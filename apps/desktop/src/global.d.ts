@@ -18,6 +18,9 @@ declare global {
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
       getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // Credential-free, installation-keyed route identities for Desktop
+      // plugins. Endpoint and auth material never crosses the IPC boundary.
+      getProfileRoutes: (profiles: string[]) => Promise<DesktopPluginProfileRoute[]>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer
@@ -511,6 +514,13 @@ export interface DesktopUpdateProgress {
   percent: number | null
   error: string | null
   at: number
+}
+
+export interface DesktopPluginProfileRoute {
+  connectionId: string
+  mode: 'local' | 'remote'
+  profile: string
+  targetProfile: string
 }
 
 export interface HermesConnection {

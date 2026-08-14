@@ -30,6 +30,8 @@ interface RegistryConfig {
 interface Secondary {
   profile: string
   gateway: HermesGateway
+  activeRequests: number
+  connectPromise: Promise<void> | null
   offEvent: () => void
   offState: () => void
   reconnectTimer: ReturnType<typeof setTimeout> | null
@@ -174,10 +176,35 @@ async function openSecondary(entry: Secondary): Promise<void> {
     return
   }
 
-  const conn = await desktop.getConnection(entry.profile)
-  const wsUrl = await resolveGatewayWsUrl(desktop, conn)
-  await entry.gateway.connect(wsUrl)
-  void desktop.touchBackend?.(entry.profile).catch(() => undefined)
+  if (entry.connectPromise) {
+    await entry.connectPromise
+
+    return
+  }
+
+  const pending = (async () => {
+    const conn = await desktop.getConnection(entry.profile)
+    const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+    await entry.gateway.connect(wsUrl)
+
+    if (!entry.wantOpen) {
+      entry.gateway.close()
+
+      return
+    }
+
+    void desktop.touchBackend?.(entry.profile).catch(() => undefined)
+  })()
+
+  entry.connectPromise = pending
+
+  try {
+    await pending
+  } finally {
+    if (entry.connectPromise === pending) {
+      entry.connectPromise = null
+    }
+  }
 }
 
 function scheduleReconnect(entry: Secondary): void {
@@ -222,6 +249,8 @@ function createSecondary(profile: string): Secondary {
   const entry: Secondary = {
     profile,
     gateway,
+    activeRequests: 0,
+    connectPromise: null,
     offEvent: () => {},
     offState: () => {},
     reconnectTimer: null,
@@ -249,11 +278,10 @@ function createSecondary(profile: string): Secondary {
 
 // True when `profile`'s backend route resolves to the SHARED primary backend
 // (global-remote case 3 in resolveProfileBackendRoute): the descriptor comes
-// back as the primary connection tagged with `profile`. Own-remote-override
-// and local pooled descriptors are never tagged. Dialing a second socket at
-// that descriptor is wrong — over SSH the second dial fails (tunnel/token are
-// per-backend) and the closed socket poisons the active gateway with
-// "not connected" even though the primary is open right next to it.
+// back as the primary connection tagged with `profile`. Electron also tags
+// dedicated pool descriptors, so compare the resolved connection itself.
+// Dialing a second socket at a shared descriptor is wrong — over SSH it can use
+// a one-shot ticket twice and poison the active gateway with "not connected".
 async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   const desktop = window.hermesDesktop
 
@@ -262,11 +290,102 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   }
 
   try {
-    const conn = await desktop.getConnection(profile)
+    const [descriptor, primary] = await Promise.all([desktop.getConnection(profile), desktop.getConnection(null)])
 
-    return Boolean(conn && typeof conn === 'object' && (conn as { profile?: string }).profile)
+    if (!descriptor?.profile || !primary) {
+      return false
+    }
+
+    // Electron tags both shared-primary and dedicated pooled descriptors with
+    // `profile`. Only the former reuses the primary connection itself.
+    if (descriptor.wsUrl || primary.wsUrl) {
+      return descriptor.wsUrl === primary.wsUrl
+    }
+
+    return (
+      descriptor.baseUrl === primary.baseUrl &&
+      descriptor.token === primary.token &&
+      descriptor.authMode === primary.authMode
+    )
   } catch {
     return false
+  }
+}
+
+// Resolve and open `profile`'s socket WITHOUT changing the active gateway.
+// Shared global-remote profiles intentionally return the primary socket plus a
+// request-scope flag; dedicated local/remote profiles use their pooled socket.
+async function gatewayForProfile(
+  profile: string,
+  leaseRequest = false
+): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
+  const key = normKey(profile)
+  const noRelease = () => undefined
+
+  if (key === g.primaryProfile) {
+    return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
+  }
+
+  if (await sharedPrimaryRoute(key)) {
+    return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
+  }
+
+  const entry = g.secondaries.get(key) ?? createSecondary(key)
+
+  // Existing dev-HMR entries predate the request lease field.
+  if (!Number.isFinite(entry.activeRequests)) {
+    entry.activeRequests = 0
+  }
+
+  entry.wantOpen = true
+
+  if (leaseRequest) {
+    entry.activeRequests += 1
+  }
+
+  let released = false
+
+  const release = () => {
+    if (!released && leaseRequest) {
+      released = true
+      entry.activeRequests = Math.max(0, entry.activeRequests - 1)
+    }
+  }
+
+  try {
+    if (!isOpen(entry.gateway)) {
+      await openSecondary(entry)
+    }
+  } catch (error) {
+    release()
+    throw error
+  }
+
+  return { gateway: entry.gateway, key, release, scopeProfile: false }
+}
+
+/**
+ * Send a gateway RPC through a named Desktop profile without foregrounding it.
+ * Global-remote routes share the primary socket and need an explicit profile
+ * param; dedicated pooled backends are already scoped by their descriptor.
+ */
+export async function requestGatewayForProfile<T>(
+  profile: string,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  const route = await gatewayForProfile(profile, true)
+
+  try {
+    if (!route.gateway) {
+      throw new Error(`Hermes gateway unavailable for profile "${route.key}"`)
+    }
+
+    const routedParams = route.scopeProfile ? { ...params, profile: route.key } : params
+
+    return await route.gateway.request<T>(method, routedParams)
+  } finally {
+    route.release()
   }
 }
 
@@ -277,23 +396,7 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
 // backend must not start a background retry loop — the real switch owns retry
 // and error UX. An already-open (or primary) profile is a no-op.
 export async function openGatewayForProfile(profile: string): Promise<void> {
-  const key = normKey(profile)
-
-  if (key === g.primaryProfile) {
-    return
-  }
-
-  if (await sharedPrimaryRoute(key)) {
-    // Served by the primary backend — there is no per-profile socket to warm.
-    return
-  }
-
-  const entry = g.secondaries.get(key) ?? createSecondary(key)
-  entry.wantOpen = true
-
-  if (!isOpen(entry.gateway)) {
-    await openSecondary(entry)
-  }
+  await gatewayForProfile(profile)
 }
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
@@ -399,7 +502,7 @@ function disposeSecondary(entry: Secondary): void {
 // (profiles with a running / needs-input session). Bounds cost to live work.
 export function pruneSecondaryGateways(keep: Set<string>): void {
   for (const [key, entry] of [...g.secondaries]) {
-    if (key === g.activeKey || keep.has(key)) {
+    if (key === g.activeKey || keep.has(key) || entry.activeRequests > 0) {
       continue
     }
 

@@ -24,15 +24,31 @@ import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
-import { $gateway } from '@/store/gateway'
+import { $gateway, requestGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile, setShowAllProfiles } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $profiles,
+  ensureGatewayProfile,
+  newSessionInProfile,
+  refreshProfiles,
+  setShowAllProfiles
+} from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
 const readonlyAtom = <T>(atomLike: ReadableAtom<T>): ReadableAtom<T> => atomLike
+
+export interface PluginProfileRoute {
+  connectionId: string
+  mode: 'local' | 'remote'
+  /** Desktop profile used to select the connection route. */
+  profile: string
+  /** Backend Hermes profile served by that route. */
+  targetProfile: string
+}
 
 /** Window geometry + the app's responsive posture, one readonly rect. */
 export interface ViewportRect {
@@ -143,6 +159,33 @@ export const host = {
 
   /** One-shot system status snapshot (platforms, versions, …). */
   status: async () => getStatus(),
+
+  /** Credential-free Desktop profile routes for connection-aware plugin UI.
+   *  Profiles sharing one execution gateway receive the same opaque id. */
+  profileRoutes: async () => {
+    const desktop = window.hermesDesktop
+    const getProfileRoutes = desktop?.getProfileRoutes
+
+    if (!getProfileRoutes) {
+      throw new Error('Hermes Desktop connection routing unavailable')
+    }
+
+    let profiles = $profiles.get()
+
+    try {
+      profiles = await refreshProfiles()
+    } catch {
+      // Route inventory is a read: a transient backend failure falls back to
+      // the last cache. Electron always adds the primary Desktop profile.
+    }
+
+    return getProfileRoutes(profiles.map(profile => profile.name))
+  },
+
+  /** Gateway JSON-RPC through a named Desktop profile without foregrounding
+   *  that profile or changing the active chat/gateway. */
+  requestProfile: async <T>(profile: string, method: string, params: Record<string, unknown> = {}): Promise<T> =>
+    requestGatewayForProfile<T>(profile, method, params),
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. */
