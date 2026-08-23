@@ -87,13 +87,14 @@ describe('view.toggleRightSidebar keybind', () => {
     expect(toggleFileBrowserOpen).toHaveBeenCalledTimes(1)
   })
 
-  it('routes fail-closed to Files when Files is missing and there is no right root side', () => {
+  it('retains the terminal fallback when the layout has no Files leaf', () => {
     $layoutTree.set(group(['workspace'], { active: 'workspace', id: 'g-workspace' }))
     renderKeybinds()
 
     pressFilesKeybind()
 
-    expect(togglePaneVisible).not.toHaveBeenCalledWith('terminal')
-    expect(toggleFileBrowserOpen).toHaveBeenCalledTimes(1)
+    expect(togglePaneVisible).toHaveBeenCalledOnce()
+    expect(togglePaneVisible).toHaveBeenCalledWith('terminal')
+    expect(toggleFileBrowserOpen).not.toHaveBeenCalled()
   })
 })

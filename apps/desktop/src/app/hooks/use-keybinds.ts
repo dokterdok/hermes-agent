@@ -6,7 +6,9 @@ import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { appViewForPath, isOverlayView } from '@/app/routes'
+import { allPaneIds } from '@/components/pane-shell/tree/model'
 import {
+  $layoutTree,
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
   isPaneVisible,
@@ -30,6 +32,7 @@ import {
 import { toggleHud } from '@/store/hud'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
+  FILES_PANE_ID,
   requestSessionSearchFocus,
   setFileBrowserOpen,
   toggleFileBrowserOpen,
@@ -240,9 +243,18 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     // Narrow-viewport reveal is handled inside the store toggles now.
     'view.toggleSidebar': toggleSidebarOpen,
-    // Keep the stable right-sidebar action semantically attached to Files,
-    // matching the titlebar even when Files is stacked or absent from the tree.
-    'view.toggleRightSidebar': toggleFileBrowserOpen,
+    // Keep the stable right-sidebar action semantically attached to Files
+    // wherever that leaf is docked. A layout with no Files leaf retains the
+    // long-standing terminal fallback so the shortcut never becomes dead.
+    'view.toggleRightSidebar': () => {
+      const tree = $layoutTree.get()
+
+      if (tree && allPaneIds(tree).includes(FILES_PANE_ID)) {
+        toggleFileBrowserOpen()
+      } else {
+        togglePaneVisible('terminal')
+      }
+    },
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
