@@ -21,7 +21,8 @@ import {
   hasLiveTurn,
   showsRunningArc,
   unreadSessionCount,
-  unreadSessionIds
+  unreadSessionIds,
+  unreadSessionTargets
 } from './session-dot-state'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $unreadWriteGuard } from './session-unread-remote'
@@ -296,5 +297,37 @@ describe('$unreadSessionIds (titlebar navigation)', () => {
     $unreadFinishedSessionIds.set(['message', 'cron'])
 
     expect($unreadSessionIds.get()).toEqual(['message', 'regular'])
+  })
+})
+
+describe('unreadSessionTargets', () => {
+  it('preserves source kind through the global recency ordering', () => {
+    expect(
+      unreadSessionTargets(
+        { cron: 'unread', message: 'unread', normal: 'unread' },
+        [{ id: 'normal', last_active: 10 }],
+        [{ id: 'cron', last_active: 30 }],
+        [{ id: 'message', last_active: 20 }]
+      )
+    ).toEqual([
+      { id: 'cron', kind: 'cron' },
+      { id: 'message', kind: 'messaging' },
+      { id: 'normal', kind: 'session' }
+    ])
+  })
+
+  it('carries a trimmed profile and registry connection owner', () => {
+    expect(
+      unreadSessionTargets(
+        { local: 'unread', remote: 'unread' },
+        [
+          { connection_id: ' conn-a ', id: 'remote', last_active: 20, profile: ' research ' },
+          { id: 'local', last_active: 10 }
+        ]
+      )
+    ).toEqual([
+      { connectionId: 'conn-a', id: 'remote', kind: 'session', profile: 'research' },
+      { id: 'local', kind: 'session' }
+    ])
   })
 })

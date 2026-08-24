@@ -72,7 +72,7 @@ import {
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { $unreadSessionCount } from '@/store/session-dot-state'
 import { watchSessionPins } from '@/store/session-pin-sync'
-import { openNextUnreadSession } from '@/store/session-unread-navigation'
+import { requestOpenNextUnread } from '@/store/session-unread-navigation'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
@@ -127,7 +127,7 @@ const idle = (node: ReactElement) => <IdleMount>{node}</IdleMount>
  *  pure (render tests drive it via props). Keep the hook in a real component:
  *  pane-shell invokes `tabTitle()` as a callback, not as a component. */
 function SessionsPaneTabTitle() {
-  return <SessionsTabTitle onOpenNextUnread={openNextUnreadSession} unread={useStore($unreadSessionCount)} />
+  return <SessionsTabTitle onOpenNextUnread={requestOpenNextUnread} unread={useStore($unreadSessionCount)} />
 }
 
 // The main tab carries the same session context menu as tile tabs (targets
