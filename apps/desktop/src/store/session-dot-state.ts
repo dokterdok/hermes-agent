@@ -202,12 +202,38 @@ export function unreadSessionCount(
   return n
 }
 
+interface UnreadSessionRow {
+  archived?: boolean
+  id: string
+  last_active?: number
+  started_at?: number
+}
+
+/** Listed unread rows across every sidebar source, globally newest first. */
+export function unreadSessionIds(
+  byId: Readonly<Record<string, SessionDotState>>,
+  ...lists: Array<readonly UnreadSessionRow[]>
+): string[] {
+  return lists
+    .flatMap(rows => rows)
+    .filter(row => !row.archived && byId[row.id] === 'unread')
+    .sort((a, b) => {
+      const byRecency =
+        Math.max(b.last_active || 0, b.started_at || 0) - Math.max(a.last_active || 0, a.started_at || 0)
+
+      return byRecency || a.id.localeCompare(b.id)
+    })
+    .map(row => row.id)
+}
+
+export const $unreadSessionIds = computed(
+  [$sessionDotStateById, $sessions, $messagingSessions],
+  (byId, sessions, messaging) => unreadSessionIds(byId, sessions, messaging)
+)
+
 /** The titlebar badge. Cron sessions are deliberately EXCLUDED: cron runs
  *  finish unwatched by design, so counting them turns the badge into a cron
  *  run counter that is permanently lit (#93552). Their unread state stays
  *  visible where it belongs — the sidebar's cron section rows — and
  *  "mark all as read" still acks them (ackAllSessionsRead iterates cron rows). */
-export const $unreadSessionCount = computed(
-  [$sessionDotStateById, $sessions, $messagingSessions],
-  (byId, sessions, messaging) => unreadSessionCount(byId, sessions, messaging)
-)
+export const $unreadSessionCount = computed($unreadSessionIds, ids => ids.length)

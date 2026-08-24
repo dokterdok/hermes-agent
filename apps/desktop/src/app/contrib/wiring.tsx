@@ -22,7 +22,7 @@ import { FindBar } from '@/components/find-bar'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
-import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
+import { $newSessionTabAction, registerPaneCloser, revealTreePane } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
   $workspaceNewSessionTarget,
@@ -79,6 +79,10 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { $unreadSessionIds } from '@/store/session-dot-state'
+import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
+import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
+import { registerOpenNextUnreadSession } from '@/store/session-unread-navigation'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
@@ -173,6 +177,20 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
+
+  useEffect(
+    () =>
+      registerOpenNextUnreadSession(() => {
+        const sessionId = $unreadSessionIds.get()[0]
+
+        revealTreePane('sessions')
+
+        if (sessionId) {
+          openSession(sessionId, navigate)
+        }
+      }),
+    [navigate]
+  )
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
