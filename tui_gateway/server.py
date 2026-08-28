@@ -12581,6 +12581,7 @@ def _run_prompt_submit(
         room_artifact_scope = None
         room_turn_token = None
         room_turn_context = None
+        history = []
         goal_followup = None  # set by the post-turn goal hook below
         result = None  # turn outcome; read after the finally for leftover /steer
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)

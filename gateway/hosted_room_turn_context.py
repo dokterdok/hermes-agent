@@ -97,6 +97,10 @@ class RoomTurnContext:
     _handoffs: list[dict[str, str]] = field(default_factory=list)
 
     def request_handoff(self, recipient: str, objective: str) -> dict[str, str]:
+        if self.provenance.get("kind") == "legacy":
+            raise RoomTurnContextError(
+                "This resumed Group Chat turn cannot delegate work; send a new message first."
+            )
         lookup = str(recipient or "").strip().removeprefix("@").casefold()
         target = next(
             (
@@ -143,6 +147,21 @@ _CURRENT_CONTEXT: ContextVar[RoomTurnContext | None] = ContextVar(
 
 def room_turn_context_from_mapping(value: Mapping[str, Any]) -> RoomTurnContext:
     member_id = _identifier(value.get("member_id"), field="member_id")
+    has_provenance = "provenance" in value
+    has_targets = "handoff_targets" in value
+    if not has_provenance and not has_targets:
+        # Turns admitted before the provenance contract can finish after an
+        # update, but they cannot acquire the new delegation capability. A new
+        # user message creates a fully scoped task with target-issued policy.
+        return RoomTurnContext(
+            current_member_id=member_id,
+            provenance={"kind": "legacy"},
+            targets=(),
+        )
+    if not has_provenance or not has_targets:
+        raise RoomTurnContextError(
+            "turn provenance and handoff targets must be supplied together"
+        )
     provenance = validate_turn_provenance(value.get("provenance"))
     targets = validate_handoff_targets(
         value.get("handoff_targets"),
