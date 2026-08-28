@@ -16,6 +16,17 @@ from gateway.hosted_room_peer import (
     attachment_manifest_digest,
     issue_room_grant,
 )
+from gateway.hosted_room_execution_policy import execution_policy_mapping
+
+
+EXECUTION_POLICY = execution_policy_mapping(
+    target_profile="default",
+    config={
+        "agent": {"max_turns": 12},
+        "approvals": {"mode": "manual"},
+        "platform_toolsets": {"api_server": ["hermes-api-server"]},
+    },
+)
 from gateway.platforms import api_server_room_attachments as room_attachments
 from gateway.platforms.api_server import APIServerAdapter
 
@@ -63,6 +74,11 @@ def _dispatch(manifest=None, **overrides) -> HostedMemberDispatch:
         "prompt": prompt,
         "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
         "capability_digest": "a" * 64,
+        "execution_policy_digest": EXECUTION_POLICY["policy_digest"],
+        "provenance": {"kind": "user", "user_event_id": "user-1"},
+        "handoff_targets": [
+            {"member_id": "member-build", "handle": "build"}
+        ],
         "trace_id": "trace-1",
         **overrides,
     }
@@ -281,6 +297,7 @@ def _grant(adapter: APIServerAdapter, *, permissions=("attachment.stage",)) -> s
         member_id="member-reviewer",
         target_install_id=TARGET_INSTALL,
         target_profile="default",
+        execution_policy_digest=EXECUTION_POLICY["policy_digest"],
         permissions=permissions,
     )
 

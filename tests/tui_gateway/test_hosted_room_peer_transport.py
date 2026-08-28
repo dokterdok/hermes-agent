@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from gateway.hosted_room_driver import TaskIdentity
+from gateway.hosted_room_execution_policy import execution_policy_mapping
 from gateway.hosted_room_peer import attachment_manifest_digest
 from tui_gateway.hosted_room_driver import HostedRoomBinding, ROOM_SESSION_SOURCE
 from tui_gateway.hosted_room_peer_transport import (
@@ -17,12 +18,21 @@ from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 
 
 BINDING = HostedRoomBinding("room-1", "gateway-home", 2)
+EXECUTION_POLICY = execution_policy_mapping(
+    target_profile="reviewer",
+    config={
+        "agent": {"max_turns": 12},
+        "approvals": {"mode": "manual"},
+        "platform_toolsets": {"api_server": ["hermes-api-server"]},
+    },
+)
 ROUTE = PeerMemberRoute(
     home_install_id="install-home",
     member_id="member-reviewer",
     target_install_id="install-peer",
     target_profile="reviewer",
     capability_digest="a" * 64,
+    execution_policy_digest=EXECUTION_POLICY["policy_digest"],
     cancellation_scope_id="cancel-1",
     trace_id="trace-1",
     grant="signed-room-grant",
@@ -111,6 +121,8 @@ def _transport(client=None, *, source_event_seq=1):
         route=ROUTE,
         client=client or FakePeerClient(),
         source_event_seq=source_event_seq,
+        provenance={"kind": "user", "user_event_id": "user-1"},
+        handoff_targets=[{"member_id": "member-build", "handle": "build"}],
     )
 
 
@@ -192,6 +204,8 @@ def test_peer_transport_pushes_digest_bound_bytes_before_run_admission():
         source_event_seq=7,
         task_id=task.task_id,
         execution_generation=3,
+        provenance={"kind": "user", "user_event_id": "user-files"},
+        handoff_targets=[{"member_id": "member-build", "handle": "build"}],
     )
     transport.create(
         profile="reviewer",

@@ -24,6 +24,7 @@ def bind_server(server) -> None:
 
     global _bound_server
     _bound_server = server
+    server._profile_execution_policy = _profile_execution_policy
 
 
 def start_hosted_room_service():
@@ -140,6 +141,30 @@ def _profile_state_db_path(profile: str):
     return default_db_path()
 
 
+def _profile_execution_policy(profile: str) -> dict:
+    """Resolve policy under the exact multiplexed profile home."""
+
+    from gateway.hosted_room_execution_policy import execution_policy_mapping
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    token = None
+    if _bound_server is not None:
+        current = str(_bound_server._current_profile_name() or "").strip()
+        if profile not in {current, _profile_name()}:
+            home = _bound_server._profile_home(profile)
+            if home is None:
+                raise ValueError(f"profile '{profile}' is unavailable")
+            token = set_hermes_home_override(str(home))
+    try:
+        return execution_policy_mapping(target_profile=profile)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
 def _room_link_run_storage_durable() -> bool:
     """Return whether peer-run replay survives this gateway process."""
 
@@ -199,6 +224,8 @@ def _(rid, params: dict) -> dict:
             link_modes=("direct",),
             text=True,
             attachments=roomlink_attachments_available(),
+            target_profile=profile,
+            execution_policy=_profile_execution_policy(profile),
         )
         room_link = {
             "enabled": True,
@@ -548,6 +575,7 @@ def _(rid, params: dict) -> dict:
         ttl = float(params.get("ttl_seconds", 3600))
         if not 60 <= ttl <= 24 * 60 * 60:
             raise ValueError("ttl_seconds must be between 60 and 86400")
+        execution_policy = _profile_execution_policy(profile)
         token = issue_room_grant(
             derive_room_grant_secret(
                 _api_server_key(profile if params.get("profile") else None)
@@ -562,6 +590,7 @@ def _(rid, params: dict) -> dict:
             member_id=str(params.get("member_id") or ""),
             target_install_id=installation_id,
             target_profile=profile,
+            execution_policy_digest=execution_policy["policy_digest"],
             ttl_seconds=ttl,
         )
         from gateway.platforms.api_server_room_attachments import (
@@ -574,6 +603,8 @@ def _(rid, params: dict) -> dict:
             link_modes=("direct",),
             text=True,
             attachments=roomlink_attachments_available(),
+            target_profile=profile,
+            execution_policy=execution_policy,
         )
         return _ok(
             rid,
@@ -694,6 +725,9 @@ def _(rid, params: dict) -> dict:
             target_install_id=catalog.installation_id,
             target_profile=target_profile,
             capability_digest=catalog.catalog_digest,
+            execution_policy_digest=(
+                catalog.execution_policy.policy_digest
+            ),
             cancellation_scope_id=str(
                 params.get("cancellation_scope_id")
                 or f"cancel-{params.get('room_id') or ''}"

@@ -112,6 +112,10 @@ class PeerRunsHTTPError(RuntimeError):
             and error_code == "invalid_room_dispatch"
             and "capability catalog changed" in str(error_message or "").lower()
         )
+        self.needs_execution_policy_refresh = bool(
+            status_code == 403
+            and error_code == "room_execution_policy_changed"
+        )
 
 
 class _RejectAttachmentRedirects(urllib.request.HTTPRedirectHandler):
@@ -238,9 +242,17 @@ class PeerRunsHTTPClient:
         self, dispatch: HostedMemberDispatch
     ) -> HostedMemberDispatch:
         catalog = self._catalog_overrides.get(self._catalog_scope(dispatch))
-        if catalog is None or catalog.catalog_digest == dispatch.capability_digest:
+        if catalog is None or (
+            catalog.catalog_digest == dispatch.capability_digest
+            and catalog.execution_policy.policy_digest
+            == dispatch.execution_policy_digest
+        ):
             return dispatch
-        return replace(dispatch, capability_digest=catalog.catalog_digest)
+        return replace(
+            dispatch,
+            capability_digest=catalog.catalog_digest,
+            execution_policy_digest=catalog.execution_policy.policy_digest,
+        )
 
     def _refresh_dispatch_capability(
         self,
@@ -281,7 +293,11 @@ class PeerRunsHTTPClient:
                         replace(stored, catalog=catalog, updated_at=time.time()),
                     )
                     break
-        return replace(dispatch, capability_digest=catalog.catalog_digest)
+        return replace(
+            dispatch,
+            capability_digest=catalog.catalog_digest,
+            execution_policy_digest=catalog.execution_policy.policy_digest,
+        )
 
     def bind_observation(self, *, task_id: str, execution_generation: int) -> None:
         """Pin history/status reads to one exact logical task attempt."""
@@ -760,6 +776,7 @@ class PeerRunsHTTPClient:
                 "error",
                 "approval",
                 "artifacts",
+                "handoffs",
                 "last_event",
             )
             if key in status
@@ -903,6 +920,11 @@ class PeerRunsHTTPClient:
                         "run_id": status.get("run_id"),
                     }
                     if status.get("artifacts")
+                    else {}
+                ),
+                **(
+                    {"handoffs": status.get("handoffs")}
+                    if status.get("handoffs")
                     else {}
                 ),
             }
@@ -1134,8 +1156,8 @@ class PeerRunsHTTPClient:
             raise PeerRunsHTTPError("peer returned no refreshed room grant")
         # Persist only after the target proves the replacement can authorize
         # the same scoped capability endpoint.
-        self.probe(grant=replacement)
-        return refreshed
+        probe = self.probe(grant=replacement)
+        return {**refreshed, "catalog": probe.get("catalog")}
 
     def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
         """Revoke this grant's exact room/home/target/profile scope."""

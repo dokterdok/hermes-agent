@@ -242,7 +242,7 @@ TOOLSETS = {
 
     "bot_room": {
         "description": "Verified Group Chat turn capabilities (internal session surface)",
-        "tools": ["share_group_file"],
+        "tools": ["share_group_file", "handoff_group_task"],
         "includes": [],
     },
 

@@ -105,7 +105,7 @@ _REVOKED_GRANT_SCHEMA_COLUMNS = frozenset({
 
 _EVENT_KINDS_BY_ACTOR = {
     "user": frozenset({"message.user"}),
-    "member": frozenset({"message.member"}),
+    "member": frozenset({"message.member", "turn.handoff"}),
     "gateway": frozenset({
         "member.unavailable",
         "room.activity",

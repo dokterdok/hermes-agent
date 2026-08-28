@@ -226,6 +226,7 @@ class PeerMemberRoute:
     trace_id: str
     grant: str
     attachments: bool = False
+    execution_policy_digest: str = ""
 
 
 class PeerHostedRoomTransport(InternalSessionRPC):
@@ -240,6 +241,8 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         source_event_seq: int = 1,
         task_id: str | None = None,
         execution_generation: int | None = None,
+        provenance: Mapping[str, Any] | None = None,
+        handoff_targets: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         self.binding = binding
         self.route = route
@@ -249,6 +252,8 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         self.source_event_seq = int(source_event_seq)
         self.task_id = task_id
         self.execution_generation = execution_generation
+        self.provenance = dict(provenance or {})
+        self.handoff_targets = tuple(dict(item) for item in handoff_targets)
         self._session_id: str | None = None
         self._dispatch: HostedMemberDispatch | None = None
         self._attachment_attempt: tuple[str, int] | None = None
@@ -437,6 +442,9 @@ class PeerHostedRoomTransport(InternalSessionRPC):
             "prompt": prompt,
             "prompt_digest": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
             "capability_digest": self.route.capability_digest,
+            "execution_policy_digest": self.route.execution_policy_digest,
+            "provenance": dict(self.provenance),
+            "handoff_targets": [dict(item) for item in self.handoff_targets],
             "trace_id": self.route.trace_id or f"trace-{uuid.uuid4().hex}",
             **(
                 {"attachment_manifest_digest": attachment_manifest_digest(manifest)}

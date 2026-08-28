@@ -110,6 +110,9 @@ class HostedRoomService:
                     target_install_id=stored.catalog.installation_id,
                     target_profile=stored.target_profile,
                     capability_digest=stored.catalog.catalog_digest,
+                    execution_policy_digest=(
+                        stored.catalog.execution_policy.policy_digest
+                    ),
                     cancellation_scope_id=stored.cancellation_scope_id,
                     trace_id=stored.trace_id,
                     grant=stored.grant,
@@ -308,6 +311,8 @@ class HostedRoomService:
             source_event_seq=int(payload.get("source_event_seq") or 0),
             task_id=getattr(task.get("identity"), "task_id", None),
             execution_generation=int(task.get("execution_generation") or 0),
+            provenance=payload.get("provenance"),
+            handoff_targets=payload.get("handoff_targets") or (),
         )
 
     def _tracked_peer_client(
@@ -327,8 +332,8 @@ class HostedRoomService:
             on_unavailable=lambda: self._set_route_status(
                 room_id, member_id, "unavailable"
             ),
-            on_refreshed=lambda grant: self._rotate_route_grant(
-                room_id, member_id, grant
+            on_refreshed=lambda grant, catalog=None: self._rotate_route_grant(
+                room_id, member_id, grant, catalog
             ),
         )
 
@@ -381,6 +386,11 @@ class HostedRoomService:
             "prompt": prompt,
             "prompt_digest": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
             "capability_digest": route.capability_digest,
+            "execution_policy_digest": route.execution_policy_digest,
+            "provenance": dict(payload.get("provenance") or {}),
+            "handoff_targets": [
+                dict(item) for item in payload.get("handoff_targets") or ()
+            ],
             "trace_id": route.trace_id,
             **(
                 {
@@ -440,7 +450,11 @@ class HostedRoomService:
                 self._pending_actions[key] = {**action, "member_id": member_id}
 
     def _rotate_route_grant(
-        self, room_id: str, member_id: str, grant: str
+        self,
+        room_id: str,
+        member_id: str,
+        grant: str,
+        catalog: GatewayRoomCatalog | None = None,
     ) -> None:
         """Persist a target-refreshed scoped grant before publishing it live."""
         key = (room_id, member_id)
@@ -457,7 +471,16 @@ class HostedRoomService:
         )
         if stored is None:
             raise RuntimeError("peer room route cannot be renewed before persistence")
-        rotated_route = replace(route, grant=grant)
+        effective_catalog = catalog or stored.catalog
+        rotated_route = replace(
+            route,
+            grant=grant,
+            capability_digest=effective_catalog.catalog_digest,
+            execution_policy_digest=(
+                effective_catalog.execution_policy.policy_digest
+            ),
+            attachments=effective_catalog.attachments,
+        )
         hosted_room_links.save_room_link(
             self.db_path,
             hosted_room_links.make_stored_link(
@@ -466,7 +489,7 @@ class HostedRoomService:
                 target_url=stored.target_url,
                 target_profile=stored.target_profile,
                 grant=grant,
-                catalog=stored.catalog,
+                catalog=effective_catalog,
                 cancellation_scope_id=stored.cancellation_scope_id,
                 trace_id=stored.trace_id,
             ),
@@ -511,11 +534,15 @@ class HostedRoomService:
             return replace(
                 route,
                 capability_digest=catalog.catalog_digest,
+                execution_policy_digest=(
+                    catalog.execution_policy.policy_digest
+                ),
                 attachments=catalog.attachments,
             )
         refreshed = replace(
             route,
             capability_digest=catalog.catalog_digest,
+            execution_policy_digest=catalog.execution_policy.policy_digest,
             attachments=catalog.attachments,
         )
         if (
@@ -1626,16 +1653,81 @@ class _RouteStatusPeerClient:
                                 raise RuntimeError(
                                     "peer returned no refreshed room grant"
                                 )
-                            self._on_refreshed(replacement)
+                            refreshed_catalog = None
+                            if refreshed.get("catalog") is not None:
+                                from gateway.hosted_room_peer import (
+                                    GatewayRoomCatalog,
+                                    HostedMemberDispatch,
+                                )
+
+                                refreshed_catalog = GatewayRoomCatalog.from_mapping(
+                                    refreshed.get("catalog")
+                                )
+                            self._on_refreshed(replacement, refreshed_catalog)
                             kwargs = {**kwargs, "grant": replacement}
+                            if "dispatch" in kwargs and refreshed_catalog is not None:
+                                checked = HostedMemberDispatch.from_mapping(
+                                    kwargs["dispatch"]
+                                )
+                                kwargs["dispatch"] = replace(
+                                    checked,
+                                    capability_digest=(
+                                        refreshed_catalog.catalog_digest
+                                    ),
+                                    execution_policy_digest=(
+                                        refreshed_catalog.execution_policy.policy_digest
+                                    ),
+                                ).as_mapping()
             try:
                 result = value(*args, **kwargs)
             except Exception as exc:
-                if bool(getattr(exc, "needs_reauthorization", False)):
+                if (
+                    bool(getattr(exc, "needs_execution_policy_refresh", False))
+                    and bool(getattr(exc, "not_admitted", False))
+                    and name in {"dispatch", "recover_dispatch"}
+                    and "grant" in kwargs
+                    and "dispatch" in kwargs
+                ):
+                    from gateway.hosted_room_peer import (
+                        GatewayRoomCatalog,
+                        HostedMemberDispatch,
+                    )
+
+                    refreshed = self._client.refresh_grant(grant=kwargs["grant"])
+                    replacement = str(refreshed.get("grant") or "")
+                    catalog = GatewayRoomCatalog.from_mapping(
+                        refreshed.get("catalog")
+                    )
+                    if not replacement:
+                        raise RuntimeError(
+                            "peer returned no refreshed room grant"
+                        ) from exc
+                    checked = HostedMemberDispatch.from_mapping(kwargs["dispatch"])
+                    if catalog.installation_id != checked.target_install_id:
+                        raise RuntimeError(
+                            "peer execution policy changed target identity"
+                        ) from exc
+                    self._on_refreshed(replacement, catalog)
+                    kwargs = {
+                        **kwargs,
+                        "grant": replacement,
+                        "dispatch": replace(
+                            checked,
+                            capability_digest=catalog.catalog_digest,
+                            execution_policy_digest=(
+                                catalog.execution_policy.policy_digest
+                            ),
+                        ).as_mapping(),
+                    }
+                    result = value(*args, **kwargs)
+                elif bool(getattr(exc, "needs_reauthorization", False)):
                     self._on_reauthorization()
+                    raise
                 elif bool(getattr(exc, "not_admitted", False)):
                     self._on_unavailable()
-                raise
+                    raise
+                else:
+                    raise
             if name != "prepare":
                 self._on_ready()
             return result

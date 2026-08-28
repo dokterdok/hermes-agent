@@ -226,6 +226,55 @@ class TestAdapterInit:
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
 
+    def test_room_policy_is_applied_at_agent_toolset_boundary(self, monkeypatch):
+        from gateway.hosted_room_execution_policy import execution_policy_mapping
+
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        policy = execution_policy_mapping(
+            target_profile="reviewer",
+            config={
+                "agent": {"max_turns": 7},
+                "approvals": {"mode": "manual"},
+                "platform_toolsets": {"api_server": ["hermes-api-server", "web"]},
+            },
+        )
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1"},
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-test")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda model="": {}),
+        )
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_fallback_model",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 999)
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_: {"terminal", "file", "web"},
+        )
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(
+            session_id="room-session",
+            room_dispatch={"room_id": "room-1"},
+            room_execution_policy=policy,
+        )
+
+        assert captured["enabled_toolsets"] == policy["enabled_toolsets"]
+        assert captured["max_iterations"] == 7
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

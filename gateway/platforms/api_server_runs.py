@@ -445,6 +445,12 @@ async def _handle_runs(
         if isinstance(body, dict) and isinstance(body.get("hosted_room_dispatch"), dict)
         else None
     )
+    room_execution_policy = (
+        body.get("_room_execution_policy")
+        if isinstance(body, dict)
+        and isinstance(body.get("_room_execution_policy"), dict)
+        else None
+    )
     room_artifact_publication = bool(
         isinstance(body, dict) and body.get("_room_artifact_publication") is True
     )
@@ -666,6 +672,18 @@ async def _handle_runs(
             if room_dispatch is not None and room_artifact_publication
             else {}
         ),
+        **(
+            {
+                "room_provenance": {
+                    **dict(room_dispatch["provenance"]),
+                    "execution_policy_digest": room_dispatch[
+                        "execution_policy_digest"
+                    ],
+                }
+            }
+            if room_dispatch is not None
+            else {}
+        ),
     )
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
@@ -745,7 +763,8 @@ async def _handle_runs(
                     requested_provider=agent_overrides.get("requested_provider"),
                     model_options=agent_overrides.get("model_options"),
                     route=route,
-                    room_dispatch=(room_dispatch if room_artifact_publication else None),
+                    room_dispatch=room_dispatch,
+                    room_execution_policy=room_execution_policy,
                 )
             self._active_run_agents[run_id] = agent
 
@@ -794,6 +813,9 @@ async def _handle_runs(
                 session_tokens = []
                 room_artifact_token = None
                 room_artifact_scope = None
+                room_policy_token = None
+                room_turn_token = None
+                room_turn_context = None
                 with self._profile_scope(request_profile):
                     try:
                         # Bind approval/session identity for this API run via
@@ -849,6 +871,24 @@ async def _handle_runs(
                             room_artifact_token = bind_room_artifact_scope(
                                 room_artifact_scope
                             )
+                        if room_dispatch is not None:
+                            from gateway.hosted_room_execution_policy import (
+                                RoomExecutionPolicy,
+                                bind_room_execution_policy,
+                            )
+                            from gateway.hosted_room_turn_context import (
+                                bind_room_turn_context,
+                                room_turn_context_from_mapping,
+                            )
+
+                            policy = RoomExecutionPolicy.from_mapping(
+                                room_execution_policy or {}
+                            )
+                            room_policy_token = bind_room_execution_policy(policy)
+                            room_turn_context = room_turn_context_from_mapping(
+                                room_dispatch
+                            )
+                            room_turn_token = bind_room_turn_context(room_turn_context)
                         register_gateway_notify(approval_session_key, _approval_notify)
                         # /v1/runs runs its own agent lifecycle (no
                         # TurnRunner, no _run_agent) — record turn process
@@ -870,6 +910,12 @@ async def _handle_runs(
                                 room_persist_user_message
                             )
                         r = agent.run_conversation(**run_kwargs)
+                        if room_turn_context is not None:
+                            if not isinstance(r, dict):
+                                r = {"final_response": str(r)}
+                            handoffs = room_turn_context.handoffs()
+                            if handoffs:
+                                r["room_handoffs"] = handoffs
                         if room_artifact_scope is not None:
                             from gateway.hosted_room_artifacts import (
                                 RoomArtifactOutbox,
@@ -926,6 +972,24 @@ async def _handle_runs(
                                     reset_room_artifact_scope(room_artifact_token)
                                 except Exception:
                                     pass
+                            if room_turn_token is not None:
+                                try:
+                                    from gateway.hosted_room_turn_context import (
+                                        reset_room_turn_context,
+                                    )
+
+                                    reset_room_turn_context(room_turn_token)
+                                except Exception:
+                                    pass
+                            if room_policy_token is not None:
+                                try:
+                                    from gateway.hosted_room_execution_policy import (
+                                        reset_room_execution_policy,
+                                    )
+
+                                    reset_room_execution_policy(room_policy_token)
+                                except Exception:
+                                    pass
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -971,6 +1035,9 @@ async def _handle_runs(
                 room_artifacts = (
                     result.get("room_artifacts") if isinstance(result, dict) else None
                 )
+                room_handoffs = (
+                    result.get("room_handoffs") if isinstance(result, dict) else None
+                )
                 # Undelivered steer text (accepted after the final response;
                 # see turn_finalizer) rides on the terminal event/status so
                 # the client can replay it as the next user turn.
@@ -986,6 +1053,8 @@ async def _handle_runs(
                     completed_event["pending_steer"] = pending_steer
                 if room_artifacts:
                     completed_event["artifacts"] = room_artifacts
+                if room_handoffs:
+                    completed_event["handoffs"] = room_handoffs
                 _put_event_if_active(completed_event)
                 self._set_run_status(
                     run_id,
@@ -994,6 +1063,7 @@ async def _handle_runs(
                     usage=usage,
                     last_event="run.completed",
                     **({"artifacts": room_artifacts} if room_artifacts else {}),
+                    **({"handoffs": room_handoffs} if room_handoffs else {}),
                     **({"pending_steer": pending_steer} if pending_steer else {}),
                 )
         except asyncio.CancelledError:

@@ -1849,6 +1849,13 @@ class TestHostedRoomRuns:
                 "prompt": prompt,
                 "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
                 "capability_digest": catalog["catalog_digest"],
+                "execution_policy_digest": catalog["execution_policy"][
+                    "policy_digest"
+                ],
+                "provenance": {"kind": "user", "user_event_id": "user-room-1"},
+                "handoff_targets": [
+                    {"member_id": "member-build", "handle": "build"}
+                ],
                 "trace_id": "trace-room-1",
             }
             with patch.object(adapter, "_create_agent") as create:
@@ -1928,6 +1935,13 @@ class TestHostedRoomRuns:
                 "prompt": prompt,
                 "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
                 "capability_digest": "f" * 64,
+                "execution_policy_digest": invitation_body["catalog"][
+                    "execution_policy"
+                ]["policy_digest"],
+                "provenance": {"kind": "user", "user_event_id": "user-room-1"},
+                "handoff_targets": [
+                    {"member_id": "member-build", "handle": "build"}
+                ],
                 "trace_id": "trace-room-1",
             }
             with patch.object(adapter, "_create_agent") as create:

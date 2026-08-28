@@ -12579,6 +12579,8 @@ def _run_prompt_submit(
         secret_token = None
         room_artifact_token = None
         room_artifact_scope = None
+        room_turn_token = None
+        room_turn_context = None
         goal_followup = None  # set by the post-turn goal hook below
         result = None  # turn outcome; read after the finally for leftover /steer
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
@@ -12644,6 +12646,17 @@ def _run_prompt_submit(
                     Path(get_hermes_home()) / "state.db"
                 ).discard_superseded(room_artifact_scope)
                 room_artifact_token = bind_room_artifact_scope(room_artifact_scope)
+            hosted_room_task = session.get("_hosted_room_task")
+            if isinstance(hosted_room_task, dict):
+                from gateway.hosted_room_turn_context import (
+                    bind_room_turn_context,
+                    room_turn_context_from_mapping,
+                )
+
+                room_turn_context = room_turn_context_from_mapping(
+                    hosted_room_task
+                )
+                room_turn_token = bind_room_turn_context(room_turn_context)
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty
@@ -13195,6 +13208,12 @@ def _run_prompt_submit(
                             if terminal_artifacts is not None
                             else {}
                         ),
+                        **(
+                            {"handoffs": room_turn_context.handoffs()}
+                            if room_turn_context is not None
+                            and room_turn_context.handoffs()
+                            else {}
+                        ),
                     }
                 )
                 terminal_receipt_committed = True
@@ -13457,6 +13476,10 @@ def _run_prompt_submit(
                 from gateway.hosted_room_artifacts import reset_room_artifact_scope
 
                 reset_room_artifact_scope(room_artifact_token)
+            if room_turn_token is not None:
+                from gateway.hosted_room_turn_context import reset_room_turn_context
+
+                reset_room_turn_context(room_turn_token)
             _clear_session_context(session_tokens)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)

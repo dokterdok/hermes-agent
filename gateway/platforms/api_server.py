@@ -2820,6 +2820,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
+        room_execution_policy: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -3086,10 +3087,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
-        if room_dispatch is not None:
-            enabled_toolsets = sorted({*enabled_toolsets, "bot_room"})
-
         max_iterations = _current_max_iterations()
+        if room_dispatch is not None:
+            from gateway.hosted_room_execution_policy import RoomExecutionPolicy
+
+            policy = RoomExecutionPolicy.from_mapping(room_execution_policy or {})
+            enabled_toolsets = list(policy.enabled_toolsets)
+            max_iterations = policy.max_iterations
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).

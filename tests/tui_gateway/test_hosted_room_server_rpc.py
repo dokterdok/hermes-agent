@@ -76,6 +76,10 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
         authority_gateway_id="gateway-a",
         authority_epoch=1,
         profile="ops",
+        provenance={"kind": "user", "user_event_id": "user-1"},
+        handoff_targets=[
+            {"member_id": "member-reviewer", "handle": "reviewer"}
+        ],
     )
     rpc.submit(
         profile="ops",
@@ -103,6 +107,10 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
         "target_install_id": submit["_hosted_task"]["target_install_id"],
         "authority_gateway_id": "gateway-a",
         "authority_epoch": 1,
+        "provenance": {"kind": "user", "user_event_id": "user-1"},
+        "handoff_targets": [
+            {"member_id": "member-reviewer", "handle": "reviewer"}
+        ],
     }
     assert submit["_hosted_task"]["home_install_id"] == submit["_hosted_task"][
         "target_install_id"

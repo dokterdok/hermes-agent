@@ -23,10 +23,19 @@ from gateway.hosted_room_peer import (
     select_room_link,
     verify_room_grant,
 )
+from gateway.hosted_room_execution_policy import execution_policy_mapping
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 SECRET = b"s" * 32
+EXECUTION_POLICY = execution_policy_mapping(
+    target_profile="reviewer",
+    config={
+        "agent": {"max_turns": 12},
+        "approvals": {"mode": "manual"},
+        "platform_toolsets": {"api_server": ["hermes-api-server"]},
+    },
+)
 
 
 def test_room_link_protocol_fixture_matches_backend_contract():
@@ -132,6 +141,11 @@ def _dispatch(**overrides):
         "prompt": prompt,
         "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
         "capability_digest": "a" * 64,
+        "execution_policy_digest": EXECUTION_POLICY["policy_digest"],
+        "provenance": {"kind": "user", "user_event_id": "user-1"},
+        "handoff_targets": [
+            {"member_id": "member-build", "handle": "build"}
+        ],
         "trace_id": "trace-1",
         **overrides,
     }
@@ -213,11 +227,20 @@ def test_room_grant_is_scoped_to_exact_room_home_target_and_profile():
         member_id=dispatch.member_id,
         target_install_id=dispatch.target_install_id,
         target_profile=dispatch.target_profile,
+        execution_policy_digest=dispatch.execution_policy_digest,
         issued_at=100,
         ttl_seconds=60,
     )
     claims = verify_room_grant(SECRET, token, dispatch, now=120)
     assert claims["grant_id"] == "grant-1"
+
+    with pytest.raises(HostedRoomGrantError, match="scope"):
+        verify_room_grant(
+            SECRET,
+            token,
+            _dispatch(execution_policy_digest="f" * 64),
+            now=120,
+        )
 
     wrong_target = _dispatch(target_profile="other")
     with pytest.raises(HostedRoomGrantError, match="scope"):
@@ -244,6 +267,7 @@ def test_room_grant_fails_closed_for_tamper_expiry_and_permission():
         member_id=dispatch.member_id,
         target_install_id=dispatch.target_install_id,
         target_profile=dispatch.target_profile,
+        execution_policy_digest=dispatch.execution_policy_digest,
         permissions=("status",),
         issued_at=100,
         ttl_seconds=10,
@@ -282,6 +306,7 @@ def test_room_grant_attachment_permission_is_scoped_and_expiring():
         member_id=dispatch.member_id,
         target_install_id=dispatch.target_install_id,
         target_profile=dispatch.target_profile,
+        execution_policy_digest=dispatch.execution_policy_digest,
         permissions=("attachment.stage",),
         issued_at=100,
         ttl_seconds=10,

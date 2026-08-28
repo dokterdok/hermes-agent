@@ -904,6 +904,8 @@ class HostedRoomRuntime:
                         authority_gateway_id=binding.gateway_id,
                         authority_epoch=binding.authority_epoch,
                         profile=profile,
+                        provenance=task["payload"].get("provenance") or {},
+                        handoff_targets=task["payload"].get("handoff_targets") or (),
                     )
 
                 def on_terminal(receipt: Mapping[str, Any]) -> None:
@@ -929,6 +931,11 @@ class HostedRoomRuntime:
                                 **(
                                     {"artifacts": receipt.get("artifacts")}
                                     if receipt.get("artifacts")
+                                    else {}
+                                ),
+                                **(
+                                    {"handoffs": receipt.get("handoffs")}
+                                    if receipt.get("handoffs")
                                     else {}
                                 ),
                                 **(
@@ -1511,6 +1518,11 @@ def _find_terminal_receipt(
                 **(
                     {"artifacts": message.get("artifacts")}
                     if message.get("artifacts")
+                    else {}
+                ),
+                **(
+                    {"handoffs": message.get("handoffs")}
+                    if message.get("handoffs")
                     else {}
                 ),
                 **({"run_id": message.get("run_id")} if message.get("run_id") else {}),

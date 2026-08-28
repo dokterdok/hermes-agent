@@ -432,6 +432,7 @@ def _peer_resolver(client: TerminalPeerClient):
         target_install_id="install-peer",
         target_profile=PROFILE,
         capability_digest="a" * 64,
+        execution_policy_digest="b" * 64,
         cancellation_scope_id="cancel-peer",
         trace_id="trace-peer",
         grant="signed-room-grant",

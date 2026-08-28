@@ -87,7 +87,10 @@ class TestSurfaceResolution:
         assert "bot_room" in server._session_surface_toolsets("desktop_bot_room")
         assert "bot_room" not in server._session_surface_toolsets("desktop")
         assert "bot_room" not in server._session_surface_toolsets("tui")
-        assert resolve_toolset("bot_room") == ["share_group_file"]
+        assert resolve_toolset("bot_room") == [
+            "handoff_group_task",
+            "share_group_file",
+        ]
 
 
 class TestResolverPlumbing:

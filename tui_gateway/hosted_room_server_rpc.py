@@ -50,6 +50,8 @@ class HostedRoomServerRPC:
         authority_gateway_id: str,
         authority_epoch: int,
         profile: str,
+        provenance: Mapping[str, Any],
+        handoff_targets: Sequence[Mapping[str, Any]],
     ) -> None:
         """Bind internal publication coordinates before one local submit."""
 
@@ -64,6 +66,8 @@ class HostedRoomServerRPC:
             "target_install_id": installation_id,
             "authority_gateway_id": authority_gateway_id,
             "authority_epoch": authority_epoch,
+            "provenance": dict(provenance),
+            "handoff_targets": [dict(item) for item in handoff_targets],
         }
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:

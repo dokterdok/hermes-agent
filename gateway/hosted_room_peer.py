@@ -21,6 +21,15 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Iterable, Literal, Mapping
 
+from gateway.hosted_room_execution_policy import (
+    RoomExecutionPolicy,
+    execution_policy_mapping,
+)
+from gateway.hosted_room_turn_context import (
+    validate_handoff_targets,
+    validate_turn_provenance,
+)
+
 
 # Version 2 adds authority/member lineage to scoped grants. It is intentionally
 # not wire-compatible with the unpublished v1 draft; mixed gateways must fall
@@ -219,6 +228,7 @@ class GatewayRoomCatalog:
     persistent_process: bool
     text: bool
     attachments: bool
+    execution_policy: RoomExecutionPolicy
     catalog_digest: str
     endpoint_url: str | None = None
     endpoint_reason: str | None = None
@@ -235,6 +245,7 @@ class GatewayRoomCatalog:
                 "persistent_process",
                 "text",
                 "attachments",
+                "execution_policy",
                 "catalog_digest",
             },
             optional={"endpoint"},
@@ -269,6 +280,9 @@ class GatewayRoomCatalog:
             "persistent_process": value["persistent_process"],
             "text": value["text"],
             "attachments": value["attachments"],
+            "execution_policy": RoomExecutionPolicy.from_mapping(
+                value["execution_policy"]
+            ).as_mapping(),
         }
         endpoint_url = None
         endpoint_reason = None
@@ -322,6 +336,9 @@ class GatewayRoomCatalog:
             persistent_process=value["persistent_process"],
             text=value["text"],
             attachments=value["attachments"],
+            execution_policy=RoomExecutionPolicy.from_mapping(
+                value["execution_policy"]
+            ),
             catalog_digest=supplied,
             endpoint_url=endpoint_url,
             endpoint_reason=endpoint_reason,
@@ -351,6 +368,8 @@ def catalog_mapping(
     text: bool = True,
     attachments: bool = False,
     endpoint: Mapping[str, Any] | None = None,
+    target_profile: str | None = None,
+    execution_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a canonical catalog mapping with its digest."""
     # A Desktop-managed gateway exits with the app.  Treat the caller's flag
@@ -368,6 +387,16 @@ def catalog_mapping(
         "persistent_process": bool(persistent_process),
         "text": bool(text),
         "attachments": bool(attachments),
+        "execution_policy": dict(
+            execution_policy
+            or execution_policy_mapping(
+                target_profile=(
+                    str(target_profile or "").strip()
+                    or (os.getenv("HERMES_PROFILE") or "default").strip()
+                    or "default"
+                )
+            )
+        ),
     }
     value["endpoint"] = dict(
         local_room_link_endpoint() if endpoint is None else endpoint
@@ -384,6 +413,8 @@ def local_catalog_mapping(
     link_modes: Iterable[LinkMode] = ("direct", "pull"),
     text: bool = True,
     attachments: bool = False,
+    target_profile: str | None = None,
+    execution_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the one truthful catalog advertised by this local process."""
     return catalog_mapping(
@@ -394,6 +425,8 @@ def local_catalog_mapping(
         text=text,
         attachments=attachments,
         endpoint=local_room_link_endpoint(),
+        target_profile=target_profile,
+        execution_policy=execution_policy,
     )
 
 
@@ -510,6 +543,9 @@ class HostedMemberDispatch:
     prompt: str
     prompt_digest: str
     capability_digest: str
+    execution_policy_digest: str
+    provenance: Mapping[str, str]
+    handoff_targets: tuple[Mapping[str, str], ...]
     trace_id: str
     attachment_manifest_digest: str | None = None
 
@@ -531,6 +567,9 @@ class HostedMemberDispatch:
             "prompt": self.prompt,
             "prompt_digest": self.prompt_digest,
             "capability_digest": self.capability_digest,
+            "execution_policy_digest": self.execution_policy_digest,
+            "provenance": dict(self.provenance),
+            "handoff_targets": [dict(item) for item in self.handoff_targets],
             "trace_id": self.trace_id,
         }
         if self.attachment_manifest_digest is not None:
@@ -555,6 +594,9 @@ class HostedMemberDispatch:
             "prompt",
             "prompt_digest",
             "capability_digest",
+            "execution_policy_digest",
+            "provenance",
+            "handoff_targets",
             "trace_id",
         }
         _exact_fields(
@@ -605,6 +647,15 @@ class HostedMemberDispatch:
             prompt_digest=prompt_digest,
             capability_digest=_digest(
                 value["capability_digest"], field="capability_digest"
+            ),
+            execution_policy_digest=_digest(
+                value["execution_policy_digest"],
+                field="execution_policy_digest",
+            ),
+            provenance=validate_turn_provenance(value["provenance"]),
+            handoff_targets=validate_handoff_targets(
+                value["handoff_targets"],
+                current_member_id=_identifier(value["member_id"], field="member_id"),
             ),
             trace_id=_identifier(value["trace_id"], field="trace_id"),
             attachment_manifest_digest=(
@@ -668,6 +719,7 @@ _GRANT_FIELDS = {
     "member_id",
     "target_install_id",
     "target_profile",
+    "execution_policy_digest",
     "permissions",
     "issued_at",
     "expires_at",
@@ -688,6 +740,7 @@ def issue_room_grant(
     member_id: str,
     target_install_id: str,
     target_profile: str,
+    execution_policy_digest: str | None = None,
     permissions: Iterable[str] = (
         "approve",
         "attachment.stage",
@@ -745,6 +798,11 @@ def issue_room_grant(
         "member_id": _identifier(member_id, field="member_id"),
         "target_install_id": _identifier(target_install_id, field="target_install_id"),
         "target_profile": _identifier(target_profile, field="target_profile"),
+        "execution_policy_digest": _digest(
+            execution_policy_digest
+            or execution_policy_mapping(target_profile=target_profile)["policy_digest"],
+            field="execution_policy_digest",
+        ),
         "permissions": list(allowed),
         "issued_at": now,
         "expires_at": now + float(ttl_seconds),
@@ -783,6 +841,7 @@ def verify_room_grant(
         "member_id": dispatch.member_id,
         "target_install_id": dispatch.target_install_id,
         "target_profile": dispatch.target_profile,
+        "execution_policy_digest": dispatch.execution_policy_digest,
     }
     if any(payload.get(field) != value for field, value in expected.items()):
         raise HostedRoomGrantError("room grant scope does not match dispatch")

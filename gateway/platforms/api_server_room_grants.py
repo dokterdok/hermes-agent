@@ -115,6 +115,7 @@ async def _handle_room_member_invitation(
             catalog_mapping,
             issue_room_grant,
         )
+        from gateway.hosted_room_execution_policy import execution_policy_mapping
 
         profile = _api_request_profile.get() or "default"
         target_install_id = hosted_rooms.local_authority_gateway_id()
@@ -125,6 +126,8 @@ async def _handle_room_member_invitation(
             roomlink_attachments_available,
         )
 
+        with self._profile_scope(profile):
+            execution_policy = execution_policy_mapping(target_profile=profile)
         catalog = catalog_mapping(
             installation_id=target_install_id,
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
@@ -132,6 +135,8 @@ async def _handle_room_member_invitation(
             persistent_process=True,
             text=True,
             attachments=roomlink_attachments_available(),
+            target_profile=profile,
+            execution_policy=execution_policy,
         )
         token = issue_room_grant(
             self._room_grant_secret(),
@@ -143,6 +148,7 @@ async def _handle_room_member_invitation(
             member_id=str(body["member_id"]),
             target_install_id=target_install_id,
             target_profile=profile,
+            execution_policy_digest=execution_policy["policy_digest"],
             issued_at=time.time(),
             ttl_seconds=ttl,
         )
@@ -176,6 +182,7 @@ async def _handle_room_member_capabilities(
             PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
             catalog_mapping,
         )
+        from gateway.hosted_room_execution_policy import execution_policy_mapping
 
         claims = self._room_grant_claims(request, permission="status")
         profile = _api_request_profile.get() or "default"
@@ -189,6 +196,8 @@ async def _handle_room_member_capabilities(
             roomlink_attachments_available,
         )
 
+        with self._profile_scope(profile):
+            execution_policy = execution_policy_mapping(target_profile=profile)
         catalog = catalog_mapping(
             installation_id=installation_id,
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
@@ -196,6 +205,8 @@ async def _handle_room_member_capabilities(
             persistent_process=True,
             text=True,
             attachments=roomlink_attachments_available(),
+            target_profile=profile,
+            execution_policy=execution_policy,
         )
     except Exception:
         return web.json_response(
@@ -245,6 +256,7 @@ async def _handle_room_member_grant_refresh(
             MAX_DISPATCH_GRANT_TTL_SECONDS,
             issue_room_grant,
         )
+        from gateway.hosted_room_execution_policy import execution_policy_mapping
 
         claims = self._room_grant_claims(request, permission="status")
         profile = _api_request_profile.get() or "default"
@@ -271,6 +283,8 @@ async def _handle_room_member_grant_refresh(
         )
         permissions = set(claims["permissions"])
         permissions.update({"artifact.ack", "artifact.read"})
+        with self._profile_scope(profile):
+            execution_policy = execution_policy_mapping(target_profile=profile)
         token = issue_room_grant(
             self._room_grant_secret(),
             grant_id=f"grant-refresh-{uuid.uuid4().hex}",
@@ -281,6 +295,7 @@ async def _handle_room_member_grant_refresh(
             member_id=claims["member_id"],
             target_install_id=installation_id,
             target_profile=profile,
+            execution_policy_digest=execution_policy["policy_digest"],
             permissions=permissions,
             issued_at=now,
             ttl_seconds=dispatch_ttl,
@@ -301,6 +316,7 @@ async def _handle_room_member_grant_refresh(
             "grant": token,
             "expires_at": now + dispatch_ttl,
             "status_expires_at": hard_expiry,
+            "execution_policy": execution_policy,
         }
     )
 

@@ -357,6 +357,8 @@ def _(rid, params: dict) -> dict:
             "target_install_id",
             "authority_gateway_id",
             "authority_epoch",
+            "provenance",
+            "handoff_targets",
         }
         if set(hosted_task) != required_hosted_fields or not all(
             isinstance(hosted_task.get(field), str) and hosted_task[field]
@@ -368,6 +370,14 @@ def _(rid, params: dict) -> dict:
             or hosted_task[field] < 1
             for field in ("execution_generation", "authority_epoch")
         ):
+            return _err(rid, 4120, "invalid hosted room turn proof")
+        try:
+            from gateway.hosted_room_turn_context import (
+                room_turn_context_from_mapping,
+            )
+
+            room_turn_context_from_mapping(hosted_task)
+        except Exception:
             return _err(rid, 4120, "invalid hosted room turn proof")
     else:
         # Older Desktop builds know the `Group: <room-id>` session title but

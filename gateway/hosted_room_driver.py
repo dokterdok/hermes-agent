@@ -55,6 +55,8 @@ _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({
 })
 _TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({
     "attachments",
+    "handoff_targets",
+    "provenance",
     "recipient_member_ids",
     "target_member_id",
 })
@@ -269,6 +271,23 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         if len(set(recipients)) != len(recipients):
             raise DriverValidationError("recipient_member_ids must be unique")
         normalized["recipient_member_ids"] = recipients
+    if "provenance" in value:
+        from gateway.hosted_room_turn_context import validate_turn_provenance
+
+        normalized["provenance"] = validate_turn_provenance(value["provenance"])
+    if "handoff_targets" in value:
+        from gateway.hosted_room_turn_context import validate_handoff_targets
+
+        current_member_id = str(
+            normalized.get("target_member_id") or target_profile
+        )
+        normalized["handoff_targets"] = [
+            dict(item)
+            for item in validate_handoff_targets(
+                value["handoff_targets"],
+                current_member_id=current_member_id,
+            )
+        ]
     if "attachments" in value:
         from gateway.hosted_room_attachments import validate_task_manifest
 
