@@ -45,7 +45,14 @@ import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
-import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
+import {
+  $groupChats,
+  GROUP_CHAT_MAX_MEMBERS,
+  groupChatHostedGateway,
+  mintGroupRoomId,
+  uniqueGroupChatName,
+  updateGroupChat
+} from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
 import {
@@ -55,6 +62,8 @@ import {
   knownGroups,
   liveGroupChatNames
 } from './group-membership'
+import { createHostedGroupChat, probeHostedRoomMembers } from './hosted-room-runtime'
+import type { HostedRoomProbe } from './hosted-room-runtime'
 import { useBots } from './i18n'
 import { displayName, slugify } from './labels'
 import { McpSetupButton } from './mcp-setup'
@@ -1026,11 +1035,23 @@ interface GroupDialogProps {
 export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const b = useBots()
   const meta = useValue($botMeta)
+  const rooms = useValue($groupChats)
   const [name, setName] = useState('')
   const current = botGroups(botRosterMeta(bot, meta))
   const groups = knownGroups(meta)
+  const hostedCurrent = current.filter(group => groupChatHostedGateway(rooms[group]))
+  const removableCurrent = current.filter(group => !groupChatHostedGateway(rooms[group]))
 
   const setMembership = (group: string, enabled: boolean) => {
+    if (groupChatHostedGateway(rooms[group])) {
+      host.notify({
+        kind: 'info',
+        message: b.group.hostedMembersFixed
+      })
+
+      return
+    }
+
     void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
     host.notify({
       kind: 'info',
@@ -1058,13 +1079,22 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
           <div className="grid gap-1.5">
             {groups.map(group => {
               const enabled = current.includes(group)
+              const hosted = Boolean(groupChatHostedGateway(rooms[group]))
 
               return (
                 <label
-                  className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-(--chrome-action-hover)"
+                  className={cn(
+                    'flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-(--chrome-action-hover)',
+                    hosted && 'cursor-not-allowed opacity-60'
+                  )}
                   key={group}
+                  title={hosted ? b.group.hostedMembersFixed : undefined}
                 >
-                  <Checkbox checked={enabled} onCheckedChange={checked => setMembership(group, checked === true)} />
+                  <Checkbox
+                    checked={enabled}
+                    disabled={hosted}
+                    onCheckedChange={checked => setMembership(group, checked === true)}
+                  />
                   <span>{group}</span>
                 </label>
               )
@@ -1093,19 +1123,19 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
             Create & join
           </Button>
         </form>
-        {current.length ? (
+        {removableCurrent.length ? (
           <Button
             className="justify-self-start"
             onClick={() =>
               void saveBotMeta(bot, {
-                groups: [],
-                group: null
+                groups: hostedCurrent,
+                group: hostedCurrent[0] || null
               })
             }
             size="sm"
             variant="ghost"
           >
-            {b.bot.removeFromAllGroups}
+            {hostedCurrent.length ? b.bot.removeFromOtherGroups : b.bot.removeFromAllGroups}
           </Button>
         ) : null}
       </DialogContent>
@@ -1132,6 +1162,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
   const [image, setImage] = useState<null | string>(null)
+  const [hostProbe, setHostProbe] = useState<null | { key: string; probe: HostedRoomProbe | null }>(null)
+  const [createPending, setCreatePending] = useState(false)
+  const [createError, setCreateError] = useState('')
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
   useEffect(() => {
@@ -1140,6 +1173,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setChecked({})
       setName('')
       setImage(null)
+      setHostProbe(null)
+      setCreatePending(false)
+      setCreateError('')
     }
   }, [open])
 
@@ -1155,8 +1191,49 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     : b.group.nameLabel
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
+  const selectedRouteKey = selected.map(botRosterKey).sort().join('|')
+  const resolvedProbe = hostProbe?.key === selectedRouteKey ? hostProbe.probe : null
+  const hostProbePending = selected.length >= 2 && hostProbe?.key !== selectedRouteKey
 
-  const create = () => {
+  useEffect(() => {
+    let cancelled = false
+
+    if (!open || selected.length < 2) {
+      setHostProbe(null)
+
+      return () => {
+        cancelled = true
+      }
+    }
+
+    void probeHostedRoomMembers(durableGroupChatMembers(selected))
+      .then(probe => {
+        if (cancelled) {
+          return
+        }
+
+        setHostProbe({
+          key: selectedRouteKey,
+          probe
+        })
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHostProbe({
+            key: selectedRouteKey,
+            probe: null
+          })
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+    // Stable member ownership, not object identity, is the probe boundary.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, selectedRouteKey])
+
+  const create = async () => {
     const base = (name.trim() || placeholder).slice(0, 64)
 
     if (selected.length < 2 || !base) {
@@ -1182,30 +1259,83 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     const groupName = uniqueGroupChatName(base, taken)
     const roomId = mintGroupRoomId()
 
-    for (const bot of selected) {
-      void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
-    }
+    setCreatePending(true)
+    setCreateError('')
 
-    // Persist every machine identity, including today's active source. That
-    // member becomes remote after a source switch and cannot rely on the new
-    // gateway's name-keyed bot metadata to remain seated in this room.
-    const roomMembers = durableGroupChatMembers(selected)
-    updateGroupChat(groupName, (room: GroupChatRoom) => {
-      room.members = roomMembers
-      room.roomId = roomId
-
-      if (image) {
-        room.image = image
+    try {
+      if (hostProbePending) {
+        return
       }
 
-      return room
-    })
-    host.notify({
-      kind: 'info',
-      message: `“${groupName}” created with ${selected.length} bots`
-    })
-    onClose()
-    onCreated?.(groupName)
+      const hostName = selected[0]?.connectionLabel || b.group.thisHost
+      let hosted: Awaited<ReturnType<typeof createHostedGroupChat>> | null = null
+
+      if (resolvedProbe?.eligible) {
+        try {
+          hosted = await createHostedGroupChat({
+            route: resolvedProbe.route,
+            roomId,
+            name: groupName,
+            members: selected.map(bot => ({
+              member_id: bot.name === 'default' ? 'default' : bot.name,
+              profile: bot.name,
+              handle: botHandle(bot.name, bot),
+              ...(displayName(bot, botRosterMeta(bot, allMeta))
+                ? {
+                    display_name: displayName(bot, botRosterMeta(bot, allMeta))
+                  }
+                : {})
+            }))
+          })
+        } catch {
+          host.notify({
+            kind: 'info',
+            message: b.group.hostedFallbackToDesktop(hostName)
+          })
+        }
+      }
+
+      for (const bot of selected) {
+        await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
+      }
+
+      // Persist every machine identity, including today's active source. That
+      // member becomes remote after a source switch and cannot rely on the new
+      // gateway's name-keyed bot metadata to remain seated in this room.
+      const roomMembers = durableGroupChatMembers(selected)
+      updateGroupChat(groupName, (room: GroupChatRoom) => {
+        room.members = roomMembers
+        room.roomId = roomId
+        room.continuityMode = hosted ? 'gateway' : 'desktop'
+
+        if (hosted) {
+          room.hosted = hosted.authorityId
+          room.hostedEpoch = hosted.authorityEpoch
+          room.hostedConnectionId = hosted.connectionId
+          room.hostedSeq = 0
+          room.hostedStatus = {
+            state: 'ready',
+            label: b.roster.ready
+          }
+        }
+
+        if (image) {
+          room.image = image
+        }
+
+        return room
+      })
+      host.notify({
+        kind: 'info',
+        message: `“${groupName}” created with ${selected.length} bots`
+      })
+      onClose()
+      onCreated?.(groupName)
+    } catch {
+      setCreateError(b.group.createFailed)
+    } finally {
+      setCreatePending(false)
+    }
   }
 
   return (
@@ -1324,7 +1454,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <form
             onSubmit={event => {
               event.preventDefault()
-              create()
+              void create()
             }}
           >
             <Input
@@ -1336,15 +1466,18 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
             />
           </form>
         </div>
+        {createError ? <div className="text-xs text-destructive">{createError}</div> : null}
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
           <Button
-            disabled={!canCreate}
-            onClick={create}
-            title={selected.length < 2 ? 'Pick at least 2 bots' : undefined}
-          >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
+            disabled={!canCreate || createPending || hostProbePending}
+            onClick={() => void create()}
+            title={selected.length < 2 ? b.group.pickAtLeastTwo : undefined}
+          >
+            {createPending ? b.group.creating : b.group.createAction(selected.length)}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

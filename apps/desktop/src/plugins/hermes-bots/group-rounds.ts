@@ -4,6 +4,8 @@
  * path, and the user send that starts it all.
  */
 
+import { host } from '@hermes/plugin-sdk'
+
 import { botFriendlyNames, botHandle, clearBotAttention, mentionNameForms, noteBotAttention } from './data'
 import { recordGroupActivity } from './group-activity'
 import {
@@ -14,6 +16,7 @@ import {
   GROUP_CHAT_MAX_CONTINUATIONS,
   GROUP_CHAT_MAX_MESSAGES,
   GROUP_CHAT_MAX_ROUNDS,
+  groupChatHostedGateway,
   groupSpeakerLabel,
   groupThreadOf,
   mintGroupThreadId,
@@ -23,8 +26,14 @@ import {
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
 import { durableGroupChatMembers, groupMemberKey } from './group-membership'
 import { harvestStrandedGroupReply, isGroupPassText, runGroupChatMemberTurn } from './group-turns'
+import { hostedRoomAcceptsAttachments, sendHostedGroupChat, stopHostedGroupChat } from './hosted-room-runtime'
+import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
+
+function hostedConnectionName(room: null | Partial<GroupChatRoom> | undefined) {
+  return room?.members?.find(member => member.connectionLabel)?.connectionLabel || botsText().group.thisHost
+}
 
 // ── group chats: bounded round-robin coordination over a shared room log ─────
 //
@@ -425,6 +434,69 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
  *  falls back to the room's durable roster so a two-arg call still works. */
 export async function stopGroupThread(group: string, thread: null | string, members: GroupMember[] | null = null) {
   const room = $groupChats.get()[group] || {}
+
+  if (groupChatHostedGateway(room)) {
+    const connectionName = hostedConnectionName(room)
+
+    updateGroupChat(
+      group,
+      current => ({
+        ...current,
+        running: true,
+        hostedStatus: {
+          state: 'stopping',
+          label: botsText().group.hostedStopping
+        }
+      }),
+      {
+        sync: false
+      }
+    )
+
+    try {
+      const acknowledged = await stopHostedGroupChat(group)
+      updateGroupChat(
+        group,
+        current => ({
+          ...current,
+          running: !acknowledged,
+          hostedStatus: {
+            state: acknowledged ? 'stopped' : 'queued',
+            label: acknowledged ? botsText().group.hostedStopped : botsText().group.hostedStopQueued(connectionName)
+          },
+          continuityIssue: acknowledged ? null : botsText().group.hostedStopQueuedHint(connectionName)
+        }),
+        {
+          sync: false
+        }
+      )
+    } catch {
+      updateGroupChat(
+        group,
+        current => ({
+          ...current,
+          running: false,
+          hostedStatus: {
+            state: 'offline',
+            label: botsText().group.hostedUnavailable(connectionName)
+          },
+          continuityIssue: botsText().group.hostedReconnectToStop(connectionName)
+        }),
+        {
+          sync: false
+        }
+      )
+    }
+
+    recordGroupActivity(group, {
+      kind: 'stopped',
+      member: 'You',
+      thread: thread || null
+    })
+
+    return
+  }
+
   const roster = Array.isArray(members) && members.length ? members : room.members || []
   const turnName = room.turn || null
 
@@ -968,8 +1040,20 @@ export function sendToGroupChat(
 ): null | string {
   const trimmed = String(text || '').trim()
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
+  const roomBeforeSend = $groupChats.get()[group]
+  const hosted = groupChatHostedGateway(roomBeforeSend)
+  const connectionName = hostedConnectionName(roomBeforeSend)
 
   if ((!trimmed && !attached.length) || !members.length) {
+    return null
+  }
+
+  if (hosted && attached.length && !hostedRoomAcceptsAttachments(roomBeforeSend)) {
+    host.notify({
+      kind: 'info',
+      message: botsText().group.hostedAttachmentsUnavailable
+    })
+
     return null
   }
 
@@ -997,6 +1081,69 @@ export function sendToGroupChat(
     target,
     attached
   )
+
+  if (!sent) {
+    return null
+  }
+
+  if (hosted) {
+    updateGroupChat(
+      group,
+      (room: GroupChatRoom) => ({
+        ...room,
+        running: true,
+        hostedStatus: {
+          state: 'sending',
+          label: botsText().group.hostedSending
+        }
+      }),
+      {
+        sync: false
+      }
+    )
+    recordGroupActivity(group, {
+      kind: 'queued',
+      member: 'You',
+      thread: target
+    })
+    void sendHostedGroupChat(group, sent, target)
+      .then(acknowledged => {
+        updateGroupChat(
+          group,
+          room => ({
+            ...room,
+            running: true,
+            hostedStatus: {
+              state: acknowledged ? 'working' : 'queued',
+              label: acknowledged ? botsText().group.hostedWorking : botsText().group.hostedQueued(connectionName)
+            },
+            continuityIssue: acknowledged ? null : botsText().group.hostedQueuedHint(connectionName)
+          }),
+          {
+            sync: false
+          }
+        )
+      })
+      .catch(() => {
+        updateGroupChat(
+          group,
+          room => ({
+            ...room,
+            running: false,
+            hostedStatus: {
+              state: 'failed',
+              label: botsText().group.hostedNeedsAttention
+            },
+            continuityIssue: botsText().group.hostedSendFailed(connectionName)
+          }),
+          {
+            sync: false
+          }
+        )
+      })
+
+    return target
+  }
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true
   updateGroupChat(group, (room: GroupChatRoom) => {

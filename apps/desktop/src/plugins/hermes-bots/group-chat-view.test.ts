@@ -13,13 +13,21 @@ import type { GroupChat, RosterRow } from './types'
 // window, and disbanding one — plus the ordering rules that keep the in-pane
 // fallback from painting a duplicate beside the main tab.
 
-const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
+const { host, renameHostedGroupChat } = vi.hoisted(() => ({
+  host: {} as Record<string, unknown>,
+  renameHostedGroupChat: vi.fn(async () => true)
+}))
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock } = await import('./group-test-utils')
 
   return pluginSdkMock(host)
 })
+
+vi.mock('./hosted-room-runtime', () => ({
+  disbandHostedGroupChat: vi.fn(async () => true),
+  renameHostedGroupChat
+}))
 
 interface Room {
   chat: typeof groupChat
@@ -57,7 +65,45 @@ async function loadRoom(): Promise<Room> {
 const durable = (room: Room) => (room.gateway.storage.get('group-chats') || {}) as Record<string, GroupChat>
 
 beforeEach(() => {
+  vi.clearAllMocks()
+  renameHostedGroupChat.mockResolvedValue(true)
   runTimersInline()
+})
+
+describe('renaming a hosted Group Chat', () => {
+  it('queues the durable rename before re-keying the local room', async () => {
+    const room = await loadRoom()
+
+    renameHostedGroupChat.mockResolvedValue(false)
+    room.chat.$groupChats.set({
+      Core: {
+        continuityMode: 'gateway',
+        hosted: 'install:studio',
+        hostedConnectionId: 'host-a',
+        hostedEpoch: 1,
+        hostedSeq: 2,
+        log: [],
+        members: [
+          {
+            connectionId: 'host-a',
+            connectionLabel: 'Studio',
+            name: 'research'
+          }
+        ],
+        roomId: 'room-1',
+        watermarks: {}
+      }
+    })
+
+    await expect(room.view.renameGroupChat('Core', 'Launch', [])).resolves.toBe('Launch')
+
+    expect(renameHostedGroupChat).toHaveBeenCalledWith('Core', 'Launch')
+    expect(room.chat.$groupChats.get()).not.toHaveProperty('Core')
+    expect(room.chat.$groupChats.get().Launch).toMatchObject({
+      hosted: 'install:studio',
+      continuityIssue: 'Rename saved. It will sync when Studio is online.'
+    })
+  })
 })
 
 describe('opening a room', () => {

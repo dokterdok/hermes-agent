@@ -89,6 +89,7 @@ type BotsMessages = {
     duplicateFailed: string
     deleteTitle: string
     removeFromAllGroups: string
+    removeFromOtherGroups: string
     createFirstHint: string
     createFailed: string
     advanced: string
@@ -157,6 +158,43 @@ type BotsMessages = {
     stopHint: string
     needsYourInput: string
     pictureGenerationFailed: string
+    createAction: (count: number) => string
+    createFailed: string
+    creating: string
+    pickAtLeastTwo: string
+    thisHost: string
+    hostedFallbackToDesktop: (host: string) => string
+    hostedAttachmentsUnavailable: string
+    hostedSending: string
+    hostedWorking: string
+    hostedQueued: (host: string) => string
+    hostedQueuedHint: (host: string) => string
+    hostedNeedsAttention: string
+    hostedSendFailed: (host: string) => string
+    hostedStopping: string
+    hostedStopped: string
+    hostedStopQueued: (host: string) => string
+    hostedStopQueuedHint: (host: string) => string
+    hostedUnavailable: (host: string) => string
+    hostedReconnectToStop: (host: string) => string
+    hostedDeleted: string
+    hostedDeleteLocally: string
+    hostedMembersFixed: string
+    hostedRenameQueued: (host: string) => string
+    hostedRenameFailed: (host: string) => string
+    hostRouteMissing: string
+    hostUpdateNeeded: (host: string) => string
+    hostReconnectToContinue: (host: string) => string
+    hostedReconnectToDelete: (host: string) => string
+    hostedSyncing: string
+    botsNeedOneHost: string
+    aBot: string
+    memberUnavailable: (member: string) => string
+    memberNeedsAttention: (member: string) => string
+    memberCouldNotRespond: (member: string) => string
+    memberRetryWhenOnline: (member: string) => string
+    desktopStorageUnavailable: string
+    hostRejectedCommand: string
     nameTaken: (name: string) => string
     memberCount: (count: number) => string
     settingsHint: (group: string) => string
@@ -291,6 +329,7 @@ const en: BotsMessages = {
     duplicateFailed: 'Duplicate failed',
     deleteTitle: 'Delete bot and profile?',
     removeFromAllGroups: 'Remove from all groups',
+    removeFromOtherGroups: 'Leave other groups',
     createFirstHint: 'Open the Bots pane and hit “New Bot”.',
     createFailed: 'Could not create the profile yet',
     advanced: 'Advanced',
@@ -354,6 +393,44 @@ const en: BotsMessages = {
     stopHint: 'Stop this run — interrupts the member on turn and holds the rest',
     needsYourInput: 'A bot in this group chat needs your input',
     pictureGenerationFailed: 'Group picture generation failed',
+    createAction: count => `Create Group${count ? ` (${count})` : ''}`,
+    createFailed: 'Could not create the Group Chat. Try again.',
+    creating: 'Creating…',
+    pickAtLeastTwo: 'Pick at least 2 bots',
+    thisHost: 'this host',
+    hostedFallbackToDesktop: host =>
+      `${host} could not keep this Group Chat running. Bots will pause when Desktop closes.`,
+    hostedAttachmentsUnavailable: 'Files need Desktop mode for now.',
+    hostedSending: 'Sending…',
+    hostedWorking: 'Working',
+    hostedQueued: host => `Waiting for ${host}`,
+    hostedQueuedHint: host => `Saved. It will send when ${host} is online.`,
+    hostedNeedsAttention: 'Needs attention',
+    hostedSendFailed: host => `Not sent. Reconnect ${host} and retry.`,
+    hostedStopping: 'Stopping…',
+    hostedStopped: 'Stopped',
+    hostedStopQueued: host => `Stop saved for ${host}`,
+    hostedStopQueuedHint: host => `It will stop when ${host} is online.`,
+    hostedUnavailable: host => `${host} is offline`,
+    hostedReconnectToStop: host => `Reconnect ${host} to stop this Group Chat.`,
+    hostedDeleted: 'This Group Chat was deleted.',
+    hostedDeleteLocally: 'Delete it here to remove its local membership and history.',
+    hostedMembersFixed: 'Members cannot change while this Group Chat keeps running without Desktop.',
+    hostedRenameQueued: host => `Rename saved. It will sync when ${host} is online.`,
+    hostedRenameFailed: host => `Could not rename. Reconnect ${host} and retry.`,
+    hostRouteMissing: 'This Group Chat’s host is unavailable.',
+    hostUpdateNeeded: host => `Update ${host} to keep this Group Chat running.`,
+    hostReconnectToContinue: host => `Reconnect ${host} to continue.`,
+    hostedReconnectToDelete: host => `Reconnect ${host} to delete this Group Chat.`,
+    hostedSyncing: 'Syncing recent activity…',
+    botsNeedOneHost: 'These Bots need one shared host for automatic continuity.',
+    aBot: 'A bot',
+    memberUnavailable: member => `${member} is unavailable.`,
+    memberNeedsAttention: member => `${member} needs your attention.`,
+    memberCouldNotRespond: member => `${member} could not respond.`,
+    memberRetryWhenOnline: member => `${member} will retry when online.`,
+    desktopStorageUnavailable: 'Desktop could not save this action. Try again.',
+    hostRejectedCommand: 'The host rejected this action.',
     nameTaken: name => `A group named “${name}” already exists.`,
     memberCount: count => `${count} bots`,
     settingsHint: group => `Group settings — rename ${group} or set a room picture`,
@@ -481,6 +558,7 @@ const ja: BotsMessages = {
     duplicateFailed: '複製に失敗しました',
     deleteTitle: 'ボットとプロファイルを削除しますか？',
     removeFromAllGroups: 'すべてのグループから外す',
+    removeFromOtherGroups: 'ほかのグループから外す',
     createFirstHint: 'ボットパネルを開いて「新しいボット」を押してください。',
     createFailed: 'プロファイルをまだ作成できませんでした',
     advanced: '詳細設定',
@@ -544,6 +622,44 @@ const ja: BotsMessages = {
     stopHint: 'この実行を停止 — ターン中のメンバーを中断し、残りを保留します',
     needsYourInput: 'このグループチャットのボットが入力を待っています',
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
+    createAction: count => `グループを作成${count ? ` (${count})` : ''}`,
+    createFailed: 'グループチャットを作成できませんでした。もう一度お試しください。',
+    creating: '作成中…',
+    pickAtLeastTwo: '2体以上のボットを選択してください',
+    thisHost: 'このホスト',
+    hostedFallbackToDesktop: host =>
+      `${host} で継続実行を開始できませんでした。Desktopを閉じるとボットは一時停止します。`,
+    hostedAttachmentsUnavailable: '現在、ファイルにはDesktopモードが必要です。',
+    hostedSending: '送信中…',
+    hostedWorking: '作業中',
+    hostedQueued: host => `${host} を待っています`,
+    hostedQueuedHint: host => `保存しました。${host} がオンラインになると送信されます。`,
+    hostedNeedsAttention: '確認が必要です',
+    hostedSendFailed: host => `送信できませんでした。${host} を再接続して再試行してください。`,
+    hostedStopping: '停止中…',
+    hostedStopped: '停止しました',
+    hostedStopQueued: host => `${host} への停止を保存しました`,
+    hostedStopQueuedHint: host => `${host} がオンラインになると停止します。`,
+    hostedUnavailable: host => `${host} はオフラインです`,
+    hostedReconnectToStop: host => `このグループチャットを停止するには ${host} を再接続してください。`,
+    hostedDeleted: 'このグループチャットは削除されました。',
+    hostedDeleteLocally: 'ローカルのメンバーシップと履歴を削除するには、ここで削除してください。',
+    hostedMembersFixed: 'Desktopなしで実行中のグループチャットではメンバーを変更できません。',
+    hostedRenameQueued: host => `名前変更を保存しました。${host} がオンラインになると同期されます。`,
+    hostedRenameFailed: host => `名前を変更できませんでした。${host} を再接続して再試行してください。`,
+    hostRouteMissing: 'このグループチャットのホストを利用できません。',
+    hostUpdateNeeded: host => `継続実行するには ${host} を更新してください。`,
+    hostReconnectToContinue: host => `続行するには ${host} を再接続してください。`,
+    hostedReconnectToDelete: host => `このグループチャットを削除するには ${host} を再接続してください。`,
+    hostedSyncing: '最近のアクティビティを同期中…',
+    botsNeedOneHost: '自動継続には、これらのボットを1つの共有ホストに置く必要があります。',
+    aBot: 'ボット',
+    memberUnavailable: member => `${member} は利用できません。`,
+    memberNeedsAttention: member => `${member} に確認が必要です。`,
+    memberCouldNotRespond: member => `${member} は応答できませんでした。`,
+    memberRetryWhenOnline: member => `${member} はオンラインになると再試行します。`,
+    desktopStorageUnavailable: 'Desktopでこの操作を保存できませんでした。もう一度お試しください。',
+    hostRejectedCommand: 'ホストがこの操作を拒否しました。',
     nameTaken: name => `「${name}」という名前のグループはすでに存在します。`,
     memberCount: count => `ボット${count}体`,
     settingsHint: group => `グループ設定 — ${group}の名前変更やルーム画像の設定`,
@@ -670,6 +786,7 @@ const zh: BotsMessages = {
     duplicateFailed: '复制失败',
     deleteTitle: '删除机器人和配置档案？',
     removeFromAllGroups: '从所有群组中移除',
+    removeFromOtherGroups: '退出其他群组',
     createFirstHint: '打开机器人面板，点击“新建机器人”。',
     createFailed: '暂时无法创建配置档案',
     advanced: '高级',
@@ -733,6 +850,43 @@ const zh: BotsMessages = {
     stopHint: '停止本次运行 — 中断当前回合的成员，并暂停其余成员',
     needsYourInput: '此群聊中有机器人需要你输入',
     pictureGenerationFailed: '群组图片生成失败',
+    createAction: count => `创建群聊${count ? ` (${count})` : ''}`,
+    createFailed: '无法创建群聊。请重试。',
+    creating: '正在创建…',
+    pickAtLeastTwo: '请至少选择 2 个机器人',
+    thisHost: '此主机',
+    hostedFallbackToDesktop: host => `${host} 无法保持此群聊运行。关闭 Desktop 后，机器人将暂停。`,
+    hostedAttachmentsUnavailable: '文件目前需要 Desktop 模式。',
+    hostedSending: '正在发送…',
+    hostedWorking: '正在工作',
+    hostedQueued: host => `正在等待 ${host}`,
+    hostedQueuedHint: host => `已保存。${host} 上线后将发送。`,
+    hostedNeedsAttention: '需要处理',
+    hostedSendFailed: host => `未发送。请重新连接 ${host} 后重试。`,
+    hostedStopping: '正在停止…',
+    hostedStopped: '已停止',
+    hostedStopQueued: host => `已为 ${host} 保存停止请求`,
+    hostedStopQueuedHint: host => `${host} 上线后将停止。`,
+    hostedUnavailable: host => `${host} 已离线`,
+    hostedReconnectToStop: host => `请重新连接 ${host} 以停止此群聊。`,
+    hostedDeleted: '此群聊已被删除。',
+    hostedDeleteLocally: '请在此处删除，以移除本地成员关系和历史记录。',
+    hostedMembersFixed: '此群聊在没有 Desktop 的情况下运行时无法更改成员。',
+    hostedRenameQueued: host => `重命名已保存。${host} 上线后将同步。`,
+    hostedRenameFailed: host => `无法重命名。请重新连接 ${host} 后重试。`,
+    hostRouteMissing: '此群聊的主机不可用。',
+    hostUpdateNeeded: host => `请更新 ${host} 以保持此群聊运行。`,
+    hostReconnectToContinue: host => `请重新连接 ${host} 以继续。`,
+    hostedReconnectToDelete: host => `请重新连接 ${host} 以删除此群聊。`,
+    hostedSyncing: '正在同步近期活动…',
+    botsNeedOneHost: '这些机器人需要一个共享主机才能自动连续运行。',
+    aBot: '一个机器人',
+    memberUnavailable: member => `${member} 不可用。`,
+    memberNeedsAttention: member => `${member} 需要你的处理。`,
+    memberCouldNotRespond: member => `${member} 无法回复。`,
+    memberRetryWhenOnline: member => `${member} 上线后将重试。`,
+    desktopStorageUnavailable: 'Desktop 无法保存此操作。请重试。',
+    hostRejectedCommand: '主机拒绝了此操作。',
     nameTaken: name => `已存在名为“${name}”的群聊。`,
     memberCount: count => `${count} 个机器人`,
     settingsHint: group => `群聊设置 — 重命名 ${group} 或设置房间图片`,
@@ -859,6 +1013,7 @@ const zhHant: BotsMessages = {
     duplicateFailed: '複製失敗',
     deleteTitle: '刪除機器人和設定檔？',
     removeFromAllGroups: '從所有群組中移除',
+    removeFromOtherGroups: '退出其他群組',
     createFirstHint: '開啟機器人面板，點「新增機器人」。',
     createFailed: '暫時無法建立設定檔',
     advanced: '進階',
@@ -922,6 +1077,43 @@ const zhHant: BotsMessages = {
     stopHint: '停止本次執行 — 中斷目前回合的成員，並暫停其餘成員',
     needsYourInput: '此群組聊天中有機器人需要您的輸入',
     pictureGenerationFailed: '群組圖片產生失敗',
+    createAction: count => `建立群組聊天${count ? ` (${count})` : ''}`,
+    createFailed: '無法建立群組聊天。請再試一次。',
+    creating: '正在建立…',
+    pickAtLeastTwo: '請至少選擇 2 個機器人',
+    thisHost: '此主機',
+    hostedFallbackToDesktop: host => `${host} 無法保持此群組聊天運作。關閉 Desktop 後，機器人將暫停。`,
+    hostedAttachmentsUnavailable: '檔案目前需要 Desktop 模式。',
+    hostedSending: '正在傳送…',
+    hostedWorking: '正在工作',
+    hostedQueued: host => `正在等待 ${host}`,
+    hostedQueuedHint: host => `已儲存。${host} 上線後將傳送。`,
+    hostedNeedsAttention: '需要處理',
+    hostedSendFailed: host => `未傳送。請重新連接 ${host} 後再試一次。`,
+    hostedStopping: '正在停止…',
+    hostedStopped: '已停止',
+    hostedStopQueued: host => `已為 ${host} 儲存停止要求`,
+    hostedStopQueuedHint: host => `${host} 上線後將停止。`,
+    hostedUnavailable: host => `${host} 已離線`,
+    hostedReconnectToStop: host => `請重新連接 ${host} 以停止此群組聊天。`,
+    hostedDeleted: '此群組聊天已被刪除。',
+    hostedDeleteLocally: '請在此處刪除，以移除本機成員關係和歷史記錄。',
+    hostedMembersFixed: '此群組聊天在沒有 Desktop 的情況下運作時無法變更成員。',
+    hostedRenameQueued: host => `重新命名已儲存。${host} 上線後將同步。`,
+    hostedRenameFailed: host => `無法重新命名。請重新連接 ${host} 後再試一次。`,
+    hostRouteMissing: '此群組聊天的主機無法使用。',
+    hostUpdateNeeded: host => `請更新 ${host} 以保持此群組聊天運作。`,
+    hostReconnectToContinue: host => `請重新連接 ${host} 以繼續。`,
+    hostedReconnectToDelete: host => `請重新連接 ${host} 以刪除此群組聊天。`,
+    hostedSyncing: '正在同步近期活動…',
+    botsNeedOneHost: '這些機器人需要一個共用主機才能自動持續運作。',
+    aBot: '一個機器人',
+    memberUnavailable: member => `${member} 無法使用。`,
+    memberNeedsAttention: member => `${member} 需要您的處理。`,
+    memberCouldNotRespond: member => `${member} 無法回覆。`,
+    memberRetryWhenOnline: member => `${member} 上線後將重試。`,
+    desktopStorageUnavailable: 'Desktop 無法儲存此操作。請再試一次。',
+    hostRejectedCommand: '主機拒絕了此操作。',
     nameTaken: name => `已存在名為「${name}」的群組聊天。`,
     memberCount: count => `${count} 個機器人`,
     settingsHint: group => `群組設定 — 重新命名 ${group} 或設定房間圖片`,

@@ -136,11 +136,23 @@ export interface GroupMessageAuthor {
 }
 
 export interface GroupMessage {
+  /** Hosted replay keeps validated manifests without transporting file bytes. */
+  attachmentMeta?: Array<{
+    kind: AttachmentKind
+    mime?: string
+    name: string
+    refs?: Record<string, string>
+    size?: number
+  }>
   /** Milliseconds. */
   at: number
+  /** Stable gateway event identity after a hosted-room replay. */
+  eventId?: string
   from: GroupMessageAuthor
   id?: string
   images?: Attachment[]
+  /** Monotonic gateway order for hosted-room events. */
+  seq?: number
   text: string
   /** Messages predating threading carry the sentinel thread `'legacy'`. */
   thread?: string
@@ -152,6 +164,8 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** User-facing continuity choice. Missing records are classic Desktop rooms. */
+  continuityMode?: 'desktop' | 'gateway'
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
   holds?: Record<string, GroupHold>
@@ -161,6 +175,22 @@ export interface GroupChat {
   /** Immutable identity, so a rename doesn't fork the room. */
   roomId?: null | string
   running?: boolean
+  /** Stable authority installation id for a gateway-hosted room. */
+  hosted?: null | string
+  /** The local Desktop connection that currently reaches the authority. */
+  hostedConnectionId?: null | string
+  /** Server-issued fencing epoch for the hosted authority. */
+  hostedEpoch?: null | number
+  /** Last contiguous hosted-room event sequence applied locally. */
+  hostedSeq?: number
+  hostedStatus?: null | {
+    canRetry?: boolean
+    canStop?: boolean
+    label: string
+    state: string
+  }
+  /** Short, actionable continuity problem for the room surface. */
+  continuityIssue?: null | string
   /** The immutable owner descriptor captured beside each plumbing session,
    *  keyed the same way as `sessions`. Partial: legacy records hold a bare
    *  `{ name }`, and the sweep re-validates the route before trusting one. */

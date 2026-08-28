@@ -63,6 +63,7 @@ import {
   $groupChatWorkspace,
   $groupClarify,
   $groupNeedsYou,
+  groupChatHostedGateway,
   groupSpeakerLabel,
   groupThreadOf,
   scheduleGroupChatServerSync,
@@ -94,6 +95,7 @@ import {
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
+import { disbandHostedGroupChat, renameHostedGroupChat } from './hosted-room-runtime'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
@@ -116,6 +118,11 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   }
 
   const prior = all[group] || {}
+
+  if (groupChatHostedGateway(prior)) {
+    await disbandHostedGroupChat(group)
+  }
+
   const metaBefore = $botMeta.get()
   const cleanup = groupDisbandMetadataPlan(group, members, prior, $lastRoster.get(), metaBefore)
   let metadataPersistence: Promise<unknown> = Promise.resolve()
@@ -191,6 +198,12 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
           sessionOwners: room.sessionOwners || {},
           members: Array.isArray(room.members) ? room.members : [],
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+          hosted: groupChatHostedGateway(room) || null,
+          hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
+          hostedConnectionId:
+            typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
+          hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+          continuityMode: groupChatHostedGateway(room) ? 'gateway' : room.continuityMode || 'desktop',
           image: room.image || null,
           syncRevision: Math.max(0, Number(room.syncRevision || 0))
         }
@@ -237,7 +250,12 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
  *  rename, so even a member whose sid is later lost falls back to the same
  *  "Group: <roomId>" title lookup instead of a fresh "Group: <new name>".
  *  Returns the new name, or null when the target name is taken. */
-async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
+export async function renameGroupChat(
+  oldName: string,
+  newName: string,
+  members: GroupMember[] | null | undefined,
+  { hostedAlreadyRenamed = false }: { hostedAlreadyRenamed?: boolean } = {}
+) {
   const next = String(newName || '')
     .trim()
     .slice(0, 64)
@@ -266,6 +284,37 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
     })
 
     return null
+  }
+
+  const beforeRename = $groupChats.get()[oldName]
+
+  if (groupChatHostedGateway(beforeRename) && !hostedAlreadyRenamed) {
+    const connectionName =
+      beforeRename.members?.find(member => member.connectionLabel)?.connectionLabel || botsText().group.thisHost
+
+    try {
+      const acknowledged = await renameHostedGroupChat(oldName, next)
+
+      if (!acknowledged) {
+        updateGroupChat(
+          oldName,
+          current => ({
+            ...current,
+            continuityIssue: botsText().group.hostedRenameQueued(connectionName)
+          }),
+          {
+            sync: false
+          }
+        )
+      }
+    } catch {
+      host.notify({
+        kind: 'error',
+        message: botsText().group.hostedRenameFailed(connectionName)
+      })
+
+      return null
+    }
   }
 
   // Move the room record wholesale — log, watermarks, sessions, members,
@@ -722,6 +771,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // Events are epoch-tagged, so a superseded run's history drops out of view.
   const activityEvents: GroupActivityEntry[] = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  const hostedActivity = groupChatHostedGateway(room) ? room.hostedStatus?.label : null
 
   // #94570 shell rewired onto the real primitive (#91868/#94569): the button
   // must stop the ROUND, not just spray per-member interrupts — without the
@@ -747,7 +797,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
-          {latestActivity ? (
+          {hostedActivity ? (
+            <span className="min-w-0 flex-1 truncate">{hostedActivity}</span>
+          ) : latestActivity ? (
             <span className="min-w-0 flex-1 truncate">{`${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`}</span>
           ) : null}
         </RowButton>
@@ -765,6 +817,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           </Tip>
         ) : null}
       </div>
+      {room.continuityIssue ? (
+        <div className="px-2.5 pb-1 text-[0.625rem] text-(--ui-text-quaternary)">{room.continuityIssue}</div>
+      ) : null}
       {activityOpen ? (
         <div className="grid gap-0.5 px-2.5 pb-1.5" id={`group-activity:${group}`}>
           {activityEvents.length ? (
@@ -1250,9 +1305,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             <div className="px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)" key={'working'}>
               {roomClarifies.length
                 ? b.group.waitingForAnswer
-                : room.turn
-                  ? b.group.memberThinking(groupSpeakerLabel(room.turn))
-                  : b.group.roomWorking}
+                : groupChatHostedGateway(room) && room.hostedStatus?.label
+                  ? room.hostedStatus.label
+                  : room.turn
+                    ? b.group.memberThinking(groupSpeakerLabel(room.turn))
+                    : b.group.roomWorking}
             </div>
           ) : null}
           {/* Scroll anchor (#89835): rooms opened at scroll position 0, mid- */
