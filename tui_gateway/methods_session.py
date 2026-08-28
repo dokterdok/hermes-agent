@@ -33,6 +33,9 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = False
     resolved_cwd = _completion_cwd(params)
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+    preserve_running_on_disconnect = is_truthy_value(
+        params.get("preserve_running_on_disconnect", False)
+    )
     _enable_gateway_prompts()
 
     # ``profile`` (app-global remote mode): a new chat started under a non-launch
@@ -81,6 +84,7 @@ def _(rid, params: dict) -> dict:
             "agent_ready": ready,
             "attached_images": [],
             "close_on_disconnect": is_truthy_value(params.get("close_on_disconnect", False)),
+            "preserve_running_on_disconnect": preserve_running_on_disconnect,
             "active_session_lease": lease,
             "cols": cols,
             "created_at": now,
@@ -389,6 +393,9 @@ def _(rid, params: dict) -> dict:
     # route in parallel. Suppress the duplicate WebSocket transcript only when
     # the caller explicitly requests it; other clients keep upstream behavior.
     omit_messages = is_truthy_value(params.get("omit_messages", False))
+    preserve_running_on_disconnect = is_truthy_value(
+        params.get("preserve_running_on_disconnect", False)
+    )
 
     # In a profile scope this opens a DEDICATED handle we own until the agent
     # takes it (see the ownership transfer at _init_session below); every path
@@ -458,6 +465,8 @@ def _(rid, params: dict) -> dict:
                         with contextlib.suppress(Exception):
                             db.close()
                     live["last_active"] = time.time()
+                    if preserve_running_on_disconnect:
+                        live["preserve_running_on_disconnect"] = True
                     # This resume reattaches the live record. A lazy session
                     # (no state.db row yet — every fresh Bot Chat) that was
                     # sentinel-parked by a WS drop MUST be rebound here, or it
@@ -631,6 +640,11 @@ def _(rid, params: dict) -> dict:
                     return _err(rid, 4007, "session no longer live; retry resume")
                 if session.get("_client_gone_interrupt_requested"):
                     return _err(rid, 4009, "session disconnect interrupt settling")
+                if preserve_running_on_disconnect:
+                    # Once a Bot Mode viewer claims a live runtime, a later
+                    # reuse without the optional flag must not downgrade its
+                    # detach policy while that same turn is still running.
+                    session["preserve_running_on_disconnect"] = True
                 # This resume reattaches the live record: cancel any pending
                 # ws-orphan reap timer armed while the client was detached
                 # (storm killer — _live_session_payload's rebind also cancels,
@@ -680,6 +694,7 @@ def _(rid, params: dict) -> dict:
                 lease=lease,
                 source=source,
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                preserve_running_on_disconnect=preserve_running_on_disconnect,
                 profile_home=profile_home,
                 lazy=True,
             )
@@ -747,6 +762,7 @@ def _(rid, params: dict) -> dict:
                 lease=lease,
                 source=source,
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                preserve_running_on_disconnect=preserve_running_on_disconnect,
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
@@ -842,6 +858,7 @@ def _(rid, params: dict) -> dict:
                 lease=lease,
                 source=source,
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                preserve_running_on_disconnect=preserve_running_on_disconnect,
                 display_history_prefix=prefix,
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
@@ -980,6 +997,7 @@ def _(rid, params: dict) -> dict:
                         cwd=profile_resume_cwd,
                         session_db=db,
                         source=source,
+                        preserve_running_on_disconnect=preserve_running_on_disconnect,
                     )
                     # Ownership TRANSFER — the registered session's agent now
                     # holds this handle for its whole life, and _init_session
@@ -1230,6 +1248,11 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     assert session is not None
+    if is_truthy_value(params.get("preserve_running_on_disconnect", False)):
+        # Warm Desktop switches use session.activate rather than resume. The
+        # Bot detach policy must follow that path too, especially for a runtime
+        # created by an older Desktop before this capability was available.
+        session["preserve_running_on_disconnect"] = True
 
     return _ok(
         rid,

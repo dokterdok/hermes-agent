@@ -426,6 +426,12 @@ def _(rid, params: dict) -> dict:
         except Exception as exc:
             return _err(rid, 4123, str(exc))
     internal_room_submit = internal_hosted_submit or desktop_turn is not None
+    if is_truthy_value(params.get("preserve_running_on_disconnect", False)):
+        # The prompt is the final authority for a Bot turn. Session routing can
+        # rebuild/rebind a runtime between open and send, so adopting the
+        # policy here closes every warm-cache and recovery path before the
+        # orphan reaper can interpret a viewer detach as Stop.
+        session["preserve_running_on_disconnect"] = True
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         return _err(rid, 4090, limit_message)
     # Which desktop window this message was typed into. Rewritten on every
