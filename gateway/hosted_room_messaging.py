@@ -11,13 +11,11 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 
@@ -298,72 +296,23 @@ class MessagingRoomBackend:
         payload: Any,
         actor: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if self.service is not None:
-            return self.service.send(
-                room_id=room_id,
-                event_id=event_id,
-                payload=payload,
-                actor=actor,
+        if self.service is None:
+            raise RoomControlError(
+                "Group Chat worker is unavailable. Restart Hermes and try again."
             )
-        normalized = discussion.validate_user_payload(payload)
-        return hosted_rooms.append_event(
-            self.db_path,
+        return self.service.send(
             room_id=room_id,
             event_id=event_id,
-            kind="message.user",
-            actor=dict(actor),
-            payload=normalized,
+            payload=payload,
+            actor=actor,
         )
 
     def stop_room(self, room_id: str, *, cancel_id: str) -> int:
-        if self.service is not None:
-            return self.service.stop_room(room_id, cancel_id=cancel_id)
-        hosted_rooms.request_room_stop(
-            self.db_path,
-            room_id=room_id,
-            cancel_id=cancel_id,
-        )
-        requested = 0
-        for task in driver.list_tasks(self.db_path, room_id=room_id):
-            for _attempt in range(3):
-                current = driver.get_task(self.db_path, task["identity"])
-                status = str(current.get("status") or "")
-                try:
-                    if status == "queued":
-                        driver.cancel_task(
-                            self.db_path,
-                            current["identity"],
-                            cancel_id=cancel_id,
-                            expected_cancel_generation=int(
-                                current["cancel_generation"]
-                            ),
-                            clock=time.time,
-                        )
-                        requested += 1
-                    elif status in {"running", "indeterminate"}:
-                        driver.begin_task_cancel(
-                            self.db_path,
-                            current["identity"],
-                            cancel_id=cancel_id,
-                            expected_cancel_generation=int(
-                                current["cancel_generation"]
-                            ),
-                            clock=time.time,
-                        )
-                        requested += 1
-                    elif status == "stopping":
-                        requested += 1
-                    elif (
-                        status == "cancelled"
-                        and current.get("cancel_id") == cancel_id
-                    ):
-                        requested += 1
-                    break
-                except (driver.InvalidTaskTransitionError, driver.StaleTaskError):
-                    # Queued work can become running between the list and the
-                    # write. Reload and retry under the new generation.
-                    continue
-        return requested
+        if self.service is None:
+            raise RoomControlError(
+                "Group Chat worker is unavailable. Restart Hermes and try again."
+            )
+        return self.service.stop_room(room_id, cancel_id=cancel_id)
 
 
 def current_room_backend() -> MessagingRoomBackend:

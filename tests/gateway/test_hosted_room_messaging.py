@@ -160,8 +160,13 @@ def _seed_rooms(tmp_path):
         room_id="release-room",
         name="Release room",
         members=[
-            {"member_id": "default", "handle": "hermes"},
-            {"member_id": "ops", "handle": "ops", "display_name": "Operations"},
+            {"member_id": "default", "profile": "default", "handle": "hermes"},
+            {
+                "member_id": "ops",
+                "profile": "ops",
+                "handle": "ops",
+                "display_name": "Operations",
+            },
         ],
         authority_gateway_id=authority,
     )
@@ -170,8 +175,12 @@ def _seed_rooms(tmp_path):
         room_id="research-room",
         name="Research room",
         members=[
-            {"member_id": "default", "handle": "hermes"},
-            {"member_id": "research", "handle": "research"},
+            {"member_id": "default", "profile": "default", "handle": "hermes"},
+            {
+                "member_id": "research",
+                "profile": "research",
+                "handle": "research",
+            },
         ],
         authority_gateway_id=authority,
     )
@@ -1254,7 +1263,7 @@ async def test_real_service_persists_server_owned_messaging_actor(tmp_path, monk
     assert "user-1" not in user_event["actor"]["id"]
 
 
-def test_cross_process_store_wakes_owner_without_desktop_transport(tmp_path):
+def test_messaging_gateway_service_wakes_without_desktop_transport(tmp_path):
     service = _TestHostedRoomService(tmp_path / "state.db")
     service.rpc = _ImmediateRPC()
     service.runtime.rpc = service.rpc
@@ -1266,7 +1275,10 @@ def test_cross_process_store_wakes_owner_without_desktop_transport(tmp_path):
             {"member_id": "ops", "profile": "ops", "handle": "ops"},
         ],
     )
-    messaging_process = MessagingRoomBackend(db_path=service.db_path)
+    messaging_process = MessagingRoomBackend(
+        db_path=service.db_path,
+        service=service,
+    )
     first_event = _event(
         "/group 1 send @ops inspect the release",
         platform=Platform.WHATSAPP,
@@ -1316,7 +1328,7 @@ def test_cross_process_store_wakes_owner_without_desktop_transport(tmp_path):
     assert events[0]["actor"]["display_name"] == "Display Name via Whatsapp"
 
 
-def test_cross_process_stop_cancels_durable_queued_work(tmp_path):
+def test_messaging_gateway_stop_cancels_durable_queued_work(tmp_path):
     service = _TestHostedRoomService(tmp_path / "state.db")
     service.create_room(
         room_id="release-room",
@@ -1331,9 +1343,12 @@ def test_cross_process_stop_cancels_durable_queued_work(tmp_path):
         event_id="user-1",
         payload={"text": "@ops inspect", "thread_id": "thread-1"},
     )
-    messaging_process = MessagingRoomBackend(db_path=service.db_path)
+    messaging_process = MessagingRoomBackend(
+        db_path=service.db_path,
+        service=service,
+    )
     assert messaging_process.stop_room("release-room", cancel_id="stop-1") == 1
-    assert messaging_process.stop_room("release-room", cancel_id="stop-1") == 1
+    assert messaging_process.stop_room("release-room", cancel_id="stop-1") == 0
     service.prepare_room(service.bindings()[0])
     assert messaging_process.status("release-room")["working"] is False
     tasks = hosted_room_driver.list_tasks(service.db_path, room_id="release-room")
@@ -1342,7 +1357,8 @@ def test_cross_process_stop_cancels_durable_queued_work(tmp_path):
 
 def test_cross_process_send_is_idempotent_on_transport_redelivery(tmp_path):
     db, room, _ = _seed_rooms(tmp_path)
-    messaging_process = MessagingRoomBackend(db_path=db)
+    service = _TestHostedRoomService(db)
+    messaging_process = MessagingRoomBackend(db_path=db, service=service)
     event = _event("/group 1 send hello", platform=Platform.TELEGRAM)
     event_id = messaging_event_id(event)
     payload = {"text": "hello", "thread_id": event_id}
@@ -1379,7 +1395,10 @@ def test_cross_process_stop_is_acknowledged_by_owner_for_running_work(tmp_path):
             {"member_id": "ops", "profile": "ops", "handle": "ops"},
         ],
     )
-    messaging_process = MessagingRoomBackend(db_path=service.db_path)
+    messaging_process = MessagingRoomBackend(
+        db_path=service.db_path,
+        service=service,
+    )
     event = _event("/group 1 send inspect")
     messaging_process.send(
         room_id="release-room",
