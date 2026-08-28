@@ -12,6 +12,8 @@ import tui_gateway.server as srv
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
+    from tui_gateway.hosted_room_service import HostedRoomService
+
     class DurableRunStore:
         durable = True
 
@@ -19,7 +21,11 @@ def home(tmp_path, monkeypatch):
     path.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(path))
     monkeypatch.setattr(srv, "_run_idempotency_store", DurableRunStore(), raising=False)
-    return path
+    service = HostedRoomService(srv, db_path=path / "state.db")
+    service.local_profiles = lambda: ("default", "ops", "reviewer")
+    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: service)
+    yield path
+    service.stop(timeout=0.1)
 
 
 def _result(envelope):
@@ -33,6 +39,68 @@ def _server_authority():
     return local_authority_gateway_id()
 
 
+def test_hosted_mutations_fail_closed_without_worker(home, monkeypatch):
+    from gateway.hosted_rooms import (
+        create_room,
+        list_rooms,
+        read_events,
+        room_state,
+    )
+
+    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: None)
+    unavailable = (
+        "Group Chat worker is unavailable. Restart the Hermes gateway and try again."
+    )
+
+    create = srv._methods["groups.create"](
+        1,
+        {
+            "room_id": "room-1",
+            "name": "Release room",
+            "members": [{"profile": "ops", "handle": "ops"}],
+        },
+    )
+    assert create["error"] == {"code": 4123, "message": unavailable}
+    assert list_rooms(home / "state.db", include_disbanded=True) == []
+
+    create_room(
+        home / "state.db",
+        room_id="room-1",
+        name="Release room",
+        members=[{"profile": "ops", "handle": "ops"}],
+        authority_gateway_id=_server_authority(),
+    )
+    before = room_state(home / "state.db", room_id="room-1")
+    before_events = read_events(home / "state.db", room_id="room-1")
+
+    calls = (
+        (
+            "groups.send",
+            {
+                "room_id": "room-1",
+                "event_id": "user-1",
+                "payload": {"text": "inspect"},
+            },
+        ),
+        (
+            "groups.rename",
+            {
+                "room_id": "room-1",
+                "event_id": "rename-1",
+                "name": "Changed room",
+            },
+        ),
+        ("groups.disband", {"room_id": "room-1"}),
+    )
+    for index, (method_name, params) in enumerate(calls, start=2):
+        response = srv._methods[method_name](index, params)
+        assert response["error"] == {"code": 4123, "message": unavailable}
+
+    after = room_state(home / "state.db", room_id="room-1")
+    assert after == before
+    assert read_events(home / "state.db", room_id="room-1") == before_events
+
+
 def _create_room():
     return _result(
         srv._methods["groups.create"](
@@ -40,7 +108,14 @@ def _create_room():
             {
                 "room_id": "room-1",
                 "name": "Release room",
-                "members": [{"profile": "ops", "handle": "ops"}],
+                "members": [
+                    {
+                        "member_id": "default",
+                        "profile": "default",
+                        "handle": "hermes",
+                    },
+                    {"member_id": "ops", "profile": "ops", "handle": "ops"},
+                ],
                 "authority_gateway_id": "gateway-a",
             },
         )
@@ -479,7 +554,7 @@ def test_create_list_send_and_log_roundtrip(home):
         )
     )
     assert sent["accepted"] is True
-    assert sent["driver_started"] is False
+    assert sent["driver_started"] is True
     assert sent["event"]["seq"] == 1
     assert sent["event"]["kind"] == "message.user"
     assert sent["event"]["actor"] == {"kind": "user", "id": "desktop"}
@@ -616,10 +691,22 @@ def test_send_does_not_trust_client_supplied_actor_identity(home):
 
 
 def test_create_ignores_client_supplied_authority_identity(home):
+    members = [
+        {
+            "member_id": "default",
+            "profile": "default",
+            "handle": "hermes",
+        },
+        {
+            "member_id": "ops",
+            "profile": "ops",
+            "handle": "ops",
+        },
+    ]
     created = _result(
         srv._methods["groups.create"](
             1,
-            {"room_id": "legacy-room", "name": "Legacy", "members": []},
+            {"room_id": "legacy-room", "name": "Legacy", "members": members},
         )
     )["room"]
     retried = _result(
@@ -628,7 +715,7 @@ def test_create_ignores_client_supplied_authority_identity(home):
             {
                 "room_id": "legacy-room",
                 "name": "Legacy",
-                "members": [],
+                "members": members,
                 "authority_gateway_id": "spoofed-gateway",
             },
         )
@@ -642,12 +729,30 @@ def test_create_ignores_client_supplied_authority_identity(home):
 def test_legacy_room_adoption_emits_one_lineage_receipt(home):
     from gateway.hosted_rooms import create_room, default_db_path
 
-    members = [{"profile": "ops", "handle": "ops"}]
+    members = [
+        {
+            "member_id": "default",
+            "profile": "default",
+            "handle": "hermes",
+        },
+        {
+            "member_id": "ops",
+            "profile": "ops",
+            "handle": "ops",
+        },
+    ]
+    stored_members = [
+        {
+            **member,
+            "target": {"kind": "local", "profile": member["profile"]},
+        }
+        for member in members
+    ]
     create_room(
         default_db_path(),
         room_id="legacy-room",
         name="Legacy",
-        members=members,
+        members=stored_members,
         authority_gateway_id="legacy",
         now=1,
     )
@@ -680,7 +785,14 @@ def test_legacy_room_adoption_emits_one_lineage_receipt(home):
             {
                 "room_id": "",
                 "name": "x",
-                "members": [],
+                "members": [
+                    {
+                        "member_id": "default",
+                        "profile": "default",
+                        "handle": "hermes",
+                    },
+                    {"member_id": "ops", "profile": "ops", "handle": "ops"},
+                ],
                 "authority_gateway_id": "gateway-a",
             },
         ),
@@ -718,7 +830,10 @@ def test_disband_tombstones_room(home):
             {"room_id": "room-1", "include_disbanded": True},
         )
     )
-    assert [event["kind"] for event in replay["events"]] == ["room.disbanded"]
+    assert [event["kind"] for event in replay["events"]] == [
+        "room.stop_requested",
+        "room.disbanded",
+    ]
 
 
 def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
@@ -726,6 +841,8 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
     calls = []
 
     class FakeService:
+        db_path = home / "state.db"
+
         class Attachments:
             def mark_room_disbanded(self, room_id):
                 calls.append(("attachments", room_id))
@@ -780,6 +897,8 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
     calls = []
 
     class FakeService:
+        db_path = home / "state.db"
+
         def stop_room(self, _room_id, **kwargs):
             calls.append(("stop", kwargs["require_acknowledged"]))
             raise RuntimeError("room work is still stopping")

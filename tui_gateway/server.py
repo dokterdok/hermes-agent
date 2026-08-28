@@ -17758,6 +17758,7 @@ from . import (  # noqa: E402
 # service accessor here so methods_groups handlers resolve the lifecycle-owned
 # singleton rather than starting one from an RPC call.
 get_hosted_room_service = _methods_groups.get_hosted_room_service
+_WORKER_UNAVAILABLE = _methods_groups._WORKER_UNAVAILABLE
 _profile_name = _methods_groups._profile_name
 _requested_profile = _methods_groups._requested_profile
 _api_server_key = _methods_groups._api_server_key
