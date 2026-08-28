@@ -16,31 +16,47 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
+import { atom } from '@hermes/plugin-sdk'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BotRow, GroupRow } from './bot-row'
+import {
+  BotRow,
+  groupAttentionRoomVisible,
+  groupMainVisibilityAtom,
+  GroupRow,
+  showGroupAttentionMarker
+} from './bot-row'
 import { $groupChats } from './group-chat'
 import { translateBotsIn } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
-const { ensureAgent, ensureBotMetadata, notifyError, openRosterBot, requestProfile, warmAgent, warmProfile } =
-  vi.hoisted(() => ({
-    ensureAgent: vi.fn(),
-    ensureBotMetadata: vi.fn(),
-    notifyError: vi.fn(),
-    openRosterBot: vi.fn(),
-    requestProfile: vi.fn(),
-    warmAgent: vi.fn(),
-    warmProfile: vi.fn()
-  }))
+const {
+  ensureAgent,
+  ensureBotMetadata,
+  notifyError,
+  openRosterBot,
+  paneVisibility,
+  requestProfile,
+  warmAgent,
+  warmProfile
+} = vi.hoisted(() => ({
+  ensureAgent: vi.fn(),
+  ensureBotMetadata: vi.fn(),
+  notifyError: vi.fn(),
+  openRosterBot: vi.fn(),
+  paneVisibility: vi.fn(),
+  requestProfile: vi.fn(),
+  warmAgent: vi.fn(),
+  warmProfile: vi.fn()
+}))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
   return {
     ...sdk,
-    host: { ...sdk.host, ensureAgent, notifyError, requestProfile, warmAgent, warmProfile },
+    host: { ...sdk.host, ensureAgent, notifyError, paneVisibility, requestProfile, warmAgent, warmProfile },
     // The plugin bundle normally lands via `ctx.i18n.register` at load, so
     // without this every localized label in the row renders empty.
     usePluginI18n: () => translateBotsIn('en')
@@ -164,6 +180,53 @@ describe('the menu opens the same forever-chat a row click does', () => {
     fireEvent.click(await screen.findByText('Open Bot Chat'))
 
     expect(openRosterBot.mock.calls).toEqual([[bot]])
+  })
+})
+
+describe('Group Chat attention', () => {
+  it('shows unresolved attention only while the room is elsewhere', () => {
+    expect(showGroupAttentionMarker(true, false)).toBe(true)
+    expect(showGroupAttentionMarker(true, true)).toBe(false)
+    expect(showGroupAttentionMarker(false, false)).toBe(false)
+
+    expect(groupAttentionRoomVisible(true, false, false)).toBe(true)
+    expect(groupAttentionRoomVisible(false, true, true)).toBe(true)
+    expect(groupAttentionRoomVisible(false, true, false)).toBe(false)
+  })
+
+  it('follows the actual main-pane visibility without clearing attention, including Unicode room names', () => {
+    const visible = atom(false)
+    paneVisibility.mockReturnValue(visible)
+
+    const props = {
+      active: false,
+      group: '小助手',
+      members: [],
+      needsYou: true,
+      onDisband: vi.fn(),
+      onNewSection: vi.fn(),
+      onOpen: vi.fn(),
+      onSettings: vi.fn()
+    }
+
+    const { container } = render(<GroupRow {...props} />)
+    const marker = () => container.querySelector('[aria-label="Needs your input"]')
+    expect(paneVisibility).toHaveBeenCalledWith('plugin-workspace:hermes-bots:group:u5c0f-u52a9-u624b')
+    expect(marker()).not.toBeNull()
+    act(() => visible.set(true))
+    expect(marker()).toBeNull()
+    act(() => visible.set(false))
+    expect(marker()).not.toBeNull()
+  })
+
+  it('fails closed when a shell cannot report main-pane visibility', () => {
+    expect(groupMainVisibilityAtom('Planning', null).get()).toBe(false)
+    expect(
+      groupMainVisibilityAtom('Planning', () => {
+        throw new Error('unsupported pane id')
+      }).get()
+    ).toBe(false)
+    expect(groupMainVisibilityAtom('Planning', (() => ({})) as never).get()).toBe(false)
   })
 })
 

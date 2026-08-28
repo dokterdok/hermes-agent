@@ -7,6 +7,7 @@
  */
 
 import {
+  atom,
   cn,
   coarseElapsed,
   Codicon,
@@ -30,6 +31,7 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+import { useMemo } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -59,11 +61,12 @@ import {
 } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { botGroups, groupLastActivity } from './group-membership'
+import { shouldRenderGroupChatInPane } from './group-panes'
 import { toggleGroupChatPinned } from './group-pin'
 import { $activeGroupMemberKeys } from './group-presence'
 import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
-import { displayName, stripPreviewMarkdown } from './labels'
+import { displayName, slugifyProfileName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
@@ -78,6 +81,7 @@ import {
   workerActiveAt
 } from './row-helpers'
 import { openBotScreen } from './screen-open'
+import { ID } from './shared'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
 import {
   $botSections,
@@ -509,10 +513,48 @@ interface GroupRowProps {
   onSettings: (room: { members: GroupMember[]; name: string }) => void
 }
 
-export function GroupRow({ active, group, members, needsYou, onOpen, onSettings, onDisband, onNewSection }: GroupRowProps) {
+/** Attention is useful only while its Group Chat is elsewhere. The durable
+ *  state stays set while visible, so leaving reveals it again until resolved. */
+export function showGroupAttentionMarker(needsYou: boolean, roomVisible: boolean): boolean {
+  return Boolean(needsYou && !roomVisible)
+}
+
+export function groupAttentionRoomVisible(mainVisible: boolean, active: boolean, fallbackVisible: boolean): boolean {
+  return Boolean(mainVisible || (active && fallbackVisible))
+}
+
+export function groupMainVisibilityAtom(
+  group: string,
+  paneVisibility: null | typeof host.paneVisibility = host.paneVisibility
+) {
+  if (typeof paneVisibility !== 'function') {
+    return atom(false)
+  }
+
+  try {
+    const visibility = paneVisibility(`plugin-workspace:${ID}:group:${slugifyProfileName(group)}`)
+
+    return visibility && typeof visibility.get === 'function' ? visibility : atom(false)
+  } catch {
+    return atom(false)
+  }
+}
+
+export function GroupRow({
+  active,
+  group,
+  members,
+  needsYou,
+  onOpen,
+  onSettings,
+  onDisband,
+  onNewSection
+}: GroupRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms = useValue($groupChats)
+  const $mainVisible = useMemo(() => groupMainVisibilityAtom(group), [group])
+  const mainVisible = useValue($mainVisible)
   const sections = useValue($botSections)
   const currentSectionId = groupChatSectionId(group, rooms)
 
@@ -538,6 +580,8 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onSettings,
 
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
   const availabilityLabel = b.group.availableCount(availableMembers, members.length)
+  const roomVisible = groupAttentionRoomVisible(mainVisible, active, shouldRenderGroupChatInPane(group))
+  const showAttention = showGroupAttentionMarker(needsYou, roomVisible)
 
   // Same drag contract as a bot row, under the group's own key shape so a
   // drop zone can tell which kind landed without decoding roster keys.
@@ -604,9 +648,12 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onSettings,
               <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="pinned" />
             </Tip>
           ) : null}
-          {needsYou ? (
+          {showAttention ? (
             <Tip label={b.group.needsYourInput}>
-              <Codicon aria-label={b.roster.needsInput} className="shrink-0 text-(--ui-accent)" name="question" />
+              <span
+                aria-label={b.roster.needsInput}
+                className="size-1.5 shrink-0 self-center rounded-full bg-(--ui-accent)"
+              />
             </Tip>
           ) : null}
           {lastAt ? (
