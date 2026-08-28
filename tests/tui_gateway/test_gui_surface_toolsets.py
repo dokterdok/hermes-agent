@@ -84,6 +84,7 @@ class TestSurfaceResolution:
 
     def test_group_file_tool_exists_only_on_bot_room_sessions(self, no_desktop_env):
         assert "bot_room" in server._session_surface_toolsets("bot_room")
+        assert "bot_room" in server._session_surface_toolsets("desktop_bot_room")
         assert "bot_room" not in server._session_surface_toolsets("desktop")
         assert "bot_room" not in server._session_surface_toolsets("tui")
         assert resolve_toolset("bot_room") == ["share_group_file"]

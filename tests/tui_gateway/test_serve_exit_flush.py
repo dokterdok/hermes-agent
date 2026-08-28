@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import signal
 import time
+from pathlib import Path
 
 import pytest
 
@@ -188,7 +189,12 @@ def test_periodic_flush_skips_running_sessions(registered_session, monkeypatch):
 
 def test_idle_reaper_scan_piggybacks_incremental_flush(monkeypatch):
     """The existing reaper tick drives the flush — no new timer subsystem."""
+    from gateway import desktop_room_mailbox
+    from hermes_cli import profiles as profiles_mod
+    import hermes_constants
+
     called = {"flush": 0}
+    named_home = Path("/tmp/hermes-research-profile")
     monkeypatch.setattr(
         server,
         "_flush_dirty_sessions",
@@ -196,5 +202,28 @@ def test_idle_reaper_scan_piggybacks_incremental_flush(monkeypatch):
     )
     monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
     monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        server,
+        "_profile_home",
+        lambda profile: named_home if profile == "research" else None,
+    )
+    monkeypatch.setattr(profiles_mod, "list_profile_names", lambda: ["default", "research"])
+    monkeypatch.setattr(
+        hermes_constants,
+        "get_hermes_home",
+        lambda: Path("/tmp/hermes-default"),
+    )
+    monkeypatch.setattr(
+        desktop_room_mailbox,
+        "reap_stale_turns",
+        lambda *_args, **kwargs: called.setdefault("classic_turn_reaps", []).append(
+            (kwargs["profile"], kwargs["artifact_db_path"])
+        ) or 0,
+    )
     server._reap_idle_sessions()
     assert called["flush"] == 1
+    assert called["classic_turn_reaps"] == [
+        ("default", Path("/tmp/hermes-default/state.db")),
+        ("research", named_home / "state.db"),
+    ]

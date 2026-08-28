@@ -573,6 +573,256 @@ class GatewaySlashCommandsMixin:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    def _home_dm_is_single_operator(self, event: MessageEvent) -> bool:
+        """Recognize the sole authorized operator's configured home DM."""
+        from gateway.authz_mixin import (
+            _auth_env,
+            _coerce_allow_set,
+            _platform_authorization_env_names,
+        )
+        from gateway.slash_access import is_home_dm_source
+
+        source = event.source
+        if getattr(source, "delivered_via_upstream_relay", False) is True:
+            return False
+        if not is_home_dm_source(self.config, source):
+            return False
+
+        is_authorized = getattr(self, "_is_user_authorized_for_source", None)
+        if not callable(is_authorized):
+            return False
+        try:
+            if not is_authorized(source):
+                return False
+        except Exception:
+            return False
+
+        def _census() -> bool:
+            platform_name = source.platform.value
+            allowed_users_env, allow_all_env = _platform_authorization_env_names(
+                source.platform
+            )
+            candidates: set[str] = set()
+            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            transport_adapter = (
+                adapter_for_source(source) if callable(adapter_for_source) else None
+            )
+            adapter_config = getattr(transport_adapter, "config", None)
+            adapter_extra = getattr(adapter_config, "extra", None)
+            if transport_adapter is not None:
+                extra = adapter_extra if isinstance(adapter_extra, dict) else {}
+            else:
+                platform_config = self.config.platforms.get(source.platform)
+                extra = getattr(platform_config, "extra", None) or {}
+            candidates.update(_coerce_allow_set(extra.get("allow_from")))
+            candidates.update(_coerce_allow_set(_auth_env(allowed_users_env)))
+            candidates.update(_coerce_allow_set(_auth_env("GATEWAY_ALLOWED_USERS")))
+            if _auth_env("GATEWAY_ALLOW_ALL_USERS").lower() in {
+                "true",
+                "1",
+                "yes",
+            }:
+                return False
+            if allow_all_env and _auth_env(allow_all_env).lower() in {
+                "true",
+                "1",
+                "yes",
+            }:
+                return False
+
+            authorization_home = getattr(
+                source,
+                "_authorization_profile_home",
+                None,
+            )
+            if authorization_home is not None:
+                pairing_store = getattr(self, "pairing_store", None)
+            else:
+                pairing_store_for = getattr(self, "_pairing_store_for", None)
+                pairing_store = (
+                    pairing_store_for(source)
+                    if callable(pairing_store_for)
+                    else None
+                )
+            if pairing_store is not None:
+                try:
+                    candidates.update(
+                        str(row.get("user_id") or "").strip()
+                        for row in pairing_store.list_approved(platform_name)
+                        if str(row.get("user_id") or "").strip()
+                    )
+                except Exception:
+                    return False
+            if not candidates or "*" in candidates:
+                return False
+
+            user_id = str(source.user_id)
+            matcher = getattr(pairing_store, "_user_ids_match", None)
+            if callable(matcher):
+                return all(
+                    matcher(platform_name, candidate, user_id)
+                    for candidate in candidates
+                )
+            return candidates == {user_id}
+
+        authorization_home = getattr(source, "_authorization_profile_home", None)
+        if authorization_home is None:
+            return _census()
+        from gateway.run import _profile_runtime_scope
+
+        with _profile_runtime_scope(Path(authorization_home)):
+            return _census()
+
+    def _can_control_group_chats(self, event: MessageEvent) -> bool:
+        """Authorize explicit admins or the sole operator's home DM."""
+        from gateway.slash_access import policy_for_source
+
+        policy = policy_for_source(self.config, event.source)
+        return (
+            policy.enabled and policy.is_admin(event.source.user_id)
+        ) or self._home_dm_is_single_operator(event)
+
+    async def _handle_rooms_command(self, event: MessageEvent) -> str:
+        """List Bot Group Chats or show one chat's recent activity."""
+
+        from gateway import hosted_rooms
+        from gateway.hosted_room_messaging import (
+            RoomControlError,
+            command_form,
+            current_room_backend,
+            format_room_detail,
+            format_room_list,
+            is_machine_authored,
+            list_messaging_rooms,
+            relay_provenance_is_unknown,
+            resolve_room,
+        )
+
+        if is_machine_authored(event):
+            return "Group Chat controls are only available to people."
+        if relay_provenance_is_unknown(event):
+            return (
+                "Group Chat controls need a relay connector that reports whether the "
+                "sender is a person or a bot. Update the connector and try again."
+            )
+        if not self._can_control_group_chats(event):
+            return (
+                "This chat can’t control Group Chats. Use the gateway’s home DM or "
+                "add your user ID to this chat’s admin list."
+            )
+        service = current_room_backend()
+        rooms_command = command_form(event)
+        query = event.get_command_args().strip()
+        try:
+            rooms = list_messaging_rooms(service)
+            exact_name = next(
+                (
+                    room
+                    for room in rooms
+                    if str(room.get("name") or "").casefold() == query.casefold()
+                ),
+                None,
+            )
+            if exact_name is not None:
+                return await asyncio.to_thread(
+                    format_room_detail,
+                    service,
+                    exact_name,
+                    room_command=rooms_command,
+                )
+            words = query.split()
+            if (
+                words
+                and words[0].isdecimal()
+                and len(words) > 1
+                and words[1].casefold() in {"send", "stop"}
+            ):
+                return await self._handle_room_command(event)
+            if not query or query.casefold() == "list":
+                return await asyncio.to_thread(
+                    format_room_list,
+                    service,
+                    rooms_command=rooms_command,
+                )
+
+            def _detail() -> str:
+                room = resolve_room(rooms, query)
+                return format_room_detail(
+                    service,
+                    room,
+                    room_command=rooms_command,
+                )
+
+            return await asyncio.to_thread(_detail)
+        except (RoomControlError, hosted_rooms.HostedRoomError) as exc:
+            return str(exc)
+        except Exception:
+            logger.exception("Failed to read Bot Group Chats from messaging")
+            return "Couldn’t load Group Chats. Try again in a moment."
+
+    async def _handle_room_command(self, event: MessageEvent) -> str:
+        """Send to or stop work in a Bot Group Chat."""
+
+        from gateway import hosted_rooms
+        from gateway.hosted_room_messaging import (
+            RoomControlError,
+            command_form,
+            current_room_backend,
+            parse_room_command,
+            resolve_room,
+            room_reference,
+            send_to_room,
+            stop_room,
+            is_machine_authored,
+            list_messaging_rooms,
+            relay_provenance_is_unknown,
+        )
+        if is_machine_authored(event):
+            return "Group Chat controls are only available to people."
+        if relay_provenance_is_unknown(event):
+            return (
+                "Group Chat controls need a relay connector that reports whether the "
+                "sender is a person or a bot. Update the connector and try again."
+            )
+        if not self._can_control_group_chats(event):
+            return (
+                "This chat can’t control Group Chats. Use the gateway’s home DM or "
+                "add your user ID to this chat’s admin list."
+            )
+        service = current_room_backend()
+        rooms_command = command_form(event)
+        try:
+            command = parse_room_command(
+                event.get_command_args(),
+                command_root=rooms_command,
+            )
+            if not command.room_query.isdecimal():
+                if command.action == "send":
+                    raise RoomControlError(
+                        f"Use `{rooms_command} <number> send <message>`."
+                    )
+                raise RoomControlError(
+                    f"Use `{rooms_command} <number> stop`."
+                )
+
+            def _mutate() -> str:
+                room = resolve_room(
+                    list_messaging_rooms(service),
+                    command.room_query,
+                )
+                if command.action == "send":
+                    result = send_to_room(service, room, event, command.message)
+                    return f"{result} Check: `{rooms_command} {room_reference(room)}`."
+                result = stop_room(service, room, event)
+                return f"{result} Check: `{rooms_command} {room_reference(room)}`."
+
+            return await asyncio.to_thread(_mutate)
+        except (RoomControlError, hosted_rooms.HostedRoomError) as exc:
+            return str(exc)
+        except Exception:
+            logger.exception("Failed to control hosted Bot room from messaging")
+            return "Couldn’t update that Bot room. Try again in a moment."
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model

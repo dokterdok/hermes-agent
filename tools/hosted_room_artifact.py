@@ -38,13 +38,13 @@ SHARE_GROUP_FILE_SCHEMA = {
 
 
 def share_group_file(path: str, *, name: str | None = None) -> str:
-    """Copy a safe file into the current hosted-room output outbox."""
+    """Copy a safe file into the current verified Group Chat turn outbox."""
 
     scope = current_room_artifact_scope()
     if scope is None:
         return json.dumps({
             "ok": False,
-            "error": "File sharing is available only during a hosted Group Chat turn.",
+            "error": "File sharing is available only during a verified Group Chat turn.",
         })
     try:
         from gateway.platforms.base import validate_media_delivery_path

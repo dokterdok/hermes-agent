@@ -1823,6 +1823,27 @@ def _reap_idle_sessions() -> None:
         _flush_dirty_sessions()
     except Exception:
         logger.debug("periodic incremental session flush failed", exc_info=True)
+    try:
+        from gateway.desktop_room_mailbox import (
+            default_db_path as desktop_room_mailbox_db_path,
+            reap_stale_turns,
+        )
+        from hermes_cli.profiles import list_profile_names
+        from hermes_constants import get_hermes_home
+
+        current_profile = str(_current_profile_name() or "default")
+        for profile in dict.fromkeys((current_profile, *list_profile_names())):
+            profile_home = _profile_home(profile)
+            if profile_home is None and profile != current_profile:
+                continue
+            reap_stale_turns(
+                desktop_room_mailbox_db_path(),
+                profile=profile,
+                artifact_db_path=(profile_home or Path(get_hermes_home())) / "state.db",
+                clock=lambda: now,
+            )
+    except Exception:
+        logger.debug("periodic classic room artifact cleanup failed", exc_info=True)
     with _sessions_lock:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:
@@ -5014,6 +5035,17 @@ def _bot_relay_outbox_sig():
     return _bot_relay_outbox_seen or None
 
 
+def _desktop_room_mailbox_sig():
+    """mtime of commands written by a messaging process for Desktop rooms."""
+
+    home = _watcher_home()
+    root = home.parent.parent if home.parent.name == "profiles" else home
+    try:
+        return (root / "desktop_room_mailbox.pending").stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 # Watched change signals: event → (check interval, signature fn, payload fn).
 # Signatures are stat/dict-lookup cheap, same bar as the skin watcher; the
 # check interval keeps the pricier probes (pet resolves the active sheet off
@@ -5027,6 +5059,11 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     # Cross-connection DM latency: 1s check so a queued envelope reaches the
     # Desktop's push-triggered drain fast; the Desktop's poll stays backstop.
     "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, lambda: {}),
+    "desktop_rooms.commands.pending": (
+        1.0,
+        _desktop_room_mailbox_sig,
+        lambda: {},
+    ),
 }
 
 # state.db moves on every message append during a streaming turn, and the
@@ -5891,7 +5928,7 @@ def _session_surface_toolsets(platform: str) -> set[str]:
     surfaces = {"project"}
     if platform == "desktop":
         surfaces.add("desktop_ui")
-    if platform == "bot_room":
+    if platform in {"bot_room", "desktop_bot_room"}:
         surfaces.add("bot_room")
     return surfaces
 
@@ -12543,15 +12580,17 @@ def _run_prompt_submit(
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(_profile_home_str)))
-            hosted_task = session.get("_hosted_room_task")
-            if isinstance(hosted_task, dict):
+            artifact_task = session.get("_hosted_room_task")
+            if not isinstance(artifact_task, dict):
+                artifact_task = session.get("_desktop_room_turn")
+            if isinstance(artifact_task, dict):
                 from gateway.hosted_room_artifacts import (
                     RoomArtifactScope,
                     bind_room_artifact_scope,
                 )
 
                 room_artifact_scope = RoomArtifactScope.from_mapping({
-                    key: hosted_task[key]
+                    key: artifact_task[key]
                     for key in (
                         "room_id",
                         "task_id",
@@ -13427,6 +13466,7 @@ def _run_prompt_submit(
                 _retire_turn_marker(session, marker_key)
                 with session["history_lock"]:
                     session.pop("_hosted_room_task", None)
+                    session.pop("_desktop_room_turn", None)
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, agent)
 
@@ -17688,6 +17728,7 @@ _profile_name = _methods_groups._profile_name
 _requested_profile = _methods_groups._requested_profile
 _api_server_key = _methods_groups._api_server_key
 _room_link_run_storage_durable = _methods_groups._room_link_run_storage_durable
+_profile_state_db_path = _methods_groups._profile_state_db_path
 
 for _m in (
     _methods_browser_control,

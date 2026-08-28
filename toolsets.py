@@ -241,7 +241,7 @@ TOOLSETS = {
     },
 
     "bot_room": {
-        "description": "Hosted Group Chat turn capabilities (internal session surface)",
+        "description": "Verified Group Chat turn capabilities (internal session surface)",
         "tools": ["share_group_file"],
         "includes": [],
     },

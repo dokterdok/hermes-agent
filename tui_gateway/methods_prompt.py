@@ -338,6 +338,8 @@ def _(rid, params: dict) -> dict:
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
+    desktop_turn_token = str(params.get("desktop_room_turn_token") or "").strip()
+    desktop_turn = None
     if internal_hosted_submit:
         if session.get("source") != "bot_room":
             return _err(rid, 4120, "hosted room turns require a bot_room session")
@@ -398,6 +400,32 @@ def _(rid, params: dict) -> dict:
                         4122,
                         "This room is managed by its gateway. Update Hermes Desktop to continue it.",
                     )
+    if desktop_turn_token:
+        if session.get("source") != "desktop_bot_room":
+            return _err(
+                rid,
+                4123,
+                "classic Group Chat file turns require a desktop_bot_room session",
+            )
+        try:
+            from gateway.desktop_room_mailbox import (
+                default_db_path as desktop_room_mailbox_db_path,
+                verify_turn_submission,
+            )
+
+            requested_profile = (
+                str(params.get("profile") or "").strip()
+                or str(_current_profile_name() or "default").strip()
+            )
+            desktop_turn = verify_turn_submission(
+                desktop_room_mailbox_db_path(),
+                token=desktop_turn_token,
+                session_key=session.get("session_key"),
+                profile=requested_profile,
+            )
+        except Exception as exc:
+            return _err(rid, 4123, str(exc))
+    internal_room_submit = internal_hosted_submit or desktop_turn is not None
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         return _err(rid, 4090, limit_message)
     # Which desktop window this message was typed into. Rewritten on every
@@ -420,7 +448,7 @@ def _(rid, params: dict) -> dict:
         )
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
-    if internal_hosted_submit and turn_isolation:
+    if internal_room_submit and turn_isolation:
         return _err(
             rid,
             4121,
@@ -435,7 +463,7 @@ def _(rid, params: dict) -> dict:
         busy_transport = None
         with session["history_lock"]:
             if session.get("running"):
-                if internal_hosted_submit:
+                if internal_room_submit:
                     return _err(rid, 4091, "hosted room member session is busy")
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
@@ -885,6 +913,8 @@ def _(rid, params: dict) -> dict:
         session["last_active"] = time.time()
         if internal_hosted_submit:
             session["_hosted_room_task"] = dict(hosted_task)
+        if desktop_turn is not None:
+            session["_desktop_room_turn"] = dict(desktop_turn["scope"])
         _start_inflight_turn(session, text)
 
     if turn_isolation:

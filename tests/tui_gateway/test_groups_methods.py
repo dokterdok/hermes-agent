@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 
 import pytest
 
@@ -62,8 +63,64 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
     assert "groups.attachment.read" in result["methods"]
     assert "attachment_same_gateway_delivery" in result["features"]
     assert "groups.desktop.claim" in result["methods"]
+    assert "groups.desktop.presence" in result["methods"]
     assert "groups.desktop.renew" in result["methods"]
     assert "groups.desktop.complete" in result["methods"]
+
+
+def test_desktop_mailbox_rpc_claim_and_complete(home):
+    from gateway.desktop_room_mailbox import default_db_path, enqueue_command
+
+    enqueue_command(
+        default_db_path(),
+        command_id="messaging:one",
+        room_id="classic-room",
+        authority_hash=hashlib.sha256(b"authority:test").hexdigest(),
+        action="send",
+        payload={"message": "hello"},
+    )
+
+    claimed = _result(
+        srv._methods["groups.desktop.claim"](
+            1,
+            {
+                "consumer_id": "desktop:test",
+                "room_authorities": [
+                    {
+                        "room_id": "classic-room",
+                        "authority_token": "authority:test",
+                    }
+                ],
+            },
+        )
+    )["commands"]
+    assert [item["command_id"] for item in claimed] == ["messaging:one"]
+
+    renewed = _result(
+        srv._methods["groups.desktop.renew"](
+            2,
+            {
+                "consumer_id": "desktop:test",
+                "command_id": "messaging:one",
+                "lease_token": claimed[0]["lease_token"],
+            },
+        )
+    )["command"]
+    assert renewed["lease_token"] == claimed[0]["lease_token"]
+
+    completed = _result(
+        srv._methods["groups.desktop.complete"](
+            3,
+            {
+                "consumer_id": "desktop:test",
+                "command_id": "messaging:one",
+                "lease_token": claimed[0]["lease_token"],
+                "success": True,
+                "result": {"thread_id": "thread-1"},
+            },
+        )
+    )["command"]
+    assert completed["state"] == "completed"
 
 
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
@@ -528,6 +585,17 @@ def test_attachment_put_send_read_roundtrip_is_bounded_and_recipient_scoped(home
         },
     )
     assert denied["error"]["code"] == 4141
+
+    classic_denied = srv._methods["groups.attachment.read"](
+        7,
+        {
+            "room_id": "classic-room",
+            "attachment_id": first["attachment_id"],
+            "purpose": "desktop-command",
+        },
+    )
+    assert classic_denied["error"]["code"] == 4141
+    assert "groups.desktop.turn.artifact.read" in classic_denied["error"]["message"]
 
 
 def test_send_does_not_trust_client_supplied_actor_identity(home):

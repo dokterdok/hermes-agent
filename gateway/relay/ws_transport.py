@@ -250,7 +250,9 @@ def _media_types_from_wire(raw: Dict[str, Any]) -> list[str]:
     return types
 
 
-def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
+def _event_from_wire(
+    raw: Dict[str, Any], *, connector_id: Optional[str] = None
+) -> MessageEvent:
     """Rebuild a MessageEvent from the connector's normalized inbound payload.
 
     The connector emits SessionSource as the snake_case wire form (§3); map it
@@ -289,6 +291,7 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
+        is_bot=bool(src.get("is_bot", False)),
         # The HERMES profile this event is routed to (multiplex mode). The
         # connector stamps it on the wire source when NAS resolves the target
         # profile for a Team-Gateway message; absent for a single-profile
@@ -336,6 +339,10 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         text=text,
         message_type=msg_type,
         source=source,
+        metadata={
+            "relay_author_classified": "is_bot" in src,
+            **({"connector_id": connector_id} if connector_id else {}),
+        },
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         # Richer quoted-reply context (Phase 4): what the user replied TO,
@@ -1078,7 +1085,12 @@ class WebSocketRelayTransport:
                 self._descriptor_ready.set_result(descriptor)
         elif ftype == "inbound":
             if self._inbound is not None:
-                event = _event_from_wire(frame.get("event", {}))
+                wire_event = frame.get("event", {})
+                wire_source = wire_event.get("source", {}) if isinstance(wire_event, dict) else {}
+                event = _event_from_wire(
+                    wire_event,
+                    connector_id=self._bot_id_for(wire_source.get("platform")),
+                )
                 await self._inbound(event)
                 # Phase 5 §5.3: a buffered delivery (replayed on reconnect) carries
                 # a bufferId; ack it after the handler has durably taken it so the

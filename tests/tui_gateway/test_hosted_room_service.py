@@ -1054,10 +1054,17 @@ def test_upgrade_retires_legacy_peer_file_before_failing_closed(tmp_path: Path):
         client=replacement,
     )
     _wait_for(lambda: bool(replacement.acks))
-    with service._artifact_retry_connection() as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM hosted_room_artifact_retries"
-        ).fetchone()[0] == 0
+
+    def retry_queue_empty():
+        with service._artifact_retry_connection() as conn:
+            return (
+                conn.execute(
+                    "SELECT COUNT(*) FROM hosted_room_artifact_retries"
+                ).fetchone()[0]
+                == 0
+            )
+
+    _wait_for(retry_queue_empty)
     assert service.stop(timeout=1.0)
     assert replacement.acks[0]["artifact_ids"] == (peer.item["artifact_id"],)
     assert not any(

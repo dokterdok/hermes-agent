@@ -91,6 +91,48 @@ def _make_transport():
 
 
 @pytest.mark.asyncio
+async def test_authenticated_connector_identity_scopes_inbound_command_replay():
+    from gateway.hosted_room_messaging import messaging_event_id
+    from gateway.relay.ws_transport import WebSocketRelayTransport
+
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    first = _make_transport()
+    second = WebSocketRelayTransport(
+        "wss://connector.example/relay",
+        "telegram",
+        "bot-other",
+        identities=[("telegram", "bot-other"), ("discord", "app-other")],
+    )
+    first.set_inbound_handler(capture)
+    second.set_inbound_handler(capture)
+    frame = json.dumps(
+        {
+            "type": "inbound",
+            "event": {
+                "text": "/group 1 send hello",
+                "message_id": "message-1",
+                "source": {
+                    "platform": "discord",
+                    "chat_id": "channel-1",
+                    "user_id": "user-1",
+                },
+            },
+        }
+    )
+
+    await first._handle_frame(frame)
+    await second._handle_frame(frame)
+
+    assert captured[0].metadata["connector_id"] == "app-1"
+    assert captured[1].metadata["connector_id"] == "app-other"
+    assert messaging_event_id(captured[0]) != messaging_event_id(captured[1])
+
+
+@pytest.mark.asyncio
 async def test_transport_descriptor_map_resets_on_redial(monkeypatch):
     """A re-dial starts a fresh handshake generation: stale per-platform
     descriptors must not survive into the new connection."""
@@ -153,5 +195,4 @@ async def test_adapter_resolves_per_chat_limits_from_inbound_platform():
 
 
 # ───────────────────── stream consumer integration ─────────────────────
-
 

@@ -106,6 +106,24 @@ def _api_server_key(profile: str | None = None) -> str:
     return (os.getenv("API_SERVER_KEY") or "").strip()
 
 
+def _profile_state_db_path(profile: str):
+    """Resolve artifact bytes to the exact routed Bot profile store."""
+
+    from pathlib import Path
+
+    from gateway.hosted_rooms import default_db_path
+    from hermes_constants import get_hermes_home
+
+    if _bound_server is not None:
+        current = str(_bound_server._current_profile_name() or "").strip()
+        if profile == current:
+            return Path(get_hermes_home()) / "state.db"
+        home = _bound_server._profile_home(profile)
+        if home is not None:
+            return home / "state.db"
+    return default_db_path()
+
+
 def _room_link_run_storage_durable() -> bool:
     """Return whether peer-run replay survives this gateway process."""
 
@@ -197,6 +215,7 @@ def _(rid, params: dict) -> dict:
                 "authority_epoch",
                 "coordinator_fencing",
                 "desktop_compatibility_mailbox",
+                "desktop_room_output_artifacts",
                 "room_identity",
                 "monotonic_log",
                 "idempotent_send",
@@ -222,8 +241,14 @@ def _(rid, params: dict) -> dict:
                 "groups.peer.revoke",
                 "groups.peer.register",
                 "groups.desktop.claim",
+                "groups.desktop.presence",
                 "groups.desktop.renew",
                 "groups.desktop.complete",
+                "groups.desktop.turn.begin",
+                "groups.desktop.turn.result",
+                "groups.desktop.turn.artifact.read",
+                "groups.desktop.turn.complete",
+                "groups.desktop.turn.cancel",
             ],
             "max_log_limit": MAX_LOG_LIMIT,
         },
@@ -286,23 +311,10 @@ def _(rid, params: dict) -> dict:
         except RoomNotFoundError:
             if purpose == "viewer":
                 recipient = "viewer"
-            elif purpose == "desktop-command":
-                from gateway.desktop_room_mailbox import (
-                    authorize_attachment_read,
-                    default_db_path as mailbox_db_path,
-                )
-
-                authorize_attachment_read(
-                    mailbox_db_path(),
-                    room_id=params.get("room_id"),
-                    command_id=params.get("event_id"),
-                    consumer_id=params.get("consumer_id"),
-                    lease_token=params.get("lease_token"),
-                    authority_token=params.get("authority_token"),
-                )
-                recipient = "desktop"
             else:
-                raise ValueError("attachment read purpose is required")
+                raise ValueError(
+                    "classic Group Chat files use groups.desktop.turn.artifact.read"
+                )
         else:
             if purpose != "viewer":
                 raise ValueError("hosted attachment reads are viewer-only over RPC")
@@ -343,6 +355,23 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4130, str(exc))
 
 
+@method("groups.desktop.presence")
+def _(rid, params: dict) -> dict:
+    """Renew classic-room ownership without claiming pending commands."""
+
+    try:
+        from gateway.desktop_room_mailbox import default_db_path, refresh_presence
+
+        room_ids = refresh_presence(
+            default_db_path(),
+            consumer_id=params.get("consumer_id"),
+            room_authorities=params.get("room_authorities", []),
+        )
+        return _ok(rid, {"room_ids": room_ids})
+    except Exception as exc:
+        return _err(rid, 4137, str(exc))
+
+
 @method("groups.desktop.complete")
 def _(rid, params: dict) -> dict:
     """Commit the outcome of one classic-room compatibility command."""
@@ -379,6 +408,123 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"command": command})
     except Exception as exc:
         return _err(rid, 4132, str(exc))
+
+
+@method("groups.desktop.turn.begin")
+def _(rid, params: dict) -> dict:
+    """Mint one opaque, member-scoped classic Group Chat turn grant."""
+
+    try:
+        from gateway.desktop_room_mailbox import begin_turn, default_db_path
+        from gateway.hosted_room_messaging import register_projected_desktop_authority
+
+        profile = _requested_profile(params)
+        if not register_projected_desktop_authority(params.get("room_id")):
+            raise ValueError("classic Group Chat authority is not present in the trusted projection")
+        turn = begin_turn(
+            default_db_path(),
+            room_id=params.get("room_id"),
+            consumer_id=params.get("consumer_id"),
+            authority_token=params.get("authority_token"),
+            session_key=params.get("session_key"),
+            profile=profile,
+            member_id=params.get("member_id"),
+            turn_id=params.get("turn_id"),
+            execution_generation=params.get("execution_generation"),
+            recipient_member_ids=params.get("recipient_member_ids"),
+            artifact_db_path=_profile_state_db_path(profile),
+        )
+        return _ok(rid, {"turn": turn})
+    except Exception as exc:
+        return _err(rid, 4133, str(exc))
+
+
+@method("groups.desktop.turn.result")
+def _(rid, params: dict) -> dict:
+    """Return one classic member turn's structured output manifest."""
+
+    try:
+        from gateway.desktop_room_mailbox import default_db_path, turn_artifacts
+
+        profile = _requested_profile(params)
+        turn = turn_artifacts(
+            default_db_path(),
+            token=params.get("token"),
+            expected_profile=profile,
+            artifact_db_path=_profile_state_db_path(profile),
+        )
+        return _ok(rid, {"turn": turn})
+    except Exception as exc:
+        return _err(rid, 4134, str(exc))
+
+
+@method("groups.desktop.turn.artifact.read")
+def _(rid, params: dict) -> dict:
+    """Read exact bytes from the member gateway that produced them."""
+
+    try:
+        from gateway.desktop_room_mailbox import (
+            default_db_path,
+            read_turn_artifact,
+        )
+        from gateway.hosted_room_attachments import encode_content_base64
+
+        profile = _requested_profile(params)
+        artifact, data = read_turn_artifact(
+            default_db_path(),
+            token=params.get("token"),
+            artifact_id=params.get("artifact_id"),
+            expected_profile=profile,
+            artifact_db_path=_profile_state_db_path(profile),
+        )
+        return _ok(
+            rid,
+            {
+                "artifact": artifact,
+                "content_base64": encode_content_base64(data),
+            },
+        )
+    except Exception as exc:
+        return _err(rid, 4135, str(exc))
+
+
+@method("groups.desktop.turn.complete")
+def _(rid, params: dict) -> dict:
+    """ACK a visible classic-room commit and retire its private bytes."""
+
+    try:
+        from gateway.desktop_room_mailbox import complete_turn, default_db_path
+
+        profile = _requested_profile(params)
+        turn = complete_turn(
+            default_db_path(),
+            token=params.get("token"),
+            artifact_ids=params.get("artifact_ids", []),
+            expected_profile=profile,
+            artifact_db_path=_profile_state_db_path(profile),
+        )
+        return _ok(rid, {"turn": turn})
+    except Exception as exc:
+        return _err(rid, 4136, str(exc))
+
+
+@method("groups.desktop.turn.cancel")
+def _(rid, params: dict) -> dict:
+    """Revoke an uncommitted classic member turn after Stop or lease loss."""
+
+    try:
+        from gateway.desktop_room_mailbox import cancel_turn, default_db_path
+
+        profile = _requested_profile(params)
+        turn = cancel_turn(
+            default_db_path(),
+            token=params.get("token"),
+            expected_profile=profile,
+            artifact_db_path=_profile_state_db_path(profile),
+        )
+        return _ok(rid, {"turn": turn})
+    except Exception as exc:
+        return _err(rid, 4137, str(exc))
 
 
 @method("groups.peer.invite")
@@ -843,7 +989,21 @@ def _(rid, params: dict) -> dict:
             str(params.get("room_id") or ""),
             task_id=str(params.get("task_id") or ""),
         )
-        return _ok(rid, {"retried": True, "task": task})
+        identity = task.get("identity") if isinstance(task, dict) else None
+        receipt = {
+            "room_id": str(getattr(identity, "room_id", "") or ""),
+            "task_id": str(getattr(identity, "task_id", "") or ""),
+            "thread_id": str(getattr(identity, "thread_id", "") or ""),
+            "turn_id": str(getattr(identity, "turn_id", "") or ""),
+            "status": str(task.get("status") or "") if isinstance(task, dict) else "",
+            "execution_generation": int(task.get("execution_generation") or 0)
+            if isinstance(task, dict)
+            else 0,
+            "cancel_generation": int(task.get("cancel_generation") or 0)
+            if isinstance(task, dict)
+            else 0,
+        }
+        return _ok(rid, {"retried": True, "task": receipt})
     except Exception as exc:
         return _err(rid, 5118, str(exc))
 
