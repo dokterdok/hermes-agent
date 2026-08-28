@@ -58,6 +58,8 @@ def _batch_key(dispatch: HostedMemberDispatch) -> str:
         (
             dispatch.home_install_id,
             dispatch.room_id,
+            dispatch.authority_gateway_id,
+            str(dispatch.authority_epoch),
             dispatch.member_id,
             dispatch.target_install_id,
             dispatch.target_profile,
@@ -104,6 +106,8 @@ class RoomAttachmentSpool:
                 batch_key TEXT PRIMARY KEY,
                 room_id TEXT NOT NULL,
                 home_install_id TEXT NOT NULL,
+                authority_gateway_id TEXT NOT NULL,
+                authority_epoch INTEGER NOT NULL,
                 member_id TEXT NOT NULL,
                 target_install_id TEXT NOT NULL,
                 target_profile TEXT NOT NULL,
@@ -115,6 +119,20 @@ class RoomAttachmentSpool:
                 expires_at REAL NOT NULL
             )"""
         )
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(roomlink_attachment_batches)")
+        }
+        if "authority_gateway_id" not in columns:
+            conn.execute(
+                "ALTER TABLE roomlink_attachment_batches ADD COLUMN "
+                "authority_gateway_id TEXT NOT NULL DEFAULT 'legacy'"
+            )
+        if "authority_epoch" not in columns:
+            conn.execute(
+                "ALTER TABLE roomlink_attachment_batches ADD COLUMN "
+                "authority_epoch INTEGER NOT NULL DEFAULT 1"
+            )
         conn.execute(
             """CREATE TABLE IF NOT EXISTS roomlink_attachment_files (
                 batch_key TEXT NOT NULL,
@@ -235,15 +253,18 @@ class RoomAttachmentSpool:
                 }
             conn.execute(
                 """INSERT INTO roomlink_attachment_batches(
-                       batch_key, room_id, home_install_id, member_id,
+                       batch_key, room_id, home_install_id,
+                       authority_gateway_id, authority_epoch, member_id,
                        target_install_id, target_profile, task_id,
                        execution_generation, manifest_digest, manifest_json,
                        created_at, expires_at
-                   ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     key,
                     dispatch.room_id,
                     dispatch.home_install_id,
+                    dispatch.authority_gateway_id,
+                    dispatch.authority_epoch,
                     dispatch.member_id,
                     dispatch.target_install_id,
                     dispatch.target_profile,
@@ -290,12 +311,15 @@ class RoomAttachmentSpool:
             batch = conn.execute(
                 """SELECT * FROM roomlink_attachment_batches
                     WHERE room_id=? AND home_install_id=? AND member_id=?
+                      AND authority_gateway_id=? AND authority_epoch=?
                       AND target_install_id=? AND target_profile=?
                       AND task_id=? AND execution_generation=?""",
                 (
                     claims["room_id"],
                     claims["home_install_id"],
                     claims["member_id"],
+                    claims["authority_gateway_id"],
+                    claims["authority_epoch"],
                     claims["target_install_id"],
                     claims["target_profile"],
                     task_id,
@@ -448,11 +472,14 @@ class RoomAttachmentSpool:
             rows = conn.execute(
                 """SELECT batch_key FROM roomlink_attachment_batches
                     WHERE room_id=? AND home_install_id=? AND member_id=?
+                      AND authority_gateway_id=? AND authority_epoch=?
                       AND target_install_id=? AND target_profile=?""",
                 (
                     claims["room_id"],
                     claims["home_install_id"],
                     claims["member_id"],
+                    claims["authority_gateway_id"],
+                    claims["authority_epoch"],
                     claims["target_install_id"],
                     claims["target_profile"],
                 ),

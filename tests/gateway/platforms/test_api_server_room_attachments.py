@@ -71,18 +71,24 @@ def _dispatch(manifest=None, **overrides) -> HostedMemberDispatch:
     return HostedMemberDispatch.from_mapping(value)
 
 
+def _claims(dispatch: HostedMemberDispatch) -> dict[str, object]:
+    return {
+        "room_id": dispatch.room_id,
+        "home_install_id": dispatch.home_install_id,
+        "authority_gateway_id": dispatch.authority_gateway_id,
+        "authority_epoch": dispatch.authority_epoch,
+        "member_id": dispatch.member_id,
+        "target_install_id": dispatch.target_install_id,
+        "target_profile": dispatch.target_profile,
+    }
+
+
 def test_spool_is_idempotent_and_survives_restart(tmp_path: Path):
     db = tmp_path / "state.db"
     root = tmp_path / "spool"
     manifest = _manifest()
     dispatch = _dispatch(manifest)
-    claims = {
-        "room_id": dispatch.room_id,
-        "home_install_id": dispatch.home_install_id,
-        "member_id": dispatch.member_id,
-        "target_install_id": dispatch.target_install_id,
-        "target_profile": dispatch.target_profile,
-    }
+    claims = _claims(dispatch)
     first = room_attachments.RoomAttachmentSpool(db, root=root)
     assert first.prepare(dispatch, manifest)["idempotent"] is False
     uploaded = first.put(
@@ -126,13 +132,7 @@ def test_spool_rejects_conflict_incomplete_and_corrupt_batches(tmp_path: Path):
     spool.prepare(dispatch, manifest)
     with pytest.raises(room_attachments.RoomAttachmentSpoolIncomplete):
         spool.require_complete(dispatch)
-    claims = {
-        "room_id": dispatch.room_id,
-        "home_install_id": dispatch.home_install_id,
-        "member_id": dispatch.member_id,
-        "target_install_id": dispatch.target_install_id,
-        "target_profile": dispatch.target_profile,
-    }
+    claims = _claims(dispatch)
     with pytest.raises(room_attachments.RoomAttachmentSpoolConflict):
         spool.put(
             claims=claims,
@@ -172,13 +172,7 @@ def test_spool_expires_partial_or_stopped_attempt_data_after_restart(tmp_path: P
     root = tmp_path / "spool"
     manifest = _manifest()
     dispatch = _dispatch(manifest)
-    claims = {
-        "room_id": dispatch.room_id,
-        "home_install_id": dispatch.home_install_id,
-        "member_id": dispatch.member_id,
-        "target_install_id": dispatch.target_install_id,
-        "target_profile": dispatch.target_profile,
-    }
+    claims = _claims(dispatch)
     spool = room_attachments.RoomAttachmentSpool(
         db,
         root=root,
@@ -211,13 +205,7 @@ def test_revoked_member_scope_removes_only_its_staged_batches(tmp_path: Path):
     )
     manifest = _manifest()
     dispatch = _dispatch(manifest)
-    claims = {
-        "room_id": dispatch.room_id,
-        "home_install_id": dispatch.home_install_id,
-        "member_id": dispatch.member_id,
-        "target_install_id": dispatch.target_install_id,
-        "target_profile": dispatch.target_profile,
-    }
+    claims = _claims(dispatch)
     spool.prepare(dispatch, manifest)
     spool.put(
         claims=claims,
@@ -231,6 +219,29 @@ def test_revoked_member_scope_removes_only_its_staged_batches(tmp_path: Path):
     with pytest.raises(room_attachments.RoomAttachmentSpoolIncomplete):
         spool.require_complete(dispatch)
     assert list(spool.root.iterdir()) == []
+
+
+def test_old_epoch_revoke_cannot_remove_current_epoch_batch(tmp_path: Path):
+    spool = room_attachments.RoomAttachmentSpool(
+        tmp_path / "state.db",
+        root=tmp_path / "spool",
+    )
+    manifest = _manifest()
+    old = _dispatch(manifest, authority_epoch=1)
+    current = _dispatch(manifest, authority_epoch=2)
+
+    spool.prepare(old, manifest)
+    spool.prepare(current, manifest)
+    spool.put(
+        claims=_claims(current),
+        task_id=current.task_id,
+        execution_generation=current.execution_generation,
+        attachment_id=str(manifest[0]["attachment_id"]),
+        data=b"hello",
+    )
+
+    assert spool.discard_scope(_claims(old)) == 1
+    assert spool.require_complete(current) == manifest
 
 
 @pytest.fixture
@@ -419,13 +430,7 @@ async def test_dispatch_materializes_files_into_the_target_run_prompt(
     room_attachments._spool.cache_clear()
     manifest = _manifest()
     dispatch = _dispatch(manifest)
-    claims = {
-        "room_id": dispatch.room_id,
-        "home_install_id": dispatch.home_install_id,
-        "member_id": dispatch.member_id,
-        "target_install_id": dispatch.target_install_id,
-        "target_profile": dispatch.target_profile,
-    }
+    claims = _claims(dispatch)
     spool = room_attachments._default_spool()
     spool.prepare(dispatch, manifest)
     spool.put(
@@ -476,13 +481,7 @@ async def test_dispatch_materializes_images_as_native_multimodal_input(
         "sha256": hashlib.sha256(data).hexdigest(),
     }]
     dispatch = _dispatch(manifest)
-    claims = {
-        "room_id": dispatch.room_id,
-        "home_install_id": dispatch.home_install_id,
-        "member_id": dispatch.member_id,
-        "target_install_id": dispatch.target_install_id,
-        "target_profile": dispatch.target_profile,
-    }
+    claims = _claims(dispatch)
     spool = room_attachments._default_spool()
     spool.prepare(dispatch, manifest)
     spool.put(

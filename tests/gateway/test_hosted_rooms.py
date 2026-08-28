@@ -614,6 +614,56 @@ def test_draft_schema_migration_is_safe_across_processes(tmp_path):
     assert replay["events"][0]["actor"] == {"kind": "system", "id": "legacy"}
 
 
+def test_legacy_remote_run_receipt_migrates_without_current_lineage_access(
+    tmp_path,
+):
+    db = tmp_path / "state.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """CREATE TABLE hosted_room_remote_runs (
+                room_id TEXT NOT NULL,
+                member_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                execution_generation INTEGER NOT NULL,
+                target_install_id TEXT NOT NULL,
+                target_profile TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (task_id, execution_generation)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_remote_runs VALUES(
+                'room-1', 'member-reviewer', 'task-1', 1, 'install-peer',
+                'reviewer', 'run-legacy', 'session-legacy', 1, 1
+            )"""
+        )
+
+    current = {
+        "room_id": "room-1",
+        "home_install_id": "install-home",
+        "authority_gateway_id": "gateway-home",
+        "authority_epoch": 2,
+        "member_id": "member-reviewer",
+        "target_install_id": "install-peer",
+        "target_profile": "reviewer",
+        "task_id": "task-1",
+        "execution_generation": 1,
+    }
+    assert rooms.remote_run_receipt(db, record=current) is None
+    legacy = rooms.list_remote_run_receipts(db)
+    assert legacy[0]["home_install_id"] == "legacy"
+    assert legacy[0]["authority_gateway_id"] == "legacy"
+
+    rooms.upsert_remote_run_receipt(
+        db,
+        record={**current, "run_id": "run-current", "session_id": "session-current"},
+    )
+    assert rooms.remote_run_receipt(db, record=current)["run_id"] == "run-current"
+
+
 def test_interrupted_draft_schema_migration_rolls_back_atomically(
     tmp_path,
     monkeypatch,

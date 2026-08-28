@@ -383,6 +383,15 @@ def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
         api_key="",
         receipt_db_path=db,
     )
+    restarted.bind_room_scope(
+        room_id="room-1",
+        home_install_id="install-home",
+        authority_gateway_id="gateway-home",
+        authority_epoch=1,
+        member_id="member-reviewer",
+        target_install_id="install-peer",
+        target_profile="reviewer",
+    )
     restarted.bind_observation(task_id="task-1", execution_generation=1)
     status = restarted.status(
         room_id="room-1",
@@ -393,6 +402,44 @@ def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
     assert status["run_id"] == accepted["run_id"]
     stopped = restarted.stop(dispatch=dispatch, grant="signed.room.grant")
     assert stopped["status"] == "stopping"
+
+
+def test_remote_run_receipt_does_not_cross_authority_epochs(tmp_path):
+    db = tmp_path / "state.db"
+    old = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=db,
+    )
+    old._request = lambda *_args, **_kwargs: {
+        "run_id": "run-old",
+        "status": "running",
+        "replayed": False,
+    }
+    assert old.dispatch(
+        dispatch=_dispatch(authority_epoch=1),
+        grant="signed.room.grant",
+    )["run_id"] == "run-old"
+
+    requests = []
+    current = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=db,
+    )
+
+    def admit_current(path, **kwargs):
+        requests.append((path, kwargs))
+        return {"run_id": "run-current", "status": "running", "replayed": False}
+
+    current._request = admit_current
+    recovered = current.recover_dispatch(
+        dispatch=_dispatch(authority_epoch=2),
+        grant="signed.room.grant",
+    )
+
+    assert recovered["run_id"] == "run-current"
+    assert [path for path, _kwargs in requests] == ["/v1/runs"]
 
 
 def test_ambiguous_admission_replays_the_identical_idempotency_key(tmp_path):
@@ -557,6 +604,101 @@ def test_post_http_5xx_remains_ambiguous(monkeypatch):
     assert caught.value.not_admitted is False
     assert caught.value.ambiguous is True
     assert len(calls) == 2
+
+
+def test_invalid_room_dispatch_http_403_is_definitively_not_admitted(monkeypatch):
+    def rejected(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "https://peer.example.test/v1/runs",
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(
+                json.dumps({
+                    "error": {
+                        "code": "invalid_room_dispatch",
+                        "message": "room capability catalog changed",
+                    }
+                }).encode()
+            ),
+        )
+
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", rejected)
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client._request(
+            "/v1/runs",
+            method="POST",
+            body={"input": "test"},
+            room_grant="signed.room.grant",
+        )
+
+    assert caught.value.error_code == "invalid_room_dispatch"
+    assert caught.value.not_admitted is True
+    assert caught.value.ambiguous is False
+    assert caught.value.needs_capability_refresh is True
+
+
+def test_capability_mismatch_reprobes_and_admits_exactly_one_model_run(tmp_path):
+    from gateway.hosted_room_peer import catalog_mapping
+
+    catalog = catalog_mapping(
+        installation_id="install-peer",
+        protocol_versions=(2,),
+        link_modes=("direct",),
+        persistent_process=True,
+        text=True,
+        attachments=False,
+        endpoint={
+            "available": True,
+            "url": "https://peer.example.test",
+            "transport_security": "tls",
+        },
+    )
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+    )
+    admission_attempts = []
+    model_runs = []
+    probes = []
+
+    def request(path, **kwargs):
+        if path == "/v1/room-members/capabilities":
+            probes.append(kwargs)
+            return {"catalog": catalog}
+        assert path == "/v1/runs"
+        admission_attempts.append(kwargs)
+        if len(admission_attempts) == 1:
+            raise PeerRunsHTTPError(
+                "peer rejected stale capabilities",
+                status_code=403,
+                error_code="invalid_room_dispatch",
+                error_message="room capability catalog changed",
+                not_admitted=True,
+            )
+        model_runs.append(kwargs["body"])
+        return {"run_id": "run-current", "status": "running", "replayed": False}
+
+    client._request = request
+    accepted = client.dispatch(
+        dispatch=_dispatch(capability_digest="b" * 64),
+        grant="signed.room.grant",
+    )
+
+    assert accepted["run_id"] == "run-current"
+    assert len(probes) == 1
+    assert len(admission_attempts) == 2
+    assert len(model_runs) == 1
+    assert (
+        model_runs[0]["hosted_room_dispatch"]["capability_digest"]
+        == catalog["catalog_digest"]
+    )
+    assert {
+        attempt["headers"]["Idempotency-Key"] for attempt in admission_attempts
+    } == {"room:task-1:1"}
 
 
 def test_peer_approval_sends_the_exact_request_id(peer_server, tmp_path):

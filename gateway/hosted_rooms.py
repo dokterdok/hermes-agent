@@ -73,6 +73,9 @@ _LINK_SCHEMA_COLUMNS = frozenset({
 })
 _REMOTE_RUN_SCHEMA_COLUMNS = frozenset({
     "room_id",
+    "home_install_id",
+    "authority_gateway_id",
+    "authority_epoch",
     "member_id",
     "task_id",
     "execution_generation",
@@ -83,6 +86,17 @@ _REMOTE_RUN_SCHEMA_COLUMNS = frozenset({
     "created_at",
     "updated_at",
 })
+_REMOTE_RUN_IDENTITY_COLUMNS = (
+    "room_id",
+    "home_install_id",
+    "authority_gateway_id",
+    "authority_epoch",
+    "member_id",
+    "target_install_id",
+    "target_profile",
+    "task_id",
+    "execution_generation",
+)
 _REVOKED_GRANT_SCHEMA_COLUMNS = frozenset({
     "scope_key",
     "expires_at",
@@ -137,6 +151,80 @@ class AuthorityConflictError(HostedRoomError):
 
 class AuthoritySupersededError(AuthorityConflictError):
     """Raised when a successful authority claim was later superseded."""
+
+
+def _primary_key_columns(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    return tuple(
+        str(row[1])
+        for row in sorted(
+            (row for row in conn.execute(f"PRAGMA table_info({table})") if row[5]),
+            key=lambda row: int(row[5]),
+        )
+    )
+
+
+def _migrate_remote_run_schema(conn: sqlite3.Connection) -> None:
+    """Fence legacy receipts behind a complete authority-lineage key."""
+
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(hosted_room_remote_runs)")
+    }
+    if (
+        _REMOTE_RUN_SCHEMA_COLUMNS.issubset(columns)
+        and _primary_key_columns(conn, "hosted_room_remote_runs")
+        == _REMOTE_RUN_IDENTITY_COLUMNS
+    ):
+        return
+
+    conn.execute("DROP TABLE IF EXISTS hosted_room_remote_runs_migrating")
+    conn.execute(
+        """CREATE TABLE hosted_room_remote_runs_migrating (
+            room_id TEXT NOT NULL,
+            home_install_id TEXT NOT NULL,
+            authority_gateway_id TEXT NOT NULL,
+            authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
+            member_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            execution_generation INTEGER NOT NULL CHECK (execution_generation >= 1),
+            target_install_id TEXT NOT NULL,
+            target_profile TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (
+                room_id, home_install_id, authority_gateway_id, authority_epoch,
+                member_id, target_install_id, target_profile, task_id,
+                execution_generation
+            )
+        )"""
+    )
+    if columns:
+        home = "home_install_id" if "home_install_id" in columns else "'legacy'"
+        gateway = (
+            "authority_gateway_id"
+            if "authority_gateway_id" in columns
+            else "'legacy'"
+        )
+        epoch = "authority_epoch" if "authority_epoch" in columns else "1"
+        conn.execute(
+            f"""INSERT OR IGNORE INTO hosted_room_remote_runs_migrating(
+                    room_id, home_install_id, authority_gateway_id,
+                    authority_epoch, member_id, task_id,
+                    execution_generation, target_install_id, target_profile,
+                    run_id, session_id, created_at, updated_at
+                )
+                SELECT room_id, {home}, {gateway}, {epoch}, member_id, task_id,
+                       execution_generation, target_install_id, target_profile,
+                       run_id, session_id, created_at, updated_at
+                  FROM hosted_room_remote_runs"""
+        )
+    conn.execute("DROP TABLE hosted_room_remote_runs")
+    conn.execute(
+        "ALTER TABLE hosted_room_remote_runs_migrating "
+        "RENAME TO hosted_room_remote_runs"
+    )
 
 
 def default_db_path() -> Path:
@@ -322,6 +410,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE IF NOT EXISTS hosted_room_remote_runs (
             room_id TEXT NOT NULL,
+            home_install_id TEXT NOT NULL,
+            authority_gateway_id TEXT NOT NULL,
+            authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
             member_id TEXT NOT NULL,
             task_id TEXT NOT NULL,
             execution_generation INTEGER NOT NULL CHECK (execution_generation >= 1),
@@ -331,7 +422,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             session_id TEXT NOT NULL,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL,
-            PRIMARY KEY (task_id, execution_generation)
+            PRIMARY KEY (
+                room_id, home_install_id, authority_gateway_id, authority_epoch,
+                member_id, target_install_id, target_profile, task_id,
+                execution_generation
+            )
         )"""
     )
     conn.execute(
@@ -374,6 +469,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE hosted_room_events ADD COLUMN authority_epoch INTEGER"
         )
+    _migrate_remote_run_schema(conn)
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor
            ON hosted_room_events(room_id, seq)"""
@@ -406,6 +502,11 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
     if not _LINK_SCHEMA_COLUMNS.issubset(link_columns):
         return False
     if not _REMOTE_RUN_SCHEMA_COLUMNS.issubset(remote_run_columns):
+        return False
+    if (
+        _primary_key_columns(conn, "hosted_room_remote_runs")
+        != _REMOTE_RUN_IDENTITY_COLUMNS
+    ):
         return False
     if not _REVOKED_GRANT_SCHEMA_COLUMNS.issubset(revoked_grant_columns):
         return False
@@ -585,6 +686,10 @@ def room_grant_is_revoked(
     return row is not None and issued_at <= float(row["revoked_before"])
 
 
+def _remote_run_identity(record: Mapping[str, Any]) -> tuple[Any, ...]:
+    return tuple(record[column] for column in _REMOTE_RUN_IDENTITY_COLUMNS)
+
+
 def upsert_remote_run_receipt(
     db_path: Path | str,
     *,
@@ -593,50 +698,43 @@ def upsert_remote_run_receipt(
 ) -> None:
     """Durably bind one logical peer task attempt to its remote run handle."""
     timestamp = float(now if now is not None else time.time())
+    identity = _remote_run_identity(record)
     with _transaction(db_path, immediate=True) as conn:
         existing = conn.execute(
             """SELECT * FROM hosted_room_remote_runs
-                 WHERE task_id=? AND execution_generation=?""",
-            (record["task_id"], record["execution_generation"]),
+                 WHERE room_id=? AND home_install_id=?
+                   AND authority_gateway_id=? AND authority_epoch=?
+                   AND member_id=? AND target_install_id=?
+                   AND target_profile=? AND task_id=?
+                   AND execution_generation=?""",
+            identity,
         ).fetchone()
-        immutable = (
-            record["room_id"],
-            record["member_id"],
-            record["target_install_id"],
-            record["target_profile"],
-            record["run_id"],
-            record["session_id"],
-        )
+        immutable = (*identity, record["run_id"], record["session_id"])
         if existing is not None:
-            stored = (
-                existing["room_id"],
-                existing["member_id"],
-                existing["target_install_id"],
-                existing["target_profile"],
-                existing["run_id"],
-                existing["session_id"],
-            )
+            stored = (*_remote_run_identity(existing), existing["run_id"], existing["session_id"])
             if stored != immutable:
                 raise HostedRoomError(
                     "remote run receipt conflicts with its logical task"
                 )
             conn.execute(
                 """UPDATE hosted_room_remote_runs SET updated_at=?
-                     WHERE task_id=? AND execution_generation=?""",
-                (timestamp, record["task_id"], record["execution_generation"]),
+                     WHERE room_id=? AND home_install_id=?
+                       AND authority_gateway_id=? AND authority_epoch=?
+                       AND member_id=? AND target_install_id=?
+                       AND target_profile=? AND task_id=?
+                       AND execution_generation=?""",
+                (timestamp, *identity),
             )
             return
         conn.execute(
             """INSERT INTO hosted_room_remote_runs(
-                   room_id, member_id, task_id, execution_generation,
-                   target_install_id, target_profile, run_id, session_id,
-                   created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   room_id, home_install_id, authority_gateway_id,
+                   authority_epoch, member_id, target_install_id,
+                   target_profile, task_id, execution_generation, run_id,
+                   session_id, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                *immutable[:2],
-                record["task_id"],
-                record["execution_generation"],
-                *immutable[2:],
+                *immutable,
                 timestamp,
                 timestamp,
             ),
@@ -675,15 +773,19 @@ def list_remote_run_receipts(
 def remote_run_receipt(
     db_path: Path | str,
     *,
-    task_id: str,
-    execution_generation: int,
+    record: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """Return the exact durable remote run handle for one task attempt."""
+    identity = _remote_run_identity(record)
     with _transaction(db_path) as conn:
         row = conn.execute(
             """SELECT * FROM hosted_room_remote_runs
-                 WHERE task_id=? AND execution_generation=?""",
-            (task_id, execution_generation),
+                 WHERE room_id=? AND home_install_id=?
+                   AND authority_gateway_id=? AND authority_epoch=?
+                   AND member_id=? AND target_install_id=?
+                   AND target_profile=? AND task_id=?
+                   AND execution_generation=?""",
+            identity,
         ).fetchone()
     return dict(row) if row is not None else None
 

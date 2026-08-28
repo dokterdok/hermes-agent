@@ -31,6 +31,8 @@ from tui_gateway.hosted_room_driver import (
 class HostedRoomPeerClient(Protocol):
     """Authenticated client for a target gateway's narrow room-member API."""
 
+    def bind_room_scope(self, **scope: Any) -> None: ...
+
     def prepare(
         self,
         *,
@@ -204,6 +206,12 @@ class FailoverHostedRoomPeerClient:
     def stop(self, **kwargs):
         return self._call("stop", **kwargs)
 
+    def bind_room_scope(self, **kwargs):
+        for candidate in self.candidates:
+            bind = getattr(candidate.client, "bind_room_scope", None)
+            if callable(bind):
+                bind(**kwargs)
+
 
 @dataclass(frozen=True)
 class PeerMemberRoute:
@@ -245,6 +253,17 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         self._dispatch: HostedMemberDispatch | None = None
         self._attachment_attempt: tuple[str, int] | None = None
         self._pending_attachments: list[dict[str, Any]] = []
+        bind_scope = getattr(self.client, "bind_room_scope", None)
+        if callable(bind_scope):
+            bind_scope(
+                room_id=self.binding.room_id,
+                home_install_id=self.route.home_install_id,
+                authority_gateway_id=self.binding.gateway_id,
+                authority_epoch=self.binding.authority_epoch,
+                member_id=self.route.member_id,
+                target_install_id=self.route.target_install_id,
+                target_profile=self.route.target_profile,
+            )
 
     def _validate_coordinates(self, *, profile: str, source: str) -> None:
         if source != ROOM_SESSION_SOURCE:
