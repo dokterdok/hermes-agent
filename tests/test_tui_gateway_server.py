@@ -4996,6 +4996,55 @@ def test_prompt_submit_adopts_bot_disconnect_policy_before_turn_slot(monkeypatch
     assert session["preserve_running_on_disconnect"] is True
 
 
+def test_prompt_submit_accepts_structured_hosted_turn_proof(monkeypatch):
+    session = _session(source="bot_room")
+    server._sessions["hosted-submit"] = session
+    monkeypatch.setattr(
+        server,
+        "_ensure_active_session_slot",
+        lambda *_args, **_kwargs: "test stop after proof validation",
+    )
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "hosted-submit",
+                    "text": "continue working",
+                    "_hosted_task": {
+                        "room_id": "room-1",
+                        "task_id": "task-1",
+                        "thread_id": "thread-1",
+                        "turn_id": "turn-1",
+                        "execution_generation": 1,
+                        "member_id": "writer",
+                        "target_profile": "writer",
+                        "home_install_id": "home-1",
+                        "target_install_id": "target-1",
+                        "authority_gateway_id": "gateway-1",
+                        "authority_epoch": 1,
+                        "provenance": {
+                            "kind": "user",
+                            "user_event_id": "event-1",
+                        },
+                        "handoff_targets": [
+                            {
+                                "member_id": "reviewer",
+                                "handle": "reviewer",
+                            }
+                        ],
+                    },
+                    "_hosted_terminal_callback": lambda _result: None,
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("hosted-submit", None)
+
+    assert response["error"]["code"] == 4090
+
+
 def test_compressed_bot_tip_inherits_root_disconnect_policy(monkeypatch):
     root_reads = []
 

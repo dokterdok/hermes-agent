@@ -363,7 +363,12 @@ def _(rid, params: dict) -> dict:
         if set(hosted_task) != required_hosted_fields or not all(
             isinstance(hosted_task.get(field), str) and hosted_task[field]
             for field in required_hosted_fields
-            - {"execution_generation", "authority_epoch"}
+            - {
+                "execution_generation",
+                "authority_epoch",
+                "provenance",
+                "handoff_targets",
+            }
         ) or any(
             isinstance(hosted_task.get(field), bool)
             or not isinstance(hosted_task.get(field), int)
