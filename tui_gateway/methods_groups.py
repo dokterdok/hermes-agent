@@ -155,12 +155,16 @@ def _(rid, params: dict) -> dict:
         derive_room_grant_secret(
             _api_server_key(profile if params.get("profile") else None)
         )
+        from gateway.platforms.api_server_room_attachments import (
+            roomlink_attachments_available,
+        )
+
         catalog = local_catalog_mapping(
             installation_id=local_authority_gateway_id(),
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
             link_modes=("direct",),
             text=True,
-            attachments=False,
+            attachments=roomlink_attachments_available(),
         )
         room_link = {
             "enabled": True,
@@ -188,8 +192,11 @@ def _(rid, params: dict) -> dict:
             "authority_gateway_id": local_authority_gateway_id(),
             "room_link": room_link,
             "features": [
+                "attachment_ids",
+                "attachment_same_gateway_delivery",
                 "authority_epoch",
                 "coordinator_fencing",
+                "desktop_compatibility_mailbox",
                 "room_identity",
                 "monotonic_log",
                 "idempotent_send",
@@ -204,6 +211,8 @@ def _(rid, params: dict) -> dict:
                 "groups.state",
                 "groups.send",
                 "groups.rename",
+                "groups.attachment.put",
+                "groups.attachment.read",
                 "groups.log",
                 "groups.disband",
                 "groups.stop",
@@ -212,10 +221,164 @@ def _(rid, params: dict) -> dict:
                 "groups.peer.invite",
                 "groups.peer.revoke",
                 "groups.peer.register",
+                "groups.desktop.claim",
+                "groups.desktop.renew",
+                "groups.desktop.complete",
             ],
             "max_log_limit": MAX_LOG_LIMIT,
         },
     )
+
+
+@method("groups.attachment.put")
+def _(rid, params: dict) -> dict:
+    """Store one bounded attachment on the room's authority gateway."""
+
+    try:
+        from gateway.hosted_room_attachments import (
+            HostedRoomAttachmentStore,
+            decode_content_base64,
+        )
+        from gateway.hosted_rooms import default_db_path, room_state
+
+        data = decode_content_base64(params.get("content_base64"))
+        service = get_hosted_room_service()
+        if service is not None:
+            attachment = service.put_attachment(
+                room_id=params.get("room_id"),
+                upload_id=params.get("upload_id"),
+                kind=params.get("kind"),
+                name=params.get("name"),
+                mime=params.get("mime"),
+                data=data,
+            )
+        else:
+            db_path = default_db_path()
+            room_state(db_path, room_id=params.get("room_id"))
+            attachment = HostedRoomAttachmentStore(db_path).put(
+                room_id=params.get("room_id"),
+                upload_id=params.get("upload_id"),
+                kind=params.get("kind"),
+                name=params.get("name"),
+                mime=params.get("mime"),
+                data=data,
+            )
+        return _ok(rid, {"attachment": attachment})
+    except Exception as exc:
+        return _err(rid, 4140, str(exc))
+
+
+@method("groups.attachment.read")
+def _(rid, params: dict) -> dict:
+    """Read one committed attachment through its room/recipient ownership."""
+
+    try:
+        from gateway.hosted_room_attachments import (
+            HostedRoomAttachmentStore,
+            encode_content_base64,
+        )
+        from gateway.hosted_rooms import RoomNotFoundError, default_db_path, room_state
+
+        hosted_db_path = default_db_path()
+        purpose = str(params.get("purpose") or "").strip().casefold()
+        try:
+            room_state(hosted_db_path, room_id=params.get("room_id"))
+        except RoomNotFoundError:
+            if purpose == "viewer":
+                recipient = "viewer"
+            elif purpose == "desktop-command":
+                from gateway.desktop_room_mailbox import (
+                    authorize_attachment_read,
+                    default_db_path as mailbox_db_path,
+                )
+
+                authorize_attachment_read(
+                    mailbox_db_path(),
+                    room_id=params.get("room_id"),
+                    command_id=params.get("event_id"),
+                    consumer_id=params.get("consumer_id"),
+                    lease_token=params.get("lease_token"),
+                    authority_token=params.get("authority_token"),
+                )
+                recipient = "desktop"
+            else:
+                raise ValueError("attachment read purpose is required")
+        else:
+            if purpose != "viewer":
+                raise ValueError("hosted attachment reads are viewer-only over RPC")
+            recipient = "viewer"
+        stored = HostedRoomAttachmentStore(hosted_db_path).read(
+            room_id=params.get("room_id"),
+            attachment_id=params.get("attachment_id"),
+            recipient_member_id=recipient,
+            event_id=params.get("event_id"),
+        )
+        return _ok(
+            rid,
+            {
+                "attachment": stored.attachment,
+                "content_base64": encode_content_base64(stored.data),
+            },
+        )
+    except Exception as exc:
+        return _err(rid, 4141, str(exc))
+
+
+@method("groups.desktop.claim")
+def _(rid, params: dict) -> dict:
+    """Advertise classic rooms and lease pending messaging commands."""
+
+    try:
+        from gateway.desktop_room_mailbox import claim_commands, default_db_path
+
+        commands = claim_commands(
+            default_db_path(),
+            consumer_id=params.get("consumer_id"),
+            room_authorities=params.get("room_authorities", []),
+            actions=params.get("actions"),
+            limit=params.get("limit", 8),
+        )
+        return _ok(rid, {"commands": commands})
+    except Exception as exc:
+        return _err(rid, 4130, str(exc))
+
+
+@method("groups.desktop.complete")
+def _(rid, params: dict) -> dict:
+    """Commit the outcome of one classic-room compatibility command."""
+
+    try:
+        from gateway.desktop_room_mailbox import complete_command, default_db_path
+
+        command = complete_command(
+            default_db_path(),
+            consumer_id=params.get("consumer_id"),
+            command_id=params.get("command_id"),
+            lease_token=params.get("lease_token"),
+            success=params.get("success") is True,
+            result=params.get("result", {}),
+        )
+        return _ok(rid, {"command": command})
+    except Exception as exc:
+        return _err(rid, 4131, str(exc))
+
+
+@method("groups.desktop.renew")
+def _(rid, params: dict) -> dict:
+    """Renew one live classic-room command lease while its turn settles."""
+
+    try:
+        from gateway.desktop_room_mailbox import default_db_path, renew_command
+
+        command = renew_command(
+            default_db_path(),
+            consumer_id=params.get("consumer_id"),
+            command_id=params.get("command_id"),
+            lease_token=params.get("lease_token"),
+        )
+        return _ok(rid, {"command": command})
+    except Exception as exc:
+        return _err(rid, 4132, str(exc))
 
 
 @method("groups.peer.invite")
@@ -253,12 +416,16 @@ def _(rid, params: dict) -> dict:
             target_profile=profile,
             ttl_seconds=ttl,
         )
+        from gateway.platforms.api_server_room_attachments import (
+            roomlink_attachments_available,
+        )
+
         catalog = local_catalog_mapping(
             installation_id=installation_id,
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
             link_modes=("direct",),
             text=True,
-            attachments=False,
+            attachments=roomlink_attachments_available(),
         )
         return _ok(
             rid,
@@ -301,6 +468,16 @@ def _(rid, params: dict) -> dict:
                 claims.get("status_expires_at", claims["expires_at"])
             ),
         )
+        try:
+            from gateway.platforms.api_server_room_attachments import (
+                _default_spool,
+            )
+
+            _default_spool().discard_scope(claims)
+        except Exception:
+            # The grant is already revoked. Bounded spool expiry remains the
+            # cleanup backstop and cannot restore authorization.
+            pass
         return _ok(rid, {"revoked": True})
     except Exception as exc:
         return _err(rid, 4122, str(exc))
@@ -375,6 +552,7 @@ def _(rid, params: dict) -> dict:
             ),
             trace_id=str(params.get("trace_id") or f"trace-{os.urandom(16).hex()}"),
             grant=grant,
+            attachments=catalog.attachments,
         )
         service.register_peer_route(
             room_id=room_id,
@@ -493,26 +671,63 @@ def _(rid, params: dict) -> dict:
     method. The actor is server-owned rather than trusted from params.
     Admission is durable; no Bot turn is started by this slice.
     """
-    from gateway.hosted_rooms import HostedRoomError, append_event, default_db_path
+    from gateway.hosted_rooms import (
+        HostedRoomError,
+        append_event,
+        default_db_path,
+        room_state,
+    )
 
     try:
         service = get_hosted_room_service()
-        event = (
-            service.send(
+        if service is not None:
+            event = service.send(
                 room_id=params.get("room_id"),
                 event_id=params.get("event_id"),
                 payload=params.get("payload"),
             )
-            if service is not None
-            else append_event(
-                default_db_path(),
+        else:
+            from gateway import hosted_room_discussion as discussion
+            from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+
+            db_path = default_db_path()
+            room = room_state(db_path, room_id=params.get("room_id"))
+            member_ids = tuple(
+                str(member.get("member_id") or member.get("profile") or "")
+                for member in room["members"]
+            )
+            raw_payload = params.get("payload")
+            if isinstance(raw_payload, dict) and "thread_id" not in raw_payload:
+                raw_payload = {
+                    **raw_payload,
+                    "thread_id": params.get("event_id"),
+                }
+            payload = discussion.validate_user_payload(
+                raw_payload,
+                member_ids=member_ids,
+            )
+            attachment_store = HostedRoomAttachmentStore(db_path)
+            if payload.get("attachments"):
+                payload["attachments"] = attachment_store.commit_message(
+                    room_id=room["room_id"],
+                    event_id=params.get("event_id"),
+                    manifest=payload["attachments"],
+                    recipient_member_ids=(*member_ids, "viewer"),
+                    hold_until_event=True,
+                )
+            event = append_event(
+                db_path,
                 room_id=params.get("room_id"),
                 event_id=params.get("event_id"),
                 kind="message.user",
                 actor={"kind": "user", "id": "desktop"},
-                payload=params.get("payload"),
+                payload=payload,
             )
-        )
+            if payload.get("attachments"):
+                attachment_store.retain_event(
+                    room_id=room["room_id"],
+                    event_id=params.get("event_id"),
+                )
         return _ok(
             rid,
             {
@@ -564,6 +779,15 @@ def _(rid, params: dict) -> dict:
             default_db_path(),
             room_id=params.get("room_id"),
         )
+        if service is not None:
+            service.attachments.mark_room_disbanded(tombstone["room_id"])
+            service.discard_output_artifacts(tombstone["room_id"])
+        else:
+            from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+
+            HostedRoomAttachmentStore(default_db_path()).mark_room_disbanded(
+                tombstone["room_id"]
+            )
         return _ok(rid, {"tombstone": tombstone})
     except HostedRoomError as exc:
         return _err(rid, 4113, str(exc))

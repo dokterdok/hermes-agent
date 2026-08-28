@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
 import tui_gateway.server as srv
@@ -56,15 +58,29 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
     assert "groups.state" in result["methods"]
     assert "groups.send" in result["methods"]
     assert result["room_link"]["enabled"] is False
+    assert "groups.attachment.put" in result["methods"]
+    assert "groups.attachment.read" in result["methods"]
+    assert "attachment_same_gateway_delivery" in result["features"]
+    assert "groups.desktop.claim" in result["methods"]
+    assert "groups.desktop.renew" in result["methods"]
+    assert "groups.desktop.complete" in result["methods"]
 
 
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
+    from gateway.platforms import api_server_room_attachments
+
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
+    monkeypatch.setattr(
+        api_server_room_attachments,
+        "roomlink_attachments_available",
+        lambda: True,
+    )
     result = _result(srv._methods["groups.capabilities"](1, {}))
     assert result["room_link"]["enabled"] is True
     assert result["room_link"]["profile"] == "reviewer"
     assert result["room_link"]["catalog"]["text"] is True
+    assert result["room_link"]["catalog"]["attachments"] is True
     assert "groups.peer.invite" in result["methods"]
     assert "groups.peer.register" in result["methods"]
 
@@ -83,7 +99,45 @@ def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch
     )
     assert invitation["target_profile"] == "reviewer"
     assert invitation["catalog"] == result["room_link"]["catalog"]
+    assert invitation["catalog"]["attachments"] is True
     assert "." in invitation["grant"]
+
+
+def test_peer_revoke_discards_the_scoped_attachment_spool(home, monkeypatch):
+    from gateway.platforms import api_server_room_attachments
+
+    monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
+    invitation = _result(
+        srv._methods["groups.peer.invite"](
+            1,
+            {
+                "room_id": "room-revoke",
+                "home_install_id": "install-home",
+                "authority_gateway_id": "install-home",
+                "authority_epoch": 1,
+                "member_id": "member-peer",
+                "grant_id": "grant-room-revoke",
+            },
+        )
+    )
+    discarded = []
+
+    class FakeSpool:
+        def discard_scope(self, claims):
+            discarded.append(dict(claims))
+            return 1
+
+    monkeypatch.setattr(api_server_room_attachments, "_default_spool", FakeSpool)
+    result = _result(
+        srv._methods["groups.peer.revoke"](
+            2,
+            {"grant": invitation["grant"]},
+        )
+    )
+
+    assert result["revoked"] is True
+    assert discarded[0]["room_id"] == "room-revoke"
+    assert discarded[0]["member_id"] == "member-peer"
 
 
 def test_capabilities_disable_roomlink_when_run_replay_is_not_durable(
@@ -380,7 +434,10 @@ def test_create_list_send_and_log_roundtrip(home):
         )
     )
     assert replay["latest_seq"] == replay["cursor"] == 1
-    assert replay["events"][0]["payload"] == {"text": "hello"}
+    assert replay["events"][0]["payload"] == {
+        "text": "hello",
+        "thread_id": "event-1",
+    }
 
 
 def test_rpc_retry_is_idempotent_and_conflict_is_visible(home):
@@ -403,6 +460,74 @@ def test_rpc_retry_is_idempotent_and_conflict_is_visible(home):
     )
     assert conflict["error"]["code"] == 4111
     assert "different content" in conflict["error"]["message"]
+
+
+def test_attachment_put_send_read_roundtrip_is_bounded_and_recipient_scoped(home):
+    _create_room()
+    encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nimage").decode("ascii")
+    put_params = {
+        "room_id": "room-1",
+        "upload_id": "upload-1",
+        "kind": "image",
+        "name": "diagram.png",
+        "mime": "image/png",
+        "content_base64": encoded,
+    }
+    first = _result(srv._methods["groups.attachment.put"](1, put_params))["attachment"]
+    repeated = _result(srv._methods["groups.attachment.put"](2, put_params))["attachment"]
+    assert repeated["attachment_id"] == first["attachment_id"]
+    assert repeated["idempotent"] is True
+
+    before_send = srv._methods["groups.attachment.read"](
+        3,
+        {
+            "room_id": "room-1",
+            "attachment_id": first["attachment_id"],
+            "purpose": "viewer",
+        },
+    )
+    assert before_send["error"]["code"] == 4141
+
+    manifest = {
+        key: first[key]
+        for key in ("attachment_id", "kind", "name", "size", "mime")
+    }
+    sent = _result(
+        srv._methods["groups.send"](
+            4,
+            {
+                "room_id": "room-1",
+                "event_id": "event-attachment-1",
+                "payload": {
+                    "text": "",
+                    "thread_id": "thread-1",
+                    "attachments": [manifest],
+                },
+            },
+        )
+    )
+    assert sent["event"]["payload"]["attachments"] == [manifest]
+    assert "content_base64" not in sent["event"]["payload"]
+
+    hosted_read = srv._methods["groups.attachment.read"](
+        5,
+        {
+            "room_id": "room-1",
+            "attachment_id": first["attachment_id"],
+            "purpose": "viewer",
+            "event_id": "event-attachment-1",
+        },
+    )
+    assert base64.b64decode(_result(hosted_read)["content_base64"]) == b"\x89PNG\r\n\x1a\nimage"
+    denied = srv._methods["groups.attachment.read"](
+        6,
+        {
+            "room_id": "room-1",
+            "attachment_id": first["attachment_id"],
+            "purpose": "desktop-command",
+        },
+    )
+    assert denied["error"]["code"] == 4141
 
 
 def test_send_does_not_trust_client_supplied_actor_identity(home):
@@ -533,16 +658,30 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
     calls = []
 
     class FakeService:
+        class Attachments:
+            def mark_room_disbanded(self, room_id):
+                calls.append(("attachments", room_id))
+
+        attachments = Attachments()
+
         def stop_room(self, room_id, **_kwargs):
             calls.append(("stop", room_id))
 
         def revoke_room_routes(self, room_id):
             calls.append(("revoke", room_id))
 
+        def discard_output_artifacts(self, room_id):
+            calls.append(("outputs", room_id))
+
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     _result(srv._methods["groups.disband"](9, {"room_id": "room-1"}))
 
-    assert calls == [("stop", "room-1"), ("revoke", "room-1")]
+    assert calls == [
+        ("stop", "room-1"),
+        ("revoke", "room-1"),
+        ("attachments", "room-1"),
+        ("outputs", "room-1"),
+    ]
     assert _result(srv._methods["groups.list"](10, {}))["rooms"] == []
 
 

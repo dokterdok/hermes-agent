@@ -140,6 +140,8 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
+from gateway.platforms import api_server_room_artifacts as _room_artifacts
+from gateway.platforms import api_server_room_attachments as _room_attachments
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE,
@@ -2259,6 +2261,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
         ]
         routes.extend(_room_grants._http_routes(self))
+        routes.extend(_room_attachments._http_routes(self))
+        routes.extend(_room_artifacts._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated
@@ -2815,6 +2819,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
+        room_dispatch: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -3081,6 +3086,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if room_dispatch is not None:
+            enabled_toolsets = sorted({*enabled_toolsets, "bot_room"})
 
         max_iterations = _current_max_iterations()
 
@@ -7205,6 +7212,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: str = "",
         browser_control_principal: str = "",
         browser_control_transport_family: str = "",
+        source: str = "",
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
@@ -7225,6 +7233,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return set_session_vars(
             platform="api_server",
+            source=source,
             chat_id=chat_id,
             session_key=session_key,
             session_id=session_id,
@@ -7555,11 +7564,37 @@ class APIServerAdapter(BasePlatformAdapter):
         request: "web.Request",
         body: Any,
     ) -> tuple[Any, "web.Response | None"]:
-        return await _room_dispatch._normalize_room_dispatch(
+        normalized, error = await _room_dispatch._normalize_room_dispatch(
             self,
             request,
             body,
             _api_server=sys.modules[__name__],
+        )
+        if error is not None:
+            return normalized, error
+        return await _room_attachments._validate_dispatch_attachments(
+            normalized,
+            _openai_error=_openai_error,
+        )
+
+    async def _handle_room_attachment_manifest(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        return await _room_attachments._handle_room_attachment_manifest(
+            self,
+            request,
+            _openai_error=_openai_error,
+            _api_request_profile=_api_request_profile,
+        )
+
+    async def _handle_room_attachment_upload(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        return await _room_attachments._handle_room_attachment_upload(
+            self,
+            request,
+            _openai_error=_openai_error,
+            _api_request_profile=_api_request_profile,
         )
 
     async def _handle_room_member_invitation(
@@ -7600,6 +7635,24 @@ class APIServerAdapter(BasePlatformAdapter):
             request,
             _openai_error=_openai_error,
             _api_request_profile=_api_request_profile,
+        )
+
+    async def _handle_room_run_artifact(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        return await _room_artifacts._handle_room_run_artifact(
+            self,
+            request,
+            _openai_error=_openai_error,
+        )
+
+    async def _handle_room_run_artifact_ack(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        return await _room_artifacts._handle_room_run_artifact_ack(
+            self,
+            request,
+            _openai_error=_openai_error,
         )
 
     def _durable_run_status(

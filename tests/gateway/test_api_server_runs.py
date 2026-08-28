@@ -1202,10 +1202,32 @@ class TestRunIdempotency:
 
     @pytest.mark.asyncio
     async def test_dead_owner_nonterminal_status_becomes_interrupted(
-        self, tmp_path
+        self, tmp_path, monkeypatch
     ):
+        from gateway.hosted_room_artifacts import (
+            RoomArtifactOutbox,
+            RoomArtifactScope,
+        )
         from gateway.platforms.api_server import RunIdempotencyStore
 
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        room_scope = RoomArtifactScope.from_mapping({
+            "room_id": "room-stale",
+            "task_id": "task-stale",
+            "execution_generation": 1,
+            "member_id": "member-stale",
+            "target_profile": "default",
+            "home_install_id": "install-home",
+            "target_install_id": "install-target",
+            "authority_gateway_id": "gateway-home",
+            "authority_epoch": 1,
+        })
+        output = tmp_path / "stale.md"
+        output.write_text("stale\n", encoding="utf-8")
+        outbox = RoomArtifactOutbox(home / "state.db")
+        outbox.put_path(scope=room_scope, path=output)
         path = tmp_path / "idem.db"
         scope = hashlib.sha256(
             "default\0unauthenticated-test-listener".encode()
@@ -1216,7 +1238,11 @@ class TestRunIdempotency:
             "stale-run",
             "fingerprint",
             "run_stale",
-            {"run_id": "run_stale", "status": "running"},
+            {
+                "run_id": "run_stale",
+                "status": "running",
+                "room_artifact_scope": room_scope.as_mapping(),
+            },
             owner_pid=999_999_999,
             owner_started=1,
         )
@@ -1225,12 +1251,31 @@ class TestRunIdempotency:
         restarted = _make_adapter()
         _use_idempotency_db(restarted, path)
         app = _create_runs_app(restarted)
+        original_discard = RoomArtifactOutbox.discard
+        attempts = 0
+
+        def fail_once(instance, artifact_scope):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("temporary cleanup failure")
+            return original_discard(instance, artifact_scope)
+
+        monkeypatch.setattr(RoomArtifactOutbox, "discard", fail_once)
         async with TestClient(TestServer(app)) as cli:
+            failed = await cli.get("/v1/runs/run_stale")
+            assert failed.status == 500
+            persisted = restarted._run_idempotency_store.status_for_run(
+                scope,
+                "run_stale",
+            )
+            assert persisted["status"]["status"] == "running"
             response = await cli.get("/v1/runs/run_stale")
             body = await response.json()
         assert response.status == 200
         assert body["status"] == "interrupted"
         assert body["last_event"] == "run.interrupted"
+        assert outbox.list(room_scope) == []
 
     def test_progress_event_does_not_fsync_unchanged_running_status(self, adapter):
         adapter._run_statuses["run_progress"] = {
@@ -1426,6 +1471,13 @@ class TestHostedRoomRuns:
             member_id="member-peer",
             target_install_id=local_authority_gateway_id(),
             target_profile="default",
+            permissions=(
+                "approve",
+                "attachment.stage",
+                "dispatch",
+                "status",
+                "stop",
+            ),
             issued_at=100,
             ttl_seconds=10,
             status_expires_at=1000,
@@ -1450,6 +1502,7 @@ class TestHostedRoomRuns:
         assert claims["room_id"] == "room-1"
         assert claims["home_install_id"] == "install-home"
         assert claims["status_expires_at"] == 1000
+        assert {"artifact.ack", "artifact.read"} <= set(claims["permissions"])
 
         fully_expired = issue_room_grant(
             auth_adapter._room_grant_secret(),

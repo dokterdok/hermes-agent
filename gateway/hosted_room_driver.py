@@ -46,10 +46,16 @@ TASK_STATUSES = frozenset({
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
-_TASK_PAYLOAD_REQUIRED_FIELDS = frozenset(
-    {"target_profile", "prompt", "source_event_seq"}
-)
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id"})
+_TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({
+    "target_profile",
+    "prompt",
+    "source_event_seq",
+})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({
+    "attachments",
+    "recipient_member_ids",
+    "target_member_id",
+})
 _LEASE_COLUMNS = frozenset({
     "room_id",
     "gateway_id",
@@ -251,6 +257,23 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         normalized["target_member_id"] = _identifier(
             value["target_member_id"], label="target_member_id"
         )
+    if "recipient_member_ids" in value:
+        raw_recipients = value["recipient_member_ids"]
+        if not isinstance(raw_recipients, list) or not 1 <= len(raw_recipients) <= 6:
+            raise DriverValidationError("recipient_member_ids must contain 1-6 members")
+        recipients = [
+            _identifier(item, label="recipient_member_id") for item in raw_recipients
+        ]
+        if len(set(recipients)) != len(recipients):
+            raise DriverValidationError("recipient_member_ids must be unique")
+        normalized["recipient_member_ids"] = recipients
+    if "attachments" in value:
+        from gateway.hosted_room_attachments import validate_task_manifest
+
+        attachments = validate_task_manifest(value["attachments"])
+        if not attachments:
+            raise DriverValidationError("attachments must not be empty when present")
+        normalized["attachments"] = attachments
     encoded = json.dumps(
         normalized,
         ensure_ascii=True,

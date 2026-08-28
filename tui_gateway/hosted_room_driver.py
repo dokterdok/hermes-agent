@@ -49,6 +49,48 @@ class InternalSessionRPC(Protocol):
     ) -> Mapping[str, Any]:
         """Resume the canonical room session."""
 
+    def stage_attachment(
+        self,
+        *,
+        profile: str,
+        session_id: str,
+        source: str,
+        attachment: Mapping[str, Any],
+        data: bytes,
+        execution_generation: int,
+    ) -> Mapping[str, Any]:
+        """Stage one verified canonical blob into the local member session."""
+
+    def begin_attachment_staging(
+        self,
+        *,
+        profile: str,
+        session_id: str,
+        source: str,
+        execution_generation: int,
+    ) -> None:
+        """Snapshot pending session attachments for one fenced attempt."""
+
+    def commit_attachment_staging(
+        self,
+        *,
+        profile: str,
+        session_id: str,
+        source: str,
+        execution_generation: int,
+    ) -> None:
+        """Accept staged attachments after crossing the submit boundary."""
+
+    def rollback_attachment_staging(
+        self,
+        *,
+        profile: str,
+        session_id: str,
+        source: str,
+        execution_generation: int,
+    ) -> None:
+        """Restore pending session attachments after a pre-submit failure."""
+
     def submit(
         self,
         *,
@@ -92,6 +134,12 @@ class MemberTransportResolver(Protocol):
         """Return a local or peer transport without changing task identity."""
 
 
+AttachmentLoader = Callable[
+    ["HostedRoomBinding", Mapping[str, Any]],
+    Iterable[tuple[Mapping[str, Any], bytes]],
+]
+
+
 @dataclass(frozen=True)
 class HostedRoomBinding:
     """Current server-issued authority coordinate for one hosted room."""
@@ -133,6 +181,7 @@ class HostedRoomRuntime:
             [str, str, Mapping[str, Any] | None], None
         ]
         | None = None,
+        attachment_loader: AttachmentLoader | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0,
         poll_interval_seconds: float = 0.1,
@@ -159,6 +208,7 @@ class HostedRoomRuntime:
         self.prepare_room = prepare_room
         self.publish_terminal = publish_terminal
         self.pending_action = pending_action
+        self.attachment_loader = attachment_loader
         self.clock = clock
         self.lease_ttl_seconds = float(lease_ttl_seconds)
         self.poll_interval_seconds = float(poll_interval_seconds)
@@ -342,7 +392,12 @@ class HostedRoomRuntime:
         if binding is None:
             raise state.RoomUnavailableError("hosted room is unavailable")
         lease = self._ensure_lease(binding)
-        inspection = self._inspect_recovery_session(binding, task)
+        transport = self._transport_for(binding, task)
+        inspection = (
+            self._inspect_local_recovery_session(task)
+            if transport is self.rpc
+            else self._inspect_recovery_session(binding, task)
+        )
         if inspection.terminal is not None:
             resolved = state.resolve_indeterminate_task(
                 self.db_path,
@@ -355,6 +410,8 @@ class HostedRoomRuntime:
                 result=inspection.terminal.result,
                 clock=self.clock,
             )
+            with self._status_lock:
+                self._blocked_rooms.discard(identity.room_id)
             if self.publish_terminal is not None:
                 self.publish_terminal(binding, resolved)
             return resolved
@@ -368,6 +425,8 @@ class HostedRoomRuntime:
                 cancel_id=f"remote-cancel:{task['execution_generation']}",
                 clock=self.clock,
             )
+            with self._status_lock:
+                self._blocked_rooms.discard(identity.room_id)
             if self.publish_terminal is not None:
                 self.publish_terminal(binding, resolved)
             return resolved
@@ -634,7 +693,7 @@ class HostedRoomRuntime:
             if self._stop.is_set():
                 return
             if self._route_retry_is_deferred(task):
-                return
+                continue
             lease = self._renew_lease_if_needed(binding, lease)
             attempt = state.start_task(
                 self.db_path,
@@ -646,6 +705,11 @@ class HostedRoomRuntime:
             self._execute_attempt(binding, task, attempt)
             current = state.get_task(self.db_path, task["identity"])
             if current["status"] not in state.TERMINAL_STATUSES:
+                if (
+                    current["status"] == "queued"
+                    and self._route_retry_is_deferred(current)
+                ):
+                    continue
                 return
 
     @staticmethod
@@ -740,6 +804,8 @@ class HostedRoomRuntime:
         profile = task["payload"]["target_profile"]
         transport = self._transport_for(binding, task)
         submit_attempted = False
+        attachment_staging_active = False
+        attachment_session_id: str | None = None
         with self._status_lock:
             self._current_task = attempt.identity
         try:
@@ -747,10 +813,81 @@ class HostedRoomRuntime:
                 session = self._resolve_or_create(
                     transport, profile, binding.room_id
                 )
+                session_id = _session_id(session)
+                prompt = str(task["payload"]["prompt"])
+                manifests = task["payload"].get("attachments") or []
+                if manifests:
+                    if self.attachment_loader is None:
+                        raise RuntimeError(
+                            "hosted attachments are unavailable for this member transport"
+                        )
+                    transport.begin_attachment_staging(
+                        profile=profile,
+                        session_id=session_id,
+                        source=ROOM_SESSION_SOURCE,
+                        execution_generation=attempt.execution_generation,
+                    )
+                    attachment_staging_active = True
+                    attachment_session_id = session_id
+                    expected_ids = [
+                        str(attachment.get("attachment_id") or "")
+                        for attachment in manifests
+                    ]
+                    file_refs = []
+                    loaded_count = 0
+                    for loaded_count, (attachment, data) in enumerate(
+                        self.attachment_loader(binding, task),
+                        start=1,
+                    ):
+                        if (
+                            loaded_count > len(expected_ids)
+                            or str(attachment.get("attachment_id") or "")
+                            != expected_ids[loaded_count - 1]
+                        ):
+                            raise RuntimeError(
+                                "hosted attachment ownership did not match the task manifest"
+                            )
+                        staged = transport.stage_attachment(
+                            profile=profile,
+                            session_id=session_id,
+                            source=ROOM_SESSION_SOURCE,
+                            attachment=attachment,
+                            data=data,
+                            execution_generation=attempt.execution_generation,
+                        )
+                        if attachment.get("kind") == "file":
+                            ref = str(staged.get("ref_text") or "").strip()
+                            if not ref and transport is self.rpc:
+                                raise RuntimeError(
+                                    "hosted file attachment returned no staged reference"
+                                )
+                            if ref:
+                                file_refs.append(f"{attachment['name']}: {ref}")
+                    if loaded_count != len(expected_ids):
+                        raise RuntimeError(
+                            "hosted attachment ownership did not match the task manifest"
+                        )
+                    if file_refs:
+                        prompt = (
+                            f"{prompt}\n\nAttached files staged in your session workspace:\n"
+                            + "\n".join(file_refs)
+                        )
                 # An in-process submit should fail before admission or return
                 # after it, but an unexpected exception at that boundary is
                 # still ambiguous. Never terminalize it as a proven failure.
                 submit_attempted = True
+
+                bind_artifact_scope = getattr(transport, "bind_artifact_scope", None)
+                if callable(bind_artifact_scope):
+                    bind_artifact_scope(
+                        task=attempt.identity,
+                        execution_generation=attempt.execution_generation,
+                        member_id=str(task["payload"].get("target_member_id") or profile),
+                        authority_gateway_id=binding.gateway_id,
+                        authority_epoch=binding.authority_epoch,
+                        profile=profile,
+                    )
+
                 def on_terminal(receipt: Mapping[str, Any]) -> None:
                     status = receipt.get("status")
                     if status == "cancelled":
@@ -771,6 +908,11 @@ class HostedRoomRuntime:
                             result={
                                 "message_id": receipt.get("message_id"),
                                 "text": receipt.get("text", ""),
+                                **(
+                                    {"artifacts": receipt.get("artifacts")}
+                                    if receipt.get("artifacts")
+                                    else {}
+                                ),
                                 **(
                                     {"error": receipt.get("error")}
                                     if receipt.get("error")
@@ -821,19 +963,27 @@ class HostedRoomRuntime:
 
                 transport.submit(
                     profile=profile,
-                    session_id=_session_id(session),
-                    prompt=task["payload"]["prompt"],
+                    session_id=session_id,
+                    prompt=prompt,
                     source=ROOM_SESSION_SOURCE,
                     task=attempt.identity,
                     execution_generation=attempt.execution_generation,
                     on_terminal=on_terminal,
                 )
+                if attachment_staging_active:
+                    transport.commit_attachment_staging(
+                        profile=profile,
+                        session_id=session_id,
+                        source=ROOM_SESSION_SOURCE,
+                        execution_generation=attempt.execution_generation,
+                    )
+                    attachment_staging_active = False
                 self._clear_unavailable_route_retry(task)
                 receipt = self._wait_for_terminal(
                     binding,
                     task=task,
                     profile=profile,
-                    session_id=_session_id(session),
+                    session_id=session_id,
                     attempt=attempt,
                     transport=transport,
                 )
@@ -848,29 +998,53 @@ class HostedRoomRuntime:
                     clock=self.clock,
                 )
         except (state.StaleLeaseError, state.StaleTaskError) as exc:
+            if attachment_staging_active and attachment_session_id is not None:
+                self._finish_attachment_staging_after_error(
+                    transport=transport,
+                    profile=profile,
+                    session_id=attachment_session_id,
+                    execution_generation=attempt.execution_generation,
+                    submit_attempted=submit_attempted,
+                )
             self._drop_lease(binding.room_id)
             self._record_error(f"task {attempt.identity.task_id} fenced: {exc}")
         except Exception as exc:
+            if attachment_staging_active and attachment_session_id is not None:
+                self._finish_attachment_staging_after_error(
+                    transport=transport,
+                    profile=profile,
+                    session_id=attachment_session_id,
+                    execution_generation=attempt.execution_generation,
+                    submit_attempted=submit_attempted,
+                )
             if submit_attempted and bool(getattr(exc, "not_admitted", False)):
-                try:
-                    state.requeue_not_admitted_task(
-                        self.db_path,
-                        attempt,
-                        clock=self.clock,
-                    )
-                except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
-                    self._drop_lease(binding.room_id)
-                    self._ambiguous_rooms[binding.room_id] = attempt.lease.expires_at
-                    self._record_error(
-                        f"task {attempt.identity.task_id} not-admitted proof lost "
-                        f"its fence: {fence_exc}"
-                    )
-                else:
+                if task.get("payload", {}).get("attachments"):
                     delay = self._defer_unavailable_route(task)
+                    self._settle_failure_if_current(attempt, exc)
                     self._record_error(
                         f"task {attempt.identity.task_id} was not admitted; "
-                        f"queued for retry in {delay:g}s"
+                        f"this member is deferred for {delay:g}s"
                     )
+                else:
+                    try:
+                        state.requeue_not_admitted_task(
+                            self.db_path,
+                            attempt,
+                            clock=self.clock,
+                        )
+                    except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
+                        self._drop_lease(binding.room_id)
+                        self._ambiguous_rooms[binding.room_id] = attempt.lease.expires_at
+                        self._record_error(
+                            f"task {attempt.identity.task_id} not-admitted proof lost "
+                            f"its fence: {fence_exc}"
+                        )
+                    else:
+                        delay = self._defer_unavailable_route(task)
+                        self._record_error(
+                            f"task {attempt.identity.task_id} was not admitted; "
+                            f"queued for retry in {delay:g}s"
+                        )
             elif submit_attempted:
                 self._drop_lease(binding.room_id)
                 self._ambiguous_rooms[binding.room_id] = attempt.lease.expires_at
@@ -882,6 +1056,42 @@ class HostedRoomRuntime:
         finally:
             with self._status_lock:
                 self._current_task = None
+
+    def _finish_attachment_staging_after_error(
+        self,
+        *,
+        transport: InternalSessionRPC,
+        profile: str,
+        session_id: str,
+        execution_generation: int,
+        submit_attempted: bool,
+    ) -> None:
+        """Close staging without masking the task's original failure.
+
+        Once submit has been attempted, admission is deliberately treated as
+        ambiguous and staged images must remain available to a turn that may
+        already have been accepted. Before that boundary, restoring the
+        snapshot prevents a partially staged attachment from leaking into the
+        next prompt on the canonical session.
+        """
+
+        try:
+            finalizer = (
+                transport.commit_attachment_staging
+                if submit_attempted
+                else transport.rollback_attachment_staging
+            )
+            finalizer(
+                profile=profile,
+                session_id=session_id,
+                source=ROOM_SESSION_SOURCE,
+                execution_generation=execution_generation,
+            )
+        except Exception as cleanup_error:
+            self._record_error(
+                "attachment staging cleanup failed for "
+                f"session {session_id}: {cleanup_error}"
+            )
 
     def _wait_for_terminal(
         self,
@@ -950,7 +1160,12 @@ class HostedRoomRuntime:
         for task in running:
             if task["run_process_generation"] == self.process_generation:
                 continue
-            inspection = self._inspect_recovery_session(binding, task)
+            transport = self._transport_for(binding, task)
+            inspection = (
+                self._inspect_local_recovery_session(task)
+                if transport is self.rpc
+                else self._inspect_recovery_session(binding, task)
+            )
             if inspection.terminal is not None:
                 self._harvest_previous_attempt(binding, task, inspection.terminal)
             elif inspection.active:
@@ -1001,6 +1216,41 @@ class HostedRoomRuntime:
                 status=str(info.get("status") or "") or None,
             )
 
+    def _inspect_local_recovery_session(
+        self,
+        task: Mapping[str, Any],
+    ) -> _RecoveryInspection:
+        """Check only live process state before an explicit local retry.
+
+        A dashboard restart loses the hosted terminal callback identity. Fully
+        resuming the hidden session here can hydrate a huge transcript and
+        auto-continue work before the user confirms Retry. The durable task is
+        already indeterminate, so only an exact still-live in-memory attempt
+        blocks a new fenced generation.
+        """
+
+        profile = task["payload"]["target_profile"]
+        with self.turn_lock(profile):
+            session = self.rpc.resolve_exact(
+                profile=profile,
+                title=room_session_title(task["identity"].room_id),
+                source=ROOM_SESSION_SOURCE,
+            )
+            if session is None:
+                return _RecoveryInspection(terminal=None, active=False, status=None)
+            session_id = _session_id(session)
+            info = self.rpc.info(
+                profile=profile,
+                session_id=session_id,
+                source=ROOM_SESSION_SOURCE,
+            )
+            self._report_pending_action(task, session_id=session_id, info=info)
+            return _RecoveryInspection(
+                terminal=None,
+                active=_info_is_active_for(info, task["identity"]),
+                status=str(info.get("status") or "") or None,
+            )
+
     def _reconcile_indeterminate(
         self,
         binding: HostedRoomBinding,
@@ -1011,7 +1261,22 @@ class HostedRoomRuntime:
             room_id=binding.room_id,
             status="indeterminate",
         )
+        with self._status_lock:
+            if not unresolved:
+                self._blocked_rooms.discard(binding.room_id)
+                return False
+            if binding.room_id in self._blocked_rooms:
+                # One unresolved inspection is enough. Re-reading a large
+                # hidden session every 100 ms starves the explicit Retry RPC
+                # on the same per-profile turn lock and burns a CPU core. The
+                # user action removes this fence after it safely requeues or
+                # reconciles the exact task.
+                return True
         for task in unresolved:
+            if self._transport_for(binding, task) is self.rpc:
+                with self._status_lock:
+                    self._blocked_rooms.add(binding.room_id)
+                return True
             inspection = self._inspect_recovery_session(binding, task)
             if inspection.status == "cancelled":
                 state.resolve_indeterminate_cancellation(
@@ -1194,6 +1459,12 @@ def _find_terminal_receipt(
             result={
                 "message_id": receipt_id,
                 "text": message.get("content", ""),
+                **(
+                    {"artifacts": message.get("artifacts")}
+                    if message.get("artifacts")
+                    else {}
+                ),
+                **({"run_id": message.get("run_id")} if message.get("run_id") else {}),
             },
         )
     return None

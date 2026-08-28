@@ -70,6 +70,7 @@ def test_room_grant_helpers_delegate_through_legacy_adapter_methods(monkeypatch)
 @pytest.mark.asyncio
 async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
     from gateway import hosted_rooms
+    from gateway.platforms import api_server_room_attachments
 
     adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
     request = object()
@@ -88,6 +89,11 @@ async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
         "local_authority_gateway_id",
         lambda: "install-target",
     )
+    monkeypatch.setattr(
+        api_server_room_attachments,
+        "roomlink_attachments_available",
+        lambda: True,
+    )
     profile_token = api_server._api_request_profile.set("worker")
     try:
         response = await adapter._handle_room_member_capabilities(request)
@@ -98,6 +104,7 @@ async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
     assert response.status == 200
     assert body["object"] == "hermes.room_member.capabilities"
     assert body["target_profile"] == "worker"
+    assert body["catalog"]["attachments"] is True
     adapter._room_grant_claims.assert_called_once_with(
         request,
         permission="status",
