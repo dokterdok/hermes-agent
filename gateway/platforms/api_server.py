@@ -145,6 +145,8 @@ from gateway.platforms.base import (
     is_network_accessible,
     validate_media_delivery_path,
 )
+# Re-exported here for existing imports and constructor monkeypatches.
+from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -942,134 +944,6 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
-class RunIdempotencyStore:
-    """Durable, tenant-scoped reservations for ``POST /v1/runs``.
-
-    A unique ``(scope, key)`` row is inserted inside ``BEGIN IMMEDIATE`` so
-    separate gateway workers/processes cannot both admit the same request.
-    Only request fingerprints and public run status are stored; request bodies
-    and credentials are deliberately excluded.
-    """
-
-    RETENTION_SECONDS = 24 * 60 * 60
-
-    def __init__(self, db_path: str = None):
-        if db_path is None:
-            try:
-                from hermes_cli.config import get_hermes_home
-
-                db_path = str(get_hermes_home() / "runs_idempotency.db")
-            except Exception:
-                db_path = ":memory:"
-        self._db_path = None if db_path == ":memory:" else db_path
-        try:
-            self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
-        except Exception:
-            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
-            self._db_path = None
-        from hermes_state import apply_wal_with_fallback
-
-        apply_wal_with_fallback(self._conn, db_label="runs_idempotency.db")
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS run_idempotency (
-                scope TEXT NOT NULL,
-                idempotency_key TEXT NOT NULL,
-                fingerprint TEXT NOT NULL,
-                run_id TEXT NOT NULL,
-                status_json TEXT NOT NULL,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                PRIMARY KEY (scope, idempotency_key)
-            )"""
-        )
-        self._conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)"
-        )
-        self._conn.commit()
-        self._lock = threading.Lock()
-        self._tighten_permissions()
-
-    def _tighten_permissions(self) -> None:
-        if not self._db_path:
-            return
-        for candidate in (
-            Path(self._db_path),
-            Path(self._db_path + "-wal"),
-            Path(self._db_path + "-shm"),
-        ):
-            try:
-                if candidate.exists():
-                    candidate.chmod(0o600)
-            except OSError:
-                logger.debug(
-                    "Failed to restrict run idempotency store permissions",
-                    exc_info=True,
-                )
-
-    def reserve(
-        self,
-        scope: str,
-        key: str,
-        fingerprint: str,
-        run_id: str,
-        status: Dict[str, Any],
-    ):
-        """Atomically reserve a key; return ``(outcome, stored_record)``."""
-        now = time.time()
-        encoded = json.dumps(status, sort_keys=True, separators=(",", ":"))
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._conn.execute(
-                    "DELETE FROM run_idempotency WHERE updated_at < ?",
-                    (now - self.RETENTION_SECONDS,),
-                )
-                row = self._conn.execute(
-                    "SELECT fingerprint, run_id, status_json FROM run_idempotency WHERE scope=? AND idempotency_key=?",
-                    (scope, key),
-                ).fetchone()
-                if row is not None:
-                    self._conn.commit()
-                    outcome = (
-                        "reused"
-                        if hmac.compare_digest(row[0], fingerprint)
-                        else "conflict"
-                    )
-                    return outcome, {"run_id": row[1], "status": json.loads(row[2])}
-                self._conn.execute(
-                    "INSERT INTO run_idempotency(scope,idempotency_key,fingerprint,run_id,status_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                    (scope, key, fingerprint, run_id, encoded, now, now),
-                )
-                self._conn.commit()
-                return "created", {"run_id": run_id, "status": status}
-            except Exception:
-                self._conn.rollback()
-                raise
-
-    def owns_run(self, scope: str, run_id: str) -> bool:
-        with self._lock:
-            return (
-                self._conn.execute(
-                    "SELECT 1 FROM run_idempotency WHERE scope=? AND run_id=?",
-                    (scope, run_id),
-                ).fetchone()
-                is not None
-            )
-
-    def update_status(self, run_id: str, status: Dict[str, Any]) -> None:
-        encoded = json.dumps(status, sort_keys=True, separators=(",", ":"))
-        with self._lock:
-            self._conn.execute(
-                "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
-                (encoded, time.time(), run_id),
-            )
-            self._conn.commit()
-
-    def close(self) -> None:
-        with self._lock:
-            self._conn.close()
-
-
 class ResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
@@ -1678,6 +1552,15 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_idempotency_store = RunIdempotencyStore()
         self._run_idempotency_ids: set[str] = set()
         self._run_owners: Dict[str, str] = {}
+        self._run_owner_pid = os.getpid()
+        try:
+            from gateway.status import get_process_start_time
+
+            self._run_owner_started = int(
+                get_process_start_time(self._run_owner_pid) or 0
+            )
+        except Exception:
+            self._run_owner_started = 0
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -7639,6 +7522,8 @@ class APIServerAdapter(BasePlatformAdapter):
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
         current = self._run_statuses.get(run_id, {})
+        previous_status = str(current.get("status") or "")
+        field_names = set(fields)
         current.update({
             "object": "hermes.run",
             "run_id": run_id,
@@ -7648,7 +7533,15 @@ class APIServerAdapter(BasePlatformAdapter):
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
         self._run_statuses[run_id] = current
-        if run_id in self._run_idempotency_ids:
+        should_persist = (
+            status != previous_status
+            or status in {"completed", "failed", "cancelled", "interrupted"}
+            or bool(
+                field_names
+                & {"output", "error", "usage", "pending_steer", "session_id"}
+            )
+        )
+        if run_id in self._run_idempotency_ids and should_persist:
             try:
                 self._run_idempotency_store.update_status(run_id, current)
             except Exception:
@@ -7758,6 +7651,57 @@ class APIServerAdapter(BasePlatformAdapter):
         identity = expected_key or "unauthenticated-test-listener"
         return hashlib.sha256(f"{profile}\0{identity}".encode()).hexdigest()
 
+    def _durable_run_status(
+        self, request: "web.Request", run_id: str
+    ) -> Dict[str, Any] | None:
+        """Hydrate a scoped run status and fail stale owners closed."""
+        status = self._run_statuses.get(run_id)
+        if status is not None:
+            return status
+
+        scope = self._run_idempotency_scope(request)
+        record = self._run_idempotency_store.status_for_run(scope, run_id)
+        if record is None:
+            return None
+
+        status = dict(record["status"])
+        owner_pid = int(record.get("owner_pid") or 0)
+        owner_started = int(record.get("owner_started") or 0)
+        nonterminal = status.get("status") not in {
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted",
+        }
+        owner_alive = False
+        if owner_pid > 0:
+            try:
+                from gateway.status import _pid_exists, get_process_start_time
+
+                owner_alive = bool(_pid_exists(owner_pid))
+                if owner_alive and owner_started:
+                    owner_alive = (
+                        int(get_process_start_time(owner_pid) or 0) == owner_started
+                    )
+            except Exception:
+                owner_alive = False
+
+        if nonterminal and not owner_alive:
+            status.update(
+                {
+                    "status": "interrupted",
+                    "error": "The gateway restarted before this run settled.",
+                    "last_event": "run.interrupted",
+                    "updated_at": time.time(),
+                }
+            )
+            self._run_idempotency_store.update_status(run_id, status)
+
+        self._run_statuses[run_id] = status
+        self._run_idempotency_ids.add(run_id)
+        self._run_owners[run_id] = scope
+        return status
+
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
@@ -7765,12 +7709,6 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
-
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
 
         try:
             body = await request.json()
@@ -7795,7 +7733,13 @@ class APIServerAdapter(BasePlatformAdapter):
         idempotency_fingerprint = (
             hashlib.sha256(
                 json.dumps(
-                    body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                    {
+                        "body": body,
+                        "gateway_session_key": gateway_session_key or "",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
                 ).encode()
             ).hexdigest()
             if idempotency_key
@@ -7878,6 +7822,49 @@ class APIServerAdapter(BasePlatformAdapter):
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
 
+        # A lost-acceptance replay must resolve even while the original run
+        # consumes the final concurrency slot. This read does not reserve a
+        # missing key; the atomic reserve below closes the concurrent-miss race.
+        if idempotency_key:
+            outcome, record = self._run_idempotency_store.lookup(
+                idempotency_scope, idempotency_key, idempotency_fingerprint
+            )
+            if outcome == "conflict":
+                return web.json_response(
+                    _openai_error(
+                        "Idempotency-Key was already used with a different request payload",
+                        code="idempotency_key_conflict",
+                    ),
+                    status=409,
+                )
+            if outcome == "reused" and record is not None:
+                original_id = str(record["run_id"])
+                status = self._durable_run_status(request, original_id) or record[
+                    "status"
+                ]
+                headers = {"Idempotency-Replayed": "true"}
+                if gateway_session_key:
+                    headers["X-Hermes-Session-Key"] = gateway_session_key
+                return web.json_response(
+                    {
+                        "run_id": original_id,
+                        "status": status.get("status", "queued"),
+                        "replayed": True,
+                    },
+                    status=202,
+                    headers=headers,
+                )
+
+        # Enforce concurrency only for a genuinely new run.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
+
+        if not conversation_history and session_id and not previous_response_id:
+            conversation_history = await self._conversation_history_for_session(
+                str(session_id)
+            )
+
         run_id = f"run_{uuid.uuid4().hex}"
         self._run_owners[run_id] = self._run_idempotency_scope(request)
         session_id = session_id or run_id
@@ -7927,7 +7914,13 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         if idempotency_key:
             outcome, record = self._run_idempotency_store.reserve(
-                idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status
+                idempotency_scope,
+                idempotency_key,
+                idempotency_fingerprint,
+                run_id,
+                initial_status,
+                owner_pid=self._run_owner_pid,
+                owner_started=self._run_owner_started,
             )
             if outcome != "created":
                 self._run_streams.pop(run_id, None)
@@ -7943,13 +7936,20 @@ class APIServerAdapter(BasePlatformAdapter):
                         ), status=409,
                     )
                 original_id = record["run_id"]
-                self._run_statuses.setdefault(original_id, record["status"])
-                self._run_idempotency_ids.add(original_id)
-                self._run_owners[original_id] = idempotency_scope
+                replay_status = self._durable_run_status(request, original_id) or record[
+                    "status"
+                ]
+                headers = {"Idempotency-Replayed": "true"}
+                if gateway_session_key:
+                    headers["X-Hermes-Session-Key"] = gateway_session_key
                 return web.json_response(
-                    {"run_id": original_id, "status": "started"},
+                    {
+                        "run_id": original_id,
+                        "status": replay_status.get("status", "queued"),
+                        "replayed": True,
+                    },
                     status=202,
-                    headers={"Idempotency-Replayed": "true"},
+                    headers=headers,
                 )
             self._run_idempotency_ids.add(run_id)
 
@@ -8243,7 +8243,7 @@ class APIServerAdapter(BasePlatformAdapter):
             {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
         )
         return web.json_response(
-            {"run_id": run_id, "status": "started"},
+            {"run_id": run_id, "status": "started", "replayed": False},
             status=202,
             headers=response_headers,
         )
@@ -8251,7 +8251,11 @@ class APIServerAdapter(BasePlatformAdapter):
     def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
         scope = self._run_idempotency_scope(request)
         owner = self._run_owners.get(run_id)
-        if owner is None and run_id in self._run_statuses:
+        if owner is None and (
+            run_id in self._run_statuses
+            or run_id in self._active_run_agents
+            or run_id in self._active_run_tasks
+        ):
             # Backward compatibility for statuses created by older/in-process
             # integrations before ownership tracking was introduced.
             return True
@@ -8271,7 +8275,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
-        status = self._run_statuses.get(run_id)
+        agent = self._active_run_agents.get(run_id)
+        task = self._active_run_tasks.get(run_id)
+        status = self._durable_run_status(request, run_id)
+        if status is None and (agent is not None or task is not None):
+            # Compatibility for in-process integrations that registered the
+            # active run object before pollable status existed.
+            status = self._set_run_status(run_id, "running")
         if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
@@ -8348,7 +8358,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
-        status = self._run_statuses.get(run_id)
+        status = self._durable_run_status(request, run_id)
         if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
@@ -8441,7 +8451,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
-        status = self._run_statuses.get(run_id)
+        status = self._durable_run_status(request, run_id)
         if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
@@ -8511,11 +8521,31 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         agent = self._active_run_agents.get(run_id)
         task = self._active_run_tasks.get(run_id)
-
-        if agent is None and task is None:
+        status = self._durable_run_status(request, run_id)
+        if status is None and (agent is not None or task is not None):
+            # Compatibility for in-process integrations that registered the
+            # active run object before pollable status existed.
+            status = self._set_run_status(run_id, "running")
+        if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
+            )
+        if status.get("status") in {
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted",
+        }:
+            return web.json_response(status)
+
+        if agent is None and task is None:
+            return web.json_response(
+                _openai_error(
+                    f"Run is not active in this gateway process: {run_id}",
+                    code="run_not_active",
+                ),
+                status=409,
             )
 
         self._set_run_status(run_id, "stopping", last_event="run.stopping")
@@ -8584,6 +8614,8 @@ class APIServerAdapter(BasePlatformAdapter):
         ]
         for run_id in stale_statuses:
             self._run_statuses.pop(run_id, None)
+            self._run_idempotency_ids.discard(run_id)
+            self._run_owners.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
@@ -8812,9 +8844,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
-        if self._run_idempotency_store is not None:
+        run_idempotency_store = getattr(self, "_run_idempotency_store", None)
+        if run_idempotency_store is not None:
             try:
-                self._run_idempotency_store.close()
+                run_idempotency_store.close()
             except Exception:
                 logger.debug(
                     "Failed to close run idempotency store for %s", self.name, exc_info=True,
