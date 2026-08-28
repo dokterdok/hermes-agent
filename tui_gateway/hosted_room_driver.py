@@ -187,6 +187,7 @@ class HostedRoomRuntime:
         poll_interval_seconds: float = 0.1,
         unavailable_retry_min_seconds: float = 1.0,
         unavailable_retry_max_seconds: float = 30.0,
+        indeterminate_defer_seconds: float = 60.0,
         process_generation: str | None = None,
     ) -> None:
         if lease_ttl_seconds <= 0:
@@ -198,6 +199,8 @@ class HostedRoomRuntime:
             and unavailable_retry_max_seconds >= unavailable_retry_min_seconds
         ):
             raise ValueError("unavailable retry bounds are invalid")
+        if indeterminate_defer_seconds <= 0:
+            raise ValueError("indeterminate_defer_seconds must be positive")
         if rpc is None and transport_resolver is None:
             raise ValueError("rpc or transport_resolver is required")
 
@@ -214,6 +217,7 @@ class HostedRoomRuntime:
         self.poll_interval_seconds = float(poll_interval_seconds)
         self.unavailable_retry_min_seconds = float(unavailable_retry_min_seconds)
         self.unavailable_retry_max_seconds = float(unavailable_retry_max_seconds)
+        self.indeterminate_defer_seconds = float(indeterminate_defer_seconds)
         self.process_generation = process_generation or uuid.uuid4().hex
         self._rooms_provider: Callable[[], Iterable[HostedRoomBinding]]
         if callable(rooms):
@@ -234,6 +238,7 @@ class HostedRoomRuntime:
             tuple[str, str], dict[str, float]
         ] = {}
         self._blocked_rooms: set[str] = set()
+        self._inspected_indeterminate_attempts: set[tuple[str, str, int]] = set()
         self._status_lock = threading.Lock()
         self._current_task: state.TaskIdentity | None = None
         self._last_error: str | None = None
@@ -292,7 +297,7 @@ class HostedRoomRuntime:
     ) -> dict[str, Any]:
         """Persist a stop intent, then commit cancellation after acknowledgement."""
         before = state.get_task(self.db_path, identity)
-        if before["status"] == "queued":
+        if before["status"] in {"queued", "deferred"}:
             cancelled = state.cancel_task(
                 self.db_path,
                 identity,
@@ -384,7 +389,7 @@ class HostedRoomRuntime:
     def retry_indeterminate(self, identity: state.TaskIdentity) -> dict[str, Any]:
         """Explicitly retry one uncertain attempt under the current room lease."""
         task = state.get_task(self.db_path, identity)
-        if task["status"] != "indeterminate":
+        if task["status"] not in {"indeterminate", "deferred"}:
             raise state.InvalidTaskTransitionError(
                 f"cannot retry task in state '{task['status']}'"
             )
@@ -392,6 +397,19 @@ class HostedRoomRuntime:
         if binding is None:
             raise state.RoomUnavailableError("hosted room is unavailable")
         lease = self._ensure_lease(binding)
+        if task["status"] == "deferred":
+            retried = state.requeue_deferred_task(
+                self.db_path,
+                identity,
+                lease,
+                expected_execution_generation=task["execution_generation"],
+                expected_cancel_generation=task["cancel_generation"],
+                clock=self.clock,
+            )
+            with self._status_lock:
+                self._blocked_rooms.discard(identity.room_id)
+            self.wakeup()
+            return retried
         transport = self._transport_for(binding, task)
         inspection = (
             self._inspect_local_recovery_session(task)
@@ -1265,19 +1283,34 @@ class HostedRoomRuntime:
             if not unresolved:
                 self._blocked_rooms.discard(binding.room_id)
                 return False
-            if binding.room_id in self._blocked_rooms:
-                # One unresolved inspection is enough. Re-reading a large
-                # hidden session every 100 ms starves the explicit Retry RPC
-                # on the same per-profile turn lock and burns a CPU core. The
-                # user action removes this fence after it safely requeues or
-                # reconciles the exact task.
-                return True
         for task in unresolved:
-            if self._transport_for(binding, task) is self.rpc:
-                with self._status_lock:
-                    self._blocked_rooms.add(binding.room_id)
-                return True
-            inspection = self._inspect_recovery_session(binding, task)
+            generation = int(task["execution_generation"])
+            attempt_key = (
+                binding.room_id,
+                task["identity"].task_id,
+                generation,
+            )
+            deferred_at = float(
+                task.get("indeterminate_at")
+                or task.get("updated_at")
+                or task.get("created_at")
+                or self.clock()
+            )
+            deadline = deferred_at + self.indeterminate_defer_seconds
+            should_inspect = (
+                attempt_key not in self._inspected_indeterminate_attempts
+                or self.clock() >= deadline
+            )
+            inspection = _RecoveryInspection(terminal=None, active=False, status=None)
+            if should_inspect:
+                try:
+                    if self._transport_for(binding, task) is not self.rpc:
+                        inspection = self._inspect_recovery_session(binding, task)
+                except Exception as exc:
+                    self._record_error(
+                        f"task {task['identity'].task_id} recovery probe failed: {exc}"
+                    )
+                self._inspected_indeterminate_attempts.add(attempt_key)
             if inspection.status == "cancelled":
                 state.resolve_indeterminate_cancellation(
                     self.db_path,
@@ -1288,22 +1321,38 @@ class HostedRoomRuntime:
                     cancel_id=f"remote-cancel:{task['execution_generation']}",
                     clock=self.clock,
                 )
+                self._inspected_indeterminate_attempts.discard(attempt_key)
                 continue
-            if inspection.terminal is None:
+            if inspection.terminal is not None:
+                state.resolve_indeterminate_task(
+                    self.db_path,
+                    task["identity"],
+                    lease,
+                    expected_execution_generation=generation,
+                    expected_cancel_generation=task["cancel_generation"],
+                    settlement_id=inspection.terminal.settlement_id,
+                    status=inspection.terminal.status,
+                    result=inspection.terminal.result,
+                    clock=self.clock,
+                )
+                self._inspected_indeterminate_attempts.discard(attempt_key)
+                continue
+            if self.clock() < deadline:
                 with self._status_lock:
                     self._blocked_rooms.add(binding.room_id)
                 return True
-            state.resolve_indeterminate_task(
+            deferred = state.defer_indeterminate_task(
                 self.db_path,
                 task["identity"],
                 lease,
-                expected_execution_generation=task["execution_generation"],
+                expected_execution_generation=generation,
                 expected_cancel_generation=task["cancel_generation"],
-                settlement_id=inspection.terminal.settlement_id,
-                status=inspection.terminal.status,
-                result=inspection.terminal.result,
+                reason="member_unavailable",
                 clock=self.clock,
             )
+            self._inspected_indeterminate_attempts.discard(attempt_key)
+            if self.publish_terminal is not None:
+                self.publish_terminal(binding, deferred)
         with self._status_lock:
             self._blocked_rooms.discard(binding.room_id)
         return False

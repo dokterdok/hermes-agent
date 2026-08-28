@@ -887,6 +887,42 @@ def test_pre_stopping_schema_is_migrated_without_losing_tasks(db):
     assert "'stopping'" in table_sql
 
 
+def test_pre_deferred_schema_is_migrated_without_losing_tasks(db):
+    clock = FakeClock()
+    identity = _identity()
+    _admit(db, identity, clock)
+
+    with sqlite3.connect(db) as conn:
+        current_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
+        ).fetchone()[0]
+        old_sql = current_sql.replace(", 'deferred'", "")
+        conn.execute("DROP INDEX idx_hosted_room_driver_tasks_status")
+        conn.execute(
+            "ALTER TABLE hosted_room_driver_tasks RENAME TO hosted_room_driver_tasks_current"
+        )
+        conn.execute(old_sql)
+        columns = ", ".join(driver._TASK_COLUMN_ORDER)
+        conn.execute(
+            f"""INSERT INTO hosted_room_driver_tasks ({columns})
+                 SELECT {columns} FROM hosted_room_driver_tasks_current"""
+        )
+        conn.execute("DROP TABLE hosted_room_driver_tasks_current")
+        conn.execute(
+            """CREATE INDEX idx_hosted_room_driver_tasks_status
+               ON hosted_room_driver_tasks(
+                   room_id, status, source_event_seq, created_at, task_id
+               )"""
+        )
+
+    assert driver.get_task(db, identity)["status"] == "queued"
+    with sqlite3.connect(db) as conn:
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
+        ).fetchone()[0]
+    assert "'deferred'" in table_sql
+
+
 def test_first_schema_creation_is_safe_across_processes(db):
     with sqlite3.connect(db) as conn:
         conn.execute("DROP TABLE IF EXISTS hosted_room_driver_tasks")

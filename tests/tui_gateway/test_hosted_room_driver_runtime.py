@@ -1131,6 +1131,117 @@ def test_ambiguous_recovery_remains_indeterminate(db: Path):
     assert not [call for call in rpc.calls if call[0] == "submit"]
 
 
+def test_offline_member_defers_then_healthy_member_runs_and_retry_is_fenced(
+    db: Path,
+):
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    first = _identity("task-offline")
+    second = state.TaskIdentity(
+        room_id=ROOM_ID,
+        task_id="task-healthy",
+        thread_id="thread-1",
+        turn_id="turn-task-healthy",
+    )
+    state.admit_task(
+        db,
+        first,
+        payload={
+            "target_profile": PROFILE,
+            "prompt": "Try the offline member.",
+            "source_event_seq": 1,
+        },
+        clock=clock,
+    )
+    old_lease = state.acquire_lease(
+        db,
+        room_id=ROOM_ID,
+        gateway_id=BINDING.gateway_id,
+        authority_epoch=BINDING.authority_epoch,
+        process_generation="old-process",
+        ttl_seconds=1,
+        clock=clock,
+    )
+    old_attempt = state.start_task(
+        db,
+        first,
+        old_lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    state.admit_task(
+        db,
+        second,
+        payload={
+            "target_profile": PROFILE,
+            "prompt": "Continue with the healthy member.",
+            "source_event_seq": 2,
+        },
+        clock=clock,
+    )
+    now[0] = 102.0
+    rpc = FakeSessionRPC()
+    published = []
+    runtime = _runtime(
+        db,
+        rpc,
+        clock=clock,
+        lease_ttl_seconds=30,
+        indeterminate_defer_seconds=5,
+        publish_terminal=lambda _binding, task: published.append(task),
+    )
+
+    runtime._process_room(BINDING)
+    assert state.get_task(db, first)["status"] == "indeterminate"
+    assert state.get_task(db, second)["status"] == "queued"
+
+    now[0] = 108.0
+    runtime._process_room(BINDING)
+    assert state.get_task(db, first)["status"] == "deferred"
+    assert state.get_task(db, second)["status"] == "settled"
+    assert [task["status"] for task in published] == ["deferred", "settled"]
+    assert ROOM_ID not in runtime.status()["blocked_rooms"]
+
+    retried = runtime.retry_indeterminate(first)
+    assert retried["status"] == "queued"
+    lease = runtime._leases[ROOM_ID]
+    retry_attempt = state.start_task(
+        db,
+        first,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    assert retry_attempt.execution_generation == old_attempt.execution_generation + 1
+    late_attempt = state.TaskAttempt(
+        identity=first,
+        lease=lease,
+        execution_generation=old_attempt.execution_generation,
+        cancel_generation=old_attempt.cancel_generation,
+    )
+    with pytest.raises(state.StaleTaskError):
+        state.settle_task(
+            db,
+            late_attempt,
+            settlement_id="late-old-result",
+            status="settled",
+            result={"text": "too late"},
+            clock=clock,
+        )
+    state.settle_task(
+        db,
+        retry_attempt,
+        settlement_id="retry-result",
+        status="settled",
+        result={"text": "retry accepted"},
+        clock=clock,
+    )
+    assert state.get_task(db, first)["result"]["text"] == "retry accepted"
+
+
 def test_post_submit_observation_failure_preserves_recoverable_outcome(db: Path):
     identity = _identity()
     _admit(db, identity)

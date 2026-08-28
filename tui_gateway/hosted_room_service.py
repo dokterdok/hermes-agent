@@ -19,6 +19,10 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
 from gateway import hosted_rooms
+from gateway.hosted_room_policy_checkpoint import (
+    HostedRoomPolicyCheckpoint,
+    PolicySnapshot,
+)
 from gateway.hosted_room_attachments import (
     AttachmentData,
     HostedRoomAttachmentStore,
@@ -66,6 +70,7 @@ class HostedRoomService:
         self.db_path = Path(db_path or hosted_rooms.default_db_path())
         self._policy_lock = threading.RLock()
         self.attachments = HostedRoomAttachmentStore(self.db_path)
+        self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
         self.rpc = HostedRoomServerRPC(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
@@ -568,6 +573,12 @@ class HostedRoomService:
                 raise RuntimeError("hosted room replay cursor did not advance")
             cursor = next_cursor
 
+    def _policy_snapshot(self, room: Mapping[str, Any]) -> PolicySnapshot:
+        return self.policy_checkpoint.snapshot(
+            room_id=str(room["room_id"]),
+            latest_seq=int(room["latest_seq"]),
+        )
+
     def _append_plan(self, room_id: str, plan: discussion.PublicationPlan) -> None:
         for event in plan.events:
             hosted_rooms.append_event(
@@ -627,18 +638,11 @@ class HostedRoomService:
     def _publish_terminal_tasks(
         self,
         room: Mapping[str, Any],
-        events: list[dict[str, Any]],
     ) -> bool:
         changed = False
         local_profiles = self.local_profiles()
-        published_task_ids = {
-            str(event.get("payload", {}).get("task_id") or "")
-            for event in events
-            if event.get("kind")
-            in {"turn.settled", "turn.failed", "turn.cancelled"}
-        }
         retry_keys = self._artifact_retry_keys(str(room["room_id"]))
-        for status in ("settled", "failed", "cancelled"):
+        for status in ("deferred", "settled", "failed", "cancelled"):
             for task in driver.list_tasks(
                 self.db_path,
                 room_id=str(room["room_id"]),
@@ -646,10 +650,13 @@ class HostedRoomService:
             ):
                 identity = task["identity"]
                 retry_key = self._artifact_retry_key(task)
-                if (
-                    identity.task_id in published_task_ids
-                    and retry_key not in retry_keys
-                ):
+                already_published = self.policy_checkpoint.publication_exists(
+                    room_id=str(room["room_id"]),
+                    task_id=identity.task_id,
+                    status=status,
+                    execution_generation=int(task["execution_generation"]),
+                )
+                if already_published and retry_key not in retry_keys:
                     continue
                 if status == "cancelled":
                     self._discard_cancelled_task_artifacts(
@@ -660,19 +667,26 @@ class HostedRoomService:
                     continue
                 publication_status = status
                 keep_artifact_retry = False
+                task_events = self.policy_checkpoint.events_for_task(
+                    room_id=str(room["room_id"]),
+                    source_event_seq=int(task["payload"]["source_event_seq"]),
+                )
                 plan = discussion.reconstruct_task_plan(
                     room,
-                    events,
+                    task_events,
                     task,
                     local_profiles=local_profiles,
                 )
+                result = task.get("result")
+                acknowledge_artifacts = lambda: None
                 try:
-                    result, acknowledge_artifacts = self._import_terminal_artifacts(
-                        room=room,
-                        task=task,
-                        plan=plan,
-                        events=events,
-                    )
+                    if status != "deferred":
+                        result, acknowledge_artifacts = self._import_terminal_artifacts(
+                            room=room,
+                            task=task,
+                            plan=plan,
+                            events=task_events,
+                        )
                 except Exception as exc:
                     if bool(getattr(exc, "retryable", False)) or isinstance(
                         exc, (ConnectionError, OSError, TimeoutError)
@@ -690,13 +704,17 @@ class HostedRoomService:
                     publication_status = "failed"
                 publication = discussion.plan_publication(
                     room,
-                    events,
+                    task_events,
                     plan,
                     status=publication_status,
                     result=result,
+                    execution_generation=(
+                        int(task["execution_generation"])
+                        if publication_status == "deferred"
+                        else None
+                    ),
                     local_profiles=local_profiles,
                 )
-                before = len(events)
                 self._append_plan(str(room["room_id"]), publication)
                 if isinstance(result, Mapping) and result.get("attachments"):
                     digest = plan.identity.task_id.removeprefix("dtask:")
@@ -716,8 +734,12 @@ class HostedRoomService:
                         continue
                 if not keep_artifact_retry:
                     self._clear_artifact_retry(task)
-                events = self._events(str(room["room_id"]))
-                changed = changed or len(events) > before
+                room = hosted_rooms.room_state(
+                    self.db_path,
+                    room_id=str(room["room_id"]),
+                )
+                events = list(self._policy_snapshot(room).events)
+                changed = True
         return changed
 
     def _artifact_retry_connection(self) -> sqlite3.Connection:
@@ -887,12 +909,14 @@ class HostedRoomService:
             )
 
     def _clear_artifact_retry(self, task: Mapping[str, Any]) -> None:
+        room_id = task["identity"].room_id
         with self._artifact_retry_connection() as conn:
             conn.execute(
                 """DELETE FROM hosted_room_artifact_retries
                    WHERE room_id=? AND task_id=? AND execution_generation=?""",
                 self._artifact_retry_key(task),
             )
+        self.policy_checkpoint.compact_completed(room_id=room_id)
 
     def _unblock_artifact_retries(self, room_id: str, member_id: str) -> None:
         with self._artifact_retry_connection() as conn:
@@ -1130,13 +1154,20 @@ class HostedRoomService:
                 and not self._artifact_retry_keys(binding.room_id)
             ):
                 return
-            events = self._events(binding.room_id)
-            if self._publish_terminal_tasks(room, events):
-                events = self._events(binding.room_id)
+            snapshot = self._policy_snapshot(room)
+            events = list(snapshot.events)
+            if self._publish_terminal_tasks(room):
+                room = hosted_rooms.room_state(
+                    self.db_path,
+                    room_id=binding.room_id,
+                )
+                snapshot = self._policy_snapshot(room)
+                events = list(snapshot.events)
             decision = discussion.plan_next_task(
                 room,
                 events,
                 local_profiles=self.local_profiles(),
+                initial_watermarks=snapshot.watermarks,
             )
             if decision.status == "task" and decision.task is not None:
                 existing = next(
@@ -1175,15 +1206,13 @@ class HostedRoomService:
                 # A stop can race the policy read from another process. Re-read
                 # after admission and cancel before the runtime can execute a
                 # task whose source event is now behind the room stop fence.
-                fresh_events = self._events(binding.room_id)
-                stopped_through_seq = max(
-                    (
-                        int(event["seq"])
-                        for event in fresh_events
-                        if event.get("kind") == "room.stop_requested"
-                    ),
-                    default=0,
+                fresh_room = hosted_rooms.room_state(
+                    self.db_path,
+                    room_id=binding.room_id,
                 )
+                stopped_through_seq = self._policy_snapshot(
+                    fresh_room
+                ).stopped_through_seq
                 if (
                     decision.source_event_seq is not None
                     and decision.source_event_seq < stopped_through_seq
@@ -1352,7 +1381,13 @@ class HostedRoomService:
         pending = 0
         with self._policy_lock:
             tasks = {}
-            for status in ("queued", "running", "indeterminate", "stopping"):
+            for status in (
+                "queued",
+                "running",
+                "indeterminate",
+                "deferred",
+                "stopping",
+            ):
                 for task in driver.list_tasks(
                     self.db_path,
                     room_id=room_id,
@@ -1417,12 +1452,15 @@ class HostedRoomService:
         RoomArtifactOutbox(profile_root / "state.db").discard(scope)
 
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
-        """Retry one indeterminate task only after explicit user action."""
+        """Retry one uncertain or deferred task only after explicit user action."""
         task = next(
             (
                 candidate
+                for status in ("indeterminate", "deferred")
                 for candidate in driver.list_tasks(
-                    self.db_path, room_id=room_id, status="indeterminate"
+                    self.db_path,
+                    room_id=room_id,
+                    status=status,
                 )
                 if candidate["identity"].task_id == task_id
             ),
@@ -1430,7 +1468,7 @@ class HostedRoomService:
         )
         if task is None:
             raise driver.InvalidTaskTransitionError(
-                "no indeterminate room task matches task_id"
+                "no retryable room task matches task_id"
             )
         return self.runtime.retry_indeterminate(task["identity"])
 
@@ -1512,7 +1550,7 @@ class HostedRoomService:
                 "task_id": task["identity"].task_id,
             }
             for task in tasks
-            if task["status"] == "indeterminate"
+            if task["status"] in {"indeterminate", "deferred"}
         ]
         with self._policy_lock:
             pending_actions.extend(
