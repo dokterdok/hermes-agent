@@ -13,11 +13,34 @@ from typing import Any, Dict, List, Optional
 
 try:
     from aiohttp import web
+    from aiohttp.web_request import RequestKey
 except ImportError:
     web = None  # type: ignore[assignment]
+    RequestKey = None  # type: ignore[assignment,misc]
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
+_ROOM_RETENTION_REQUEST_KEY = (
+    RequestKey("hermes.room_run_retention_until", float)
+    if RequestKey is not None
+    else "hermes.room_run_retention_until"
+)
+
+
+def _remember_room_retention(request: "web.Request", claims: dict[str, Any]) -> None:
+    value = float(claims.get("status_expires_at") or claims.get("expires_at") or 0)
+    try:
+        request[_ROOM_RETENTION_REQUEST_KEY] = value
+    except (AttributeError, TypeError):
+        setattr(request, "_hermes_room_run_retention_until", value)
+
+
+def _room_retention_until(request: "web.Request") -> float:
+    try:
+        value = request.get(_ROOM_RETENTION_REQUEST_KEY, 0)
+    except AttributeError:
+        value = getattr(request, "_hermes_room_run_retention_until", 0)
+    return max(0.0, float(value or 0))
 
 
 def _uses_room_run_auth(self, request: "web.Request") -> bool:
@@ -266,6 +289,7 @@ def _run_idempotency_scope(
                 else "dispatch"
             ),
         )
+        _remember_room_retention(request, claims)
         identity = (
             f"{claims['room_id']}\0{claims['home_install_id']}\0"
             f"{claims['authority_gateway_id']}\0{claims['authority_epoch']}\0"
@@ -312,10 +336,21 @@ def _durable_run_status(
     """Hydrate a scoped run status and fail stale owners closed."""
     status = self._run_statuses.get(run_id)
     if status is not None:
+        if run_id in self._run_idempotency_ids:
+            scope = self._run_idempotency_scope(request)
+            self._run_idempotency_store.extend_retention(
+                scope,
+                run_id,
+                _room_retention_until(request),
+            )
         return status
 
     scope = self._run_idempotency_scope(request)
-    record = self._run_idempotency_store.status_for_run(scope, run_id)
+    record = self._run_idempotency_store.status_for_run(
+        scope,
+        run_id,
+        retention_until=_room_retention_until(request),
+    )
     if record is None:
         return None
 
@@ -526,7 +561,10 @@ async def _handle_runs(
     # missing key; the atomic reserve below closes the concurrent-miss race.
     if idempotency_key:
         outcome, record = self._run_idempotency_store.lookup(
-            idempotency_scope, idempotency_key, idempotency_fingerprint
+            idempotency_scope,
+            idempotency_key,
+            idempotency_fingerprint,
+            retention_until=_room_retention_until(request),
         )
         if outcome == "conflict":
             return web.json_response(
@@ -638,6 +676,7 @@ async def _handle_runs(
             initial_status,
             owner_pid=self._run_owner_pid,
             owner_started=self._run_owner_started,
+            retention_until=_room_retention_until(request),
         )
         if outcome != "created":
             self._run_streams.pop(run_id, None)

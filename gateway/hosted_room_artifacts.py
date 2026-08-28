@@ -16,7 +16,7 @@ from contextlib import suppress
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from gateway.hosted_room_attachments import (
     MAX_ATTACHMENT_BYTES,
@@ -24,8 +24,11 @@ from gateway.hosted_room_attachments import (
     MAX_GATEWAY_BLOB_BYTES,
     MAX_MESSAGE_ATTACHMENT_BYTES,
 )
+from gateway.hosted_room_peer import MAX_STATUS_GRANT_TTL_SECONDS
 
 _SCOPE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+ACKNOWLEDGED_RETENTION_SECONDS = 24 * 60 * 60
+ABANDONED_RETENTION_SECONDS = MAX_STATUS_GRANT_TTL_SECONDS
 
 
 class RoomArtifactError(ValueError):
@@ -128,10 +131,17 @@ def current_room_artifact_scope() -> RoomArtifactScope | None:
 class RoomArtifactOutbox:
     """Durable private bytes awaiting canonical import by the room home."""
 
-    def __init__(self, db_path: Path | str, *, root: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path | str,
+        *,
+        root: Path | str | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
         self.db_path = Path(db_path)
         self.root = Path(root or self.db_path.parent / "hosted-room-artifact-outbox")
         self.blob_root = self.root / "blobs"
+        self.clock = clock
         self._lock = threading.RLock()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.blob_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -140,13 +150,8 @@ class RoomArtifactOutbox:
                 os.chmod(path, 0o700)
         with self._connect() as conn:
             self._initialize(conn)
-            acknowledged = conn.execute(
-                """SELECT blob_name FROM hosted_room_output_artifacts
-                   WHERE acknowledged_at IS NOT NULL"""
-            ).fetchall()
-        for row in acknowledged:
-            (self.blob_root / str(row["blob_name"])).unlink(missing_ok=True)
-        cutoff = time.time() - 3600
+        self.prune()
+        cutoff = self.clock() - 3600
         with self._connect() as conn:
             referenced = {
                 str(row["blob_name"])
@@ -197,6 +202,45 @@ class RoomArtifactOutbox:
                ON hosted_room_output_artifacts(scope_key, created_at)"""
         )
         conn.commit()
+
+    def prune(self, *, now: float | None = None) -> int:
+        """Bound abandoned bytes and acknowledged delivery metadata."""
+
+        checked_now = self.clock() if now is None else float(now)
+        rows_to_delete: list[sqlite3.Row] = []
+        acknowledged: list[sqlite3.Row] = []
+        with self._lock, self._connect() as conn:
+            self._initialize(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT * FROM hosted_room_output_artifacts"
+            ).fetchall()
+            for row in rows:
+                acknowledged_at = row["acknowledged_at"]
+                if acknowledged_at is not None:
+                    acknowledged.append(row)
+                    if (
+                        float(acknowledged_at)
+                        <= checked_now - ACKNOWLEDGED_RETENTION_SECONDS
+                    ):
+                        rows_to_delete.append(row)
+                elif (
+                    float(row["created_at"])
+                    <= checked_now - ABANDONED_RETENTION_SECONDS
+                ):
+                    rows_to_delete.append(row)
+            if rows_to_delete:
+                conn.executemany(
+                    "DELETE FROM hosted_room_output_artifacts WHERE artifact_id=?",
+                    ((row["artifact_id"],) for row in rows_to_delete),
+                )
+            conn.commit()
+        blob_names = {
+            str(row["blob_name"]) for row in (*acknowledged, *rows_to_delete)
+        }
+        for blob_name in blob_names:
+            (self.blob_root / blob_name).unlink(missing_ok=True)
+        return len(rows_to_delete)
 
     @staticmethod
     def _safe_name(value: str) -> str:
@@ -249,6 +293,8 @@ class RoomArtifactOutbox:
         name: str | None = None,
     ) -> dict[str, Any]:
         """Copy one regular file into private storage before returning."""
+
+        self.prune()
 
         candidate = Path(path).resolve(strict=True)
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -322,7 +368,7 @@ class RoomArtifactOutbox:
                         len(data),
                         digest,
                         blob_name,
-                        time.time(),
+                        self.clock(),
                     ),
                 )
                 conn.commit()
@@ -339,6 +385,7 @@ class RoomArtifactOutbox:
             return self._manifest(row)
 
     def list(self, scope: RoomArtifactScope) -> list[dict[str, Any]]:
+        self.prune()
         with self._connect() as conn:
             self._initialize(conn)
             rows = conn.execute(
@@ -350,6 +397,7 @@ class RoomArtifactOutbox:
         return [self._manifest(row) for row in rows]
 
     def read(self, scope: RoomArtifactScope, artifact_id: str) -> tuple[dict[str, Any], bytes]:
+        self.prune()
         with self._connect() as conn:
             self._initialize(conn)
             row = conn.execute(
@@ -374,6 +422,7 @@ class RoomArtifactOutbox:
         return self._manifest(row), data
 
     def acknowledge(self, scope: RoomArtifactScope, artifact_ids: Sequence[str]) -> int:
+        self.prune()
         ids = tuple(dict.fromkeys(str(item) for item in artifact_ids if str(item)))
         if not ids:
             return 0
@@ -393,7 +442,7 @@ class RoomArtifactOutbox:
                 f"""UPDATE hosted_room_output_artifacts SET acknowledged_at=?
                     WHERE scope_key=? AND artifact_id IN ({placeholders})
                       AND acknowledged_at IS NULL""",
-                (time.time(), scope.key, *ids),
+                (self.clock(), scope.key, *ids),
             ).rowcount
             conn.commit()
         for row in rows:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,41 @@ def test_outbox_is_idempotent_scoped_and_acknowledged(tmp_path: Path):
     assert outbox.acknowledge(scope, [first["artifact_id"]]) == 0
     with pytest.raises(RoomArtifactError, match="not found"):
         outbox.read(scope, first["artifact_id"])
+
+
+def test_outbox_expires_abandoned_bytes_and_acknowledged_metadata(tmp_path: Path):
+    from gateway import hosted_room_artifacts as artifacts
+
+    now = [100.0]
+    db = tmp_path / "state.db"
+    root = tmp_path / "outbox"
+    path = tmp_path / "handoff.md"
+    path.write_text("handoff\n", encoding="utf-8")
+    outbox = RoomArtifactOutbox(db, root=root, clock=lambda: now[0])
+
+    abandoned_scope = _scope(task_id="dtask:abandoned")
+    outbox.put_path(scope=abandoned_scope, path=path)
+    abandoned_blob = next((root / "blobs").iterdir())
+    now[0] += artifacts.ABANDONED_RETENTION_SECONDS + 1
+    assert outbox.prune() == 1
+    assert outbox.list(abandoned_scope) == []
+    assert not abandoned_blob.exists()
+
+    acknowledged_scope = _scope(task_id="dtask:acknowledged")
+    acknowledged = outbox.put_path(scope=acknowledged_scope, path=path)
+    assert outbox.acknowledge(
+        acknowledged_scope, [acknowledged["artifact_id"]]
+    ) == 1
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_output_artifacts"
+        ).fetchone()[0] == 1
+    now[0] += artifacts.ACKNOWLEDGED_RETENTION_SECONDS + 1
+    assert outbox.prune() == 1
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_output_artifacts"
+        ).fetchone()[0] == 0
 
 
 def test_share_group_file_is_visible_only_inside_bound_room_turn(tmp_path: Path):

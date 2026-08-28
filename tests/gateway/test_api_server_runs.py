@@ -1071,6 +1071,100 @@ class TestRunIdempotency:
         assert done_record is None
         store.close()
 
+    def test_room_terminal_receipt_survives_offline_home_until_grant_horizon(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.platforms import api_server_run_idempotency as idempotency
+
+        now = [100.0]
+        monkeypatch.setattr(idempotency.time, "time", lambda: now[0])
+        store = idempotency.RunIdempotencyStore(str(tmp_path / "idem.db"))
+        horizon = now[0] + 30 * 24 * 60 * 60
+        assert store.reserve(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+            "run-room",
+            {"run_id": "run-room", "status": "completed"},
+            retention_until=horizon,
+        )[0] == "created"
+
+        now[0] += idempotency.RunIdempotencyStore.RETENTION_SECONDS + 1
+        store.reserve(
+            "other-scope",
+            "other-key",
+            "other-fingerprint",
+            "run-other",
+            {"run_id": "run-other", "status": "queued"},
+        )
+        outcome, record = store.lookup(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+        )
+        assert outcome == "reused"
+        assert record["run_id"] == "run-room"
+
+        now[0] = horizon + 1
+        store.reserve(
+            "third-scope",
+            "third-key",
+            "third-fingerprint",
+            "run-third",
+            {"run_id": "run-third", "status": "queued"},
+        )
+        assert store.lookup(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+        ) == ("missing", None)
+        store.close()
+
+    def test_explicit_home_acknowledgement_releases_terminal_receipt(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.platforms import api_server_run_idempotency as idempotency
+
+        now = [100.0]
+        monkeypatch.setattr(idempotency.time, "time", lambda: now[0])
+        store = idempotency.RunIdempotencyStore(str(tmp_path / "idem.db"))
+        assert store.reserve(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+            "run-room",
+            {"run_id": "run-room", "status": "completed"},
+            retention_until=now[0] + 30 * 24 * 60 * 60,
+        )[0] == "created"
+        assert store.acknowledge_terminal("room-scope", "run-room") is True
+        store.reserve(
+            "other-scope",
+            "other-key",
+            "other-fingerprint",
+            "run-other",
+            {"run_id": "run-other", "status": "queued"},
+        )
+        assert store.lookup(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+        )[0] == "reused"
+
+        now[0] += store.ACKNOWLEDGED_RETENTION_SECONDS + 1
+        store.reserve(
+            "third-scope",
+            "third-key",
+            "third-fingerprint",
+            "run-third",
+            {"run_id": "run-third", "status": "queued"},
+        )
+        assert store.lookup(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+        ) == ("missing", None)
+        store.close()
+
     @pytest.mark.asyncio
     async def test_missing_key_preserves_legacy_new_run_behavior(
         self, adapter, tmp_path

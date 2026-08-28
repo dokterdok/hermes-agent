@@ -24,6 +24,7 @@ class RunIdempotencyStore:
     """
 
     RETENTION_SECONDS = 24 * 60 * 60
+    ACKNOWLEDGED_RETENTION_SECONDS = 24 * 60 * 60
 
     @property
     def durable(self) -> bool:
@@ -61,6 +62,8 @@ class RunIdempotencyStore:
                 status_json TEXT NOT NULL,
                 owner_pid INTEGER NOT NULL DEFAULT 0,
                 owner_started INTEGER NOT NULL DEFAULT 0,
+                retention_until REAL NOT NULL DEFAULT 0,
+                acknowledged_at REAL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 PRIMARY KEY (scope, idempotency_key)
@@ -77,6 +80,15 @@ class RunIdempotencyStore:
         if "owner_started" not in columns:
             self._conn.execute(
                 "ALTER TABLE run_idempotency ADD COLUMN owner_started INTEGER NOT NULL DEFAULT 0"
+            )
+        if "retention_until" not in columns:
+            self._conn.execute(
+                "ALTER TABLE run_idempotency ADD COLUMN "
+                "retention_until REAL NOT NULL DEFAULT 0"
+            )
+        if "acknowledged_at" not in columns:
+            self._conn.execute(
+                "ALTER TABLE run_idempotency ADD COLUMN acknowledged_at REAL"
             )
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)"
@@ -112,9 +124,11 @@ class RunIdempotencyStore:
         *,
         owner_pid: int = 0,
         owner_started: int = 0,
+        retention_until: float = 0,
     ):
         """Atomically reserve a key; return ``(outcome, stored_record)``."""
         now = time.time()
+        retention_until = max(0.0, float(retention_until or 0))
         encoded = json.dumps(status, sort_keys=True, separators=(",", ":"))
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
@@ -126,6 +140,14 @@ class RunIdempotencyStore:
                     (scope, key),
                 ).fetchone()
                 if row is not None:
+                    if retention_until:
+                        self._conn.execute(
+                            """UPDATE run_idempotency
+                                  SET retention_until=MAX(retention_until, ?)
+                                WHERE scope=? AND idempotency_key=?
+                                  AND fingerprint=?""",
+                            (retention_until, scope, key, fingerprint),
+                        )
                     self._conn.commit()
                     outcome = (
                         "reused"
@@ -142,8 +164,8 @@ class RunIdempotencyStore:
                 self._conn.execute(
                     "INSERT INTO run_idempotency("
                     "scope,idempotency_key,fingerprint,run_id,status_json,"
-                    "owner_pid,owner_started,created_at,updated_at"
-                    ") VALUES(?,?,?,?,?,?,?,?,?)",
+                    "owner_pid,owner_started,retention_until,created_at,updated_at"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (
                         scope,
                         key,
@@ -152,6 +174,7 @@ class RunIdempotencyStore:
                         encoded,
                         int(owner_pid or 0),
                         int(owner_started or 0),
+                        retention_until,
                         now,
                         now,
                     ),
@@ -168,12 +191,28 @@ class RunIdempotencyStore:
                 self._conn.rollback()
                 raise
 
-    def lookup(self, scope: str, key: str, fingerprint: str):
+    def lookup(
+        self,
+        scope: str,
+        key: str,
+        fingerprint: str,
+        *,
+        retention_until: float = 0,
+    ):
         """Return ``missing``, ``reused`` or ``conflict`` without reserving."""
         now = time.time()
+        retention_until = max(0.0, float(retention_until or 0))
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
+                if retention_until:
+                    self._conn.execute(
+                        """UPDATE run_idempotency
+                              SET retention_until=MAX(retention_until, ?)
+                            WHERE scope=? AND idempotency_key=?
+                              AND fingerprint=?""",
+                        (retention_until, scope, key, fingerprint),
+                    )
                 self._prune_stale_terminal_locked(now)
                 row = self._conn.execute(
                     "SELECT fingerprint, run_id, status_json, owner_pid, owner_started, updated_at "
@@ -203,11 +242,26 @@ class RunIdempotencyStore:
         disconnected room turn may legitimately outlive the retention window.
         """
         stale = self._conn.execute(
-            """SELECT scope, idempotency_key, status_json
-                 FROM run_idempotency WHERE updated_at < ?""",
-            (now - self.RETENTION_SECONDS,),
+            """SELECT scope, idempotency_key, status_json, retention_until,
+                      acknowledged_at, updated_at
+                 FROM run_idempotency
+                WHERE acknowledged_at <= ?
+                   OR (retention_until > 0 AND retention_until <= ?)
+                   OR (retention_until <= 0 AND updated_at < ?)""",
+            (
+                now - self.ACKNOWLEDGED_RETENTION_SECONDS,
+                now,
+                now - self.RETENTION_SECONDS,
+            ),
         ).fetchall()
-        for stale_scope, stale_key, stale_status in stale:
+        for (
+            stale_scope,
+            stale_key,
+            stale_status,
+            retention_until,
+            acknowledged_at,
+            updated_at,
+        ) in stale:
             try:
                 terminal = json.loads(stale_status).get("status") in {
                     "completed",
@@ -217,16 +271,46 @@ class RunIdempotencyStore:
                 }
             except Exception:
                 terminal = False
-            if terminal:
+            expired = bool(
+                (
+                    acknowledged_at is not None
+                    and float(acknowledged_at)
+                    <= now - self.ACKNOWLEDGED_RETENTION_SECONDS
+                )
+                or (
+                    float(retention_until or 0) > 0
+                    and now >= float(retention_until)
+                )
+                or (
+                    float(retention_until or 0) <= 0
+                    and float(updated_at or 0) < now - self.RETENTION_SECONDS
+                )
+            )
+            if terminal and expired:
                 self._conn.execute(
                     """DELETE FROM run_idempotency
                          WHERE scope=? AND idempotency_key=?""",
                     (stale_scope, stale_key),
                 )
 
-    def status_for_run(self, scope: str, run_id: str) -> dict[str, Any] | None:
+    def status_for_run(
+        self,
+        scope: str,
+        run_id: str,
+        *,
+        retention_until: float = 0,
+    ) -> dict[str, Any] | None:
         """Load one durable run status inside its authenticated scope."""
+        retention_until = max(0.0, float(retention_until or 0))
         with self._lock:
+            if retention_until:
+                self._conn.execute(
+                    """UPDATE run_idempotency
+                          SET retention_until=MAX(retention_until, ?)
+                        WHERE scope=? AND run_id=?""",
+                    (retention_until, scope, run_id),
+                )
+                self._conn.commit()
             row = self._conn.execute(
                 "SELECT status_json, owner_pid, owner_started, updated_at "
                 "FROM run_idempotency WHERE scope=? AND run_id=?",
@@ -240,6 +324,33 @@ class RunIdempotencyStore:
             "owner_started": int(row[2] or 0),
             "updated_at": float(row[3] or 0),
         }
+
+    def acknowledge_terminal(self, scope: str, run_id: str) -> bool:
+        """Allow cleanup once the room home durably imported terminal output."""
+        now = time.time()
+        with self._lock:
+            changed = self._conn.execute(
+                """UPDATE run_idempotency SET acknowledged_at=?
+                     WHERE scope=? AND run_id=?""",
+                (now, scope, run_id),
+            ).rowcount
+            self._conn.commit()
+        return changed == 1
+
+    def extend_retention(self, scope: str, run_id: str, until: float) -> bool:
+        """Persist the latest verified recovery horizon for an active grant."""
+        checked_until = max(0.0, float(until or 0))
+        if not checked_until:
+            return False
+        with self._lock:
+            changed = self._conn.execute(
+                """UPDATE run_idempotency
+                      SET retention_until=MAX(retention_until, ?)
+                    WHERE scope=? AND run_id=?""",
+                (checked_until, scope, run_id),
+            ).rowcount
+            self._conn.commit()
+        return changed == 1
 
     def owns_run(self, scope: str, run_id: str) -> bool:
         with self._lock:

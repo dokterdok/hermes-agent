@@ -106,7 +106,7 @@ async def _handle_room_run_artifact_ack(
     _openai_error,
 ) -> "web.Response":
     try:
-        _run_id, scope, status, manifest = _load_scope_and_status(
+        run_id, scope, status, manifest = _load_scope_and_status(
             self,
             request,
             permission="artifact.ack",
@@ -133,6 +133,10 @@ async def _handle_room_run_artifact_ack(
         changed = RoomArtifactOutbox(
             Path(get_hermes_home()) / "state.db"
         ).acknowledge(scope, artifact_ids)
+        self._run_idempotency_store.acknowledge_terminal(
+            self._run_idempotency_scope(request),
+            run_id,
+        )
         return web.json_response({"acknowledged": True, "changed": changed})
     except Exception:
         return web.json_response(
