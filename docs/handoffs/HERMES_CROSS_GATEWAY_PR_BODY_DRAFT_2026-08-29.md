@@ -10,7 +10,7 @@ under the later Desktop continuity UX.
 
 > [!IMPORTANT]
 > This PR is stacked on #97712 and #97744. Review only the commits after the
-> current #97744 head. It does not enable a new Desktop creation path by itself.
+> current #97744 head `09f58fafa9`. It does not enable a new Desktop creation path by itself.
 
 ## What this layer provides
 
@@ -64,8 +64,20 @@ Those capabilities remain separate layers in #97681.
 
 ## Validation
 
-Exact head, focused counts, two-gateway text canary, and GitHub CI will be added
-before this draft leaves draft status.
+WIP head `4a53a0978c`, stacked on #97744 head `09f58fafa9`:
+
+| Check | Result |
+| --- | ---: |
+| Peer/API/RoomLink, authority, recovery, policy, Stop, and service boundary | **418 passed / 1 skipped** |
+| Headless in-process two-gateway HTTP canary | passed |
+| Execution-policy sub-boundaries | **232 + 37 passed** |
+| Ruff on every changed Python file | passed |
+| No Desktop, files/artifacts, messaging, or relay path in this diff | passed |
+| `git diff --check` | passed |
+
+The final branch keeps the five original contributor commits plus three
+composition/hardening commits. Exact-head GitHub CI and real same-network and
+separate-network text UAT remain before this layer leaves draft status.
 
 The prior field build already passed same-network and separate-network
 two-gateway UAT, restart recovery, Stop, scoped route revocation, and offline
