@@ -48,7 +48,10 @@ def _room_grant_token(request: "web.Request") -> str:
 def _room_grant_secret(self) -> bytes:
     from gateway.hosted_room_peer import derive_room_grant_secret
 
-    key = self._expected_api_key()
+    # RoomLink is gateway-owned even when the URL selects a named profile.
+    # The signed claims and every handler still bind and verify target_profile;
+    # ordinary Bearer auth continues to use the profile-scoped API key.
+    key = self._api_key
     return derive_room_grant_secret(key or "")
 
 

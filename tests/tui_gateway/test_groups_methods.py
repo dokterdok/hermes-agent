@@ -386,7 +386,9 @@ def test_roomlink_endpoint_absence_has_machine_reason(home, monkeypatch):
     }
 
 
-def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
+def test_multiplexed_invitation_uses_gateway_secret_and_binds_profile(
+    home, monkeypatch
+):
     from gateway.hosted_room_peer import (
         HostedRoomGrantError,
         decode_room_grant,
@@ -415,17 +417,47 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
         )
     )
     claims = decode_room_grant(
-        derive_room_grant_secret(reviewer_key),
+        derive_room_grant_secret(default_key),
         invitation["grant"],
         permission="status",
     )
     assert claims["target_profile"] == "reviewer"
     with pytest.raises(HostedRoomGrantError, match="signature"):
         decode_room_grant(
-            derive_room_grant_secret(default_key),
+            derive_room_grant_secret(reviewer_key),
             invitation["grant"],
             permission="status",
         )
+
+
+def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
+    from gateway.hosted_room_peer import decode_room_grant, derive_room_grant_secret
+
+    reviewer_home = home / "profiles" / "reviewer"
+    reviewer_home.mkdir(parents=True)
+    gateway_key = "gateway-api-key-1234567890"
+    monkeypatch.setenv("API_SERVER_KEY", gateway_key)
+
+    invitation = _result(
+        srv._methods["groups.peer.invite"](
+            4,
+            {
+                "room_id": "room-named-bot",
+                "home_install_id": "install-home",
+                "authority_gateway_id": "gateway-home",
+                "authority_epoch": 1,
+                "member_id": "member-reviewer",
+                "profile": "reviewer",
+            },
+        )
+    )
+
+    claims = decode_room_grant(
+        derive_room_grant_secret(gateway_key),
+        invitation["grant"],
+        permission="status",
+    )
+    assert claims["target_profile"] == "reviewer"
 
 
 def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeypatch):

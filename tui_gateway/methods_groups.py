@@ -123,6 +123,24 @@ def _api_server_key(profile: str | None = None) -> str:
     return (os.getenv("API_SERVER_KEY") or "").strip()
 
 
+def _room_link_gateway_key() -> str:
+    """Return the gateway-owned RoomLink signing key.
+
+    Profile API keys still authenticate ordinary profile-scoped HTTP requests.
+    RoomLink grants are a separate gateway control-plane credential whose
+    claims bind the exact target profile, member, room, authority epoch, and
+    execution policy. Using one gateway key lets a named Bot participate
+    without copying the launch profile's API key into every profile home.
+    """
+
+    process_key = (os.getenv("API_SERVER_KEY") or "").strip()
+    if process_key:
+        return process_key
+    # Contract tests and embedded single-profile callers may not expose the
+    # process environment. Their active key is still gateway-owned.
+    return _api_server_key()
+
+
 def _profile_state_db_path(profile: str):
     """Resolve artifact bytes to the exact routed Bot profile store."""
 
@@ -211,9 +229,7 @@ def _(rid, params: dict) -> dict:
         profile = _requested_profile(params)
         if not _room_link_run_storage_durable():
             raise ValueError("durable run idempotency storage is required")
-        derive_room_grant_secret(
-            _api_server_key(profile if params.get("profile") else None)
-        )
+        derive_room_grant_secret(_room_link_gateway_key())
         from gateway.platforms.api_server_room_attachments import (
             roomlink_attachments_available,
         )
@@ -577,9 +593,7 @@ def _(rid, params: dict) -> dict:
             raise ValueError("ttl_seconds must be between 60 and 86400")
         execution_policy = _profile_execution_policy(profile)
         token = issue_room_grant(
-            derive_room_grant_secret(
-                _api_server_key(profile if params.get("profile") else None)
-            ),
+            derive_room_grant_secret(_room_link_gateway_key()),
             grant_id=str(params.get("grant_id") or f"grant-{os.urandom(16).hex()}"),
             room_id=str(params.get("room_id") or ""),
             home_install_id=str(params.get("home_install_id") or ""),
@@ -628,9 +642,7 @@ def _(rid, params: dict) -> dict:
 
         profile = _requested_profile(params)
         claims = decode_room_grant(
-            derive_room_grant_secret(
-                _api_server_key(profile if params.get("profile") else None)
-            ),
+            derive_room_grant_secret(_room_link_gateway_key()),
             str(params.get("grant") or ""),
             permission="status",
         )

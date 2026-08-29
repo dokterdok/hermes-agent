@@ -67,6 +67,20 @@ def test_room_grant_helpers_delegate_through_legacy_adapter_methods(monkeypatch)
     claims.assert_called_once_with(adapter, request, permission="status")
 
 
+def test_room_grant_secret_stays_gateway_owned_on_named_profile():
+    from gateway.hosted_room_peer import derive_room_grant_secret
+
+    adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
+    adapter._api_key = "gateway-api-key-1234567890"
+    profile_token = api_server._api_request_profile.set("reviewer")
+    try:
+        assert adapter._room_grant_secret() == derive_room_grant_secret(
+            "gateway-api-key-1234567890"
+        )
+    finally:
+        api_server._api_request_profile.reset(profile_token)
+
+
 @pytest.mark.asyncio
 async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
     from gateway import hosted_rooms
