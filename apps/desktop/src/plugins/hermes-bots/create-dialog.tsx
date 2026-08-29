@@ -1287,6 +1287,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           })
         : null
       let hosted: Awaited<ReturnType<typeof createAutonomousHostedGroupChat>> | null = null
+      let fallbackIssue: null | string = null
 
       if (resolvedProbe?.eligible) {
         try {
@@ -1308,9 +1309,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
             throw error
           }
 
+          fallbackIssue = describeHostedRoomCreationError(error) || b.group.hostedFallbackToDesktop(hostName)
           host.notify({
             kind: 'info',
-            message: describeHostedRoomCreationError(error) || b.group.hostedFallbackToDesktop(hostName)
+            message: fallbackIssue
           })
         }
       }
@@ -1329,7 +1331,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         room.members = roomMembers
         room.roomId = roomId
         room.continuityMode = hosted?.continuityMode || 'desktop'
-        room.continuityIssue = hosted ? null : planCopy?.description || null
+        room.continuityIssue = hosted ? null : fallbackIssue || planCopy?.description || null
 
         if (desktopAuthority) {
           room.desktopAuthorityHash = desktopAuthority.desktopAuthorityHash

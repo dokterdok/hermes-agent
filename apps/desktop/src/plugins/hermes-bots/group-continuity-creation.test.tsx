@@ -222,6 +222,7 @@ describe('automatic Group Chat continuity', () => {
 
     expect(created.continuityMode).toBe('desktop')
     expect(created.hosted ?? null).toBeNull()
+    expect(created.continuityIssue).toContain('Bots will pause when Desktop closes')
 
     const fallback = mocks.notify.mock.calls.filter(([payload]) =>
       String(payload?.message || '').includes('Bots will pause when Desktop closes')
