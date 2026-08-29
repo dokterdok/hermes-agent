@@ -221,6 +221,16 @@ function positiveInteger(value: unknown, fallback: null | number = null): null |
   return Number.isSafeInteger(number) && number > 0 ? number : fallback
 }
 
+function timestampMilliseconds(value: unknown) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number) || number <= 0) {
+    return 0
+  }
+
+  return number < 1_000_000_000_000 ? number * 1000 : number
+}
+
 function errorCode(error: unknown): unknown {
   const outer = record(error)
   const inner = record(outer?.error)
@@ -708,9 +718,7 @@ function normalizeEvent(raw: unknown): HostedRoomEvent | null {
     kind,
     actor: { ...(record(candidate.actor) || {}) },
     payload: { ...(record(candidate.payload) || {}) },
-    createdAt: Number.isFinite(Number(candidate.created_at ?? candidate.createdAt))
-      ? Number(candidate.created_at ?? candidate.createdAt)
-      : 0
+    createdAt: timestampMilliseconds(candidate.created_at ?? candidate.createdAt)
   }
 }
 

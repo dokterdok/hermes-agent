@@ -255,6 +255,21 @@ describe('hosted Group Chat capability negotiation', () => {
 })
 
 describe('hosted Group Chat replay', () => {
+  it('normalizes gateway epoch seconds before rendering relative time', () => {
+    const seconds = 1_787_968_060.355
+    const replayed = reduceHostedRoomEvents(
+      createHostedRoomReplayState({ roomId: 'room-1' }),
+      [
+        {
+          ...event(1, 'message-1', 'message.user', { text: 'Hello' }),
+          created_at: seconds
+        }
+      ]
+    )
+
+    expect(replayed.messages[0].at).toBe(seconds * 1000)
+  })
+
   it('orders, deduplicates, and advances across unknown event kinds without applying them', () => {
     const initial = createHostedRoomReplayState({
       roomId: 'room-1',
