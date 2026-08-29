@@ -640,6 +640,43 @@ def test_room_listing_is_paged_and_old_tombstones_are_pruned(tmp_path, monkeypat
         rooms.room_state(db, room_id="room-0", include_disbanded=True)
 
 
+def test_peer_reservation_rejects_stale_or_conflicting_authority(tmp_path):
+    db = tmp_path / "state.db"
+    current = {
+        "room_id": "room-peer",
+        "member_id": "member-peer",
+        "target_profile": "reviewer",
+        "authority_gateway_id": "gateway-current",
+        "authority_epoch": 2,
+    }
+    rooms.reserve_peer_room(db, claims=current, expires_at=300, now=100)
+
+    with pytest.raises(rooms.AuthorityConflictError, match="authority changed"):
+        rooms.reserve_peer_room(
+            db,
+            claims={
+                **current,
+                "authority_gateway_id": "gateway-stale",
+                "authority_epoch": 1,
+            },
+            expires_at=300,
+            now=100,
+        )
+    with pytest.raises(rooms.AuthorityConflictError, match="authority changed"):
+        rooms.reserve_peer_room(
+            db,
+            claims={**current, "authority_gateway_id": "gateway-conflict"},
+            expires_at=300,
+            now=100,
+        )
+    assert rooms.peer_room_is_reserved(
+        db,
+        room_id="room-peer",
+        target_profile="reviewer",
+        now=200,
+    )
+
+
 def test_pre_actor_draft_database_migrates_with_explicit_legacy_identity(tmp_path):
     db = tmp_path / "state.db"
     _create_pre_actor_database(db)

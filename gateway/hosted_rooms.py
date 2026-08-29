@@ -783,6 +783,20 @@ def reserve_peer_room(
             "DELETE FROM hosted_room_peer_reservations WHERE expires_at<=?",
             (timestamp,),
         )
+        existing = conn.execute(
+            """SELECT authority_gateway_id, authority_epoch
+                 FROM hosted_room_peer_reservations
+                WHERE room_id=? AND member_id=? AND target_profile=?""",
+            values[:3],
+        ).fetchone()
+        if existing is not None and (
+            int(existing["authority_epoch"]) > values[4]
+            or (
+                int(existing["authority_epoch"]) == values[4]
+                and str(existing["authority_gateway_id"]) != values[3]
+            )
+        ):
+            raise AuthorityConflictError("peer room reservation authority changed")
         conn.execute(
             """INSERT INTO hosted_room_peer_reservations(
                    room_id, member_id, target_profile, authority_gateway_id,
