@@ -56,7 +56,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
-  continuityMode?: 'desktop' | 'gateway'
+  continuityMode?: 'desktop' | 'distributed' | 'gateway'
   desktopAuthorityHash?: null | string
   hosted?: null | string
   hostedEpoch?: null | number
@@ -364,7 +364,7 @@ export function groupChatSyncSnapshot(
             desktopAuthorityHash: room.desktopAuthorityHash
           }
         : {}),
-      continuityMode: groupChatHostedGateway(room) ? 'gateway' : 'desktop',
+      continuityMode: room.continuityMode === 'distributed' ? 'distributed' : groupChatHostedGateway(room) ? 'gateway' : 'desktop',
       log,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
@@ -710,7 +710,11 @@ export function mergeGroupChatSyncSnapshots(
         ? {
             hosted: hosted || null,
             hostedEpoch: hostedEpoch || null,
-            continuityMode: hosted ? ('gateway' as const) : ('desktop' as const)
+            continuityMode: hosted
+              ? localRoom?.continuityMode === 'distributed' || remoteRoom?.continuityMode === 'distributed'
+                ? ('distributed' as const)
+                : ('gateway' as const)
+              : ('desktop' as const)
           }
         : {}),
       ...(typeof image === 'string' && image
@@ -915,7 +919,12 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
           : null),
       hosted: cachedHosted || null,
       hostedEpoch: cachedHostedEpoch || null,
-      continuityMode: cachedHosted ? 'gateway' : existing.continuityMode || projected.continuityMode || 'desktop',
+      continuityMode:
+        cachedHosted && (existing.continuityMode === 'distributed' || projected.continuityMode === 'distributed')
+          ? 'distributed'
+          : cachedHosted
+            ? 'gateway'
+            : existing.continuityMode || projected.continuityMode || 'desktop',
       syncRevision: isPreserved ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
@@ -1004,7 +1013,12 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       hostedConnectionId:
         typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
       hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
-      continuityMode: groupChatHostedGateway(room) ? 'gateway' : room.continuityMode || 'desktop',
+      continuityMode:
+        room.continuityMode === 'distributed'
+          ? 'distributed'
+          : groupChatHostedGateway(room)
+            ? 'gateway'
+            : room.continuityMode || 'desktop',
       image: room.image || null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
@@ -1613,7 +1627,12 @@ export function updateGroupChat(
         hostedConnectionId:
           typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
         hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
-        continuityMode: groupChatHostedGateway(room) ? 'gateway' : room.continuityMode || 'desktop',
+        continuityMode:
+          room.continuityMode === 'distributed'
+            ? 'distributed'
+            : groupChatHostedGateway(room)
+              ? 'gateway'
+              : room.continuityMode || 'desktop',
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,
         syncRevision: Math.max(0, Number(room.syncRevision || 0))

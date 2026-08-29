@@ -296,7 +296,12 @@ export default {
                       ? room.hostedConnectionId
                       : null,
                   hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
-                  continuityMode: room.hosted ? 'gateway' : room.continuityMode === 'gateway' ? 'gateway' : 'desktop',
+                  continuityMode:
+                    room.continuityMode === 'distributed'
+                      ? 'distributed'
+                      : room.hosted || room.continuityMode === 'gateway'
+                        ? 'gateway'
+                        : 'desktop',
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,

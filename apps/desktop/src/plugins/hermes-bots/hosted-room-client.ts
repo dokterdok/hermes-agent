@@ -21,6 +21,7 @@ const MAX_ATTACHMENT_REFS = 6
 const MAX_STAGED_REF_CHARS = 256
 const ATTACHMENT_ID_RE = /^att_[0-9a-f]{32}$/
 const FORBIDDEN_TRANSPORT_FIELD_TOKENS = new Set(['base64', 'byte', 'bytes', 'data', 'path', 'paths'])
+export const ROOM_LINK_PROTOCOL_VERSION = 2
 
 export interface HostedRoomClientLimitations {
   attachments: boolean
@@ -32,7 +33,7 @@ export interface HostedRoomClientLimitations {
 export const HOSTED_ROOM_CLIENT_LIMITATIONS: HostedRoomClientLimitations = Object.freeze({
   attachments: false,
   automaticFailover: false,
-  crossGatewayMembers: false,
+  crossGatewayMembers: true,
   stagedAttachmentManifest: true
 })
 
@@ -46,11 +47,35 @@ export interface HostedRoomCapability {
   maxLogLimit?: number
   persistentProcess: boolean | null
   reason: null | string
+  roomLink: null | RoomLinkCapability
+}
+
+export interface RoomLinkCapability {
+  catalog: null | {
+    attachments: boolean
+    digest: null | string
+    installationId: null | string
+    linkModes: string[]
+    persistentProcess: boolean
+    protocolVersions: number[]
+    text: boolean
+  }
+  enabled: boolean
+  endpoint: null | string
+  endpointReason: null | string
+  profile: null | string
+  reason: null | string
+}
+
+export interface AutonomousRoomPlan extends HostedRoomRouteResolution {
+  homeConnectionId: null | string
+  remoteConnectionIds: string[]
+  unavailableConnectionId?: string
 }
 
 export interface HostedRoomRouteResolution {
   connectionId: null | string
-  kind: 'single-gateway' | 'unsupported'
+  kind: 'multi-gateway' | 'single-gateway' | 'unsupported'
   limits: HostedRoomClientLimitations
   memberConnectionIds: Array<null | string>
   reason: null | string
@@ -238,6 +263,38 @@ function capabilityResult(probe: unknown): Record<string, unknown> | null {
   return null
 }
 
+function roomLinkCapability(value: unknown): null | RoomLinkCapability {
+  const candidate = record(value)
+
+  if (!candidate) {
+    return null
+  }
+
+  const catalog = record(candidate.catalog)
+  const endpoint = record(candidate.endpoint)
+
+  return {
+    enabled: candidate.enabled === true,
+    endpoint: endpoint?.available === true ? text(endpoint.url) : null,
+    endpointReason: endpoint?.available === false ? text(endpoint.reason) : null,
+    reason: text(candidate.reason),
+    profile: text(candidate.profile),
+    catalog: catalog
+      ? {
+          installationId: text(catalog.installation_id),
+          digest: text(catalog.catalog_digest),
+          persistentProcess: catalog.persistent_process === true,
+          text: catalog.text === true,
+          attachments: catalog.attachments === true,
+          linkModes: Array.isArray(catalog.link_modes) ? catalog.link_modes.map(String).filter(Boolean) : [],
+          protocolVersions: Array.isArray(catalog.protocol_versions)
+            ? catalog.protocol_versions.map(Number).filter(Number.isSafeInteger)
+            : []
+        }
+      : null
+  }
+}
+
 function capabilityLimits(capabilities: Record<string, unknown>): HostedRoomClientLimitations {
   const features = new Set(Array.isArray(capabilities.features) ? capabilities.features.map(String) : [])
   const methods = new Set(Array.isArray(capabilities.methods) ? capabilities.methods.map(String) : [])
@@ -272,6 +329,7 @@ export function classifyHostedRoomCapability(
       connectionId: localConnectionId,
       authorityId: null,
       persistentProcess: null,
+      roomLink: null,
       limits: HOSTED_ROOM_CLIENT_LIMITATIONS
     }
   }
@@ -285,6 +343,7 @@ export function classifyHostedRoomCapability(
       connectionId: localConnectionId,
       authorityId: null,
       persistentProcess: null,
+      roomLink: null,
       limits: HOSTED_ROOM_CLIENT_LIMITATIONS
     }
   }
@@ -296,6 +355,7 @@ export function classifyHostedRoomCapability(
       connectionId: localConnectionId,
       authorityId: null,
       persistentProcess: capabilities.persistent_process === true,
+      roomLink: roomLinkCapability(capabilities.room_link),
       limits: HOSTED_ROOM_CLIENT_LIMITATIONS
     }
   }
@@ -309,6 +369,7 @@ export function classifyHostedRoomCapability(
       connectionId: localConnectionId,
       authorityId: null,
       persistentProcess: capabilities.persistent_process === true,
+      roomLink: roomLinkCapability(capabilities.room_link),
       limits: HOSTED_ROOM_CLIENT_LIMITATIONS
     }
   }
@@ -319,6 +380,7 @@ export function classifyHostedRoomCapability(
     connectionId: localConnectionId,
     authorityId,
     persistentProcess: capabilities.persistent_process === true,
+    roomLink: roomLinkCapability(capabilities.room_link),
     maxLogLimit: positiveInteger(capabilities.max_log_limit, 100) || 100,
     limits: capabilityLimits(capabilities)
   }
@@ -403,6 +465,197 @@ export function resolveSingleGatewayRoute(
     memberConnectionIds,
     limits: HOSTED_ROOM_CLIENT_LIMITATIONS
   }
+}
+
+/** Choose the simplest autonomous plan without widening any gateway's
+ * advertised capability. */
+export function resolveAutonomousRoomPlan(
+  members: GroupMember[],
+  {
+    activeConnectionId = null,
+    capabilities = {}
+  }: {
+    activeConnectionId?: null | string
+    capabilities?: Record<string, HostedRoomCapability | null>
+  } = {}
+): AutonomousRoomPlan {
+  const roster = Array.isArray(members) ? members : []
+  const route = resolveSingleGatewayRoute(roster, {
+    activeConnectionId
+  })
+
+  if (route.reason && route.reason !== 'cross-gateway') {
+    return {
+      ...route,
+      homeConnectionId: null,
+      remoteConnectionIds: []
+    }
+  }
+
+  const memberConnectionIds = roster.map(member => memberConnectionId(member, activeConnectionId))
+  const connectionIds = [...new Set(memberConnectionIds.filter((value): value is string => Boolean(value)))]
+  const homeCandidates = connectionIds.filter(connectionId => {
+    const capability = capabilities[connectionId]
+
+    if (capability?.kind !== 'driver-capable' || capability.persistentProcess !== true) {
+      return false
+    }
+
+    if (connectionIds.length === 1) {
+      return true
+    }
+
+    const roomLink = capability.roomLink
+
+    return Boolean(
+      roomLink?.enabled === true &&
+        roomLink.catalog?.persistentProcess === true &&
+        roomLink.catalog.protocolVersions.includes(ROOM_LINK_PROTOCOL_VERSION) &&
+        roomLink.catalog.linkModes.includes('direct')
+    )
+  })
+  const preferredHome = text(activeConnectionId)
+  const homeConnectionId = preferredHome && homeCandidates.includes(preferredHome) ? preferredHome : homeCandidates[0] || null
+
+  if (!homeConnectionId) {
+    return {
+      kind: 'unsupported',
+      reason: 'no-persistent-home',
+      connectionId: null,
+      homeConnectionId: null,
+      memberConnectionIds,
+      remoteConnectionIds: connectionIds,
+      limits: HOSTED_ROOM_CLIENT_LIMITATIONS
+    }
+  }
+
+  const remoteConnectionIds = connectionIds.filter(connectionId => connectionId !== homeConnectionId)
+  const unsupportedRemote = remoteConnectionIds.find(connectionId => {
+    const roomLink = capabilities[connectionId]?.roomLink
+
+    return !(
+      roomLink?.enabled === true &&
+      roomLink.catalog?.persistentProcess === true &&
+      roomLink.catalog.text === true &&
+      roomLink.catalog.installationId &&
+      roomLink.catalog.digest &&
+      roomLink.catalog.protocolVersions.includes(ROOM_LINK_PROTOCOL_VERSION) &&
+      roomLink.catalog.linkModes.includes('direct')
+    )
+  })
+
+  if (unsupportedRemote) {
+    return {
+      kind: 'unsupported',
+      reason: 'remote-needs-setup',
+      connectionId: null,
+      homeConnectionId,
+      memberConnectionIds,
+      remoteConnectionIds,
+      unavailableConnectionId: unsupportedRemote,
+      limits: HOSTED_ROOM_CLIENT_LIMITATIONS
+    }
+  }
+
+  const unreachableRemote = remoteConnectionIds.find(
+    connectionId => !capabilities[connectionId]?.roomLink?.endpoint
+  )
+
+  if (unreachableRemote) {
+    return {
+      kind: 'unsupported',
+      reason: 'remote-needs-address',
+      connectionId: null,
+      homeConnectionId,
+      memberConnectionIds,
+      remoteConnectionIds,
+      unavailableConnectionId: unreachableRemote,
+      limits: HOSTED_ROOM_CLIENT_LIMITATIONS
+    }
+  }
+
+  return {
+    kind: remoteConnectionIds.length ? 'multi-gateway' : 'single-gateway',
+    reason: null,
+    connectionId: homeConnectionId,
+    homeConnectionId,
+    memberConnectionIds,
+    remoteConnectionIds,
+    limits: HOSTED_ROOM_CLIENT_LIMITATIONS
+  }
+}
+
+export function describeAutonomousRoomPlan(
+  plan: AutonomousRoomPlan,
+  { homeLabel = 'one host', unavailableLabel = 'One host' } = {}
+) {
+  if (plan.kind === 'multi-gateway') {
+    return {
+      defaultEnabled: true,
+      level: 'distributed' as const,
+      title: 'Continues when Desktop is closed',
+      description: `${homeLabel} keeps this Group Chat moving across its Bot hosts.`
+    }
+  }
+
+  if (plan.kind === 'single-gateway') {
+    return {
+      defaultEnabled: true,
+      level: 'gateway' as const,
+      title: 'Continues when Desktop is closed',
+      description: `Bots keep working on ${homeLabel}.`
+    }
+  }
+
+  const needsSetup = ['remote-needs-address', 'remote-needs-setup'].includes(String(plan.reason || ''))
+
+  return {
+    defaultEnabled: false,
+    level: 'desktop' as const,
+    title: 'Keep Desktop open for this Group Chat',
+    description: needsSetup
+      ? `${unavailableLabel} needs Group Chat connections enabled in Hermes settings.`
+      : 'The selected Bots cannot continue this Group Chat on their own yet.'
+  }
+}
+
+export function profileScopedRoomLinkEndpoint(endpoint: unknown, profile: unknown) {
+  const base = text(endpoint)?.replace(/\/+$/, '') || null
+  const targetProfile = text(profile)
+
+  if (!base || !targetProfile || targetProfile === 'default') {
+    return base
+  }
+
+  const suffix = `/p/${encodeURIComponent(targetProfile)}`
+
+  if (base.endsWith(suffix)) {
+    return base
+  }
+
+  if (/\/p\/[^/]+$/i.test(base)) {
+    return null
+  }
+
+  return `${base}${suffix}`
+}
+
+export function describeHostedRoomCreationError(error: unknown) {
+  const message = errorMessage(error)
+
+  if (/unreachable|name or service not known|timed? ?out|connection refused|network is unreachable/i.test(message)) {
+    return 'One Bot host cannot reach another. Check that both are online, then try again.'
+  }
+
+  if (/non-json|authorization|grant|renewal|http 40[13]|unknown or unconfigured profile/i.test(message)) {
+    return 'One Bot host could not verify this Group Chat. Update or reconnect it, then try again.'
+  }
+
+  if (/capability catalog changed|changed during setup/i.test(message)) {
+    return 'A Bot host changed while the Group Chat was being created. Wait for it to reconnect, then try again.'
+  }
+
+  return null
 }
 
 function cloneRecords(value: unknown): Array<Record<string, unknown>> {

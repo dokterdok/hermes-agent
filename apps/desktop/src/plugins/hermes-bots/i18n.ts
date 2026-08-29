@@ -164,6 +164,12 @@ type BotsMessages = {
     creating: string
     pickAtLeastTwo: string
     thisHost: string
+    backgroundWork: string
+    continuesWithoutDesktop: string
+    distributedContinuity: string
+    gatewayContinuity: (host: string) => string
+    desktopContinuity: string
+    desktopContinuityDescription: string
     hostedFallbackToDesktop: (host: string) => string
     hostedAttachmentsUnavailable: string
     hostedSending: string
@@ -400,6 +406,12 @@ const en: BotsMessages = {
     creating: 'Creating…',
     pickAtLeastTwo: 'Pick at least 2 bots',
     thisHost: 'this host',
+    backgroundWork: 'Background work',
+    continuesWithoutDesktop: 'Continues when Desktop is closed',
+    distributedContinuity: 'Bots keep working together across their hosts.',
+    gatewayContinuity: host => `Bots keep working on ${host}.`,
+    desktopContinuity: 'Keep Desktop open while this Group Chat is working.',
+    desktopContinuityDescription: 'Work pauses if Desktop closes.',
     hostedFallbackToDesktop: host =>
       `${host} could not keep this Group Chat running. Bots will pause when Desktop closes.`,
     hostedAttachmentsUnavailable: 'Reconnect unavailable Bots or update Hermes to share files.',
@@ -630,6 +642,12 @@ const ja: BotsMessages = {
     creating: '作成中…',
     pickAtLeastTwo: '2体以上のボットを選択してください',
     thisHost: 'このホスト',
+    backgroundWork: 'バックグラウンド作業',
+    continuesWithoutDesktop: 'Desktopを閉じても続行します',
+    distributedContinuity: 'Botはそれぞれのホストで連携して作業を続けます。',
+    gatewayContinuity: host => `Botは${host}で作業を続けます。`,
+    desktopContinuity: 'このグループチャットの作業中はDesktopを開いたままにしてください。',
+    desktopContinuityDescription: 'Desktopを閉じると作業は一時停止します。',
     hostedFallbackToDesktop: host =>
       `${host} で継続実行を開始できませんでした。Desktopを閉じるとボットは一時停止します。`,
     hostedAttachmentsUnavailable: 'ファイルを共有するには、利用できないBotを再接続するか、Hermesを更新してください。',
@@ -859,6 +877,12 @@ const zh: BotsMessages = {
     creating: '正在创建…',
     pickAtLeastTwo: '请至少选择 2 个机器人',
     thisHost: '此主机',
+    backgroundWork: '后台工作',
+    continuesWithoutDesktop: '关闭 Desktop 后仍会继续',
+    distributedContinuity: 'Bot 会在各自的主机上继续协作。',
+    gatewayContinuity: host => `Bot 会在 ${host} 上继续工作。`,
+    desktopContinuity: '此群聊工作时请保持 Desktop 开启。',
+    desktopContinuityDescription: '关闭 Desktop 后工作会暂停。',
     hostedFallbackToDesktop: host => `${host} 无法保持此群聊运行。关闭 Desktop 后，机器人将暂停。`,
     hostedAttachmentsUnavailable: '请重新连接不可用的 Bot 或更新 Hermes 后再共享文件。',
     hostedSending: '正在发送…',
@@ -1087,6 +1111,12 @@ const zhHant: BotsMessages = {
     creating: '正在建立…',
     pickAtLeastTwo: '請至少選擇 2 個機器人',
     thisHost: '此主機',
+    backgroundWork: '背景工作',
+    continuesWithoutDesktop: '關閉 Desktop 後仍會繼續',
+    distributedContinuity: 'Bot 會在各自的主機上繼續協作。',
+    gatewayContinuity: host => `Bot 會在 ${host} 上繼續工作。`,
+    desktopContinuity: '此群組聊天工作時請保持 Desktop 開啟。',
+    desktopContinuityDescription: '關閉 Desktop 後工作會暫停。',
     hostedFallbackToDesktop: host => `${host} 無法保持此群組聊天運作。關閉 Desktop 後，機器人將暫停。`,
     hostedAttachmentsUnavailable: '請重新連線無法使用的 Bot 或更新 Hermes 後再分享檔案。',
     hostedSending: '正在傳送…',

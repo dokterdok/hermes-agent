@@ -13,6 +13,7 @@ const { host } = vi.hoisted(() => ({
 vi.mock('@hermes/plugin-sdk', async () => pluginSdkMock(host))
 
 interface RpcCall {
+  connectionId?: string
   method: string
   params: Record<string, unknown>
 }
@@ -77,18 +78,19 @@ function hostedEvent(
 }
 
 async function loadRuntime(
-  handler: (method: string, params: Record<string, unknown>) => Promise<unknown> | unknown
+  handler: (method: string, params: Record<string, unknown>, route?: Record<string, unknown>) => Promise<unknown> | unknown,
+  routes: Array<Record<string, unknown>> = [
+    {
+      connectionId: 'gateway-a',
+      mode: 'remote' as const,
+      profile: 'default',
+      targetProfile: 'default'
+    }
+  ]
 ): Promise<RuntimeRoom> {
   vi.resetModules()
   const calls: RpcCall[] = []
   const storage = new Map<string, unknown>()
-
-  const route = {
-    connectionId: 'gateway-a',
-    mode: 'remote' as const,
-    profile: 'default',
-    targetProfile: 'default'
-  }
 
   for (const key of Object.keys(host)) {
     delete host[key]
@@ -97,7 +99,7 @@ async function loadRuntime(
   Object.assign(host, {
     activeConnectionId: () => 'gateway-a',
     notify: vi.fn(),
-    profileRoutes: async () => [route],
+    profileRoutes: async () => routes,
     request: async (method: string, params: Record<string, unknown>) => {
       calls.push({
         method,
@@ -106,13 +108,14 @@ async function loadRuntime(
 
       return handler(method, params)
     },
-    requestProfile: async (_route: unknown, method: string, params: Record<string, unknown>) => {
+    requestProfile: async (route: Record<string, unknown>, method: string, params: Record<string, unknown>) => {
       calls.push({
+        connectionId: String(route?.connectionId || ''),
         method,
         params
       })
 
-      return handler(method, params)
+      return handler(method, params, route)
     },
     state: {
       connectionId: {
@@ -581,6 +584,251 @@ describe('hosted Group Chat runtime', () => {
         }
       )
     ).resolves.toBe('data:application/pdf;base64,JVBERg==')
+
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
+  it('creates a multi-host Group Chat with target-issued scoped grants', async () => {
+    const routes = [
+      { connectionId: 'host-a', mode: 'remote' as const, profile: 'default', targetProfile: 'default' },
+      { connectionId: 'host-b', mode: 'remote' as const, profile: 'default', targetProfile: 'default' },
+      { connectionId: 'host-b', mode: 'remote' as const, profile: 'builder', targetProfile: 'builder' }
+    ]
+    const loaded = await loadRuntime(
+      (method, _params, route) => {
+        const connectionId = String(route?.connectionId || '')
+
+        if (method === 'groups.capabilities') {
+          return {
+            authority_gateway_id: `install:${connectionId}`,
+            driver: true,
+            features: ['attachment_ids', 'attachment_same_gateway_delivery'],
+            methods: ['groups.attachment.put', 'groups.attachment.read'],
+            persistent_process: true,
+            room_link: {
+              enabled: true,
+              endpoint: {
+                available: true,
+                url: `https://${connectionId}.example.test:19445`
+              },
+              catalog: {
+                attachments: true,
+                catalog_digest: `digest:${connectionId}`,
+                installation_id: `install:${connectionId}`,
+                link_modes: ['direct'],
+                persistent_process: true,
+                protocol_versions: [2],
+                text: true
+              }
+            }
+          }
+        }
+
+        if (method === 'groups.list') {
+          return { rooms: [] }
+        }
+
+        if (method === 'groups.peer.invite') {
+          return {
+            grant: 'grant:builder',
+            target_profile: 'builder',
+            catalog: {
+              attachments: true,
+              catalog_digest: 'digest:host-b',
+              installation_id: 'install:host-b',
+              link_modes: ['direct'],
+              persistent_process: true,
+              protocol_versions: [2],
+              text: true
+            }
+          }
+        }
+
+        if (method === 'groups.create') {
+          return {
+            room: {
+              authority_epoch: 1,
+              authority_gateway_id: 'install:host-a',
+              room_id: 'room-multi'
+            }
+          }
+        }
+
+        if (method === 'groups.peer.register') {
+          return { registered: true }
+        }
+
+        throw new Error(`unexpected method: ${method}`)
+      },
+      routes
+    )
+    const storage = scriptedStorage(loaded.storage).storage
+
+    await loaded.runtime.startHostedRoomRuntime(storage)
+
+    const members: GroupMember[] = [
+      {
+        connectionId: 'host-a',
+        name: 'research',
+        route: routes[0],
+        sourceScoped: true,
+        targetProfile: 'research'
+      },
+      {
+        connectionId: 'host-b',
+        name: 'builder',
+        route: routes[2],
+        sourceScoped: true,
+        targetProfile: 'builder'
+      }
+    ]
+    const probe = await loaded.runtime.probeHostedRoomMembers(members)
+
+    expect(probe.route).toMatchObject({
+      homeConnectionId: 'host-a',
+      kind: 'multi-gateway',
+      remoteConnectionIds: ['host-b']
+    })
+    expect(
+      loaded.runtime.hostedRoomAcceptsAttachments({
+        continuityMode: 'distributed',
+        hosted: 'install:host-a',
+        hostedConnectionId: 'host-a',
+        log: [],
+        members,
+        watermarks: {}
+      })
+    ).toBe(true)
+    await expect(
+      loaded.runtime.createAutonomousHostedGroupChat({
+        members: [
+          { handle: 'research', member: members[0], profile: 'research' },
+          { handle: 'builder', member: members[1], profile: 'builder' }
+        ],
+        name: 'Multi',
+        probe,
+        roomId: 'room-multi'
+      })
+    ).resolves.toMatchObject({
+      authorityId: 'install:host-a',
+      connectionId: 'host-a',
+      continuityMode: 'distributed'
+    })
+
+    expect(loaded.calls.find(call => call.method === 'groups.peer.invite')?.connectionId).toBe('host-b')
+    expect(loaded.calls.find(call => call.method === 'groups.create')?.connectionId).toBe('host-a')
+    expect(loaded.calls.find(call => call.method === 'groups.peer.register')?.params).toMatchObject({
+      grant: 'grant:builder',
+      member_id: 'member-2-builder',
+      room_id: 'room-multi',
+      target_profile: 'builder',
+      target_url: 'https://host-b.example.test:19445/p/builder'
+    })
+    expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).toEqual([])
+
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
+  it('durably disbands and revokes a partial multi-host setup', async () => {
+    const routes = [
+      { connectionId: 'host-a', mode: 'remote' as const, profile: 'default', targetProfile: 'default' },
+      { connectionId: 'host-b', mode: 'remote' as const, profile: 'default', targetProfile: 'default' },
+      { connectionId: 'host-b', mode: 'remote' as const, profile: 'builder', targetProfile: 'builder' }
+    ]
+    let cleanupAvailable = false
+    const loaded = await loadRuntime(
+      (method, _params, route) => {
+        const connectionId = String(route?.connectionId || '')
+
+        if (method === 'groups.capabilities') {
+          return {
+            authority_gateway_id: `install:${connectionId}`,
+            driver: true,
+            features: ['attachment_ids', 'attachment_same_gateway_delivery'],
+            methods: ['groups.attachment.put', 'groups.attachment.read'],
+            persistent_process: true,
+            room_link: {
+              enabled: true,
+              endpoint: { available: true, url: `https://${connectionId}.example.test:19445` },
+              catalog: {
+                attachments: true,
+                catalog_digest: `digest:${connectionId}`,
+                installation_id: `install:${connectionId}`,
+                link_modes: ['direct'],
+                persistent_process: true,
+                protocol_versions: [2],
+                text: true
+              }
+            }
+          }
+        }
+
+        if (method === 'groups.list') {
+          return { rooms: [] }
+        }
+        if (method === 'groups.peer.invite') {
+          return {
+            grant: 'grant:builder',
+            target_profile: 'builder',
+            catalog: {
+              attachments: true,
+              catalog_digest: 'digest:host-b',
+              installation_id: 'install:host-b',
+              link_modes: ['direct'],
+              persistent_process: true,
+              protocol_versions: [2],
+              text: true
+            }
+          }
+        }
+        if (method === 'groups.create' || method === 'groups.state') {
+          throw new Error('create failed')
+        }
+        if (method === 'groups.disband' || method === 'groups.peer.revoke') {
+          if (!cleanupAvailable) {
+            throw new Error('host offline')
+          }
+
+          return { ok: true }
+        }
+
+        throw new Error(`unexpected method: ${method}`)
+      },
+      routes
+    )
+
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+
+    const members: GroupMember[] = [
+      { connectionId: 'host-a', name: 'research', route: routes[0], sourceScoped: true, targetProfile: 'research' },
+      { connectionId: 'host-b', name: 'builder', route: routes[2], sourceScoped: true, targetProfile: 'builder' }
+    ]
+    const probe = await loaded.runtime.probeHostedRoomMembers(members)
+
+    const failure = await loaded.runtime
+      .createAutonomousHostedGroupChat({
+        members: [
+          { handle: 'research', member: members[0], profile: 'research' },
+          { handle: 'builder', member: members[1], profile: 'builder' }
+        ],
+        name: 'Partial',
+        probe,
+        roomId: 'room-partial'
+      })
+      .catch(error => error as Error & { fallbackSafe?: boolean })
+
+    expect(failure).toMatchObject({
+      fallbackSafe: false,
+      message: expect.stringContaining('could not finish cleanup')
+    })
+    expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).not.toEqual([])
+
+    cleanupAvailable = true
+    loaded.runtime.stopHostedRoomRuntime()
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+
+    expect(loaded.calls.map(call => call.method)).toEqual(expect.arrayContaining(['groups.disband', 'groups.peer.revoke']))
+    expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).toEqual([])
 
     loaded.runtime.stopHostedRoomRuntime()
   })

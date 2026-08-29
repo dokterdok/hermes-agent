@@ -9,7 +9,7 @@ import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
 const mocks = vi.hoisted(() => ({
-  createHostedGroupChat: vi.fn(),
+  createAutonomousHostedGroupChat: vi.fn(),
   notify: vi.fn(),
   probeHostedRoomMembers: vi.fn(),
   saveBotMeta: vi.fn(async () => undefined)
@@ -38,7 +38,9 @@ vi.mock('./data', async importOriginal => {
 })
 
 vi.mock('./hosted-room-runtime', () => ({
-  createHostedGroupChat: mocks.createHostedGroupChat,
+  createAutonomousHostedGroupChat: mocks.createAutonomousHostedGroupChat,
+  describeAutonomousRoomPlan: () => ({ description: 'Automatic continuity', title: 'Continues' }),
+  describeHostedRoomCreationError: () => null,
   probeHostedRoomMembers: mocks.probeHostedRoomMembers
 }))
 
@@ -74,10 +76,13 @@ const eligibleProbe: HostedRoomProbe = {
       stagedAttachmentManifest: true
     },
     persistentProcess: true,
-    reason: null
+    reason: null,
+    roomLink: null
   },
+  capabilities: {},
   route: {
     connectionId: 'host-a',
+    homeConnectionId: 'host-a',
     kind: 'single-gateway',
     limits: {
       attachments: false,
@@ -86,9 +91,13 @@ const eligibleProbe: HostedRoomProbe = {
       stagedAttachmentManifest: true
     },
     memberConnectionIds: ['host-a', 'host-a'],
+    remoteConnectionIds: [],
     reason: null
-  }
+  },
+  routes: {}
 }
+
+eligibleProbe.capabilities['host-a'] = eligibleProbe.capability!
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = () => undefined
@@ -100,10 +109,11 @@ beforeAll(() => {
 beforeEach(async () => {
   vi.clearAllMocks()
   mocks.probeHostedRoomMembers.mockResolvedValue(eligibleProbe)
-  mocks.createHostedGroupChat.mockResolvedValue({
+  mocks.createAutonomousHostedGroupChat.mockResolvedValue({
     authorityId: 'install:studio',
     authorityEpoch: 1,
-    connectionId: 'host-a'
+    connectionId: 'host-a',
+    continuityMode: 'gateway'
   })
 
   const { $groupChats } = await import('./group-chat')
@@ -146,7 +156,7 @@ describe('automatic Group Chat continuity', () => {
     await waitFor(() => expect(create.disabled).toBe(false))
     fireEvent.click(create)
 
-    await waitFor(() => expect(mocks.createHostedGroupChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mocks.createAutonomousHostedGroupChat).toHaveBeenCalledTimes(1))
 
     const { $groupChats } = await import('./group-chat')
     const created = Object.values($groupChats.get())[0]
@@ -195,11 +205,11 @@ describe('automatic Group Chat continuity', () => {
 
     expect(created.continuityMode).toBe('desktop')
     expect(created.hosted ?? null).toBeNull()
-    expect(mocks.createHostedGroupChat).not.toHaveBeenCalled()
+    expect(mocks.createAutonomousHostedGroupChat).not.toHaveBeenCalled()
   })
 
   it('falls back to Desktop and shows one concise notice when hosted creation fails', async () => {
-    mocks.createHostedGroupChat.mockRejectedValue(new Error('host refused'))
+    mocks.createAutonomousHostedGroupChat.mockRejectedValue(new Error('host refused'))
     const create = await renderSelectedGroup()
 
     await waitFor(() => expect(create.disabled).toBe(false))
@@ -224,5 +234,22 @@ describe('automatic Group Chat continuity', () => {
         message: 'Studio could not keep this Group Chat running. Bots will pause when Desktop closes.'
       })
     )
+  })
+
+  it('does not create a competing Desktop room while distributed cleanup is pending', async () => {
+    mocks.createAutonomousHostedGroupChat.mockRejectedValue(
+      Object.assign(new Error('cleanup pending'), {
+        fallbackSafe: false
+      })
+    )
+    const create = await renderSelectedGroup()
+
+    await waitFor(() => expect(create.disabled).toBe(false))
+    fireEvent.click(create)
+
+    const { $groupChats } = await import('./group-chat')
+
+    await waitFor(() => expect(screen.getByText('Could not create the Group Chat. Try again.')).toBeTruthy())
+    expect(Object.values($groupChats.get())).toHaveLength(0)
   })
 })

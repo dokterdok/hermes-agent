@@ -25,11 +25,14 @@ import {
   createHostedRoomReplayState,
   deriveFriendlyHostedRoomStatus,
   isHostedRoomContinuityEligible,
+  profileScopedRoomLinkEndpoint,
   reduceHostedRoomOutbox,
   replayHostedRoomPages,
+  resolveAutonomousRoomPlan,
   resolveSingleGatewayRoute
 } from './hosted-room-client'
 import type {
+  AutonomousRoomPlan,
   FriendlyHostedRoomStatus,
   HostedRoomCapability,
   HostedRoomCommand,
@@ -37,20 +40,27 @@ import type {
   HostedRoomRouteResolution
 } from './hosted-room-client'
 import { botsText } from './i18n'
+import { requestForBot } from './routing'
 import type { Attachment, GroupChat, GroupMember, GroupMessage, ProfileRoute } from './types'
 
+export { describeAutonomousRoomPlan, describeHostedRoomCreationError } from './hosted-room-client'
+
 const HOSTED_ROOM_OUTBOX_KEY = 'hosted-room-outbox-v1'
+const HOSTED_ROOM_CLEANUP_KEY = 'hosted-room-cleanup-v1'
+const HOSTED_ROOM_CLEANUP_LIMIT = 64
 const HOSTED_ROOM_SYNC_INTERVAL_MS = 5000
 const GROUP_ATTACHMENT_CACHE_CHARS = 50_000_000
 
 export const $hostedRoomCapabilities = atom<Record<string, HostedRoomCapability>>({})
 export const $hostedRoomOutbox = atom<HostedRoomOutbox>(createHostedRoomOutbox())
+export const $hostedRoomCleanup = atom<HostedRoomCleanup>({ version: 1, operations: [] })
 
 const hostedAuthorityRoutes = new Map<string, ProfileRoute>()
 let hostedRoomSyncTimer: ReturnType<typeof setTimeout> | null = null
 let hostedRoomSyncRunning = false
 let hostedRoomSyncDisposed = true
 let hostedOutboxDispatching = false
+let hostedCleanupDispatching = false
 let hostedRoomStorage: null | PluginContext['storage'] = null
 let hostedRoomHooks: HostedRoomRuntimeHooks = {}
 const groupAttachmentDataCache = new Map<string, string>()
@@ -62,8 +72,27 @@ export interface HostedRoomRuntimeHooks {
 
 export interface HostedRoomProbe {
   capability: HostedRoomCapability | null
+  capabilities: Record<string, HostedRoomCapability>
   eligible: boolean
-  route: HostedRoomRouteResolution
+  route: AutonomousRoomPlan
+  routes: Record<string, ProfileRoute>
+}
+
+interface HostedRoomCleanupOperation {
+  cancelId?: null | string
+  connectionId: string
+  grant?: null | string
+  kind: 'home-disband' | 'peer-revoke'
+  operationId: string
+  ownerId: string
+  profile?: null | string
+  roomId?: null | string
+  setupId: string
+}
+
+interface HostedRoomCleanup {
+  operations: HostedRoomCleanupOperation[]
+  version: 1
 }
 
 interface HostedRoomCreateInput {
@@ -78,11 +107,26 @@ interface HostedRoomCreateInput {
   route: HostedRoomRouteResolution
 }
 
+interface AutonomousHostedRoomMember {
+  displayName?: string
+  handle: string
+  member: GroupMember
+  profile: string
+}
+
+interface AutonomousHostedRoomCreateInput {
+  members: AutonomousHostedRoomMember[]
+  name: string
+  probe: HostedRoomProbe
+  roomId: string
+}
+
 interface HostedRoomServerMember {
   display_name?: unknown
   handle?: unknown
   member_id?: unknown
   profile?: unknown
+  target?: unknown
 }
 
 interface HostedRoomServerState {
@@ -136,6 +180,208 @@ async function requestHostedConnection<T>(
   return host.requestProfile(route, method, params) as Promise<T>
 }
 
+const hostedCleanupOwnerId =
+  globalThis.crypto?.randomUUID?.() || `desktop-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+function normalizeHostedRoomCleanup(value: unknown): HostedRoomCleanup {
+  const candidate = record(value)
+  const operations: HostedRoomCleanupOperation[] = []
+
+  for (const raw of Array.isArray(candidate?.operations) ? candidate.operations : []) {
+    const operation = record(raw)
+    const operationId = String(operation?.operationId || '')
+    const setupId = String(operation?.setupId || '')
+    const kind = String(operation?.kind || '')
+    const connectionId = String(operation?.connectionId || '')
+
+    if (!operationId || !setupId || !connectionId || !['home-disband', 'peer-revoke'].includes(kind)) {
+      continue
+    }
+
+    if (kind === 'home-disband' && !String(operation?.roomId || '')) {
+      continue
+    }
+
+    if (kind === 'peer-revoke' && (!String(operation?.grant || '') || !String(operation?.profile || ''))) {
+      continue
+    }
+
+    operations.push({
+      operationId,
+      setupId,
+      kind: kind as HostedRoomCleanupOperation['kind'],
+      connectionId,
+      ownerId: String(operation?.ownerId || ''),
+      roomId: kind === 'home-disband' ? String(operation?.roomId || '') : null,
+      cancelId:
+        kind === 'home-disband'
+          ? String(operation?.cancelId || `rollback-${String(operation?.roomId || '')}`)
+          : null,
+      profile: kind === 'peer-revoke' ? String(operation?.profile || '') : null,
+      grant: kind === 'peer-revoke' ? String(operation?.grant || '') : null
+    })
+  }
+
+  return {
+    version: 1,
+    operations: operations.slice(-HOSTED_ROOM_CLEANUP_LIMIT)
+  }
+}
+
+async function replaceHostedRoomCleanup(next: HostedRoomCleanup) {
+  if (!hostedRoomStorage?.set) {
+    throw new Error('Desktop storage is unavailable, so Group Chat setup cannot be secured.')
+  }
+
+  const previous = $hostedRoomCleanup.get()
+
+  $hostedRoomCleanup.set(next)
+
+  try {
+    await hostedRoomStorage.set(HOSTED_ROOM_CLEANUP_KEY, next)
+  } catch (error) {
+    $hostedRoomCleanup.set(previous)
+    throw error
+  }
+}
+
+async function addHostedRoomCleanup(operation: Omit<HostedRoomCleanupOperation, 'ownerId'>) {
+  const current = normalizeHostedRoomCleanup($hostedRoomCleanup.get())
+  const next = normalizeHostedRoomCleanup({
+    version: 1,
+    operations: [
+      ...current.operations.filter(entry => entry.operationId !== operation.operationId),
+      {
+        ...operation,
+        ownerId: hostedCleanupOwnerId
+      }
+    ]
+  })
+
+  if (next.operations.length >= HOSTED_ROOM_CLEANUP_LIMIT && current.operations.length >= HOSTED_ROOM_CLEANUP_LIMIT) {
+    throw new Error('Group Chat cleanup is pending. Reconnect the affected hosts before creating another.')
+  }
+
+  await replaceHostedRoomCleanup(next)
+}
+
+async function releaseHostedRoomCleanup(setupId: string) {
+  const current = normalizeHostedRoomCleanup($hostedRoomCleanup.get())
+
+  await replaceHostedRoomCleanup({
+    version: 1,
+    operations: current.operations.filter(operation => operation.setupId !== setupId)
+  })
+}
+
+async function armHostedRoomCleanup(setupId: string) {
+  const current = normalizeHostedRoomCleanup($hostedRoomCleanup.get())
+
+  await replaceHostedRoomCleanup({
+    version: 1,
+    operations: current.operations.map(operation =>
+      operation.setupId === setupId
+        ? {
+            ...operation,
+            ownerId: ''
+          }
+        : operation
+    )
+  })
+}
+
+async function hostedRouteForReference(connectionId: string, profile = 'default') {
+  if (typeof host.profileRoutes !== 'function') {
+    return null
+  }
+
+  const routes = await host.profileRoutes()
+
+  return (
+    (Array.isArray(routes) ? routes : []).find(route => {
+      const routeProfile = String(route?.targetProfile || route?.profile || '')
+
+      return String(route?.connectionId || '') === connectionId && routeProfile === profile
+    }) || null
+  ) as ProfileRoute | null
+}
+
+function hostedCleanupAlreadySettled(error: unknown) {
+  const candidate = record(error)
+  const inner = record(candidate?.error)
+  const code = Number(candidate?.code ?? inner?.code)
+  const message = String(candidate?.message || inner?.message || error || '')
+
+  return code === 4007 || /not found|already (?:disbanded|revoked)|unknown room|unknown grant/i.test(message)
+}
+
+async function dispatchHostedRoomCleanup() {
+  if (hostedCleanupDispatching || hostedRoomSyncDisposed) {
+    return
+  }
+
+  hostedCleanupDispatching = true
+
+  try {
+    for (const operation of normalizeHostedRoomCleanup($hostedRoomCleanup.get()).operations) {
+      if (operation.ownerId === hostedCleanupOwnerId) {
+        continue
+      }
+
+      const profile = operation.kind === 'peer-revoke' ? String(operation.profile || '') : 'default'
+      const route = await hostedRouteForReference(operation.connectionId, profile)
+
+      if (!route) {
+        continue
+      }
+
+      try {
+        if (operation.kind === 'home-disband') {
+          await requestHostedConnection(route, 'groups.disband', {
+            room_id: operation.roomId,
+            cancel_id: operation.cancelId
+          })
+        } else {
+          await requestHostedConnection(route, 'groups.peer.revoke', {
+            grant: operation.grant,
+            profile: operation.profile
+          })
+        }
+      } catch (error) {
+        if (!hostedCleanupAlreadySettled(error)) {
+          continue
+        }
+      }
+
+      const latest = normalizeHostedRoomCleanup($hostedRoomCleanup.get())
+
+      await replaceHostedRoomCleanup({
+        version: 1,
+        operations: latest.operations.filter(entry => entry.operationId !== operation.operationId)
+      })
+    }
+  } finally {
+    hostedCleanupDispatching = false
+  }
+}
+
+async function withHostedRoomProbeTimeout<T>(task: Promise<T>, timeoutMs = 3000) {
+  let timer: null | ReturnType<typeof setTimeout> = null
+
+  try {
+    return await Promise.race([
+      task,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Host check timed out')), timeoutMs)
+      })
+    ])
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer)
+    }
+  }
+}
+
 function sourceLabel(connectionId: string) {
   const source = ($lastRoster.get() || []).find(row => String(row?.connectionId || '') === connectionId)
 
@@ -145,21 +391,36 @@ function sourceLabel(connectionId: string) {
 function hostedMemberDescriptors(
   room: HostedRoomServerState,
   connectionId: string,
-  connectionLabel: string
+  connectionLabel: string,
+  capabilities: Record<string, HostedRoomCapability> = $hostedRoomCapabilities.get()
 ): GroupMember[] {
+  const connectionByInstall = new Map(
+    Object.entries(capabilities).flatMap(([candidateConnectionId, capability]) =>
+      capability.roomLink?.catalog?.installationId
+        ? [[capability.roomLink.catalog.installationId, candidateConnectionId] as const]
+        : []
+    )
+  )
+
   return (Array.isArray(room?.members) ? room.members : []).map(raw => {
     const member = (record(raw) || {}) as HostedRoomServerMember
-    const profile = String(member.profile || member.member_id || 'default')
+    const target = record(member.target)
+    const peer = target?.kind === 'peer'
+    const targetConnectionId = peer
+      ? String(connectionByInstall.get(String(target.installation_id || '')) || '')
+      : connectionId
+    const profile = String(target?.profile || member.profile || member.member_id || 'default')
 
     return {
       name: profile,
       handle: String(member.handle || member.profile || 'hermes'),
       title: String(member.display_name || ''),
-      connectionId,
-      connectionLabel,
+      connectionId: targetConnectionId,
+      connectionLabel: peer ? sourceLabel(targetConnectionId) : connectionLabel,
       remoteSource: true,
-      sourceScoped: true,
-      sourceReachable: true,
+      sourceScoped: Boolean(targetConnectionId),
+      sourceMissing: peer && !targetConnectionId,
+      sourceReachable: Boolean(targetConnectionId),
       targetProfile: profile
     }
   })
@@ -438,6 +699,9 @@ export async function refreshHostedRooms() {
         const friendly = deriveFriendlyHostedRoomStatus(replay.state)
         const driver = record(stateResponse.driver_status)
         const running = driver?.working === true || friendly.kind === 'working'
+        const distributed =
+          Array.isArray(serverRoom.members) &&
+          serverRoom.members.some(member => record(record(member)?.target)?.kind === 'peer')
 
         updateGroupChat(
           localName,
@@ -452,7 +716,7 @@ export async function refreshHostedRooms() {
               hostedConnectionId: connectionId,
               hostedSeq: replay.state.cursor,
               hostedStatus: hostedStatus(friendly, sourceLabel(connectionId)),
-              continuityMode: 'gateway',
+              continuityMode: distributed ? 'distributed' : 'gateway',
               continuityIssue: replay.complete ? null : botsText().group.hostedSyncing,
               running
             }
@@ -512,6 +776,8 @@ function scheduleHostedRoomSync(delay = HOSTED_ROOM_SYNC_INTERVAL_MS) {
     void refreshHostedRooms()
       .catch(() => undefined)
       .then(() => dispatchHostedRoomOutbox())
+      .catch(() => undefined)
+      .then(() => dispatchHostedRoomCleanup())
       .catch(() => undefined)
       .then(() => scheduleHostedRoomSync())
   }, delay)
@@ -670,67 +936,81 @@ async function hostedRouteForRoom(room: GroupChat) {
 }
 
 export async function probeHostedRoomMembers(members: GroupMember[]): Promise<HostedRoomProbe> {
-  const route = resolveSingleGatewayRoute(members, {
-    activeConnectionId: activeConnectionId()
+  const active = activeConnectionId()
+  const preliminary = resolveSingleGatewayRoute(members, {
+    activeConnectionId: active
   })
+  const connectionIds = [...new Set(preliminary.memberConnectionIds.filter((value): value is string => Boolean(value)))]
+  const availableRoutes = await hostedDefaultRoutes()
+  const routes = Object.fromEntries(availableRoutes.map(route => [String(route.connectionId), route]))
+  const capabilities: Record<string, HostedRoomCapability> = {}
 
-  if (route.kind !== 'single-gateway' || !route.connectionId) {
-    return {
-      route,
-      capability: null,
-      eligible: false
-    }
-  }
+  await Promise.all(
+    connectionIds.map(async connectionId => {
+      const profileRoute = routes[connectionId]
 
-  const profileRoute = (await hostedDefaultRoutes()).find(candidate => candidate.connectionId === route.connectionId)
+      if (!profileRoute) {
+        capabilities[connectionId] = classifyHostedRoomCapability(
+          {
+            ok: false,
+            error: new Error('Host route unavailable')
+          },
+          {
+            connectionId
+          }
+        )
 
-  if (!profileRoute) {
-    return {
-      route,
-      capability: classifyHostedRoomCapability(
-        {
-          ok: false,
-          error: new Error('Gateway route unavailable')
-        },
-        {
-          connectionId: route.connectionId
-        }
-      ),
-      eligible: false
-    }
-  }
-
-  let capability: HostedRoomCapability
-
-  try {
-    capability = classifyHostedRoomCapability(await requestHostedConnection(profileRoute, 'groups.capabilities'), {
-      connectionId: route.connectionId
-    })
-  } catch (error) {
-    capability = classifyHostedRoomCapability(
-      {
-        ok: false,
-        error
-      },
-      {
-        connectionId: route.connectionId
+        return
       }
-    )
-  }
+
+      try {
+        capabilities[connectionId] = classifyHostedRoomCapability(
+          await withHostedRoomProbeTimeout(requestHostedConnection(profileRoute, 'groups.capabilities')),
+          {
+            connectionId
+          }
+        )
+      } catch (error) {
+        capabilities[connectionId] = classifyHostedRoomCapability(
+          {
+            ok: false,
+            error
+          },
+          {
+            connectionId
+          }
+        )
+      }
+    })
+  )
 
   $hostedRoomCapabilities.set({
     ...$hostedRoomCapabilities.get(),
-    [route.connectionId]: capability
+    ...capabilities
   })
 
-  if (capability.authorityId && isHostedRoomContinuityEligible(capability)) {
-    hostedAuthorityRoutes.set(capability.authorityId, profileRoute)
+  for (const [connectionId, capability] of Object.entries(capabilities)) {
+    if (capability.authorityId && isHostedRoomContinuityEligible(capability) && routes[connectionId]) {
+      hostedAuthorityRoutes.set(capability.authorityId, routes[connectionId])
+    }
   }
+
+  const route = resolveAutonomousRoomPlan(members, {
+    activeConnectionId: active,
+    capabilities
+  })
+  const capability = route.homeConnectionId ? capabilities[route.homeConnectionId] || null : null
 
   return {
     route,
     capability,
-    eligible: isHostedRoomContinuityEligible(capability)
+    capabilities,
+    routes,
+    eligible: Boolean(
+      (route.kind === 'single-gateway' || route.kind === 'multi-gateway') &&
+        capability &&
+        isHostedRoomContinuityEligible(capability)
+    )
   }
 }
 
@@ -739,7 +1019,7 @@ export async function createHostedGroupChat({ route, roomId, name, members }: Ho
   authorityId: string
   connectionId: string
 }> {
-  if (route.kind !== 'single-gateway' || !route.connectionId) {
+  if ((route.kind !== 'single-gateway' && route.kind !== 'multi-gateway') || !route.connectionId) {
     throw new Error(botsText().group.botsNeedOneHost)
   }
 
@@ -789,14 +1069,175 @@ export async function createHostedGroupChat({ route, roomId, name, members }: Ho
   }
 }
 
+export async function createAutonomousHostedGroupChat({
+  probe,
+  roomId,
+  name,
+  members
+}: AutonomousHostedRoomCreateInput) {
+  const plan = probe.route
+  const homeConnectionId = String(plan.homeConnectionId || '')
+  const homeRoute = probe.routes[homeConnectionId]
+  const homeCapability = probe.capabilities[homeConnectionId]
+
+  if (!probe.eligible || !homeConnectionId || !homeRoute || !homeCapability?.authorityId) {
+    throw new Error('This Group Chat cannot continue without Desktop yet.')
+  }
+
+  const hostedMembers: Array<Record<string, unknown>> = []
+  const peerRegistrations: Array<Record<string, unknown>> = []
+
+  try {
+    await addHostedRoomCleanup({
+      operationId: `${roomId}:home-disband`,
+      setupId: roomId,
+      kind: 'home-disband',
+      connectionId: homeConnectionId,
+      roomId,
+      cancelId: `rollback-${roomId}`
+    })
+
+    for (const [index, item] of members.entries()) {
+      const connectionId = String(item.member.route?.connectionId || item.member.connectionId || '')
+      const profile = String(item.member.targetProfile || item.profile || item.member.name || 'default')
+      const memberId = `member-${index + 1}-${profile}`.replace(/[^A-Za-z0-9._:-]/g, '-').slice(0, 128)
+      const descriptor: Record<string, unknown> = {
+        member_id: memberId,
+        profile,
+        handle: item.handle,
+        ...(item.displayName
+          ? {
+              display_name: item.displayName
+            }
+          : {})
+      }
+
+      if (connectionId === homeConnectionId) {
+        hostedMembers.push(descriptor)
+
+        continue
+      }
+
+      const invitation = record(
+        await requestForBot(item.member, 'groups.peer.invite', {
+          room_id: roomId,
+          home_install_id: homeCapability.authorityId,
+          authority_gateway_id: homeCapability.authorityId,
+          authority_epoch: 1,
+          member_id: memberId,
+          profile
+        })
+      )
+      const catalog = record(invitation?.catalog)
+      const invitedProfile = String(invitation?.target_profile || profile || '')
+      const scopedTargetUrl = profileScopedRoomLinkEndpoint(
+        probe.capabilities[connectionId]?.roomLink?.endpoint,
+        invitation?.target_profile
+      )
+
+      if (invitation?.grant && invitedProfile) {
+        await addHostedRoomCleanup({
+          operationId: `${roomId}:peer-revoke:${memberId}`,
+          setupId: roomId,
+          kind: 'peer-revoke',
+          connectionId,
+          profile: invitedProfile,
+          grant: String(invitation.grant)
+        })
+      }
+
+      if (
+        !scopedTargetUrl ||
+        !invitation?.grant ||
+        !catalog?.installation_id ||
+        !catalog.catalog_digest ||
+        !invitation.target_profile
+      ) {
+        throw new Error('One Bot host could not prepare this Group Chat.')
+      }
+
+      hostedMembers.push({
+        ...descriptor,
+        profile: invitation.target_profile,
+        target: {
+          kind: 'peer',
+          peer_id: catalog.installation_id,
+          installation_id: catalog.installation_id,
+          profile: invitation.target_profile,
+          capability_digest: catalog.catalog_digest
+        }
+      })
+      peerRegistrations.push({
+        room_id: roomId,
+        member_id: memberId,
+        target_url: scopedTargetUrl,
+        target_profile: invitation.target_profile,
+        grant: invitation.grant,
+        catalog
+      })
+    }
+
+    const created = await createHostedGroupChat({
+      route: plan,
+      roomId,
+      name,
+      members: hostedMembers as HostedRoomCreateInput['members']
+    })
+
+    for (const registration of peerRegistrations) {
+      await requestHostedConnection(homeRoute, 'groups.peer.register', registration)
+    }
+
+    await releaseHostedRoomCleanup(roomId)
+
+    return {
+      ...created,
+      continuityMode: plan.kind === 'multi-gateway' ? ('distributed' as const) : ('gateway' as const)
+    }
+  } catch (error) {
+    await armHostedRoomCleanup(roomId).catch(() => undefined)
+    await dispatchHostedRoomCleanup().catch(() => undefined)
+
+    if (normalizeHostedRoomCleanup($hostedRoomCleanup.get()).operations.some(operation => operation.setupId === roomId)) {
+      throw Object.assign(new Error('Some Bot hosts could not finish cleanup. Reconnect them before trying again.', {
+          cause: error
+        }), {
+        fallbackSafe: false
+      })
+    }
+
+    throw error
+  }
+}
+
 export function hostedRoomAcceptsAttachments(room: GroupChat) {
   if (!groupChatHostedGateway(room)) {
     return true
   }
 
   const connectionId = String(room.hostedConnectionId || '')
+  const capabilities = $hostedRoomCapabilities.get()
 
-  return Boolean(connectionId && $hostedRoomCapabilities.get()[connectionId]?.limits.attachments)
+  if (!connectionId || !capabilities[connectionId]?.limits.attachments) {
+    return false
+  }
+
+  if (room.continuityMode !== 'distributed') {
+    return true
+  }
+
+  const memberConnections = new Set(
+    (Array.isArray(room.members) ? room.members : []).map(member => String(member.connectionId || '')).filter(Boolean)
+  )
+
+  return [...memberConnections].every(memberConnectionId => {
+    const capability = capabilities[memberConnectionId]
+
+    return Boolean(
+      capability?.limits.attachments &&
+        (memberConnectionId === connectionId || capability.roomLink?.catalog?.attachments === true)
+    )
+  })
 }
 
 function attachmentMime(attachment: Attachment) {
@@ -1102,6 +1543,13 @@ export async function startHostedRoomRuntime(storage: PluginContext['storage'], 
     $hostedRoomOutbox.set(createHostedRoomOutbox())
   }
 
+  try {
+    $hostedRoomCleanup.set(normalizeHostedRoomCleanup(await storage?.get?.(HOSTED_ROOM_CLEANUP_KEY, null)))
+  } catch {
+    $hostedRoomCleanup.set({ version: 1, operations: [] })
+  }
+
+  await dispatchHostedRoomCleanup().catch(() => undefined)
   await refreshHostedRooms().catch(() => undefined)
   await dispatchHostedRoomOutbox().catch(() => undefined)
   scheduleHostedRoomSync()
@@ -1127,6 +1575,8 @@ export function resetHostedRoomRuntimeForTests() {
   stopHostedRoomRuntime()
   hostedRoomSyncRunning = false
   hostedOutboxDispatching = false
+  hostedCleanupDispatching = false
   $hostedRoomCapabilities.set({})
   $hostedRoomOutbox.set(createHostedRoomOutbox())
+  $hostedRoomCleanup.set({ version: 1, operations: [] })
 }

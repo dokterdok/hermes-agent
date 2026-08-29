@@ -6,9 +6,11 @@ import {
   createHostedRoomReplayState,
   deriveFriendlyHostedRoomStatus,
   isHostedRoomContinuityEligible,
+  profileScopedRoomLinkEndpoint,
   reduceHostedRoomEvents,
   reduceHostedRoomOutbox,
   replayHostedRoomPages,
+  resolveAutonomousRoomPlan,
   resolveSingleGatewayRoute
 } from './hosted-room-client'
 
@@ -148,6 +150,107 @@ describe('hosted Group Chat capability negotiation', () => {
       reason: 'cross-gateway'
     })
     expect(unresolved.reason).toBe('unresolved-member-route')
+  })
+
+  it('plans a direct multi-host Group Chat only from verified v2 catalogs', () => {
+    const capability = (connectionId: string, installationId: string) =>
+      classifyHostedRoomCapability(
+        {
+          authority_gateway_id: installationId,
+          driver: true,
+          persistent_process: true,
+          room_link: {
+            enabled: true,
+            endpoint: {
+              available: true,
+              url: `https://${connectionId}.example.test:19445`
+            },
+            catalog: {
+              attachments: true,
+              catalog_digest: `digest-${connectionId}`,
+              installation_id: installationId,
+              link_modes: ['direct'],
+              persistent_process: true,
+              protocol_versions: [2],
+              text: true
+            }
+          }
+        },
+        {
+          connectionId
+        }
+      )
+
+    const capabilities = {
+      'host-a': capability('host-a', 'install:a'),
+      'host-b': capability('host-b', 'install:b')
+    }
+    const plan = resolveAutonomousRoomPlan(
+      [
+        { connectionId: 'host-a', name: 'research', sourceScoped: true },
+        { connectionId: 'host-b', name: 'builder', sourceScoped: true }
+      ],
+      {
+        activeConnectionId: 'host-a',
+        capabilities
+      }
+    )
+
+    expect(plan).toMatchObject({
+      connectionId: 'host-a',
+      homeConnectionId: 'host-a',
+      kind: 'multi-gateway',
+      remoteConnectionIds: ['host-b']
+    })
+    expect(capabilities['host-b'].roomLink?.catalog?.attachments).toBe(true)
+
+    const incompatible = {
+      ...capabilities,
+      'host-b': classifyHostedRoomCapability(
+        {
+          authority_gateway_id: 'install:b',
+          driver: true,
+          persistent_process: true,
+          room_link: {
+            enabled: true,
+            endpoint: { available: true, url: 'https://host-b.example.test' },
+            catalog: {
+              catalog_digest: 'digest-b',
+              installation_id: 'install:b',
+              link_modes: ['direct'],
+              persistent_process: true,
+              protocol_versions: [1],
+              text: true
+            }
+          }
+        },
+        { connectionId: 'host-b' }
+      )
+    }
+
+    expect(
+      resolveAutonomousRoomPlan(
+        [
+          { connectionId: 'host-a', name: 'research', sourceScoped: true },
+          { connectionId: 'host-b', name: 'builder', sourceScoped: true }
+        ],
+        { activeConnectionId: 'host-a', capabilities: incompatible }
+      )
+    ).toMatchObject({
+      kind: 'unsupported',
+      reason: 'remote-needs-setup',
+      unavailableConnectionId: 'host-b'
+    })
+  })
+
+  it('scopes one advertised endpoint to the selected Bot profile', () => {
+    expect(profileScopedRoomLinkEndpoint('https://peer.example.test/hermes/', 'research lead')).toBe(
+      'https://peer.example.test/hermes/p/research%20lead'
+    )
+    expect(profileScopedRoomLinkEndpoint('https://peer.example.test/hermes/p/other', 'research lead')).toBeNull()
+    expect(profileScopedRoomLinkEndpoint('https://peer.example.test/hermes/', 'default')).toBe(
+      'https://peer.example.test/hermes'
+    )
   })
 })
 

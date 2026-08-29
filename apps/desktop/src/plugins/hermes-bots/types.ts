@@ -175,7 +175,7 @@ export interface GroupHold {
 
 export interface GroupChat {
   /** User-facing continuity choice. Missing records are classic Desktop rooms. */
-  continuityMode?: 'desktop' | 'gateway'
+  continuityMode?: 'desktop' | 'distributed' | 'gateway'
   /** Public SHA-256 commitment to the local authority token. */
   desktopAuthorityHash?: null | string
   /** Secret held only by the Desktop that coordinates this classic room. */

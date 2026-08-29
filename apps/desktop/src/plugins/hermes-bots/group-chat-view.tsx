@@ -63,6 +63,7 @@ import {
   $groupChatWorkspace,
   $groupClarify,
   $groupNeedsYou,
+  durableGroupChatRooms,
   groupChatHostedGateway,
   groupSpeakerLabel,
   groupThreadOf,
@@ -281,30 +282,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   // Persist the room map WITHOUT the disbanded room so it can't come back
   // on the next window load.
   try {
-    const durable: Record<string, GroupChat> = {}
-
-    for (const [name, room] of Object.entries($groupChats.get())) {
-      if (name !== group && Array.isArray(room.log)) {
-        durable[name] = {
-          log: room.log,
-          watermarks: room.watermarks,
-          sessions: room.sessions || {},
-          sessionOwners: room.sessionOwners || {},
-          members: Array.isArray(room.members) ? room.members : [],
-          roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-          hosted: groupChatHostedGateway(room) || null,
-          hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
-          hostedConnectionId:
-            typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
-          hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
-          continuityMode: groupChatHostedGateway(room) ? 'gateway' : room.continuityMode || 'desktop',
-          image: room.image || null,
-          syncRevision: Math.max(0, Number(room.syncRevision || 0))
-        }
-      }
-    }
-
-    await Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durable))
+    await Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durableGroupChatRooms($groupChats.get())))
   } catch {
     /* storage unavailable — the atom reset above still empties the room */
   }
@@ -533,6 +511,25 @@ export function GroupChatSettingsDialog({ group, members, open, onClose, onRenam
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
   const renameBlocked = name.trim() !== group && groupChatRenameBlocked(room)
+  const continuityMode = room.continuityMode === 'distributed' ? 'distributed' : groupChatHostedGateway(room) ? 'gateway' : 'desktop'
+  const coordinator = (members || []).find(
+    member => String(member?.connectionId || '') === String(room.hostedConnectionId || '')
+  )?.connectionLabel
+  const continuityCopy =
+    continuityMode === 'distributed'
+      ? {
+          title: b.group.continuesWithoutDesktop,
+          description: b.group.distributedContinuity
+        }
+      : continuityMode === 'gateway'
+        ? {
+            title: b.group.continuesWithoutDesktop,
+            description: b.group.gatewayContinuity(coordinator || b.group.thisHost)
+          }
+        : {
+            title: b.group.desktopContinuity,
+            description: room.continuityIssue || b.group.desktopContinuityDescription
+          }
   useEffect(() => {
     if (open) {
       setName(group)
@@ -594,6 +591,15 @@ export function GroupChatSettingsDialog({ group, members, open, onClose, onRenam
           />
         </form>
         {renameBlocked ? <p className="text-xs text-(--ui-text-tertiary)">{b.group.renameWait}</p> : null}
+        <div className="border-t border-(--ui-stroke-secondary) pt-3">
+          <div className="text-xs font-medium text-foreground">{b.group.backgroundWork}</div>
+          <div className="mt-1 text-[0.6875rem] leading-relaxed text-(--ui-text-tertiary)">
+            {continuityCopy.title}
+          </div>
+          <div className="mt-0.5 text-[0.6875rem] leading-relaxed text-(--ui-text-quaternary)">
+            {continuityCopy.description}
+          </div>
+        </div>
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}

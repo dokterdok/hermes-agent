@@ -63,7 +63,12 @@ import {
   knownGroups,
   liveGroupChatNames
 } from './group-membership'
-import { createHostedGroupChat, probeHostedRoomMembers } from './hosted-room-runtime'
+import {
+  createAutonomousHostedGroupChat,
+  describeAutonomousRoomPlan,
+  describeHostedRoomCreationError,
+  probeHostedRoomMembers
+} from './hosted-room-runtime'
 import type { HostedRoomProbe } from './hosted-room-runtime'
 import { useBots } from './i18n'
 import { displayName, slugify } from './labels'
@@ -1269,29 +1274,43 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       }
 
       const hostName = selected[0]?.connectionLabel || b.group.thisHost
-      let hosted: Awaited<ReturnType<typeof createHostedGroupChat>> | null = null
+      const unavailableConnectionId = resolvedProbe?.route.unavailableConnectionId
+      const unavailableLabel =
+        selected.find(bot => String(bot.connectionId || '') === unavailableConnectionId)?.connectionLabel || 'One Bot host'
+      const homeLabel =
+        selected.find(bot => String(bot.connectionId || '') === resolvedProbe?.route.homeConnectionId)?.connectionLabel ||
+        b.group.thisHost
+      const planCopy = resolvedProbe
+        ? describeAutonomousRoomPlan(resolvedProbe.route, {
+            homeLabel,
+            unavailableLabel
+          })
+        : null
+      let hosted: Awaited<ReturnType<typeof createAutonomousHostedGroupChat>> | null = null
 
       if (resolvedProbe?.eligible) {
         try {
-          hosted = await createHostedGroupChat({
-            route: resolvedProbe.route,
+          const roomMembers = durableGroupChatMembers(selected)
+
+          hosted = await createAutonomousHostedGroupChat({
+            probe: resolvedProbe,
             roomId,
             name: groupName,
-            members: selected.map(bot => ({
-              member_id: bot.name === 'default' ? 'default' : bot.name,
+            members: selected.map((bot, index) => ({
+              member: roomMembers[index],
               profile: bot.name,
               handle: botHandle(bot.name, bot),
-              ...(displayName(bot, botRosterMeta(bot, allMeta))
-                ? {
-                    display_name: displayName(bot, botRosterMeta(bot, allMeta))
-                  }
-                : {})
+              displayName: displayName(bot, botRosterMeta(bot, allMeta)) || undefined
             }))
           })
-        } catch {
+        } catch (error) {
+          if ((error as { fallbackSafe?: boolean } | null)?.fallbackSafe === false) {
+            throw error
+          }
+
           host.notify({
             kind: 'info',
-            message: b.group.hostedFallbackToDesktop(hostName)
+            message: describeHostedRoomCreationError(error) || b.group.hostedFallbackToDesktop(hostName)
           })
         }
       }
@@ -1309,7 +1328,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       updateGroupChat(groupName, (room: GroupChatRoom) => {
         room.members = roomMembers
         room.roomId = roomId
-        room.continuityMode = hosted ? 'gateway' : 'desktop'
+        room.continuityMode = hosted?.continuityMode || 'desktop'
+        room.continuityIssue = hosted ? null : planCopy?.description || null
 
         if (desktopAuthority) {
           room.desktopAuthorityHash = desktopAuthority.desktopAuthorityHash
