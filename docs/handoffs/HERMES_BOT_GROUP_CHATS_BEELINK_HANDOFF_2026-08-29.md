@@ -74,7 +74,7 @@ All branches are on https://github.com/dokterdok/hermes-agent.
 | 2 same-gateway runner | `feat/bot-mode-same-gateway-continuity-20260829` | `09f58fafa94fee562bc03b00d6c04ec03e9c2f15` | PR #97744, ready |
 | 3 cross-gateway backend | `feat/bot-mode-cross-gateway-roomlink-20260829` | `4a53a0978cc4518c0a3644a059d62de7c9603a72` | WIP branch, no PR yet |
 | complete field build | `wip/roomlink-field-integration-20260829` | `5bda072c0ffc4c32f4329acb36e545f9db7b7a8a` | reference only |
-| handoff docs | `handoff/bot-group-chats-beelink-20260829` | `487d7d8ca0af46ece42856131012fbcf8b5fd7b0` | no PR |
+| handoff docs | `handoff/bot-group-chats-beelink-20260829` | handoff root `487d7d8ca0`; use the remote branch tip | no PR |
 
 The cross-gateway branch includes the parent Layer 1 and Layer 2 commits. Do not independently rebase only Layer 3 if that would rewrite or duplicate the ready parent heads. If upstream changes conflict, update the stack in order: #97712, then #97744, then Layer 3.
 
