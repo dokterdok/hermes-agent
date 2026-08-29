@@ -33,6 +33,7 @@ MAX_MEMBERS = 128
 MAX_MEMBERS_JSON_BYTES = 128 * 1024
 MAX_EVENT_JSON_BYTES = 256 * 1024
 MAX_LOG_LIMIT = 500
+MAX_LOG_PAGE_BYTES = 2 * 1024 * 1024
 MAX_ROOM_LIST_LIMIT = 500
 MAX_ACTIVE_ROOMS = 256
 MAX_DISBANDED_ROOM_TOMBSTONES = 512
@@ -1695,7 +1696,12 @@ def append_event(
     )
     kind = _validate_event_kind(kind)
     normalized_actor, actor_json = _validate_actor(actor, kind=kind)
-    authority_scoped = normalized_actor["kind"] in {"member", "gateway", "system"}
+    authority_scoped = normalized_actor["kind"] in {
+        "user",
+        "member",
+        "gateway",
+        "system",
+    }
     normalized_authority_gateway_id: str | None = None
     normalized_authority_epoch: int | None = None
     if authority_scoped:
@@ -1718,7 +1724,7 @@ def append_event(
         normalized_authority_epoch = authority_epoch
     elif authority_gateway_id is not None or authority_epoch is not None:
         raise HostedRoomError(
-            "authority fields are only valid for member, gateway, or system events"
+            "authority fields are only valid for room-scoped events"
         )
     if not isinstance(payload, dict):
         raise HostedRoomError("payload must be an object")
@@ -2055,6 +2061,8 @@ def disband_room(
     db_path: Path | str,
     *,
     room_id: Any,
+    expected_gateway_id: Any,
+    expected_epoch: Any,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Tombstone a room id permanently and idempotently."""
@@ -2063,11 +2071,23 @@ def disband_room(
         label="room_id",
         max_chars=MAX_ROOM_ID_CHARS,
     )
+    expected_gateway_id = _validate_identifier(
+        expected_gateway_id,
+        label="expected_gateway_id",
+        max_chars=MAX_ACTOR_ID_CHARS,
+    )
+    if (
+        isinstance(expected_epoch, bool)
+        or not isinstance(expected_epoch, int)
+        or expected_epoch < 1
+    ):
+        raise HostedRoomError("expected_epoch must be a positive integer")
     now = time.time() if now is None else float(now)
 
     with _transaction(db_path, immediate=True) as conn:
         room = conn.execute(
-            """SELECT authority_epoch, next_seq, event_bytes, disbanded_at
+            """SELECT authority_gateway_id, authority_epoch, next_seq,
+                      event_bytes, disbanded_at
                  FROM hosted_rooms WHERE room_id=?""",
             (room_id,),
         ).fetchone()
@@ -2107,6 +2127,11 @@ def disband_room(
                     else {}
                 ),
             }
+        if (
+            str(room["authority_gateway_id"]) != expected_gateway_id
+            or int(room["authority_epoch"]) != expected_epoch
+        ):
+            raise AuthorityConflictError("stale hosted room authority")
         seq = int(room["next_seq"])
         actor_json = _canonical_json(
             {"kind": "system", "id": "room-control"},
@@ -2148,8 +2173,16 @@ def disband_room(
             """UPDATE hosted_rooms
                SET disbanded_at=?, updated_at=?, revision=revision+1,
                    next_seq=next_seq+1, event_bytes=event_bytes+?
-               WHERE room_id=? AND disbanded_at IS NULL""",
-            (now, now, disband_bytes, room_id),
+               WHERE room_id=? AND disbanded_at IS NULL
+                 AND authority_gateway_id=? AND authority_epoch=?""",
+            (
+                now,
+                now,
+                disband_bytes,
+                room_id,
+                expected_gateway_id,
+                expected_epoch,
+            ),
         )
         if updated.rowcount != 1:
             raise RoomConflictError("hosted room disband lost its fence")
@@ -2215,12 +2248,23 @@ def read_events(
         if since_seq > latest_seq:
             raise HostedRoomError("since_seq is ahead of the hosted room log")
         rows = conn.execute(
-            """SELECT room_id, seq, event_id, kind, actor_json, authority_epoch,
-                      payload_json, created_at
-               FROM hosted_room_events
-               WHERE room_id=? AND seq>?
-               ORDER BY seq ASC LIMIT ?""",
-            (room_id, since_seq, limit),
+            """WITH candidates AS (
+                   SELECT room_id, seq, event_id, kind, actor_json,
+                          authority_epoch, payload_json, created_at,
+                          SUM(
+                              LENGTH(event_id) + LENGTH(kind) +
+                              LENGTH(actor_json) + LENGTH(payload_json)
+                          ) OVER (ORDER BY seq ASC) AS cumulative_bytes
+                     FROM hosted_room_events
+                    WHERE room_id=? AND seq>?
+                    ORDER BY seq ASC LIMIT ?
+               )
+               SELECT room_id, seq, event_id, kind, actor_json,
+                      authority_epoch, payload_json, created_at
+                 FROM candidates
+                WHERE cumulative_bytes<=?
+                ORDER BY seq ASC""",
+            (room_id, since_seq, limit, MAX_LOG_PAGE_BYTES),
         ).fetchall()
     events = [_event_from_row(row) for row in rows]
     cursor = events[-1]["seq"] if events else since_seq

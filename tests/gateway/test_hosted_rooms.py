@@ -74,6 +74,19 @@ def _create(db, room_id="room-1"):
     )
 
 
+def _append(db, **kwargs):
+    if kwargs.get("kind") == "message.user":
+        kwargs.setdefault("authority_gateway_id", "gateway-a")
+        kwargs.setdefault("authority_epoch", 1)
+    return rooms.append_event(db, **kwargs)
+
+
+def _disband(db, **kwargs):
+    kwargs.setdefault("expected_gateway_id", "gateway-a")
+    kwargs.setdefault("expected_epoch", 1)
+    return rooms.disband_room(db, **kwargs)
+
+
 def _assert_retired_identity_stays_reserved(db, room_id, *, fresh_id):
     # Reopen the database to prove the reservation is durable rather than a
     # process-local cache, while the heavier room/event payload is gone.
@@ -95,7 +108,7 @@ def _assert_retired_identity_stays_reserved(db, room_id, *, fresh_id):
     with pytest.raises(rooms.RoomConflictError, match="disbanded"):
         _create(db, room_id)
     with pytest.raises(rooms.RoomHistoryExpiredError) as send_error:
-        rooms.append_event(
+        _append(
             db,
             room_id=room_id,
             event_id="stale-send",
@@ -107,7 +120,7 @@ def _assert_retired_identity_stays_reserved(db, room_id, *, fresh_id):
     with pytest.raises(rooms.RoomHistoryExpiredError) as log_error:
         rooms.read_events(db, room_id=room_id, include_disbanded=True)
     assert log_error.value.reason == "room_history_expired"
-    repeated = rooms.disband_room(db, room_id=room_id, now=999)
+    repeated = _disband(db, room_id=room_id, now=999)
     assert repeated == {
         "room_id": room_id,
         "disbanded_at": 20.0,
@@ -209,7 +222,7 @@ def test_authority_claim_fences_stale_gateway_events(tmp_path):
     db = tmp_path / "state.db"
     _create(db)
 
-    first = rooms.append_event(
+    first = _append(
         db,
         room_id="room-1",
         event_id="turn-1",
@@ -258,7 +271,7 @@ def test_authority_claim_fences_stale_gateway_events(tmp_path):
 
     # An exact retry admitted before takeover stays idempotent and cannot
     # produce a second side effect, even though its epoch is now stale.
-    repeated = rooms.append_event(
+    repeated = _append(
         db,
         room_id="room-1",
         event_id="turn-1",
@@ -272,7 +285,7 @@ def test_authority_claim_fences_stale_gateway_events(tmp_path):
     assert repeated["idempotent"] is True
 
     with pytest.raises(rooms.AuthorityConflictError, match="stale"):
-        rooms.append_event(
+        _append(
             db,
             room_id="room-1",
             event_id="turn-2-stale",
@@ -284,7 +297,7 @@ def test_authority_claim_fences_stale_gateway_events(tmp_path):
         )
 
     with pytest.raises(rooms.AuthorityConflictError, match="stale"):
-        rooms.append_event(
+        _append(
             db,
             room_id="room-1",
             event_id="member-2-stale",
@@ -295,7 +308,7 @@ def test_authority_claim_fences_stale_gateway_events(tmp_path):
             payload={"text": "stale result"},
         )
 
-    current = rooms.append_event(
+    current = _append(
         db,
         room_id="room-1",
         event_id="turn-2-current",
@@ -306,7 +319,7 @@ def test_authority_claim_fences_stale_gateway_events(tmp_path):
         payload={"member": "ops"},
     )
     assert current["authority_epoch"] == 2
-    current_member = rooms.append_event(
+    current_member = _append(
         db,
         room_id="room-1",
         event_id="member-2-current",
@@ -384,7 +397,7 @@ def test_authority_scoped_events_require_gateway_and_epoch(tmp_path):
     _create(db)
 
     with pytest.raises(rooms.HostedRoomError, match="authority_gateway_id"):
-        rooms.append_event(
+        _append(
             db,
             room_id="room-1",
             event_id="turn-1",
@@ -394,7 +407,7 @@ def test_authority_scoped_events_require_gateway_and_epoch(tmp_path):
         )
 
     with pytest.raises(rooms.HostedRoomError, match="actor.id"):
-        rooms.append_event(
+        _append(
             db,
             room_id="room-1",
             event_id="turn-2",
@@ -405,24 +418,32 @@ def test_authority_scoped_events_require_gateway_and_epoch(tmp_path):
             payload={"member": "ops"},
         )
 
-    with pytest.raises(rooms.HostedRoomError, match="only valid"):
+    with pytest.raises(rooms.HostedRoomError, match="authority_gateway_id"):
         rooms.append_event(
             db,
             room_id="room-1",
             event_id="message-1",
             kind="message.user",
             actor=USER,
-            authority_gateway_id="gateway-a",
-            authority_epoch=1,
             payload={"text": "hello"},
         )
+
+    appended = _append(
+        db,
+        room_id="room-1",
+        event_id="message-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "hello"},
+    )
+    assert appended["authority_epoch"] == 1
 
 
 def test_append_is_idempotent_and_conflicting_event_id_is_rejected(tmp_path):
     db = tmp_path / "state.db"
     _create(db)
 
-    first = rooms.append_event(
+    first = _append(
         db,
         room_id="room-1",
         event_id="event-1",
@@ -431,7 +452,7 @@ def test_append_is_idempotent_and_conflicting_event_id_is_rejected(tmp_path):
         payload={"text": "hello"},
         now=20,
     )
-    repeated = rooms.append_event(
+    repeated = _append(
         db,
         room_id="room-1",
         event_id="event-1",
@@ -446,7 +467,7 @@ def test_append_is_idempotent_and_conflicting_event_id_is_rejected(tmp_path):
     assert rooms.read_events(db, room_id="room-1")["latest_seq"] == 1
 
     with pytest.raises(rooms.EventConflictError):
-        rooms.append_event(
+        _append(
             db,
             room_id="room-1",
             event_id="event-1",
@@ -460,7 +481,7 @@ def test_since_seq_returns_ordered_deltas_and_stable_cursor(tmp_path):
     db = tmp_path / "state.db"
     _create(db)
     for index in range(1, 5):
-        rooms.append_event(
+        _append(
             db,
             room_id="room-1",
             event_id=f"event-{index}",
@@ -497,7 +518,7 @@ def test_since_seq_returns_ordered_deltas_and_stable_cursor(tmp_path):
 def test_room_log_survives_store_reopen(tmp_path):
     db = tmp_path / "state.db"
     _create(db)
-    rooms.append_event(
+    _append(
         db,
         room_id="room-1",
         event_id="event-1",
@@ -518,7 +539,7 @@ def test_room_tables_coexist_with_session_db_schema(tmp_path, session_first):
         SessionDB(db_path=db).close()
 
     _create(db)
-    rooms.append_event(
+    _append(
         db,
         room_id="room-1",
         event_id="event-1",
@@ -538,7 +559,7 @@ def test_concurrent_appends_allocate_one_monotonic_sequence(tmp_path):
     _create(db)
 
     def append(index):
-        return rooms.append_event(
+        return _append(
             db,
             room_id="room-1",
             event_id=f"event-{index}",
@@ -573,7 +594,7 @@ def test_rolled_back_append_does_not_consume_sequence(tmp_path):
     finally:
         conn.close()
 
-    event = rooms.append_event(
+    event = _append(
         db,
         room_id="room-1",
         event_id="after-restart",
@@ -608,7 +629,7 @@ def test_invalid_event_contract_is_rejected(tmp_path, kwargs, message):
     params.update(kwargs)
 
     with pytest.raises(rooms.HostedRoomError, match=message):
-        rooms.append_event(db, **params)
+        _append(db, **params)
 
 
 def test_unknown_room_and_invalid_cursor_fail_closed(tmp_path):
@@ -628,7 +649,7 @@ def test_unknown_room_and_invalid_cursor_fail_closed(tmp_path):
 def test_actor_is_part_of_event_idempotency_and_replay(tmp_path):
     db = tmp_path / "state.db"
     _create(db)
-    event = rooms.append_event(
+    event = _append(
         db,
         room_id="room-1",
         event_id="event-1",
@@ -641,7 +662,7 @@ def test_actor_is_part_of_event_idempotency_and_replay(tmp_path):
     assert rooms.read_events(db, room_id="room-1")["events"][0]["actor"] == USER
 
     with pytest.raises(rooms.EventConflictError):
-        rooms.append_event(
+        _append(
             db,
             room_id="room-1",
             event_id="event-1",
@@ -655,8 +676,8 @@ def test_disband_is_idempotent_and_room_id_cannot_be_reused(tmp_path):
     db = tmp_path / "state.db"
     _create(db)
 
-    first = rooms.disband_room(db, room_id="room-1", now=50)
-    repeated = rooms.disband_room(db, room_id="room-1", now=60)
+    first = _disband(db, room_id="room-1", now=50)
+    repeated = _disband(db, room_id="room-1", now=60)
 
     assert first["room_id"] == "room-1"
     assert first["disbanded_at"] == 50.0
@@ -682,6 +703,56 @@ def test_disband_is_idempotent_and_room_id_cannot_be_reused(tmp_path):
     assert not isinstance(missing.value, rooms.RoomHistoryExpiredError)
 
 
+def test_disband_rejects_stale_authority(tmp_path):
+    db = tmp_path / "state.db"
+    _create(db)
+    rooms.claim_authority(
+        db,
+        room_id="room-1",
+        expected_gateway_id="gateway-a",
+        expected_epoch=1,
+        new_gateway_id="gateway-b",
+        event_id="claim-b",
+    )
+
+    with pytest.raises(rooms.AuthorityConflictError, match="stale"):
+        _disband(db, room_id="room-1")
+
+    tombstone = _disband(
+        db,
+        room_id="room-1",
+        expected_gateway_id="gateway-b",
+        expected_epoch=2,
+    )
+    assert tombstone["event"]["authority_epoch"] == 2
+
+
+def test_room_log_pages_are_bounded_by_serialized_event_bytes(tmp_path, monkeypatch):
+    db = tmp_path / "state.db"
+    _create(db)
+    monkeypatch.setattr(rooms, "MAX_LOG_PAGE_BYTES", 450)
+    for index in range(4):
+        _append(
+            db,
+            room_id="room-1",
+            event_id=f"message-{index}",
+            kind="message.user",
+            actor=USER,
+            payload={"text": "x" * 180, "index": index},
+        )
+
+    first = rooms.read_events(db, room_id="room-1", limit=4)
+    assert len(first["events"]) == 1
+    assert first["has_more"] is True
+    second = rooms.read_events(
+        db,
+        room_id="room-1",
+        since_seq=first["cursor"],
+        limit=4,
+    )
+    assert second["events"][0]["seq"] == first["cursor"] + 1
+
+
 def test_active_rooms_and_event_storage_are_bounded(tmp_path, monkeypatch):
     db = tmp_path / "state.db"
     _create(db)
@@ -690,9 +761,9 @@ def test_active_rooms_and_event_storage_are_bounded(tmp_path, monkeypatch):
     with pytest.raises(rooms.HostedRoomError, match="too many active"):
         _create(db, "room-2")
 
-    rooms.disband_room(db, room_id="room-1", now=20)
+    _disband(db, room_id="room-1", now=20)
     _create(db, "room-2")
-    first = rooms.append_event(
+    first = _append(
         db,
         room_id="room-2",
         event_id="message-1",
@@ -707,7 +778,7 @@ def test_active_rooms_and_event_storage_are_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr(rooms, "MAX_ROOM_EVENT_BYTES", current_bytes)
 
     with pytest.raises(rooms.HostedRoomError, match="storage limit"):
-        rooms.append_event(
+        _append(
             db,
             room_id="room-2",
             event_id="message-2",
@@ -716,7 +787,7 @@ def test_active_rooms_and_event_storage_are_bounded(tmp_path, monkeypatch):
             payload={"text": "second"},
         )
     assert rooms.read_events(db, room_id="room-2")["events"] == [first]
-    assert rooms.disband_room(db, room_id="room-2")["event"]["kind"] == "room.disbanded"
+    assert _disband(db, room_id="room-2")["event"]["kind"] == "room.disbanded"
 
 
 def test_room_listing_is_paged_and_old_tombstones_are_pruned(tmp_path, monkeypatch):
@@ -726,7 +797,7 @@ def test_room_listing_is_paged_and_old_tombstones_are_pruned(tmp_path, monkeypat
         room_id = f"room-{index}"
         _create(db, room_id)
         if index < 2:
-            rooms.disband_room(db, room_id=room_id, now=20 + index)
+            _disband(db, room_id=room_id, now=20 + index)
 
     first_page = rooms.list_rooms(db, include_disbanded=True, limit=1)
     second_page = rooms.list_rooms(
@@ -748,7 +819,7 @@ def test_room_listing_is_paged_and_old_tombstones_are_pruned(tmp_path, monkeypat
 def test_retention_pruning_keeps_retired_room_id_reserved(tmp_path):
     db = tmp_path / "state.db"
     _create(db, "room-old")
-    rooms.disband_room(db, room_id="room-old", now=20)
+    _disband(db, room_id="room-old", now=20)
 
     assert (
         rooms.prune_disbanded_rooms(
@@ -769,7 +840,7 @@ def test_byte_pressure_pruning_keeps_retired_room_id_reserved(
     _create(db, "room-full")
     monkeypatch.setattr(rooms, "MAX_GATEWAY_EVENT_BYTES", 0)
 
-    rooms.disband_room(db, room_id="room-full", now=20)
+    _disband(db, room_id="room-full", now=20)
 
     _assert_retired_identity_stays_reserved(db, "room-full", fresh_id="room-new")
 

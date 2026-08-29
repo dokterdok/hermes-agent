@@ -596,6 +596,7 @@ def _(rid, params: dict) -> dict:
         HostedRoomError,
         RoomHistoryExpiredError,
         disband_room,
+        local_authority_gateway_id,
         room_state,
     )
 
@@ -603,6 +604,21 @@ def _(rid, params: dict) -> dict:
         service = get_hosted_room_service()
         if service is None:
             return _err(rid, 4123, _WORKER_UNAVAILABLE)
+
+        def disband_with_state(state: dict | None = None) -> dict:
+            return disband_room(
+                service.db_path,
+                room_id=params.get("room_id"),
+                expected_gateway_id=str(
+                    state["authority_gateway_id"]
+                    if state is not None
+                    else local_authority_gateway_id()
+                ),
+                expected_epoch=int(
+                    state["authority_epoch"] if state is not None else 1
+                ),
+            )
+
         try:
             existing = room_state(
                 service.db_path,
@@ -610,16 +626,10 @@ def _(rid, params: dict) -> dict:
                 include_disbanded=True,
             )
         except RoomHistoryExpiredError:
-            tombstone = disband_room(
-                service.db_path,
-                room_id=params.get("room_id"),
-            )
+            tombstone = disband_with_state()
             return _ok(rid, {"tombstone": tombstone})
         if existing.get("disbanded_at") is not None:
-            tombstone = disband_room(
-                service.db_path,
-                room_id=params.get("room_id"),
-            )
+            tombstone = disband_with_state(existing)
             return _ok(rid, {"tombstone": tombstone})
         service.stop_room(
             str(params.get("room_id") or ""),
@@ -627,10 +637,7 @@ def _(rid, params: dict) -> dict:
             require_acknowledged=True,
         )
         service.revoke_room_routes(str(params.get("room_id") or ""))
-        tombstone = disband_room(
-            service.db_path,
-            room_id=params.get("room_id"),
-        )
+        tombstone = disband_with_state(existing)
         return _ok(rid, {"tombstone": tombstone})
     except HostedRoomError as exc:
         reason = getattr(exc, "reason", None)
