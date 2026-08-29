@@ -16,11 +16,20 @@ const MAX_REPLAY_PAGE_SIZE = 500
 const MAX_REPLAY_PAGES = 100
 const MAX_ATTACHMENT_COUNT = 8
 const MAX_ATTACHMENT_NAME_CHARS = 255
+const MAX_ATTACHMENT_FILE_BYTES = 15_000_000
 const MAX_ATTACHMENT_REFS = 6
 const MAX_STAGED_REF_CHARS = 256
+const ATTACHMENT_ID_RE = /^att_[0-9a-f]{32}$/
 const FORBIDDEN_TRANSPORT_FIELD_TOKENS = new Set(['base64', 'byte', 'bytes', 'data', 'path', 'paths'])
 
-export const HOSTED_ROOM_CLIENT_LIMITATIONS = Object.freeze({
+export interface HostedRoomClientLimitations {
+  attachments: boolean
+  automaticFailover: boolean
+  crossGatewayMembers: boolean
+  stagedAttachmentManifest: boolean
+}
+
+export const HOSTED_ROOM_CLIENT_LIMITATIONS: HostedRoomClientLimitations = Object.freeze({
   attachments: false,
   automaticFailover: false,
   crossGatewayMembers: false,
@@ -33,7 +42,7 @@ export interface HostedRoomCapability {
   authorityId: null | string
   connectionId: null | string
   kind: HostedRoomCapabilityKind
-  limits: typeof HOSTED_ROOM_CLIENT_LIMITATIONS
+  limits: HostedRoomClientLimitations
   maxLogLimit?: number
   persistentProcess: boolean | null
   reason: null | string
@@ -42,12 +51,13 @@ export interface HostedRoomCapability {
 export interface HostedRoomRouteResolution {
   connectionId: null | string
   kind: 'single-gateway' | 'unsupported'
-  limits: typeof HOSTED_ROOM_CLIENT_LIMITATIONS
+  limits: HostedRoomClientLimitations
   memberConnectionIds: Array<null | string>
   reason: null | string
 }
 
 export interface HostedAttachmentMetadata {
+  attachment_id: string
   kind: 'file' | 'image' | 'pdf'
   mime?: string
   name: string
@@ -228,6 +238,22 @@ function capabilityResult(probe: unknown): Record<string, unknown> | null {
   return null
 }
 
+function capabilityLimits(capabilities: Record<string, unknown>): HostedRoomClientLimitations {
+  const features = new Set(Array.isArray(capabilities.features) ? capabilities.features.map(String) : [])
+  const methods = new Set(Array.isArray(capabilities.methods) ? capabilities.methods.map(String) : [])
+  const attachments =
+    features.has('attachment_ids') &&
+    features.has('attachment_same_gateway_delivery') &&
+    methods.has('groups.attachment.put') &&
+    methods.has('groups.attachment.read')
+
+  return {
+    ...HOSTED_ROOM_CLIENT_LIMITATIONS,
+    attachments,
+    stagedAttachmentManifest: attachments
+  }
+}
+
 /** A missing RPC is a compatibility verdict; a socket failure is not. */
 export function classifyHostedRoomCapability(
   probe: unknown,
@@ -294,7 +320,7 @@ export function classifyHostedRoomCapability(
     authorityId,
     persistentProcess: capabilities.persistent_process === true,
     maxLogLimit: positiveInteger(capabilities.max_log_limit, 100) || 100,
-    limits: HOSTED_ROOM_CLIENT_LIMITATIONS
+    limits: capabilityLimits(capabilities)
   }
 }
 
@@ -455,8 +481,23 @@ function attachmentMetadata(value: unknown): HostedAttachmentMetadata[] {
     const candidate = record(item)
     const kind = text(candidate?.kind)
     const name = text(candidate?.name)?.slice(0, MAX_ATTACHMENT_NAME_CHARS)
+    const attachmentId = text(candidate?.attachment_id)
+    const size = Number(candidate?.size)
+    const mime = text(candidate?.mime)?.toLowerCase()
 
-    if (!candidate || !name || !['file', 'image', 'pdf'].includes(kind || '')) {
+    if (
+      !candidate ||
+      !attachmentId ||
+      !ATTACHMENT_ID_RE.test(attachmentId) ||
+      !name ||
+      !['file', 'image', 'pdf'].includes(kind || '') ||
+      !Number.isSafeInteger(size) ||
+      size < 0 ||
+      size > MAX_ATTACHMENT_FILE_BYTES ||
+      !mime ||
+      (kind === 'image' && !mime.startsWith('image/')) ||
+      (kind === 'pdf' && mime !== 'application/pdf')
+    ) {
       return []
     }
 
@@ -476,12 +517,11 @@ function attachmentMetadata(value: unknown): HostedAttachmentMetadata[] {
 
     return [
       {
+        attachment_id: attachmentId,
         kind: kind as HostedAttachmentMetadata['kind'],
         name,
-        ...(Number.isFinite(Number(candidate.size)) && Number(candidate.size) >= 0
-          ? { size: Number(candidate.size) }
-          : {}),
-        ...(text(candidate.mime) ? { mime: text(candidate.mime) || undefined } : {}),
+        size,
+        mime,
         ...(Object.keys(refs).length ? { refs } : {})
       }
     ]
@@ -881,13 +921,29 @@ function normalizeCommand(raw: Partial<HostedRoomCommand>): HostedRoomCommand {
     throw new TypeError('hosted room command is incomplete')
   }
 
+  const payload = jsonRecord(raw.payload, 'command payload')
+
+  if (kind === 'send' && Object.prototype.hasOwnProperty.call(payload, 'attachments')) {
+    const attachments = attachmentMetadata(payload.attachments)
+
+    if (!Array.isArray(payload.attachments) || attachments.length !== payload.attachments.length) {
+      throw new TypeError('send attachments must be a valid opaque manifest')
+    }
+
+    if (attachments.reduce((total, attachment) => total + Number(attachment.size || 0), 0) > 25_000_000) {
+      throw new TypeError('send attachments exceed the 25MB message limit')
+    }
+
+    payload.attachments = attachments.map(({ refs: _refs, ...attachment }) => attachment)
+  }
+
   return {
     commandId,
     kind: kind as HostedRoomCommandKind,
     roomId,
     authorityId: text(raw.authorityId),
     connectionId,
-    payload: jsonRecord(raw.payload, 'command payload'),
+    payload,
     status: ['failed', 'in-flight', 'pending'].includes(String(raw.status))
       ? (raw.status as HostedRoomCommandStatus)
       : 'pending',

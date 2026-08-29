@@ -92,6 +92,31 @@ describe('group composer drafts', () => {
     expect(drafts.groupComposerDraftSnapshot(key).main).toBe('newer typing')
   })
 
+  it('a durable send clears only the submitted text and files', async () => {
+    const drafts = await loadDrafts()
+    const key = 'id:room-1'
+    const sent: Attachment = { data: 'data:text/plain;base64,YQ==', kind: 'file', name: 'a.txt' }
+    const addedLater: Attachment = { data: 'data:text/plain;base64,Yg==', kind: 'file', name: 'b.txt' }
+
+    drafts.updateGroupComposerDraft(key, state => ({
+      ...state,
+      main: 'send this',
+      pendingAttachments: { main: [sent] }
+    }))
+    const before = drafts.groupComposerDraftSnapshot(key)
+
+    drafts.updateGroupComposerDraft(key, state => ({
+      ...state,
+      main: 'newer typing',
+      pendingAttachments: { main: [sent, addedLater] }
+    }))
+
+    const completed = drafts.completeGroupComposerSend(key, before, [sent])
+
+    expect(completed.main).toBe('newer typing')
+    expect(completed.pendingAttachments.main).toEqual([addedLater])
+  })
+
   it('disband removes only that room draft', async () => {
     const drafts = await loadDrafts()
 

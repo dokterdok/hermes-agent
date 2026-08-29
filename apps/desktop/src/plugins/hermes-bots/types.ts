@@ -122,10 +122,16 @@ export type GroupMember = Pick<
 export type AttachmentKind = 'file' | 'image' | 'pdf'
 
 export interface Attachment {
-  /** Data URL. */
-  data: string
+  /** Data URL while the bytes are local to this Desktop. */
+  data?: string
+  /** Opaque gateway id after the bytes are stored durably. */
+  attachment_id?: string
+  /** Connection that owns `attachment_id`; never a public URL. */
+  connectionId?: string
   kind: AttachmentKind
+  mime?: string
   name: string
+  size?: number
 }
 
 export interface GroupMessageAuthor {
@@ -138,6 +144,8 @@ export interface GroupMessageAuthor {
 export interface GroupMessage {
   /** Hosted replay keeps validated manifests without transporting file bytes. */
   attachmentMeta?: Array<{
+    attachment_id?: string
+    connectionId?: string
     kind: AttachmentKind
     mime?: string
     name: string

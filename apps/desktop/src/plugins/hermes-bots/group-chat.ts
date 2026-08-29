@@ -1602,7 +1602,7 @@ export function setGroupChatImage(group: string, image: null | string | undefine
   })
 }
 
-function groupChatEntryId(): string {
+export function mintGroupChatEntryId(): string {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
     return globalThis.crypto.randomUUID()
   }
@@ -1633,7 +1633,7 @@ export function appendGroupChatEntry(
   images?: Attachment[]
 ): GroupMessage {
   const entry: GroupMessage = {
-    id: groupChatEntryId(),
+    id: mintGroupChatEntryId(),
     at: Date.now(),
     from,
     text: normalizeGroupChatText(text),

@@ -372,9 +372,7 @@ describe('hosted Group Chat runtime', () => {
 
     const thread = loaded.rounds.sendToGroupChat('Legacy', MEMBERS, 'Continue', null, [])
 
-    expect(thread).toBeTruthy()
-    await Promise.resolve()
-    await Promise.resolve()
+    await expect(Promise.resolve(thread)).resolves.toBeTruthy()
     expect(loaded.calls.some(call => call.method === 'session.create' || call.method === 'prompt.submit')).toBe(false)
     expect(loaded.chat.$groupChats.get().Legacy.hosted).toBe('install:home')
 
@@ -463,6 +461,126 @@ describe('hosted Group Chat runtime', () => {
       expect.arrayContaining(['groups.create', 'groups.send', 'groups.stop', 'groups.disband'])
     )
     expect((loaded.storage.get('hosted-room-outbox-v1') as { commands: unknown[] }).commands).toEqual([])
+
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
+  it('uploads attachment bytes before enqueue and reopens only verified gateway data', async () => {
+    const attachment = {
+      attachment_id: 'att_11111111111111111111111111111111',
+      kind: 'pdf' as const,
+      mime: 'application/pdf',
+      name: 'brief.pdf',
+      size: 3
+    }
+    const loaded = await loadRuntime((method, params) => {
+      if (method === 'groups.capabilities') {
+        return {
+          authority_gateway_id: 'install:home',
+          driver: true,
+          features: ['attachment_ids', 'attachment_same_gateway_delivery'],
+          methods: ['groups.attachment.put', 'groups.attachment.read'],
+          persistent_process: true
+        }
+      }
+
+      if (method === 'groups.list') {
+        return {
+          rooms: []
+        }
+      }
+
+      if (method === 'groups.attachment.put') {
+        expect(params).toMatchObject({
+          room_id: 'room-1',
+          upload_id: 'send-file:upload:0',
+          content_base64: 'JVBERg=='
+        })
+
+        return {
+          attachment
+        }
+      }
+
+      if (method === 'groups.send') {
+        return {
+          accepted: true
+        }
+      }
+
+      if (method === 'groups.attachment.read') {
+        return {
+          attachment,
+          content_base64: 'JVBERg=='
+        }
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    loaded.chat.$groupChats.set({
+      Release: room()
+    })
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+
+    expect(loaded.runtime.hostedRoomAcceptsAttachments(room())).toBe(true)
+    await expect(
+      loaded.runtime.sendHostedGroupChat(
+        'Release',
+        {
+          at: 1,
+          from: {
+            kind: 'user',
+            name: 'You'
+          },
+          id: 'send-file',
+          text: 'Review this',
+          thread: 'thread-1'
+        },
+        'thread-1',
+        [
+          {
+            data: 'data:application/pdf;base64,JVBERg==',
+            kind: 'pdf',
+            mime: 'application/pdf',
+            name: 'brief.pdf',
+            size: 3
+          }
+        ]
+      )
+    ).resolves.toBe(true)
+
+    const send = loaded.calls.find(call => call.method === 'groups.send')
+
+    expect(send?.params).toMatchObject({
+      event_id: 'send-file',
+      payload: {
+        attachments: [attachment],
+        text: 'Review this',
+        thread_id: 'thread-1'
+      },
+      room_id: 'room-1'
+    })
+    expect(JSON.stringify(send)).not.toContain('JVBERg')
+    await expect(
+      loaded.runtime.loadHostedGroupAttachmentData(
+        room(),
+        {
+          at: 1,
+          eventId: 'send-file',
+          from: {
+            kind: 'user',
+            name: 'You'
+          },
+          text: 'Review this',
+          thread: 'thread-1'
+        },
+        {
+          ...attachment,
+          connectionId: 'gateway-a'
+        }
+      )
+    ).resolves.toBe('data:application/pdf;base64,JVBERg==')
 
     loaded.runtime.stopHostedRoomRuntime()
   })

@@ -61,7 +61,11 @@ export async function filesToGroupAttachments(files: File[] | FileList | null | 
     picked.push({
       name: file.name || (kind === 'image' ? 'pasted image' : 'attachment'),
       data: kind === 'image' ? await normalizeGroupAttachment(data) : data,
-      kind
+      kind,
+      mime:
+        file.type ||
+        (kind === 'image' ? 'image/png' : kind === 'pdf' ? 'application/pdf' : 'application/octet-stream'),
+      size: Number(file.size || 0)
     })
   }
 

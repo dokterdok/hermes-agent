@@ -56,7 +56,9 @@ describe('hosted Group Chat capability negotiation', () => {
         driver: true,
         persistent_process: true,
         authority_gateway_id: 'install:home',
-        max_log_limit: 250
+        max_log_limit: 250,
+        features: ['attachment_ids', 'attachment_same_gateway_delivery'],
+        methods: ['groups.attachment.put', 'groups.attachment.read']
       },
       {
         connectionId: 'gateway-a'
@@ -75,6 +77,7 @@ describe('hosted Group Chat capability negotiation', () => {
       persistentProcess: true,
       maxLogLimit: 250
     })
+    expect(capable.limits.attachments).toBe(true)
     expect(isHostedRoomContinuityEligible(capable)).toBe(true)
     expect(
       isHostedRoomContinuityEligible({
@@ -210,6 +213,7 @@ describe('hosted Group Chat replay', () => {
       text: 'Done',
       attachments: [
         {
+          attachment_id: 'att_11111111111111111111111111111111',
           kind: 'pdf',
           name: 'brief.pdf',
           size: 42,
@@ -233,6 +237,7 @@ describe('hosted Group Chat replay', () => {
     expect(complete.cursor).toBe(2)
     expect(complete.messages[1].attachments).toEqual([
       {
+        attachment_id: 'att_11111111111111111111111111111111',
         kind: 'pdf',
         name: 'brief.pdf',
         size: 42,

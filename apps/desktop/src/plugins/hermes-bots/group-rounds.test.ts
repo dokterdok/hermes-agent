@@ -328,7 +328,7 @@ describe('threads', () => {
 
     const member: GroupMember[] = [{ name: 'research', title: '' }]
 
-    const billing = room.rounds.sendToGroupChat('Scoped', member, 'fix the billing bug')
+    const billing = await Promise.resolve(room.rounds.sendToGroupChat('Scoped', member, 'fix the billing bug'))
     await settle(room, 'Scoped')
     room.rounds.sendToGroupChat('Scoped', member, 'research pricing')
     await settle(room, 'Scoped')

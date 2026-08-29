@@ -83,19 +83,23 @@ import {
 import {
   clearGroupComposerDraft,
   closeGroupChatMainTab,
+  completeGroupComposerSend,
   dropGroupMainTab,
   groupChatMainTabs,
   groupComposerDraftKey,
   groupComposerDraftSnapshot,
   migrateGroupComposerDraft,
   recordGroupMainTab,
-  restoreGroupComposerDraft,
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
-import { disbandHostedGroupChat, renameHostedGroupChat } from './hosted-room-runtime'
+import {
+  disbandHostedGroupChat,
+  loadHostedGroupAttachmentData,
+  renameHostedGroupChat
+} from './hosted-room-runtime'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
@@ -103,6 +107,96 @@ import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
+
+function downloadGroupAttachment(dataUrl: string, name: string) {
+  const link = document.createElement('a')
+
+  link.href = dataUrl
+  link.download = name || 'attachment'
+  link.style.display = 'none'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+function GroupAttachmentDisplay({
+  attachment,
+  entry,
+  entryKey,
+  index,
+  room
+}: {
+  attachment: Attachment
+  entry: GroupMessage
+  entryKey: string
+  index: number
+  room: GroupChatRoom
+}) {
+  const [busy, setBusy] = useState(false)
+  const [data, setData] = useState(String(attachment.data || ''))
+  const isImage = attachment.kind === 'image'
+  const label = String(attachment.name || (isImage ? 'attached image' : 'attached file'))
+  const canLoad = Boolean(attachment.attachment_id && (attachment.connectionId || room.hostedConnectionId))
+
+  const open = async () => {
+    if (busy || (!data && !canLoad)) {
+      return
+    }
+
+    setBusy(true)
+
+    try {
+      const loaded = data || (await loadHostedGroupAttachmentData(room, entry, attachment))
+
+      if (isImage && !data) {
+        setData(loaded)
+      } else {
+        downloadGroupAttachment(loaded, label)
+      }
+    } catch (error) {
+      host.notify({
+        kind: 'error',
+        message: error instanceof Error ? error.message : 'This attachment could not be opened.'
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (isImage && data) {
+    return (
+      <button
+        aria-label={`Download ${label}`}
+        className="cursor-pointer rounded-md border border-(--ui-stroke-secondary) p-0"
+        key={`${entryKey}:attachment:${index}`}
+        onClick={() => void open()}
+        title={`Download ${label}`}
+        type="button"
+      >
+        <img alt={label} className="max-h-40 max-w-60 rounded-md object-contain" src={data} />
+      </button>
+    )
+  }
+
+  return (
+    <button
+      aria-busy={busy || undefined}
+      aria-label={canLoad || data ? `${isImage ? 'Load preview for' : 'Download'} ${label}` : label}
+      className="flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
+      disabled={busy || (!data && !canLoad)}
+      key={`${entryKey}:attachment:${index}`}
+      onClick={() => void open()}
+      title={canLoad || data ? `${isImage ? 'Load preview for' : 'Download'} ${label}` : label}
+      type="button"
+    >
+      <Codicon className="text-[0.8rem]" name={attachment.kind === 'pdf' ? 'file-pdf' : isImage ? 'file-media' : 'file'} />
+      <span className="max-w-48 truncate">{label}</span>
+      {canLoad || data ? (
+        <span className="text-(--ui-text-quaternary)">{busy ? 'Loading…' : isImage ? 'Preview' : 'Download'}</span>
+      ) : null}
+    </button>
+  )
+}
 
 /** Soft-disband a group chat: remove only this group from every local member's
  *  membership list (the metadata syncs cross-machine via ui_meta), drop the
@@ -590,6 +684,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sendingComposer, setSendingComposer] = useState<null | string>(null)
   // Click-to-disambiguate: which log entry is showing its speaker's full
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
@@ -878,81 +973,69 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     </div>
   )
 
-  const submit = () => {
+  const submit = async () => {
     const text = draft.trim()
     const images = imagesFor(null)
 
-    if (!text && !images.length) {
+    if ((!text && !images.length) || sendingComposer !== null) {
       return
     }
 
     const before = groupComposerDraftSnapshot(composerKeyRef.current)
+    setSendingComposer('main')
 
-    const cleared = updateComposerDraft(current => ({
-      ...current,
-      main: '',
-      pendingAttachments: {
-        ...(current.pendingAttachments || {}),
-        main: []
+    try {
+      const minted = await Promise.resolve(sendToGroupChat(group, memberDescriptors(), text, null, images))
+
+      if (minted) {
+        const next = completeGroupComposerSend(composerKeyRef.current, before, images)
+
+        setComposerDraft(next)
+        setOpenThreads(prev => ({
+          ...prev,
+          [minted]: true
+        }))
       }
-    }))
-
-    // Main composer = START A NEW THREAD with the whole group (Slack shape).
-    // Full descriptors ride into the turn loop: remote members keep their
-    // connection fields so their turns route to their own machines.
-    const minted = sendToGroupChat(group, memberDescriptors(), text, null, images)
-
-    if (minted) {
-      setOpenThreads(prev => ({
-        ...prev,
-        [minted]: true
-      }))
-    } else {
-      const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
-
-      if (restored) {
-        setComposerDraft(restored)
-      }
+    } catch (error) {
+      host.notify({
+        kind: 'error',
+        message: error instanceof Error ? error.message : 'The Group Chat could not accept this message.'
+      })
+    } finally {
+      setSendingComposer(null)
     }
   }
 
-  const submitReply = (thread: string) => {
+  const submitReply = async (thread: string) => {
     const text = (replyDrafts[thread] || '').trim()
     const images = imagesFor(thread)
 
-    if (!text && !images.length) {
+    if ((!text && !images.length) || sendingComposer !== null) {
       return
     }
 
     const before = groupComposerDraftSnapshot(composerKeyRef.current)
+    setSendingComposer(thread)
 
-    const cleared = updateComposerDraft(current => ({
-      ...current,
-      pendingAttachments: {
-        ...(current.pendingAttachments || {}),
-        [thread]: []
-      },
-      replies: {
-        ...(current.replies || {}),
-        [thread]: ''
+    try {
+      const sent = await Promise.resolve(sendToGroupChat(group, memberDescriptors(), text, thread, images))
+
+      if (sent) {
+        const next = completeGroupComposerSend(composerKeyRef.current, before, images, thread)
+
+        setComposerDraft(next)
+        setOpenThreads(prev => ({
+          ...prev,
+          [thread]: true
+        }))
       }
-    }))
-
-    // Reply box = CONTINUE this thread; the member turns it triggers are
-    // scoped to it.
-    const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images)
-
-    if (sent) {
-      setOpenThreads(prev => ({
-        ...prev,
-        [thread]: true
-      }))
-    } else {
-      const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
-
-      if (restored) {
-        setComposerDraft(restored)
-      }
+    } catch (error) {
+      host.notify({
+        kind: 'error',
+        message: error instanceof Error ? error.message : 'The Group Chat could not accept this reply.'
+      })
+    } finally {
+      setSendingComposer(null)
     }
   }
 
@@ -1056,6 +1139,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     const appearance = isUser ? null : botAppearance(entry.from.name, meta)
     const image = appearance?.image ?? null
     const photo = Boolean(image && !isBackfilledFacePng(image))
+    const attachments: Attachment[] =
+      Array.isArray(entry.images) && entry.images.length
+        ? entry.images
+        : Array.isArray(entry.attachmentMeta)
+          ? entry.attachmentMeta
+          : []
 
     return (
       <div
@@ -1105,31 +1194,18 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           >
             {Streamdown ? <Streamdown>{entry.text}</Streamdown> : entry.text}
           </div>
-          {/* User attachments: what every responding bot was */
-          /* shown — image previews, or a named chip for */
-          /* PDFs/files. */}
-          {Array.isArray(entry.images) && entry.images.length ? (
+          {attachments.length ? (
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
-              {entry.images.map((img, imgIndex) =>
-                img.kind === 'pdf' || img.kind === 'file' ? (
-                  <div
-                    className="flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
-                    key={`${entryKey}:img:${imgIndex}`}
-                    title={img.name || 'attached file'}
-                  >
-                    <Codicon className="text-[0.8rem]" name={img.kind === 'pdf' ? 'file-pdf' : 'file'} />
-                    <span className="max-w-48 truncate">{img.name || 'attached file'}</span>
-                  </div>
-                ) : (
-                  <img
-                    alt={img.name || 'attached image'}
-                    className="max-h-40 max-w-60 rounded-md border border-(--ui-stroke-secondary) object-contain"
-                    key={`${entryKey}:img:${imgIndex}`}
-                    src={img.data}
-                    title={img.name || 'attached image'}
-                  />
-                )
-              )}
+              {attachments.map((attachment, attachmentIndex) => (
+                <GroupAttachmentDisplay
+                  attachment={attachment}
+                  entry={entry}
+                  entryKey={entryKey}
+                  index={attachmentIndex}
+                  key={`${entryKey}:attachment:${attachmentIndex}`}
+                  room={room}
+                />
+              ))}
             </div>
           ) : null}
         </div>
@@ -1237,7 +1313,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           key={`replybox:${id}`}
           onSubmit={event => {
             event.preventDefault()
-            submitReply(id)
+            void submitReply(id)
           }}
         >
           {attachmentRow(id)}
@@ -1253,12 +1329,17 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                 }))
               }
               onPaste={event => pasteImages(id, event)}
-              onSubmitDraft={() => submitReply(id)}
+              onSubmitDraft={() => void submitReply(id)}
               placeholder={b.group.replyInThreadPlaceholder}
               value={replyDrafts[id] || ''}
             />
             {attachButton(id)}
-            <Button disabled={!(replyDrafts[id] || '').trim() && !imagesFor(id).length} size="sm" type="submit">
+            <Button
+              aria-busy={sendingComposer === id || undefined}
+              disabled={sendingComposer !== null || (!(replyDrafts[id] || '').trim() && !imagesFor(id).length)}
+              size="sm"
+              type="submit"
+            >
               {b.group.reply}
             </Button>
           </div>
@@ -1345,7 +1426,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           className="grid gap-0"
           onSubmit={event => {
             event.preventDefault()
-            submit()
+            void submit()
           }}
         >
           {attachmentRow(null)}
@@ -1355,12 +1436,17 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               members={members}
               onChange={setDraft}
               onPaste={event => pasteImages(null, event)}
-              onSubmitDraft={submit}
+              onSubmitDraft={() => void submit()}
               placeholder={b.group.newThreadPlaceholder(group)}
               value={draft}
             />
             {attachButton(null)}
-            <Button disabled={!draft.trim() && !imagesFor(null).length} size="sm" type="submit">
+            <Button
+              aria-busy={sendingComposer === 'main' || undefined}
+              disabled={sendingComposer !== null || (!draft.trim() && !imagesFor(null).length)}
+              size="sm"
+              type="submit"
+            >
               {b.group.newThread}
             </Button>
           </div>

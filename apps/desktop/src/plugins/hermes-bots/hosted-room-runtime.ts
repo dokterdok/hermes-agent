@@ -37,10 +37,11 @@ import type {
   HostedRoomRouteResolution
 } from './hosted-room-client'
 import { botsText } from './i18n'
-import type { GroupChat, GroupMember, GroupMessage, ProfileRoute } from './types'
+import type { Attachment, GroupChat, GroupMember, GroupMessage, ProfileRoute } from './types'
 
 const HOSTED_ROOM_OUTBOX_KEY = 'hosted-room-outbox-v1'
 const HOSTED_ROOM_SYNC_INTERVAL_MS = 5000
+const GROUP_ATTACHMENT_CACHE_CHARS = 50_000_000
 
 export const $hostedRoomCapabilities = atom<Record<string, HostedRoomCapability>>({})
 export const $hostedRoomOutbox = atom<HostedRoomOutbox>(createHostedRoomOutbox())
@@ -52,6 +53,8 @@ let hostedRoomSyncDisposed = true
 let hostedOutboxDispatching = false
 let hostedRoomStorage: null | PluginContext['storage'] = null
 let hostedRoomHooks: HostedRoomRuntimeHooks = {}
+const groupAttachmentDataCache = new Map<string, string>()
+let groupAttachmentDataCacheChars = 0
 
 export interface HostedRoomRuntimeHooks {
   renameGroupChat?: (oldName: string, newName: string, members: GroupMember[]) => Promise<null | string>
@@ -223,7 +226,10 @@ function hostedStatus(status: FriendlyHostedRoomStatus, connectionName: string) 
   }
 }
 
-function replayMessages(messages: ReturnType<typeof createHostedRoomReplayState>['messages']): GroupMessage[] {
+function replayMessages(
+  messages: ReturnType<typeof createHostedRoomReplayState>['messages'],
+  connectionId: string
+): GroupMessage[] {
   return messages.map(message => ({
     at: message.at,
     from: message.from,
@@ -234,7 +240,10 @@ function replayMessages(messages: ReturnType<typeof createHostedRoomReplayState>
     thread: message.thread,
     ...(message.attachments?.length
       ? {
-          attachmentMeta: message.attachments
+          attachmentMeta: message.attachments.map(attachment => ({
+            ...attachment,
+            connectionId
+          }))
         }
       : {})
   }))
@@ -439,7 +448,7 @@ export async function refreshHostedRooms() {
               ...authoritative,
               roomId,
               members: hostedMemberDescriptors(serverRoom, connectionId, sourceLabel(connectionId)),
-              log: mergeGroupChatSyncEntries(current.log || [], replayMessages(replay.state.messages)),
+              log: mergeGroupChatSyncEntries(current.log || [], replayMessages(replay.state.messages, connectionId)),
               hostedConnectionId: connectionId,
               hostedSeq: replay.state.cursor,
               hostedStatus: hostedStatus(friendly, sourceLabel(connectionId)),
@@ -781,10 +790,188 @@ export async function createHostedGroupChat({ route, roomId, name, members }: Ho
 }
 
 export function hostedRoomAcceptsAttachments(room: GroupChat) {
-  return !groupChatHostedGateway(room)
+  if (!groupChatHostedGateway(room)) {
+    return true
+  }
+
+  const connectionId = String(room.hostedConnectionId || '')
+
+  return Boolean(connectionId && $hostedRoomCapabilities.get()[connectionId]?.limits.attachments)
 }
 
-export async function sendHostedGroupChat(group: string, message: GroupMessage, thread: string) {
+function attachmentMime(attachment: Attachment) {
+  const dataMime = /^data:([^;,]+)/i.exec(String(attachment?.data || ''))?.[1]
+
+  return (
+    dataMime ||
+    String(attachment?.mime || '') ||
+    (attachment?.kind === 'pdf'
+      ? 'application/pdf'
+      : attachment?.kind === 'image'
+        ? 'image/png'
+        : 'application/octet-stream')
+  ).toLowerCase()
+}
+
+function attachmentBase64(attachment: Attachment) {
+  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/i.exec(String(attachment?.data || ''))
+
+  if (!match) {
+    throw new Error(`${attachment?.name || 'Attachment'} could not be encoded for upload.`)
+  }
+
+  return {
+    contentBase64: match[2],
+    mime: match[1].toLowerCase()
+  }
+}
+
+async function stageHostedAttachments(
+  route: ProfileRoute,
+  roomId: string,
+  eventId: string,
+  attachments: Attachment[]
+) {
+  const picked = Array.isArray(attachments) ? attachments : []
+
+  if (picked.length > 8) {
+    throw new Error('A Group Chat message supports at most 8 attachments.')
+  }
+
+  const manifests: Array<Record<string, unknown>> = []
+  let total = 0
+
+  for (let index = 0; index < picked.length; index += 1) {
+    const attachment = picked[index]
+    const encoded = attachmentBase64(attachment)
+    const mime = attachmentMime(attachment)
+
+    if (encoded.mime !== mime) {
+      throw new Error(`${attachment.name || 'Attachment'} has conflicting MIME metadata.`)
+    }
+
+    const result = await requestHostedConnection<Record<string, unknown>>(route, 'groups.attachment.put', {
+      room_id: roomId,
+      upload_id: `${eventId}:upload:${index}`,
+      kind: attachment.kind,
+      name: attachment.name || 'attachment',
+      mime,
+      content_base64: encoded.contentBase64
+    })
+
+    const stored = record(result.attachment)
+    const size = Number(stored?.size)
+
+    if (!stored?.attachment_id || !Number.isSafeInteger(size) || size < 0) {
+      throw new Error(`${attachment.name || 'Attachment'} was not accepted by the Group Chat gateway.`)
+    }
+
+    total += size
+
+    if (total > 25_000_000) {
+      throw new Error('Attachments exceed the 25MB message limit.')
+    }
+
+    manifests.push({
+      attachment_id: stored.attachment_id,
+      kind: stored.kind,
+      name: stored.name,
+      size,
+      mime: stored.mime
+    })
+  }
+
+  return manifests
+}
+
+function cacheGroupAttachmentData(key: string, dataUrl: string) {
+  if (!key || !dataUrl || dataUrl.length > GROUP_ATTACHMENT_CACHE_CHARS) {
+    return
+  }
+
+  const prior = groupAttachmentDataCache.get(key)
+
+  if (prior) {
+    groupAttachmentDataCacheChars -= prior.length
+  }
+
+  groupAttachmentDataCache.delete(key)
+  groupAttachmentDataCache.set(key, dataUrl)
+  groupAttachmentDataCacheChars += dataUrl.length
+
+  while (groupAttachmentDataCacheChars > GROUP_ATTACHMENT_CACHE_CHARS && groupAttachmentDataCache.size > 1) {
+    const oldest = groupAttachmentDataCache.keys().next().value
+
+    if (!oldest) {
+      break
+    }
+
+    const removed = groupAttachmentDataCache.get(oldest) || ''
+
+    groupAttachmentDataCache.delete(oldest)
+    groupAttachmentDataCacheChars -= removed.length
+  }
+}
+
+export async function loadHostedGroupAttachmentData(
+  room: GroupChat,
+  entry: GroupMessage,
+  attachment: Attachment
+) {
+  const attachmentId = String(attachment.attachment_id || '')
+  const connectionId = String(attachment.connectionId || room.hostedConnectionId || '')
+  const roomId = String(room.roomId || '')
+  const eventId = String(entry.id || entry.eventId || '')
+
+  if (!/^att_[0-9a-f]{32}$/.test(attachmentId) || !connectionId || !roomId || !eventId) {
+    throw new Error('This attachment is not available from its source.')
+  }
+
+  const cacheKey = `${connectionId}:${roomId}:${eventId}:${attachmentId}`
+  const cached = groupAttachmentDataCache.get(cacheKey)
+
+  if (cached) {
+    return cached
+  }
+
+  const route = (await hostedDefaultRoutes()).find(candidate => candidate.connectionId === connectionId)
+
+  if (!route) {
+    throw new Error('Reconnect the Group Chat gateway to open this attachment.')
+  }
+
+  const result = await requestHostedConnection<Record<string, unknown>>(route, 'groups.attachment.read', {
+    purpose: 'viewer',
+    room_id: roomId,
+    event_id: eventId,
+    attachment_id: attachmentId
+  })
+  const stored = record(result.attachment)
+
+  if (
+    stored?.attachment_id !== attachmentId ||
+    stored?.kind !== attachment.kind ||
+    stored?.name !== attachment.name ||
+    stored?.size !== attachment.size ||
+    stored?.mime !== attachment.mime ||
+    typeof result.content_base64 !== 'string'
+  ) {
+    throw new Error('This attachment failed its integrity check.')
+  }
+
+  const dataUrl = `data:${attachment.mime};base64,${result.content_base64}`
+
+  cacheGroupAttachmentData(cacheKey, dataUrl)
+
+  return dataUrl
+}
+
+export async function sendHostedGroupChat(
+  group: string,
+  message: GroupMessage,
+  thread: string,
+  attachments: Attachment[] = []
+) {
   const room = $groupChats.get()[group]
 
   if (!room?.roomId || !groupChatHostedGateway(room)) {
@@ -794,9 +981,11 @@ export async function sendHostedGroupChat(group: string, message: GroupMessage, 
   const route = await hostedRouteForRoom(room)
   const connectionId = String(route?.connectionId || room.hostedConnectionId || '')
 
-  if (!connectionId) {
+  if (!route || !connectionId) {
     throw new Error(botsText().group.hostRouteMissing)
   }
+
+  const manifests = await stageHostedAttachments(route, String(room.roomId), String(message.id || ''), attachments)
 
   return enqueueHostedRoomCommand({
     commandId: String(message.id || ''),
@@ -806,7 +995,12 @@ export async function sendHostedGroupChat(group: string, message: GroupMessage, 
     connectionId,
     payload: {
       text: message.text || '',
-      thread_id: thread
+      thread_id: thread,
+      ...(manifests.length
+        ? {
+            attachments: manifests
+          }
+        : {})
     }
   })
 }

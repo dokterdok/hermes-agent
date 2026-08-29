@@ -19,6 +19,7 @@ import {
   groupChatHostedGateway,
   groupSpeakerLabel,
   groupThreadOf,
+  mintGroupChatEntryId,
   mintGroupThreadId,
   shouldCommitMemberTurn,
   updateGroupChat
@@ -1037,7 +1038,7 @@ export function sendToGroupChat(
   text: string,
   thread?: null | string,
   images?: Attachment[]
-): null | string {
+): null | Promise<string> | string {
   const trimmed = String(text || '').trim()
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
   const roomBeforeSend = $groupChats.get()[group]
@@ -1058,6 +1059,80 @@ export function sendToGroupChat(
   }
 
   const target = thread || mintGroupThreadId()
+
+  if (hosted) {
+    const sent: GroupMessage = {
+      at: Date.now(),
+      from: {
+        kind: 'user',
+        name: 'You'
+      },
+      id: mintGroupChatEntryId(),
+      text: trimmed,
+      thread: target
+    }
+
+    updateGroupChat(
+      group,
+      (room: GroupChatRoom) => ({
+        ...room,
+        running: true,
+        hostedStatus: {
+          state: 'sending',
+          label: botsText().group.hostedSending
+        }
+      }),
+      {
+        sync: false
+      }
+    )
+    recordGroupActivity(group, {
+      kind: 'queued',
+      member: 'You',
+      thread: target
+    })
+
+    return sendHostedGroupChat(group, sent, target, attached)
+      .then(acknowledged => {
+        updateGroupChat(
+          group,
+          room => ({
+            ...room,
+            running: true,
+            hostedStatus: {
+              state: acknowledged ? 'working' : 'queued',
+              label: acknowledged ? botsText().group.hostedWorking : botsText().group.hostedQueued(connectionName)
+            },
+            continuityIssue: acknowledged ? null : botsText().group.hostedQueuedHint(connectionName)
+          }),
+          {
+            sync: false
+          }
+        )
+
+        return target
+      })
+      .catch(error => {
+        updateGroupChat(
+          group,
+          room => ({
+            ...room,
+            running: false,
+            hostedStatus: {
+              state: 'failed',
+              label: botsText().group.hostedNeedsAttention
+            },
+            continuityIssue: botsText().group.hostedSendFailed(connectionName)
+          }),
+          {
+            sync: false
+          }
+        )
+
+        throw error
+      })
+  }
+
   $groupNeedsYou.set({
     ...$groupNeedsYou.get(),
     [group]: false
@@ -1084,65 +1159,6 @@ export function sendToGroupChat(
 
   if (!sent) {
     return null
-  }
-
-  if (hosted) {
-    updateGroupChat(
-      group,
-      (room: GroupChatRoom) => ({
-        ...room,
-        running: true,
-        hostedStatus: {
-          state: 'sending',
-          label: botsText().group.hostedSending
-        }
-      }),
-      {
-        sync: false
-      }
-    )
-    recordGroupActivity(group, {
-      kind: 'queued',
-      member: 'You',
-      thread: target
-    })
-    void sendHostedGroupChat(group, sent, target)
-      .then(acknowledged => {
-        updateGroupChat(
-          group,
-          room => ({
-            ...room,
-            running: true,
-            hostedStatus: {
-              state: acknowledged ? 'working' : 'queued',
-              label: acknowledged ? botsText().group.hostedWorking : botsText().group.hostedQueued(connectionName)
-            },
-            continuityIssue: acknowledged ? null : botsText().group.hostedQueuedHint(connectionName)
-          }),
-          {
-            sync: false
-          }
-        )
-      })
-      .catch(() => {
-        updateGroupChat(
-          group,
-          room => ({
-            ...room,
-            running: false,
-            hostedStatus: {
-              state: 'failed',
-              label: botsText().group.hostedNeedsAttention
-            },
-            continuityIssue: botsText().group.hostedSendFailed(connectionName)
-          }),
-          {
-            sync: false
-          }
-        )
-      })
-
-    return target
   }
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true

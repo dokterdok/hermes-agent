@@ -95,6 +95,43 @@ export function restoreGroupComposerDraft(key: string, expectedRevision: number,
   return restored
 }
 
+/** Clear only the text and attachment objects that were actually submitted.
+ * Typing or adding another file while a durable upload is in flight survives. */
+export function completeGroupComposerSend(
+  key: string,
+  before: GroupComposerDraft,
+  attachments: Attachment[],
+  thread: null | string = null
+) {
+  const submitted = new Set(attachments)
+
+  return updateGroupComposerDraft(key, current => {
+    const pendingAttachments = {
+      ...(current.pendingAttachments || {})
+    }
+    const slot = thread || 'main'
+
+    pendingAttachments[slot] = (pendingAttachments[slot] || []).filter(item => !submitted.has(item))
+
+    if (thread) {
+      return {
+        ...current,
+        pendingAttachments,
+        replies: {
+          ...(current.replies || {}),
+          [thread]: current.replies?.[thread] === before.replies?.[thread] ? '' : current.replies?.[thread] || ''
+        }
+      }
+    }
+
+    return {
+      ...current,
+      main: current.main === before.main ? '' : current.main,
+      pendingAttachments
+    }
+  })
+}
+
 export function clearGroupComposerDraft(key: string) {
   groupComposerDrafts.delete(key)
 }
