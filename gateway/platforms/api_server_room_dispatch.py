@@ -160,12 +160,25 @@ async def _normalize_room_dispatch(
         }, None
     except Exception as exc:
         message = str(exc)
+        lowered = message.lower()
+        policy_changed = (
+            "execution policy" in lowered
+            or "remote room execution requires" in lowered
+        )
         return body, web.json_response(
             _openai_error(
-                message,
+                (
+                    "Room execution policy changed; reauthorization is required."
+                    if policy_changed
+                    else "Room capability catalog changed; reauthorization is required."
+                    if "capability catalog changed" in lowered
+                    else message
+                ),
                 code=(
                     "room_execution_policy_changed"
-                    if "execution policy changed" in message.lower()
+                    if policy_changed
+                    else "room_capability_catalog_changed"
+                    if "capability catalog changed" in lowered
                     else "invalid_room_dispatch"
                 ),
             ),

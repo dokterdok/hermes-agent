@@ -60,6 +60,7 @@ async def test_run_http_handlers_delegate_without_changing_method_surface(
 async def test_decorated_run_admission_delegates_and_releases_slot(monkeypatch):
     adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
     adapter._room_grant_token = MagicMock(return_value="room-grant")
+    adapter._check_run_auth = MagicMock(return_value=None)
     adapter._draining_response = MagicMock(return_value=None)
     adapter._pending_agent_requests = 0
     request = SimpleNamespace(path="/v1/runs")
@@ -73,6 +74,7 @@ async def test_decorated_run_admission_delegates_and_releases_slot(monkeypatch):
         request,
         _api_server=sys.modules[api_server.__name__],
     )
+    adapter._check_run_auth.assert_called_once_with(request, permission="dispatch")
     assert adapter._pending_agent_requests == 0
 
 

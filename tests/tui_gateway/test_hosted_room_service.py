@@ -299,12 +299,19 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
     monkeypatch.setattr(
         hosted_rooms,
         "request_room_stop",
-        lambda _db, *, room_id, cancel_id: {
+        lambda _db, *, room_id, cancel_id, **_authority: {
             "room_id": room_id,
             "cancel_id": cancel_id,
         },
     )
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    hosted_rooms.create_room(
+        service.db_path,
+        room_id="room-1",
+        name="Stop room",
+        members=[],
+        authority_gateway_id=hosted_rooms.local_authority_gateway_id(),
+    )
     service.runtime = SimpleNamespace(cancel=cancel, wakeup=lambda: None)
 
     assert service.stop_room("room-1", cancel_id="stop-1") == 1

@@ -311,14 +311,27 @@ def _check_run_auth(
         return self._check_auth(request)
     try:
         self._room_grant_claims(request, permission=permission)
-    except Exception:
+    except Exception as exc:
+        from gateway.platforms.api_server_room_grants import (
+            RoomGrantReauthorizationRequired,
+        )
+
+        reauthorization = isinstance(exc, RoomGrantReauthorizationRequired)
         return web.json_response(
             _openai_error(
-                "Room authorization is invalid or expired.",
+                (
+                    "Room authorization needs to be renewed."
+                    if reauthorization
+                    else "Room authorization is invalid or expired."
+                ),
                 err_type="gateway_auth_error",
-                code="invalid_room_grant",
+                code=(
+                    "room_reauthorization_required"
+                    if reauthorization
+                    else "invalid_room_grant"
+                ),
             ),
-            status=401,
+            status=403 if reauthorization else 401,
         )
     return None
 

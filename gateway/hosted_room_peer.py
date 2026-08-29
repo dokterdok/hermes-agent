@@ -59,22 +59,11 @@ class HostedRoomGrantError(HostedRoomPeerError):
 _ROOM_GRANT_SECRET_FILE = ".room-link-grant-secret"
 
 
-def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:
-    """Load or atomically mint the gateway-only RoomLink signing secret.
+@lru_cache(maxsize=32)
+def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
+    """Load one restart-scoped grant secret for an exact installation root."""
 
-    API keys are bearer credentials known to clients and may be profile scoped;
-    they must never become grant-signing authority. This secret lives in the
-    installation root, is not exposed by configuration or capability RPCs, and
-    is shared only by the gateway processes that serve this installation.
-    """
-
-    if root is None:
-        from hermes_constants import get_hermes_home
-
-        # Profile routing uses a context-local HERMES_HOME override. The process
-        # environment retains the installation root and is the authority here.
-        root = os.environ.get("HERMES_HOME") or get_hermes_home()
-    home = Path(root).expanduser()
+    home = Path(home_value)
     home.mkdir(parents=True, exist_ok=True)
     path = home / _ROOM_GRANT_SECRET_FILE
 
@@ -120,6 +109,25 @@ def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:
         b"hermes-hosted-room-installation-grant-v1",
         hashlib.sha256,
     ).digest()
+
+
+def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:
+    """Load or atomically mint the gateway-only RoomLink signing secret.
+
+    API keys are bearer credentials known to clients and may be profile scoped;
+    they must never become grant-signing authority. This secret lives in the
+    installation root, is not exposed by configuration or capability RPCs, and
+    is shared only by the gateway processes that serve this installation.
+    """
+
+    if root is None:
+        from hermes_constants import get_hermes_home
+
+        # Profile routing uses a context-local HERMES_HOME override. The process
+        # environment retains the installation root and is the authority here.
+        root = os.environ.get("HERMES_HOME") or get_hermes_home()
+    home = Path(root).expanduser().resolve()
+    return _gateway_room_grant_secret_for_home(str(home))
 
 
 def derive_room_grant_secret(api_key: str) -> bytes:
@@ -358,6 +366,24 @@ def catalog_mapping(
     # as an upper bound so every local catalog construction site stays honest,
     # including older call sites that still pass ``True`` explicitly.
     persistent_process = bool(persistent_process and os.getenv("HERMES_DESKTOP") != "1")
+    checked_policy = RoomExecutionPolicy.from_mapping(
+        execution_policy
+        or execution_policy_mapping(
+            target_profile=(
+                str(target_profile or "").strip()
+                or (os.getenv("HERMES_PROFILE") or "default").strip()
+                or "default"
+            )
+        )
+    )
+    # A RoomLink run is initiated by another installation. Process-wide YOLO
+    # mode bypasses the scoped approval ContextVar, so it cannot be made safe by
+    # rewriting the advertised policy. Refuse to advertise or accept remote
+    # room execution until the target enables manual or smart approvals.
+    if checked_policy.approval_mode == "off":
+        raise HostedRoomPeerError(
+            "remote room execution requires manual or smart approvals"
+        )
     value = {
         "installation_id": _identifier(installation_id, field="installation_id"),
         "protocol_versions": sorted({
@@ -369,16 +395,7 @@ def catalog_mapping(
         "persistent_process": bool(persistent_process),
         "text": bool(text),
         "attachments": bool(attachments),
-        "execution_policy": dict(
-            execution_policy
-            or execution_policy_mapping(
-                target_profile=(
-                    str(target_profile or "").strip()
-                    or (os.getenv("HERMES_PROFILE") or "default").strip()
-                    or "default"
-                )
-            )
-        ),
+        "execution_policy": checked_policy.as_mapping(),
     }
     value["endpoint"] = dict(
         local_room_link_endpoint() if endpoint is None else endpoint
@@ -698,7 +715,7 @@ def issue_room_grant(
     permissions: Iterable[str] = ("approve", "dispatch", "status", "stop"),
     issued_at: float | None = None,
     ttl_seconds: float = 3600,
-    status_ttl_seconds: float = MAX_STATUS_GRANT_TTL_SECONDS,
+    status_ttl_seconds: float | None = None,
     status_expires_at: float | None = None,
 ) -> str:
     """Issue a target-verifiable bearer grant scoped to one room member."""
@@ -706,7 +723,7 @@ def issue_room_grant(
         raise HostedRoomGrantError("room grant secret must be at least 32 bytes")
     now = time.time() if issued_at is None else float(issued_at)
     bounded_status_expiry = (
-        now + float(status_ttl_seconds)
+        now + float(ttl_seconds if status_ttl_seconds is None else status_ttl_seconds)
         if status_expires_at is None
         else float(status_expires_at)
     )

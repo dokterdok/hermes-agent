@@ -441,12 +441,31 @@ class HostedRoomService:
         if stored is None:
             raise RuntimeError("peer room route cannot be renewed before persistence")
         effective_catalog = catalog or stored.catalog
+        if catalog is not None and (
+            catalog.installation_id != route.target_install_id
+            or catalog.execution_policy.target_profile != route.target_profile
+            or PROTOCOL_VERSION not in catalog.protocol_versions
+            or "direct" not in catalog.link_modes
+            or not catalog.text
+            or catalog.execution_policy.policy_digest
+            != route.execution_policy_digest
+        ):
+            self._set_route_status(room_id, member_id, "needs_reauthorization")
+            raise RuntimeError(
+                "peer room execution policy changed; reauthorization is required"
+            )
         rotated_route = replace(
             route,
             grant=grant,
-            capability_digest=effective_catalog.catalog_digest,
+            capability_digest=(
+                catalog.catalog_digest
+                if catalog is not None
+                else route.capability_digest
+            ),
             execution_policy_digest=(
-                effective_catalog.execution_policy.policy_digest
+                catalog.execution_policy.policy_digest
+                if catalog is not None
+                else route.execution_policy_digest
             ),
         )
         hosted_room_links.save_room_link(
@@ -960,46 +979,7 @@ class _RouteStatusPeerClient:
             try:
                 result = value(*args, **kwargs)
             except Exception as exc:
-                if (
-                    bool(getattr(exc, "needs_execution_policy_refresh", False))
-                    and bool(getattr(exc, "not_admitted", False))
-                    and name in {"dispatch", "recover_dispatch"}
-                    and "grant" in kwargs
-                    and "dispatch" in kwargs
-                ):
-                    from gateway.hosted_room_peer import (
-                        GatewayRoomCatalog,
-                        HostedMemberDispatch,
-                    )
-
-                    refreshed = self._client.refresh_grant(grant=kwargs["grant"])
-                    replacement = str(refreshed.get("grant") or "")
-                    catalog = GatewayRoomCatalog.from_mapping(
-                        refreshed.get("catalog")
-                    )
-                    if not replacement:
-                        raise RuntimeError(
-                            "peer returned no refreshed room grant"
-                        ) from exc
-                    checked = HostedMemberDispatch.from_mapping(kwargs["dispatch"])
-                    if catalog.installation_id != checked.target_install_id:
-                        raise RuntimeError(
-                            "peer execution policy changed target identity"
-                        ) from exc
-                    self._on_refreshed(replacement, catalog)
-                    kwargs = {
-                        **kwargs,
-                        "grant": replacement,
-                        "dispatch": replace(
-                            checked,
-                            capability_digest=catalog.catalog_digest,
-                            execution_policy_digest=(
-                                catalog.execution_policy.policy_digest
-                            ),
-                        ).as_mapping(),
-                    }
-                    result = value(*args, **kwargs)
-                elif bool(getattr(exc, "needs_reauthorization", False)):
+                if bool(getattr(exc, "needs_reauthorization", False)):
                     self._on_reauthorization()
                     raise
                 elif bool(getattr(exc, "not_admitted", False)):

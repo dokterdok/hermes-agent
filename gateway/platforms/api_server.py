@@ -1250,10 +1250,13 @@ def _admit_api_agent_request(handler):
     """
     @wraps(handler)
     async def _wrapped(self, request, *args, **kwargs):
-        if not _api_runs._uses_room_run_auth(self, request):
-            auth_err = self._check_auth(request)
-            if auth_err:
-                return auth_err
+        auth_err = (
+            self._check_run_auth(request, permission="dispatch")
+            if _api_runs._uses_room_run_auth(self, request)
+            else self._check_auth(request)
+        )
+        if auth_err:
+            return auth_err
         draining = self._draining_response()
         if draining is not None:
             return draining

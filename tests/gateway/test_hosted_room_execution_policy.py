@@ -91,6 +91,16 @@ def test_room_policy_overrides_broader_live_approval_config(monkeypatch):
         reset_room_execution_policy(token)
 
 
+def test_room_catalog_fails_closed_when_remote_approvals_are_off():
+    with pytest.raises(ValueError, match="requires manual or smart approvals"):
+        catalog_mapping(
+            installation_id="install-peer",
+            persistent_process=True,
+            target_profile="reviewer",
+            execution_policy=_policy(approval_mode="off"),
+        )
+
+
 def test_grant_and_recipient_dispatch_bind_the_exact_policy_digest():
     policy = _policy(max_turns=7)
     dispatch = _dispatch(policy)
@@ -165,15 +175,8 @@ def test_room_agent_uses_target_policy_toolsets_and_turn_limit(monkeypatch):
     assert captured["reasoning_config"] == {"enabled": True, "effort": "high"}
 
 
-def test_policy_drift_refreshes_target_grant_then_retries_once():
+def test_policy_drift_requires_reauthorization_without_retry():
     old_policy = _policy(max_turns=7)
-    new_policy = _policy(max_turns=5)
-    new_catalog = catalog_mapping(
-        installation_id="install-peer",
-        persistent_process=True,
-        target_profile="reviewer",
-        execution_policy=new_policy,
-    )
     dispatch = _dispatch(old_policy)
 
     class DriftClient:
@@ -191,26 +194,21 @@ def test_policy_drift_refreshes_target_grant_then_retries_once():
                 )
             return {"status": "accepted"}
 
-        def refresh_grant(self, **_kwargs):
-            return {"grant": "grant-new", "catalog": new_catalog}
-
     refreshed = []
+    reauthorization = []
     client = DriftClient()
     tracked = _RouteStatusPeerClient(
         client,
         on_ready=lambda: None,
-        on_reauthorization=lambda: None,
+        on_reauthorization=lambda: reauthorization.append(True),
         on_unavailable=lambda: None,
         on_refreshed=lambda grant, catalog=None: refreshed.append((grant, catalog)),
     )
 
-    assert tracked.dispatch(dispatch=dispatch.as_mapping(), grant="grant-old") == {
-        "status": "accepted"
-    }
-    assert len(client.dispatches) == 2
-    assert client.dispatches[1]["grant"] == "grant-new"
-    assert (
-        client.dispatches[1]["dispatch"]["execution_policy_digest"]
-        == new_policy["policy_digest"]
-    )
-    assert refreshed[0][0] == "grant-new"
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        tracked.dispatch(dispatch=dispatch.as_mapping(), grant="grant-old")
+
+    assert caught.value.needs_reauthorization is True
+    assert len(client.dispatches) == 1
+    assert refreshed == []
+    assert reauthorization == [True]

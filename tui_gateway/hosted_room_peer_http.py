@@ -5,22 +5,24 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import logging
+import re
 import socket
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from gateway.hosted_room_peer import (
-    GatewayRoomCatalog,
     HostedMemberDispatch,
-    PROTOCOL_VERSION,
     validate_room_link_url,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 _NOT_ADMITTED_ERRNOS = frozenset(
@@ -34,6 +36,7 @@ _NOT_ADMITTED_ERRNOS = frozenset(
     )
     if (value := getattr(errno, name, None)) is not None
 )
+_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 def _is_proven_pre_admission_failure(exc: BaseException) -> bool:
@@ -57,27 +60,24 @@ def _response_error_code(detail: str) -> str | None:
     error = payload.get("error")
     if isinstance(error, dict) and isinstance(error.get("code"), str):
         code = error["code"]
+        if _ERROR_CODE_RE.fullmatch(code) is None:
+            return None
         message = str(error.get("message") or "").lower()
         # Older target gateways wrap grant expiry inside the generic dispatch
         # error. Normalize it locally until their wire code becomes specific.
         if code == "invalid_room_dispatch" and "room grant" in message:
             return "invalid_room_grant"
+        if code == "invalid_room_dispatch" and "capability catalog changed" in message:
+            return "room_capability_catalog_changed"
+        if code == "invalid_room_dispatch" and "execution policy changed" in message:
+            return "room_execution_policy_changed"
         return code
-    return payload.get("code") if isinstance(payload.get("code"), str) else None
-
-
-def _response_error_message(detail: str) -> str | None:
-    """Extract bounded machine-readable context for controlled recovery."""
-    try:
-        payload = json.loads(detail)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    error = payload.get("error")
-    if isinstance(error, dict) and isinstance(error.get("message"), str):
-        return error["message"][:500]
-    return payload.get("message") if isinstance(payload.get("message"), str) else None
+    code = payload.get("code")
+    return (
+        code
+        if isinstance(code, str) and _ERROR_CODE_RE.fullmatch(code) is not None
+        else None
+    )
 
 
 class PeerRunsHTTPError(RuntimeError):
@@ -102,12 +102,18 @@ class PeerRunsHTTPError(RuntimeError):
         self.error_code = error_code
         self.error_message = error_message
         self.needs_reauthorization = bool(
-            status_code in {401, 403} and error_code == "invalid_room_grant"
+            status_code in {401, 403}
+            and error_code
+            in {
+                "invalid_room_grant",
+                "room_capability_catalog_changed",
+                "room_execution_policy_changed",
+                "room_reauthorization_required",
+            }
         )
         self.needs_capability_refresh = bool(
             status_code == 403
-            and error_code == "invalid_room_dispatch"
-            and "capability catalog changed" in str(error_message or "").lower()
+            and error_code == "room_capability_catalog_changed"
         )
         self.needs_execution_policy_refresh = bool(
             status_code == 403
@@ -147,7 +153,6 @@ class PeerRunsHTTPClient:
         self._recovery_backoff: dict[tuple[str, int], dict[str, Any]] = {}
         self._terminal_receipts: set[tuple[str, int]] = set()
         self._room_scope: dict[str, Any] | None = None
-        self._catalog_overrides: dict[tuple[Any, ...], GatewayRoomCatalog] = {}
 
     def bind_receipt_store(self, db_path: Path | str) -> None:
         """Attach the gateway-wide durable receipt store idempotently."""
@@ -216,79 +221,6 @@ class PeerRunsHTTPClient:
             "execution_generation": execution_generation,
         }
 
-    @staticmethod
-    def _catalog_scope(dispatch: HostedMemberDispatch) -> tuple[Any, ...]:
-        return (
-            dispatch.room_id,
-            dispatch.home_install_id,
-            dispatch.authority_gateway_id,
-            dispatch.authority_epoch,
-            dispatch.member_id,
-            dispatch.target_install_id,
-            dispatch.target_profile,
-        )
-
-    def _effective_dispatch(
-        self, dispatch: HostedMemberDispatch
-    ) -> HostedMemberDispatch:
-        catalog = self._catalog_overrides.get(self._catalog_scope(dispatch))
-        if catalog is None or (
-            catalog.catalog_digest == dispatch.capability_digest
-            and catalog.execution_policy.policy_digest
-            == dispatch.execution_policy_digest
-        ):
-            return dispatch
-        return replace(
-            dispatch,
-            capability_digest=catalog.catalog_digest,
-            execution_policy_digest=catalog.execution_policy.policy_digest,
-        )
-
-    def _refresh_dispatch_capability(
-        self,
-        dispatch: HostedMemberDispatch,
-        *,
-        grant: str,
-    ) -> HostedMemberDispatch:
-        probe = self.probe(grant=grant)
-        try:
-            catalog = GatewayRoomCatalog.from_mapping(probe.get("catalog"))
-        except Exception as exc:
-            raise PeerRunsHTTPError(
-                "peer returned an invalid capability catalog"
-            ) from exc
-        if (
-            catalog.installation_id != dispatch.target_install_id
-            or PROTOCOL_VERSION not in catalog.protocol_versions
-            or "direct" not in catalog.link_modes
-            or not catalog.text
-        ):
-            raise PeerRunsHTTPError("peer capability catalog is incompatible")
-
-        scope = self._catalog_scope(dispatch)
-        self._catalog_overrides[scope] = catalog
-        if self.receipt_db_path is not None:
-            from gateway import hosted_room_links
-
-            for stored in hosted_room_links.load_room_links(self.receipt_db_path):
-                if (
-                    stored.room_id == dispatch.room_id
-                    and stored.member_id == dispatch.member_id
-                    and stored.target_url == self.base_url
-                    and stored.target_profile == dispatch.target_profile
-                    and stored.catalog.installation_id == dispatch.target_install_id
-                ):
-                    hosted_room_links.save_room_link(
-                        self.receipt_db_path,
-                        replace(stored, catalog=catalog, updated_at=time.time()),
-                    )
-                    break
-        return replace(
-            dispatch,
-            capability_digest=catalog.catalog_digest,
-            execution_policy_digest=catalog.execution_policy.policy_digest,
-        )
-
     def bind_observation(self, *, task_id: str, execution_generation: int) -> None:
         """Pin history/status reads to one exact logical task attempt."""
         key = (str(task_id or ""), int(execution_generation or 0))
@@ -341,9 +273,13 @@ class PeerRunsHTTPClient:
             try:
                 detail = exc.read().decode("utf-8", "replace")[:500]
             except Exception:
-                detail = str(exc)
+                detail = ""
             error_code = _response_error_code(detail)
-            error_message = _response_error_message(detail)
+            logger.debug(
+                "Peer RoomLink request returned HTTP %s (%s)",
+                exc.code,
+                error_code or "no-code",
+            )
             pre_admission = bool(
                 method == "POST"
                 and path == "/v1/runs"
@@ -351,8 +287,13 @@ class PeerRunsHTTPClient:
             )
             message = (
                 "peer room authorization needs renewal"
-                if exc.code in {401, 403} and error_code == "invalid_room_grant"
-                else f"peer rejected {method} {path} with HTTP {exc.code}: {detail}"
+                if exc.code in {401, 403}
+                and error_code in {"invalid_room_grant", "room_reauthorization_required"}
+                else "peer room execution policy needs reauthorization"
+                if exc.code == 403 and error_code == "room_execution_policy_changed"
+                else "peer room capabilities need reauthorization"
+                if exc.code == 403 and error_code == "room_capability_catalog_changed"
+                else f"peer rejected {method} {path} with HTTP {exc.code}"
             )
             raise PeerRunsHTTPError(
                 message,
@@ -361,14 +302,13 @@ class PeerRunsHTTPClient:
                 not_admitted=pre_admission,
                 status_code=exc.code,
                 error_code=error_code,
-                error_message=error_message,
             ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             not_admitted = method == "POST" and _is_proven_pre_admission_failure(
                 exc
             )
             raise PeerRunsHTTPError(
-                f"peer is unreachable: {exc}",
+                "peer RoomLink endpoint is unreachable",
                 retryable=True,
                 ambiguous=method == "POST" and not not_admitted,
                 not_admitted=not_admitted,
@@ -499,7 +439,6 @@ class PeerRunsHTTPClient:
         *,
         grant: str,
     ) -> Mapping[str, Any]:
-        checked = self._effective_dispatch(checked)
         session_id = self._session_id(checked, grant=grant)
         idempotency_key = f"room:{checked.task_id}:{checked.execution_generation}"
 
@@ -518,10 +457,7 @@ class PeerRunsHTTPClient:
         try:
             result = admit(checked)
         except PeerRunsHTTPError as exc:
-            if exc.needs_capability_refresh and exc.not_admitted:
-                checked = self._refresh_dispatch_capability(checked, grant=grant)
-                result = admit(checked)
-            elif exc.ambiguous:
+            if exc.ambiguous:
                 result = admit(checked)
             else:
                 raise
@@ -875,6 +811,7 @@ class PeerRunsHTTPClient:
         member_id: str,
         grant_id: str,
         ttl_seconds: float = 3600,
+        status_ttl_seconds: float | None = None,
     ) -> Mapping[str, Any]:
         """Ask the target gateway to mint a scoped room-member grant."""
         if not self.api_key:
@@ -892,6 +829,11 @@ class PeerRunsHTTPClient:
                 "member_id": member_id,
                 "grant_id": grant_id,
                 "ttl_seconds": ttl_seconds,
+                **(
+                    {"status_ttl_seconds": status_ttl_seconds}
+                    if status_ttl_seconds is not None
+                    else {}
+                ),
             },
         )
 

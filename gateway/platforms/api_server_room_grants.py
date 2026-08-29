@@ -10,6 +10,30 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 
+class RoomGrantReauthorizationRequired(ValueError):
+    """A validly signed room grant was revoked or superseded."""
+
+
+def _room_grant_error_response(exc: Exception, *, _openai_error) -> "web.Response":
+    reauthorization = isinstance(exc, RoomGrantReauthorizationRequired)
+    return web.json_response(
+        _openai_error(
+            (
+                "Room authorization needs to be renewed."
+                if reauthorization
+                else "Room authorization is invalid or expired."
+            ),
+            err_type="gateway_auth_error",
+            code=(
+                "room_reauthorization_required"
+                if reauthorization
+                else "invalid_room_grant"
+            ),
+        ),
+        status=403 if reauthorization else 401,
+    )
+
+
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     return [
         (
@@ -71,12 +95,12 @@ def _room_grant_claims(
         hosted_rooms.default_db_path(),
         claims=claims,
     ):
-        raise ValueError("room grant is revoked")
+        raise RoomGrantReauthorizationRequired("room grant is revoked")
     if not hosted_rooms.peer_room_grant_is_current(
         hosted_rooms.default_db_path(),
         claims=claims,
     ):
-        raise ValueError("room grant is no longer current")
+        raise RoomGrantReauthorizationRequired("room grant is no longer current")
     return claims
 
 
@@ -101,7 +125,7 @@ async def _handle_room_member_invitation(
         "authority_epoch",
         "member_id",
     }
-    allowed = required | {"grant_id", "ttl_seconds"}
+    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds"}
     if set(body) - allowed or not required <= set(body):
         return web.json_response(
             _openai_error(
@@ -125,6 +149,11 @@ async def _handle_room_member_invitation(
         ttl = float(body.get("ttl_seconds", 3600))
         if not 60 <= ttl <= 24 * 60 * 60:
             raise ValueError("ttl_seconds must be between 60 and 86400")
+        status_ttl = float(body.get("status_ttl_seconds", ttl))
+        if not ttl <= status_ttl <= 30 * 24 * 60 * 60:
+            raise ValueError(
+                "status_ttl_seconds must be at least ttl_seconds and no more than 2592000"
+            )
         with self._profile_scope(profile):
             execution_policy = execution_policy_mapping(target_profile=profile)
         catalog = catalog_mapping(
@@ -150,6 +179,7 @@ async def _handle_room_member_invitation(
             execution_policy_digest=execution_policy["policy_digest"],
             issued_at=time.time(),
             ttl_seconds=ttl,
+            status_ttl_seconds=status_ttl,
         )
         claims = decode_room_grant(
             self._room_grant_secret(), token, permission="status"
@@ -170,6 +200,8 @@ async def _handle_room_member_invitation(
             "grant": token,
             "target_profile": profile,
             "catalog": catalog,
+            "expires_at": float(claims["expires_at"]),
+            "status_expires_at": float(claims["status_expires_at"]),
         },
         status=201,
     )
@@ -211,15 +243,8 @@ async def _handle_room_member_capabilities(
             target_profile=profile,
             execution_policy=execution_policy,
         )
-    except Exception:
-        return web.json_response(
-            _openai_error(
-                "Room authorization is invalid or expired.",
-                err_type="gateway_auth_error",
-                code="invalid_room_grant",
-            ),
-            status=401,
-        )
+    except Exception as exc:
+        return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response(
         {
             "object": "hermes.room_member.capabilities",
@@ -261,7 +286,10 @@ async def _handle_room_member_grant_refresh(
         )
         from gateway.hosted_room_execution_policy import execution_policy_mapping
 
-        claims = self._room_grant_claims(request, permission="status")
+        # A status-only bearer may observe a run but must never mint new
+        # dispatch authority. Renewal is possible only while the existing
+        # dispatch permission is still live.
+        claims = self._room_grant_claims(request, permission="dispatch")
         profile = _api_request_profile.get() or "default"
         installation_id = hosted_rooms.local_authority_gateway_id()
         if (
@@ -302,15 +330,8 @@ async def _handle_room_member_grant_refresh(
             ttl_seconds=dispatch_ttl,
             status_expires_at=hard_expiry,
         )
-    except Exception:
-        return web.json_response(
-            _openai_error(
-                "Room authorization can no longer be renewed.",
-                err_type="gateway_auth_error",
-                code="invalid_room_grant",
-            ),
-            status=401,
-        )
+    except Exception as exc:
+        return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response(
         {
             "object": "hermes.room_member.grant",

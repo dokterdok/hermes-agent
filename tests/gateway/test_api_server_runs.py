@@ -146,6 +146,31 @@ def auth_adapter():
 
 class TestStartRun:
     @pytest.mark.asyncio
+    async def test_room_auth_is_validated_before_body_parse_or_work_reservation(
+        self, auth_adapter
+    ):
+        from gateway.platforms import api_server_runs
+
+        app = _create_runs_app(auth_adapter)
+        handler = AsyncMock()
+        with patch.object(api_server_runs, "_handle_runs", handler):
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    data="{this body must never be parsed",
+                    headers={
+                        "Authorization": "HermesRoom invalid-token",
+                        "Content-Type": "application/json",
+                    },
+                )
+                body = await response.json()
+
+        assert response.status == 401
+        assert body["error"]["code"] == "invalid_room_grant"
+        assert auth_adapter._pending_agent_requests == 0
+        handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_start_returns_202(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -1502,9 +1527,34 @@ class TestHostedRoomRuns:
             "url": "https://peer.example.test/hermes",
             "transport_security": "tls",
         }
+        assert body["expires_at"] == body["status_expires_at"]
 
     @pytest.mark.asyncio
-    async def test_scoped_grant_refresh_survives_dispatch_expiry_but_not_horizon(
+    async def test_invitation_returns_operator_selected_status_horizon(
+        self, auth_adapter
+    ):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            invitation = await cli.post(
+                "/v1/room-members/invitations",
+                json={
+                    "room_id": "room-horizon",
+                    "home_install_id": "install-home",
+                    "authority_gateway_id": "gateway-home",
+                    "authority_epoch": 1,
+                    "member_id": "member-reviewer",
+                    "ttl_seconds": 600,
+                    "status_ttl_seconds": 3600,
+                },
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            body = await invitation.json()
+
+        assert invitation.status == 201
+        assert body["status_expires_at"] - body["expires_at"] == 3000
+
+    @pytest.mark.asyncio
+    async def test_scoped_grant_refresh_requires_live_dispatch_authority(
         self, auth_adapter, monkeypatch
     ):
         from gateway import hosted_rooms
@@ -1522,7 +1572,7 @@ class TestHostedRoomRuns:
             target_install_id=local_authority_gateway_id(),
             target_profile="default",
             issued_at=100,
-            ttl_seconds=10,
+            ttl_seconds=300,
             status_expires_at=1000,
         )
         old_claims = decode_room_grant(
@@ -1557,6 +1607,44 @@ class TestHostedRoomRuns:
         assert claims["room_id"] == "room-1"
         assert claims["home_install_id"] == "install-home"
         assert claims["status_expires_at"] == 1000
+
+        status_only = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-status-only",
+            room_id="room-1",
+            home_install_id="install-home",
+            authority_gateway_id="install-home",
+            authority_epoch=1,
+            member_id="member-peer",
+            target_install_id=local_authority_gateway_id(),
+            target_profile="default",
+            permissions=("status",),
+            issued_at=100,
+            ttl_seconds=300,
+            status_expires_at=1000,
+        )
+        status_claims = decode_room_grant(
+            auth_adapter._room_grant_secret(),
+            status_only,
+            permission="status",
+            now=100,
+        )
+        hosted_rooms.reserve_peer_room(
+            hosted_rooms.default_db_path(),
+            claims=status_claims,
+            expires_at=1000,
+            now=100,
+        )
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            status_refresh = await cli.post(
+                "/v1/room-members/grants/refresh",
+                json={"ttl_seconds": 300},
+                headers={"Authorization": f"HermesRoom {status_only}"},
+            )
+            status_refresh_body = await status_refresh.json()
+        assert status_refresh.status == 401
+        assert status_refresh_body["error"]["code"] == "invalid_room_grant"
 
         fully_expired = issue_room_grant(
             auth_adapter._room_grant_secret(),
@@ -1720,6 +1808,16 @@ class TestHostedRoomRuns:
                 "/v1/room-members/capabilities",
                 headers={"Authorization": f"HermesRoom {old_grant}"},
             )
+            denied_run = await cli.post(
+                "/v1/runs",
+                data="{never parsed",
+                headers={
+                    "Authorization": f"HermesRoom {old_grant}",
+                    "Content-Type": "application/json",
+                },
+            )
+            denied_body = await denied.json()
+            denied_run_body = await denied_run.json()
             future_grant = issue_room_grant(
                 auth_adapter._room_grant_secret(),
                 grant_id="grant-repaired",
@@ -1745,7 +1843,14 @@ class TestHostedRoomRuns:
                 headers={"Authorization": f"HermesRoom {future_grant}"},
             )
         assert first.status == repeated.status == 200
-        assert denied.status == 401
+        assert denied.status == 403
+        assert denied_body["error"]["code"] == "room_reauthorization_required"
+        assert denied_run.status == 403
+        assert (
+            denied_run_body["error"]["code"]
+            == "room_reauthorization_required"
+        )
+        assert auth_adapter._pending_agent_requests == 0
         assert repaired.status == 200
 
     @pytest.mark.asyncio
