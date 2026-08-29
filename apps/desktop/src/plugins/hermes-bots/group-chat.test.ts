@@ -273,6 +273,22 @@ describe('duplicate append guard (#93127)', () => {
 })
 
 describe('threads', () => {
+  it('repairs cached gateway-second timestamps during hydration', async () => {
+    const room = await loadRoom()
+    const seconds = 1_787_969_590.436
+
+    expect(
+      room.chat.assignLegacyThreads([
+        {
+          at: seconds,
+          from: { kind: 'user', name: 'You' },
+          text: 'Hello',
+          thread: 'thread-1'
+        }
+      ])[0].at
+    ).toBe(seconds * 1000)
+  })
+
   it('hydration assigns legacy thread ids — a lull splits, follow-ups stay together', async () => {
     const { chat } = await loadRoom()
     const minute = 60000

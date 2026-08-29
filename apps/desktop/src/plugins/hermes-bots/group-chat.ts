@@ -1861,15 +1861,25 @@ const GROUP_THREAD_GAP_MS = 15 * 60000
 export function assignLegacyThreads(log: GroupMessage[]): GroupMessage[] {
   let current: null | string = null
   let n = 0
+  const normalized = (log || []).map(entry => {
+    const at = Number(entry?.at || 0)
 
-  return (log || []).map((entry, i) => {
+    return at >= 1_000_000_000 && at < 1_000_000_000_000
+      ? {
+          ...entry,
+          at: at * 1000
+        }
+      : entry
+  })
+
+  return normalized.map((entry, i) => {
     if (entry?.thread) {
       current = null
 
       return entry
     }
 
-    const prev = log[i - 1]
+    const prev = normalized[i - 1]
     const lull = !prev || (entry.at || 0) - (prev.at || 0) > GROUP_THREAD_GAP_MS
 
     if (!current || (entry.from?.kind === 'user' && lull)) {
