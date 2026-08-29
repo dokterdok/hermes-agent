@@ -194,7 +194,7 @@ class HostedRoomPolicyCheckpoint:
             )
             return
 
-        if kind in {"message.member", *_TERMINAL_KINDS}:
+        if kind in {"message.member", "turn.handoff", *_TERMINAL_KINDS}:
             thread_id = str(payload.get("thread_id") or "")
             discussion_event_id = str(payload.get("discussion_event_id") or "")
             source = conn.execute(

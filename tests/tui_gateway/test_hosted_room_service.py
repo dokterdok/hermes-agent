@@ -131,6 +131,38 @@ class _FakeRPC:
         return {"resolved": 1}
 
 
+class _TypedHandoffRPC(_FakeRPC):
+    def submit(
+        self,
+        *,
+        profile,
+        session_id,
+        prompt,
+        source,
+        task,
+        execution_generation,
+        on_terminal,
+    ):
+        self.calls.append(("submit", {"profile": profile, "prompt": prompt}))
+        if profile == "default":
+            on_terminal(
+                {
+                    "status": "settled",
+                    "text": "HANDOFF_REQUESTED",
+                    "handoffs": [
+                        {
+                            "recipient_member_id": "ops",
+                            "recipient_handle": "ops",
+                            "objective": "Reply exactly FOLLOWUP_OK",
+                        }
+                    ],
+                }
+            )
+        else:
+            on_terminal({"status": "settled", "text": "FOLLOWUP_OK"})
+        return {"accepted": True}
+
+
 class _ArtifactRPC(_FakeRPC):
     def __init__(self, db_path: Path) -> None:
         super().__init__()
@@ -481,6 +513,45 @@ def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path:
     ]
     assert events[1]["payload"]["text"] == "reply from ops"
     assert service.status("room-1")["working"] is False
+
+
+def test_policy_checkpoint_preserves_typed_handoff_for_next_round(tmp_path: Path):
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    service.rpc = _TypedHandoffRPC()
+    service.runtime.rpc = service.rpc
+    service.local_profiles = lambda: ("default", "ops")
+    service.create_room(
+        room_id="room-1",
+        name="Handoff room",
+        members=[
+            {"member_id": "default", "profile": "default", "handle": "hermes"},
+            {"member_id": "ops", "profile": "ops", "handle": "ops"},
+        ],
+    )
+
+    service.start()
+    service.send(
+        room_id="room-1",
+        event_id="user-1",
+        payload={"text": "@hermes delegate the follow-up", "thread_id": "thread-1"},
+    )
+    _wait_for(
+        lambda: sum(
+            event["kind"] == "message.member" for event in service._events("room-1")
+        )
+        == 2
+    )
+    assert service.stop(timeout=1.0)
+
+    events = service._events("room-1")
+    member_events = [event for event in events if event["kind"] == "message.member"]
+    assert [event["payload"]["text"] for event in member_events] == [
+        "HANDOFF_REQUESTED",
+        "FOLLOWUP_OK",
+    ]
+    assert [event["payload"]["round_index"] for event in member_events] == [0, 1]
+    assert sum(event["kind"] == "turn.handoff" for event in events) == 1
 
 
 def test_attachment_send_freezes_roster_stages_bytes_and_logs_metadata_only(
