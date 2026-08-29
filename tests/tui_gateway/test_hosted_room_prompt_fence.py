@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import pytest
 
 from gateway import hosted_rooms
 import tui_gateway.server as server
@@ -68,6 +69,34 @@ def test_direct_prompt_to_non_hosted_group_reaches_normal_admission(
     assert result["error"] == {"code": 4090, "message": "normal admission reached"}
 
 
+@pytest.mark.parametrize(
+    "legacy_name",
+    (
+        "Launch room",
+        "Ceo, Product Designer, Cfo",
+        "Équipe",
+        "Alpha/Beta",
+    ),
+)
+def test_direct_prompt_to_legacy_named_group_reaches_normal_admission(
+    tmp_path, monkeypatch, legacy_name
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _stub_session(monkeypatch, title=f"Group: {legacy_name}")
+    monkeypatch.setattr(
+        server,
+        "_ensure_active_session_slot",
+        lambda _sid, _session: "normal admission reached",
+    )
+    result = server._methods["prompt.submit"](
+        "request-legacy", {"session_id": "session-1", "text": "continue"}
+    )
+
+    assert result["error"] == {"code": 4090, "message": "normal admission reached"}
+
+
 def test_direct_prompt_to_peer_reserved_group_is_rejected_until_revoke(
     tmp_path, monkeypatch
 ):
@@ -102,12 +131,8 @@ def test_direct_prompt_to_peer_reserved_group_is_rejected_until_revoke(
 
     rejected = server._methods["prompt.submit"](
         "request-peer",
-        {
-            "session_id": "session-1",
-            "text": "continue",
-        },
+        {"session_id": "session-1", "text": "continue"},
     )
-
     assert rejected["error"]["code"] == 4122
     assert "home host" in rejected["error"]["message"]
 
@@ -124,12 +149,8 @@ def test_direct_prompt_to_peer_reserved_group_is_rejected_until_revoke(
     )
     admitted = server._methods["prompt.submit"](
         "request-peer-after-revoke",
-        {
-            "session_id": "session-1",
-            "text": "continue",
-        },
+        {"session_id": "session-1", "text": "continue"},
     )
-
     assert admitted["error"] == {
         "code": 4090,
         "message": "normal admission reached",

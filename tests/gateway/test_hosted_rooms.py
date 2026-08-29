@@ -397,7 +397,7 @@ def test_authority_scoped_events_require_gateway_and_epoch(tmp_path):
     _create(db)
 
     with pytest.raises(rooms.HostedRoomError, match="authority_gateway_id"):
-        _append(
+        rooms.append_event(
             db,
             room_id="room-1",
             event_id="turn-1",
@@ -874,7 +874,7 @@ def test_tombstone_pruning_owns_only_room_log_driver_and_policy_tables(tmp_path)
         clock=lambda: 20,
     )
     HostedRoomPolicyCheckpoint(db)
-    rooms.disband_room(db, room_id="room-1", now=50)
+    _disband(db, room_id="room-1", now=50)
     with sqlite3.connect(db) as conn:
         conn.execute(
             """INSERT INTO hosted_room_policy_cursors(
@@ -989,7 +989,7 @@ def test_policy_sync_cannot_recreate_projection_after_room_pruning(
 ):
     db = tmp_path / "state.db"
     _create(db)
-    rooms.append_event(
+    _append(
         db,
         room_id="room-1",
         event_id="user-1",
@@ -1003,7 +1003,7 @@ def test_policy_sync_cannot_recreate_projection_after_room_pruning(
 
     def read_then_prune(*args, **kwargs):
         page = original_read(*args, **kwargs)
-        rooms.disband_room(db, room_id="room-1", now=20)
+        _disband(db, room_id="room-1", now=20)
         rooms.prune_disbanded_rooms(
             db,
             now=20 + rooms.DISBANDED_ROOM_RETENTION_SECONDS + 1,

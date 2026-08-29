@@ -366,6 +366,7 @@ def _(rid, params: dict) -> dict:
             if room_id:
                 try:
                     from gateway.hosted_rooms import (
+                        HostedRoomError,
                         RoomNotFoundError,
                         default_db_path,
                         peer_room_is_reserved,
@@ -398,6 +399,10 @@ def _(rid, params: dict) -> dict:
                             4122,
                             "This room is managed by its home host. Update Hermes Desktop to continue it.",
                         )
+                except HostedRoomError:
+                    # Legacy Desktop sessions used the display name after
+                    # "Group: "; those names are not hosted room ids.
+                    pass
                 except Exception:
                     return _err(
                         rid,

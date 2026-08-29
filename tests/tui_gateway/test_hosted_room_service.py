@@ -25,6 +25,16 @@ from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 
 
+def _append_room_event(db, **kwargs):
+    if kwargs.get("kind") == "message.user":
+        room = hosted_rooms.room_state(db, room_id=kwargs["room_id"])
+        kwargs.setdefault(
+            "authority_gateway_id", str(room["authority_gateway_id"])
+        )
+        kwargs.setdefault("authority_epoch", int(room["authority_epoch"]))
+    return hosted_rooms.append_event(db, **kwargs)
+
+
 class _FakeRPC:
     def __init__(self) -> None:
         self.sessions = {}
@@ -352,7 +362,7 @@ def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path)
             {"member_id": "ops", "profile": "ops", "handle": "ops"},
         ],
     )
-    event = hosted_rooms.append_event(
+    event = _append_room_event(
         db,
         room_id="room-1",
         event_id="user-1",
@@ -460,7 +470,7 @@ def test_policy_checkpoint_bounds_replay_after_completed_room_history(
                SET next_seq=401, revision=revision+400, updated_at=400
                WHERE room_id='room-1'"""
         )
-    hosted_rooms.append_event(
+    _append_room_event(
         db,
         room_id="room-1",
         event_id="user-active",
@@ -629,7 +639,7 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
     )
     assert service.stop(timeout=1.0)
     for index in range(24):
-        hosted_rooms.append_event(
+        _append_room_event(
             db,
             room_id="room-1",
             event_id=f"user-tail-{index}",

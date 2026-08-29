@@ -656,6 +656,7 @@ class HostedRoomService:
         payload: Any,
     ) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
+        room = hosted_rooms.room_state(self.db_path, room_id=room_id)
         event = hosted_rooms.append_event(
             self.db_path,
             room_id=room_id,
@@ -663,6 +664,8 @@ class HostedRoomService:
             kind="message.user",
             actor={"kind": "user", "id": "desktop"},
             payload=normalized,
+            authority_gateway_id=str(room["authority_gateway_id"]),
+            authority_epoch=int(room["authority_epoch"]),
         )
         binding = next(
             (
