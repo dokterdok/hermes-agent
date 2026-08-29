@@ -737,8 +737,11 @@ describe('hosted Group Chat runtime', () => {
     ]
     let cleanupAvailable = false
     let cleanupFailureCode = -32601
-    const loaded = await loadRuntime(
-      (method, _params, route) => {
+    let observedPrejournal = false
+    let loaded!: RuntimeRoom
+
+    loaded = await loadRuntime(
+      (method, params, route) => {
         const connectionId = String(route?.connectionId || '')
 
         if (method === 'groups.capabilities') {
@@ -768,6 +771,17 @@ describe('hosted Group Chat runtime', () => {
           return { rooms: [] }
         }
         if (method === 'groups.peer.invite') {
+          const cleanup = loaded.storage.get('hosted-room-cleanup-v1') as {
+            operations: Array<Record<string, unknown>>
+          }
+          const pending = cleanup.operations.find(
+            operation => operation.kind === 'peer-revoke' && operation.memberId === 'member-2-builder'
+          )
+
+          observedPrejournal = Boolean(
+            pending && !pending.grant && pending.grantId === params.grant_id
+          )
+
           return {
             grant: 'grant:builder',
             target_profile: 'builder',
@@ -825,6 +839,7 @@ describe('hosted Group Chat runtime', () => {
       fallbackSafe: false,
       message: expect.stringContaining('could not finish cleanup')
     })
+    expect(observedPrejournal).toBe(true)
     expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).not.toEqual([])
 
     cleanupFailureCode = 4007
@@ -838,6 +853,79 @@ describe('hosted Group Chat runtime', () => {
 
     expect(loaded.calls.map(call => call.method)).toEqual(expect.arrayContaining(['groups.disband', 'groups.peer.revoke']))
     expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).toEqual([])
+
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
+  it('checks cleanup capacity before issuing a peer invitation', async () => {
+    const routes = [
+      { connectionId: 'host-a', mode: 'remote' as const, profile: 'default', targetProfile: 'default' },
+      { connectionId: 'host-b', mode: 'remote' as const, profile: 'default', targetProfile: 'default' },
+      { connectionId: 'host-b', mode: 'remote' as const, profile: 'builder', targetProfile: 'builder' }
+    ]
+    const loaded = await loadRuntime((method, _params, route) => {
+      const connectionId = String(route?.connectionId || '')
+
+      if (method === 'groups.capabilities') {
+        return {
+          authority_gateway_id: `install:${connectionId}`,
+          driver: true,
+          persistent_process: true,
+          room_link: {
+            enabled: true,
+            endpoint: { available: true, url: `https://${connectionId}.example.test:19445` },
+            catalog: {
+              attachments: true,
+              catalog_digest: `digest:${connectionId}`,
+              installation_id: `install:${connectionId}`,
+              link_modes: ['direct'],
+              persistent_process: true,
+              protocol_versions: [2],
+              text: true
+            }
+          }
+        }
+      }
+      if (method === 'groups.list') {
+        return { rooms: [] }
+      }
+      if (method === 'groups.peer.invite' || method === 'groups.create') {
+        throw new Error('setup side effect must not start')
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    }, routes)
+    loaded.storage.set('hosted-room-cleanup-v1', {
+      version: 1,
+      operations: Array.from({ length: 63 }, (_value, index) => ({
+        operationId: `stale-${index}`,
+        setupId: `stale-${index}`,
+        kind: 'home-disband',
+        connectionId: `missing-${index}`,
+        ownerId: 'older-desktop',
+        roomId: `stale-room-${index}`,
+        cancelId: `cancel-${index}`
+      }))
+    })
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+    const members: GroupMember[] = [
+      { connectionId: 'host-a', name: 'research', route: routes[0], sourceScoped: true, targetProfile: 'research' },
+      { connectionId: 'host-b', name: 'builder', route: routes[2], sourceScoped: true, targetProfile: 'builder' }
+    ]
+    const probe = await loaded.runtime.probeHostedRoomMembers(members)
+
+    await expect(
+      loaded.runtime.createAutonomousHostedGroupChat({
+        members: [
+          { handle: 'research', member: members[0], profile: 'research' },
+          { handle: 'builder', member: members[1], profile: 'builder' }
+        ],
+        name: 'Capacity check',
+        probe,
+        roomId: 'room-capacity'
+      })
+    ).rejects.toThrow(/cleanup is pending/)
+    expect(loaded.calls.find(call => ['groups.peer.invite', 'groups.create'].includes(call.method))).toBeUndefined()
 
     loaded.runtime.stopHostedRoomRuntime()
   })
@@ -896,6 +984,77 @@ describe('hosted Group Chat runtime', () => {
       connectionId: 'gateway-a'
     })
     expect(loaded.calls.map(call => call.method)).toEqual(expect.arrayContaining(['groups.create', 'groups.state']))
+
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
+  it('confirms an omitted paginated room before showing it as deleted', async () => {
+    const loaded = await loadRuntime((method, params) => {
+      if (method === 'groups.capabilities') {
+        return {
+          driver: true,
+          persistent_process: true,
+          authority_gateway_id: 'install:home'
+        }
+      }
+      if (method === 'groups.list') {
+        return Number(params.offset || 0) === 0
+          ? {
+              rooms: [
+                {
+                  room_id: 'room-other',
+                  name: 'Other',
+                  members: MEMBERS,
+                  authority_gateway_id: 'install:home',
+                  authority_epoch: 1
+                }
+              ],
+              next_offset: 500
+            }
+          : {
+              rooms: [
+                {
+                  room_id: 'room-other',
+                  name: 'Other',
+                  members: MEMBERS,
+                  authority_gateway_id: 'install:home',
+                  authority_epoch: 1
+                }
+              ],
+              next_offset: null
+            }
+      }
+      if (method === 'groups.state') {
+        const roomId = String(params.room_id || '')
+
+        return {
+          room: {
+            room_id: roomId,
+            name: roomId === 'room-1' ? 'Release' : 'Other',
+            members: MEMBERS,
+            authority_gateway_id: 'install:home',
+            authority_epoch: 1,
+            disbanded_at: null
+          },
+          driver_status: { working: false }
+        }
+      }
+      if (method === 'groups.log') {
+        return { events: [], latest_seq: 0, has_more: false }
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+    loaded.chat.$groupChats.set({ Release: room() })
+
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+
+    expect(loaded.chat.$groupChats.get().Release.hostedStatus?.state).not.toBe('deleted')
+    expect(
+      loaded.calls.some(
+        call => call.method === 'groups.state' && call.params.room_id === 'room-1'
+      )
+    ).toBe(true)
 
     loaded.runtime.stopHostedRoomRuntime()
   })
@@ -1018,6 +1177,56 @@ describe('hosted Group Chat runtime', () => {
     loaded.runtime.stopHostedRoomRuntime()
   })
 
+  it('rolls back the in-memory outbox when Desktop storage rejects a write', async () => {
+    const loaded = await loadRuntime(method => {
+      if (method === 'groups.capabilities') {
+        return { driver: true, persistent_process: true, authority_gateway_id: 'install:home' }
+      }
+      if (method === 'groups.list') {
+        return { rooms: [] }
+      }
+      if (method === 'groups.send') {
+        return { ok: true }
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+    const baseStorage = scriptedStorage(loaded.storage).storage
+    let rejectOutbox = true
+    const storage = {
+      ...baseStorage,
+      set: async (key: string, value: unknown) => {
+        if (key === 'hosted-room-outbox-v1' && rejectOutbox) {
+          rejectOutbox = false
+          throw new Error('storage unavailable')
+        }
+
+        return baseStorage.set?.(key, value)
+      }
+    }
+
+    await loaded.runtime.startHostedRoomRuntime(storage)
+    loaded.chat.$groupChats.set({ Release: room() })
+
+    await expect(
+      loaded.runtime.sendHostedGroupChat(
+        'Release',
+        {
+          at: 1,
+          from: { kind: 'user', name: 'You' },
+          id: 'send-storage-failure',
+          text: 'Do not send later',
+          thread: 'thread-1'
+        },
+        'thread-1'
+      )
+    ).rejects.toThrow(/storage unavailable/)
+    expect(loaded.runtime.$hostedRoomOutbox.get().commands).toEqual([])
+    expect(loaded.calls.filter(call => call.method === 'groups.send')).toEqual([])
+
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
   it('replays an unknown in-flight send after Desktop closes with the same command id', async () => {
     let releaseFirstSend: () => void = () => undefined
     let firstSend = true
@@ -1079,7 +1288,14 @@ describe('hosted Group Chat runtime', () => {
       'thread-1'
     )
 
-    for (let attempt = 0; attempt < 10; attempt++) {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const persisted = loaded.storage.get('hosted-room-outbox-v1') as
+        | { commands?: Array<{ status?: string }> }
+        | undefined
+
+      if (persisted?.commands?.[0]?.status === 'in-flight') {
+        break
+      }
       await Promise.resolve()
     }
 
@@ -1091,6 +1307,9 @@ describe('hosted Group Chat runtime', () => {
         }
       ]
     })
+    for (let attempt = 0; attempt < 100 && !loaded.calls.some(call => call.method === 'groups.send'); attempt++) {
+      await Promise.resolve()
+    }
 
     loaded.runtime.stopHostedRoomRuntime()
     releaseFirstSend()

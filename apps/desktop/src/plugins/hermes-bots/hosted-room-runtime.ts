@@ -63,6 +63,7 @@ let hostedRoomSyncRunning = false
 let hostedRoomSyncDisposed = true
 let hostedOutboxDispatching = false
 let hostedCleanupDispatching = false
+let hostedOutboxWriteQueue: Promise<void> = Promise.resolve()
 let hostedRoomStorage: null | PluginContext['storage'] = null
 let hostedRoomHooks: HostedRoomRuntimeHooks = {}
 const groupAttachmentDataCache = new Map<string, string>()
@@ -81,10 +82,15 @@ export interface HostedRoomProbe {
 }
 
 interface HostedRoomCleanupOperation {
+  authorityEpoch?: null | number
+  authorityGatewayId?: null | string
   cancelId?: null | string
   connectionId: string
   grant?: null | string
+  grantId?: null | string
+  homeInstallId?: null | string
   kind: 'home-disband' | 'peer-revoke'
+  memberId?: null | string
   operationId: string
   ownerId: string
   profile?: null | string
@@ -204,7 +210,19 @@ function normalizeHostedRoomCleanup(value: unknown): HostedRoomCleanup {
       continue
     }
 
-    if (kind === 'peer-revoke' && (!String(operation?.grant || '') || !String(operation?.profile || ''))) {
+    const grant = String(operation?.grant || '')
+    const profile = String(operation?.profile || '')
+    const recoverablePeerRevoke = Boolean(
+      String(operation?.grantId || '') &&
+        String(operation?.roomId || '') &&
+        String(operation?.homeInstallId || '') &&
+        String(operation?.authorityGatewayId || '') &&
+        Number.isSafeInteger(Number(operation?.authorityEpoch)) &&
+        Number(operation?.authorityEpoch) > 0 &&
+        String(operation?.memberId || '')
+    )
+
+    if (kind === 'peer-revoke' && (!profile || (!grant && !recoverablePeerRevoke))) {
       continue
     }
 
@@ -214,13 +232,19 @@ function normalizeHostedRoomCleanup(value: unknown): HostedRoomCleanup {
       kind: kind as HostedRoomCleanupOperation['kind'],
       connectionId,
       ownerId: String(operation?.ownerId || ''),
-      roomId: kind === 'home-disband' ? String(operation?.roomId || '') : null,
+      roomId: String(operation?.roomId || '') || null,
       cancelId:
         kind === 'home-disband'
           ? String(operation?.cancelId || `rollback-${String(operation?.roomId || '')}`)
           : null,
-      profile: kind === 'peer-revoke' ? String(operation?.profile || '') : null,
-      grant: kind === 'peer-revoke' ? String(operation?.grant || '') : null
+      profile: kind === 'peer-revoke' ? profile : null,
+      grant: kind === 'peer-revoke' ? grant || null : null,
+      grantId: kind === 'peer-revoke' ? String(operation?.grantId || '') || null : null,
+      homeInstallId: kind === 'peer-revoke' ? String(operation?.homeInstallId || '') || null : null,
+      authorityGatewayId:
+        kind === 'peer-revoke' ? String(operation?.authorityGatewayId || '') || null : null,
+      authorityEpoch: kind === 'peer-revoke' ? Number(operation?.authorityEpoch || 0) || null : null,
+      memberId: kind === 'peer-revoke' ? String(operation?.memberId || '') || null : null
     })
   }
 
@@ -265,6 +289,14 @@ async function addHostedRoomCleanup(operation: Omit<HostedRoomCleanupOperation, 
   }
 
   await replaceHostedRoomCleanup(next)
+}
+
+function ensureHostedRoomCleanupCapacity(required: number) {
+  const current = normalizeHostedRoomCleanup($hostedRoomCleanup.get())
+
+  if (required < 1 || current.operations.length + required > HOSTED_ROOM_CLEANUP_LIMIT) {
+    throw new Error('Group Chat cleanup is pending. Reconnect the affected hosts before creating another.')
+  }
 }
 
 async function releaseHostedRoomCleanup(setupId: string) {
@@ -348,8 +380,42 @@ async function dispatchHostedRoomCleanup() {
             cancel_id: operation.cancelId
           })
         } else {
+          let grant = String(operation.grant || '')
+
+          if (!grant) {
+            const invitation = record(
+              await requestHostedConnection(route, 'groups.peer.invite', {
+                room_id: operation.roomId,
+                home_install_id: operation.homeInstallId,
+                authority_gateway_id: operation.authorityGatewayId,
+                authority_epoch: operation.authorityEpoch,
+                member_id: operation.memberId,
+                grant_id: operation.grantId,
+                profile: operation.profile
+              })
+            )
+
+            grant = String(invitation?.grant || '')
+            if (!grant) {
+              continue
+            }
+
+            const latest = normalizeHostedRoomCleanup($hostedRoomCleanup.get())
+            await replaceHostedRoomCleanup({
+              version: 1,
+              operations: latest.operations.map(entry =>
+                entry.operationId === operation.operationId
+                  ? {
+                      ...entry,
+                      grant
+                    }
+                  : entry
+              )
+            })
+          }
+
           await requestHostedConnection(route, 'groups.peer.revoke', {
-            grant: operation.grant,
+            grant,
             profile: operation.profile
           })
         }
@@ -794,6 +860,32 @@ export async function refreshHostedRooms() {
           room.hostedConnectionId === connectionId &&
           !listedIds.has(room.roomId)
         ) {
+          let confirmedDeleted = false
+
+          try {
+            const state = await requestHostedConnection<Record<string, unknown>>(route, 'groups.state', {
+              room_id: room.roomId,
+              include_disbanded: true
+            })
+
+            confirmedDeleted = isDisbanded((record(state.room) || {}) as HostedRoomServerState)
+          } catch (error) {
+            const candidate = record(error)
+            const nested = record(candidate?.error)
+            const code = Number(candidate?.code ?? nested?.code)
+            const message = String(candidate?.message || nested?.message || error || '')
+
+            confirmedDeleted = code === 4114 && /hosted room not found/i.test(message)
+          }
+
+          if (hostedRoomSyncDisposed) {
+            return
+          }
+
+          if (!confirmedDeleted) {
+            continue
+          }
+
           updateGroupChat(
             name,
             current => ({
@@ -845,20 +937,33 @@ function scheduleHostedRoomSync(delay = HOSTED_ROOM_SYNC_INTERVAL_MS) {
   timer?.unref?.()
 }
 
-async function persistHostedRoomOutbox() {
-  if (typeof hostedRoomStorage?.set !== 'function') {
-    throw new Error(botsText().group.desktopStorageUnavailable)
-  }
+async function transitionHostedRoomOutbox(action: Parameters<typeof reduceHostedRoomOutbox>[1]) {
+  const write = hostedOutboxWriteQueue.then(async () => {
+    if (typeof hostedRoomStorage?.set !== 'function') {
+      throw new Error(botsText().group.desktopStorageUnavailable)
+    }
 
-  await hostedRoomStorage.set(HOSTED_ROOM_OUTBOX_KEY, $hostedRoomOutbox.get())
-}
+    const previous = $hostedRoomOutbox.get()
+    const next = reduceHostedRoomOutbox(previous, action)
 
-function transitionHostedRoomOutbox(action: Parameters<typeof reduceHostedRoomOutbox>[1]) {
-  const next = reduceHostedRoomOutbox($hostedRoomOutbox.get(), action)
+    $hostedRoomOutbox.set(next)
 
-  $hostedRoomOutbox.set(next)
+    try {
+      await hostedRoomStorage.set(HOSTED_ROOM_OUTBOX_KEY, next)
+    } catch (error) {
+      $hostedRoomOutbox.set(previous)
+      throw error
+    }
 
-  return next
+    return next
+  })
+
+  hostedOutboxWriteQueue = write.then(
+    () => undefined,
+    () => undefined
+  )
+
+  return write
 }
 
 function terminalCommandFailure(error: unknown) {
@@ -896,11 +1001,10 @@ export async function dispatchHostedRoomOutbox() {
         continue
       }
 
-      state = transitionHostedRoomOutbox({
+      state = await transitionHostedRoomOutbox({
         type: 'dispatch',
         commandId: command.commandId
       })
-      await persistHostedRoomOutbox()
 
       const method: Record<HostedRoomCommand['kind'], string> = {
         create: 'groups.create',
@@ -940,14 +1044,13 @@ export async function dispatchHostedRoomOutbox() {
           return
         }
 
-        state = transitionHostedRoomOutbox({
+        state = await transitionHostedRoomOutbox({
           type: 'acknowledge',
           commandId: command.commandId
         })
-        await persistHostedRoomOutbox()
       } catch (error) {
         const terminal = terminalCommandFailure(error)
-        state = transitionHostedRoomOutbox(
+        state = await transitionHostedRoomOutbox(
           terminal
             ? {
                 type: 'terminal-failure',
@@ -959,7 +1062,6 @@ export async function dispatchHostedRoomOutbox() {
                 commandId: command.commandId
               }
         )
-        await persistHostedRoomOutbox()
         if (!terminal) {
           blockedRooms.add(command.roomId)
         }
@@ -971,11 +1073,10 @@ export async function dispatchHostedRoomOutbox() {
 }
 
 async function enqueueHostedRoomCommand(command: Partial<HostedRoomCommand>) {
-  transitionHostedRoomOutbox({
+  await transitionHostedRoomOutbox({
     type: 'enqueue',
     command
   })
-  await persistHostedRoomOutbox()
   await dispatchHostedRoomOutbox()
 
   const pending = $hostedRoomOutbox.get().commands.find(entry => entry.commandId === command.commandId)
@@ -1155,6 +1256,13 @@ export async function createAutonomousHostedGroupChat({
 
   const hostedMembers: Array<Record<string, unknown>> = []
   const peerRegistrations: Array<Record<string, unknown>> = []
+  const remoteMemberCount = members.filter(item => {
+    const connectionId = String(item.member.route?.connectionId || item.member.connectionId || '')
+
+    return connectionId !== homeConnectionId
+  }).length
+
+  ensureHostedRoomCleanupCapacity(1 + remoteMemberCount)
 
   try {
     await addHostedRoomCleanup({
@@ -1187,6 +1295,28 @@ export async function createAutonomousHostedGroupChat({
         continue
       }
 
+      const grantId =
+        globalThis.crypto?.randomUUID?.() ||
+        `grant-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const cleanupOperation = {
+        operationId: `${roomId}:peer-revoke:${memberId}`,
+        setupId: roomId,
+        kind: 'peer-revoke' as const,
+        connectionId,
+        profile,
+        grant: null,
+        grantId,
+        roomId,
+        homeInstallId: homeCapability.authorityId,
+        authorityGatewayId: homeCapability.authorityId,
+        authorityEpoch: 1,
+        memberId
+      }
+
+      // Journal the deterministic invitation before the target mints a live
+      // grant. A restart can recover the same scoped invitation, then revoke it.
+      await addHostedRoomCleanup(cleanupOperation)
+
       const invitation = record(
         await requestForBot(item.member, 'groups.peer.invite', {
           room_id: roomId,
@@ -1194,6 +1324,7 @@ export async function createAutonomousHostedGroupChat({
           authority_gateway_id: homeCapability.authorityId,
           authority_epoch: 1,
           member_id: memberId,
+          grant_id: grantId,
           profile
         })
       )
@@ -1206,10 +1337,7 @@ export async function createAutonomousHostedGroupChat({
 
       if (invitation?.grant && invitedProfile) {
         await addHostedRoomCleanup({
-          operationId: `${roomId}:peer-revoke:${memberId}`,
-          setupId: roomId,
-          kind: 'peer-revoke',
-          connectionId,
+          ...cleanupOperation,
           profile: invitedProfile,
           grant: String(invitation.grant)
         })
