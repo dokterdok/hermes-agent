@@ -736,6 +736,7 @@ describe('hosted Group Chat runtime', () => {
       { connectionId: 'host-b', mode: 'remote' as const, profile: 'builder', targetProfile: 'builder' }
     ]
     let cleanupAvailable = false
+    let cleanupFailureCode = -32601
     const loaded = await loadRuntime(
       (method, _params, route) => {
         const connectionId = String(route?.connectionId || '')
@@ -786,7 +787,10 @@ describe('hosted Group Chat runtime', () => {
         }
         if (method === 'groups.disband' || method === 'groups.peer.revoke') {
           if (!cleanupAvailable) {
-            throw Object.assign(new Error('method not found'), { code: -32601 })
+            throw Object.assign(
+              new Error(cleanupFailureCode === 4007 ? 'session not found' : 'method not found'),
+              { code: cleanupFailureCode }
+            )
           }
 
           return { ok: true }
@@ -821,6 +825,11 @@ describe('hosted Group Chat runtime', () => {
       fallbackSafe: false,
       message: expect.stringContaining('could not finish cleanup')
     })
+    expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).not.toEqual([])
+
+    cleanupFailureCode = 4007
+    loaded.runtime.stopHostedRoomRuntime()
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
     expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).not.toEqual([])
 
     cleanupAvailable = true

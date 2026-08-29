@@ -316,7 +316,8 @@ function hostedCleanupAlreadySettled(operation: HostedRoomCleanupOperation, erro
 
   return (
     operation.kind === 'home-disband' &&
-    (code === 4007 || (code === 4113 && /hosted room not found|already disbanded/i.test(message)))
+    code === 4113 &&
+    /hosted room not found|already disbanded/i.test(message)
   )
 }
 
