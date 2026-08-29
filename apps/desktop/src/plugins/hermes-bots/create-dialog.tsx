@@ -44,6 +44,7 @@ import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
+import { prepareDesktopRoomAuthority } from './desktop-room-command-runtime'
 import { labeled, ResizableFrame } from './dialog-parts'
 import {
   $groupChats,
@@ -1303,10 +1304,18 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       // member becomes remote after a source switch and cannot rely on the new
       // gateway's name-keyed bot metadata to remain seated in this room.
       const roomMembers = durableGroupChatMembers(selected)
+      const desktopAuthority = hosted ? null : await prepareDesktopRoomAuthority().catch(() => null)
+
       updateGroupChat(groupName, (room: GroupChatRoom) => {
         room.members = roomMembers
         room.roomId = roomId
         room.continuityMode = hosted ? 'gateway' : 'desktop'
+
+        if (desktopAuthority) {
+          room.desktopAuthorityHash = desktopAuthority.desktopAuthorityHash
+          room.desktopAuthorityToken = desktopAuthority.desktopAuthorityToken
+          room.desktopCoordinatorId = desktopAuthority.desktopCoordinatorId
+        }
 
         if (hosted) {
           room.hosted = hosted.authorityId

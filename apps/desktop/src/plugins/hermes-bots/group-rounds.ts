@@ -36,6 +36,14 @@ function hostedConnectionName(room: null | Partial<GroupChatRoom> | undefined) {
   return room?.members?.find(member => member.connectionLabel)?.connectionLabel || botsText().group.thisHost
 }
 
+const groupTransientAttachments = new Map<string, Attachment[]>()
+
+interface SendGroupChatOptions {
+  entryId?: string
+  omitAttachmentDataFromLog?: boolean
+  userName?: string
+}
+
 // ── group chats: bounded round-robin coordination over a shared room log ─────
 //
 // Behavioral model (clean-room): a group conversation is ONE ordered room log
@@ -560,6 +568,38 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   }
 }
 
+/** Fence a classic-room turn after this Desktop loses its gateway command
+ * lease. Unlike a user Stop, this adds no durable holds, so the same command
+ * can be leased to the current owner and resumed idempotently. */
+export async function cancelGroupThreadForLeaseLoss(
+  group: string,
+  members: GroupMember[] | null = null
+) {
+  const room = $groupChats.get()[group] || {}
+  const roster = Array.isArray(members) && members.length ? members : room.members || []
+  const turnName = room.turn || null
+
+  updateGroupChat(group, current => ({
+    ...current,
+    epoch: (current.epoch || 0) + 1,
+    running: false,
+    turn: null
+  }))
+
+  const onTurn = turnName ? roster.find(member => member?.name === turnName) : null
+  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+
+  if (onTurn && sessionId) {
+    try {
+      await requestForBot(onTurn, 'session.interrupt', {
+        session_id: sessionId
+      })
+    } catch {
+      /* the epoch fence still prevents stale room commits */
+    }
+  }
+}
+
 /** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
  *  a time. A newer user send bumps the room epoch; this loop notices at the
  *  next member boundary, bails, and the newest send's own loop takes over.
@@ -700,7 +740,11 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         // carry images today, but flatMap keeps this future-proof) get staged
         // into the member's session so the model sees the pixels, not just
         // the transcript's [attached image: …] marker.
-        const deltaImages = delta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
+        const deltaImages = delta.flatMap((e: GroupMessage) => {
+          const transient = e?.id ? groupTransientAttachments.get(String(e.id)) : null
+
+          return Array.isArray(transient) ? transient : Array.isArray(e.images) ? e.images : []
+        })
 
         // Surface WHO is on turn (runtime-only, like running/epoch) so the
         // room shows "Radar is thinking…" instead of a generic working line —
@@ -960,6 +1004,13 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
     // the round cap ended the drive, not consensus. (#94478)
     exitKind = 'capped'
   } finally {
+    const externalIds = (Array.isArray(($groupChats.get()[group] || {}).log)
+      ? $groupChats.get()[group].log
+      : []
+    )
+      .filter(entry => entry?.external && groupThreadOf(entry) === thread && entry?.id)
+      .map(entry => String(entry.id))
+
     if (isCurrent()) {
       recordGroupActivity(group, {
         kind: exitKind,
@@ -969,6 +1020,18 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       updateGroupChat(group, (r: GroupChatRoom) => {
         r.running = false
         r.turn = null
+        r.desktopCommandSettled = Object.fromEntries(
+          Object.entries({
+            ...(r.desktopCommandSettled || {}),
+            ...Object.fromEntries(externalIds.map(id => [id, Date.now()]))
+          })
+            .sort(([, left], [, right]) => Number(right) - Number(left))
+            .slice(0, 128)
+        )
+
+        for (const id of externalIds) {
+          groupTransientAttachments.delete(id)
+        }
 
         return r
       })
@@ -1037,13 +1100,16 @@ export function sendToGroupChat(
   members: GroupMember[],
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  options: SendGroupChatOptions = {}
 ): null | Promise<string> | string {
   const trimmed = String(text || '').trim()
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
   const roomBeforeSend = $groupChats.get()[group]
   const hosted = groupChatHostedGateway(roomBeforeSend)
   const connectionName = hostedConnectionName(roomBeforeSend)
+  const externalId = String(options.entryId || '').trim()
+  const userName = String(options.userName || 'You').trim().slice(0, 128) || 'You'
 
   if ((!trimmed && !attached.length) || !members.length) {
     return null
@@ -1067,7 +1133,7 @@ export function sendToGroupChat(
         kind: 'user',
         name: 'You'
       },
-      id: mintGroupChatEntryId(),
+      id: externalId || mintGroupChatEntryId(),
       text: trimmed,
       thread: target
     }
@@ -1133,6 +1199,42 @@ export function sendToGroupChat(
       })
   }
 
+  if (externalId) {
+    const existing = (Array.isArray(roomBeforeSend?.log) ? roomBeforeSend.log : []).find(entry => entry?.id === externalId)
+
+    if (existing) {
+      const existingThread = existing.thread || 'legacy'
+
+      if (roomBeforeSend?.desktopCommandSettled?.[externalId] || roomBeforeSend?.running) {
+        return existingThread
+      }
+
+      if (options.omitAttachmentDataFromLog && attached.length) {
+        groupTransientAttachments.set(externalId, attached)
+      }
+
+      updateGroupChat(group, current => ({
+        ...current,
+        members: durableGroupChatMembers(members),
+        epoch: (current.epoch || 0) + 1,
+        running: true
+      }))
+      recordGroupActivity(group, {
+        kind: 'queued',
+        member: userName,
+        thread: existingThread
+      })
+      void runGroupChatRounds(group, members, existingThread).catch(() => {
+        updateGroupChat(group, current => ({
+          ...current,
+          running: false
+        }))
+      })
+
+      return existingThread
+    }
+  }
+
   $groupNeedsYou.set({
     ...$groupNeedsYou.get(),
     [group]: false
@@ -1150,15 +1252,23 @@ export function sendToGroupChat(
     group,
     {
       kind: 'user',
-      name: 'You'
+      name: userName
     },
     trimmed,
     target,
-    attached
+    options.omitAttachmentDataFromLog ? attached.map(({ data: _data, ...attachment }) => attachment) : attached,
+    {
+      entryId: externalId,
+      external: Boolean(externalId)
+    }
   )
 
   if (!sent) {
     return null
+  }
+
+  if (sent.id && options.omitAttachmentDataFromLog && attached.length) {
+    groupTransientAttachments.set(String(sent.id), attached)
   }
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true

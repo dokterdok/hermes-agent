@@ -57,6 +57,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
   continuityMode?: 'desktop' | 'gateway'
+  desktopAuthorityHash?: null | string
   hosted?: null | string
   hostedEpoch?: null | number
   image?: null | string
@@ -268,7 +269,14 @@ export function groupChatSyncSnapshot(
   const ranked = Object.entries(all || {})
     // Empty runtime tombstones are used to stop an in-flight room after
     // disband. They are not real rooms and must never reappear on mobile.
-    .filter(([, room]) => room && Array.isArray(room.log) && room.log.length > 0)
+    .filter(
+      ([, room]) =>
+        room &&
+        !room.tombstone &&
+        Array.isArray(room.log) &&
+        (room.log.length > 0 ||
+          (typeof room.roomId === 'string' && room.roomId && Array.isArray(room.members) && room.members.length >= 2))
+    )
     .sort(([, left], [, right]) => {
       const leftAt = Number(left.log[left.log.length - 1]?.at || 0)
       const rightAt = Number(right.log[right.log.length - 1]?.at || 0)
@@ -317,6 +325,25 @@ export function groupChatSyncSnapshot(
         ? {
             thread: String(entry.thread).slice(0, 128)
           }
+        : {}),
+      ...(Array.isArray(entry?.images)
+        ? {
+            images: entry.images
+              .filter(attachment => /^att_[0-9a-f]{32}$/.test(String(attachment?.attachment_id || '')))
+              .slice(0, 8)
+              .map(attachment => ({
+                attachment_id: String(attachment.attachment_id),
+                kind: attachment.kind,
+                name: String(attachment.name || 'attachment').slice(0, 255),
+                size: Math.max(0, Number(attachment.size || 0)),
+                mime: String(attachment.mime || 'application/octet-stream').slice(0, 127),
+                ...(attachment.connectionId
+                  ? {
+                      connectionId: String(attachment.connectionId).slice(0, 128)
+                    }
+                  : {})
+              }))
+          }
         : {})
     }))
 
@@ -332,6 +359,11 @@ export function groupChatSyncSnapshot(
       // authority fence instead of interpreting omission as a local takeover.
       hosted: groupChatHostedGateway(room) || null,
       hostedEpoch: groupChatHostedEpoch(room) || null,
+      ...(typeof room.desktopAuthorityHash === 'string' && /^[a-f0-9]{64}$/.test(room.desktopAuthorityHash)
+        ? {
+            desktopAuthorityHash: room.desktopAuthorityHash
+          }
+        : {}),
       continuityMode: groupChatHostedGateway(room) ? 'gateway' : 'desktop',
       log,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
@@ -874,6 +906,13 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
         : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'image')
           ? projected.image || null
           : existing.image || null,
+      desktopAuthorityHash:
+        (typeof existing.desktopAuthorityHash === 'string' && /^[a-f0-9]{64}$/.test(existing.desktopAuthorityHash)
+          ? existing.desktopAuthorityHash
+          : null) ||
+        (typeof projected.desktopAuthorityHash === 'string' && /^[a-f0-9]{64}$/.test(projected.desktopAuthorityHash)
+          ? projected.desktopAuthorityHash
+          : null),
       hosted: cachedHosted || null,
       hostedEpoch: cachedHostedEpoch || null,
       continuityMode: cachedHosted ? 'gateway' : existing.continuityMode || projected.continuityMode || 'desktop',
@@ -917,6 +956,16 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   return rooms
 }
 
+export function boundedDesktopCommandSettled(value: unknown, limit = 128) {
+  return Object.fromEntries(
+    Object.entries(value && typeof value === 'object' ? value : {})
+      .map(([id, at]) => [String(id), Math.max(0, Number(at || 0))] as const)
+      .filter(([id]) => id)
+      .sort(([, left], [, right]) => right - left)
+      .slice(0, limit)
+  )
+}
+
 export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupChats.get()) {
   const durable: Record<string, GroupChat> = {}
 
@@ -945,6 +994,11 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       // name-keyed identity — same field updateGroupChat's inline map
       // already carries.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+      desktopCoordinatorId:
+        typeof room.desktopCoordinatorId === 'string' && room.desktopCoordinatorId ? room.desktopCoordinatorId : null,
+      desktopAuthorityToken:
+        typeof room.desktopAuthorityToken === 'string' && room.desktopAuthorityToken ? room.desktopAuthorityToken : null,
+      desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
       hosted: groupChatHostedGateway(room) || null,
       hostedEpoch: groupChatHostedEpoch(room) || null,
       hostedConnectionId:
@@ -1549,6 +1603,11 @@ export function updateGroupChat(
         members: Array.isArray(room.members) ? room.members : [],
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+        desktopCoordinatorId:
+          typeof room.desktopCoordinatorId === 'string' && room.desktopCoordinatorId ? room.desktopCoordinatorId : null,
+        desktopAuthorityToken:
+          typeof room.desktopAuthorityToken === 'string' && room.desktopAuthorityToken ? room.desktopAuthorityToken : null,
+        desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
         hosted: groupChatHostedGateway(room) || null,
         hostedEpoch: groupChatHostedEpoch(room) || null,
         hostedConnectionId:
@@ -1630,14 +1689,20 @@ export function appendGroupChatEntry(
   from: GroupMessageAuthor,
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  { entryId = '', external = false }: { entryId?: string; external?: boolean } = {}
 ): GroupMessage {
   const entry: GroupMessage = {
-    id: mintGroupChatEntryId(),
+    id: entryId || mintGroupChatEntryId(),
     at: Date.now(),
     from,
     text: normalizeGroupChatText(text),
-    thread: thread || 'legacy'
+    thread: thread || 'legacy',
+    ...(external
+      ? {
+          external: true
+        }
+      : {})
   }
 
   if (Array.isArray(images) && images.length) {

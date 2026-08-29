@@ -1112,6 +1112,8 @@ export function stopHostedRoomRuntime() {
   hostedRoomStorage = null
   hostedRoomHooks = {}
   hostedAuthorityRoutes.clear()
+  groupAttachmentDataCache.clear()
+  groupAttachmentDataCacheChars = 0
 
   if (hostedRoomSyncTimer) {
     clearTimeout(hostedRoomSyncTimer)
