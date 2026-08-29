@@ -118,6 +118,7 @@ class StoredRoomLink:
             "persistent_process": self.catalog.persistent_process,
             "text": self.catalog.text,
             "attachments": self.catalog.attachments,
+            "execution_policy": self.catalog.execution_policy.as_mapping(),
             "catalog_digest": self.catalog.catalog_digest,
         }
         if (
@@ -231,6 +232,7 @@ def make_stored_link(
             "persistent_process": catalog.persistent_process,
             "text": catalog.text,
             "attachments": catalog.attachments,
+            "execution_policy": catalog.execution_policy.as_mapping(),
             "catalog_digest": catalog.catalog_digest,
             **(
                 {"endpoint": catalog.endpoint_mapping()}

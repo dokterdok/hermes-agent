@@ -24,6 +24,7 @@ def bind_server(server) -> None:
 
     global _bound_server
     _bound_server = server
+    server._profile_execution_policy = _profile_execution_policy
 
 
 def start_hosted_room_service():
@@ -122,6 +123,30 @@ def _api_server_key(profile: str | None = None) -> str:
     return (os.getenv("API_SERVER_KEY") or "").strip()
 
 
+def _profile_execution_policy(profile: str) -> dict:
+    """Resolve execution policy under the exact multiplexed profile home."""
+
+    from gateway.hosted_room_execution_policy import execution_policy_mapping
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    token = None
+    if _bound_server is not None:
+        current = str(_bound_server._current_profile_name() or "").strip()
+        if profile not in {current, _profile_name()}:
+            home = _bound_server._profile_home(profile)
+            if home is None:
+                raise ValueError(f"profile '{profile}' is unavailable")
+            token = set_hermes_home_override(str(home))
+    try:
+        return execution_policy_mapping(target_profile=profile)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
 def _room_link_run_storage_durable() -> bool:
     """Return whether peer-run replay survives this gateway process."""
 
@@ -161,22 +186,22 @@ def _(rid, params: dict) -> dict:
     try:
         from gateway.hosted_room_peer import (
             PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
-            derive_room_grant_secret,
+            gateway_room_grant_secret,
             local_catalog_mapping,
         )
 
         profile = _requested_profile(params)
         if not _room_link_run_storage_durable():
             raise ValueError("durable run idempotency storage is required")
-        derive_room_grant_secret(
-            _api_server_key(profile if params.get("profile") else None)
-        )
+        gateway_room_grant_secret()
         catalog = local_catalog_mapping(
             installation_id=local_authority_gateway_id(),
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
             link_modes=("direct",),
             text=True,
             attachments=False,
+            target_profile=profile,
+            execution_policy=_profile_execution_policy(profile),
         )
         room_link = {
             "enabled": True,
@@ -190,7 +215,7 @@ def _(rid, params: dict) -> dict:
             "reason": (
                 "durable_run_storage_required"
                 if not _room_link_run_storage_durable()
-                else "gateway_api_key_required"
+                else "gateway_roomlink_secret_unavailable"
             ),
         }
     return _ok(
@@ -240,23 +265,24 @@ def _(rid, params: dict) -> dict:
     try:
         from gateway.hosted_room_peer import (
             PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
-            derive_room_grant_secret,
+            decode_room_grant,
+            gateway_room_grant_secret,
             issue_room_grant,
             local_catalog_mapping,
         )
-        from gateway.hosted_rooms import local_authority_gateway_id
+        from gateway import hosted_rooms
 
         if not _room_link_run_storage_durable():
             raise ValueError("durable run idempotency storage is required")
-        installation_id = local_authority_gateway_id()
+        installation_id = hosted_rooms.local_authority_gateway_id()
         profile = _requested_profile(params)
         ttl = float(params.get("ttl_seconds", 3600))
         if not 60 <= ttl <= 24 * 60 * 60:
             raise ValueError("ttl_seconds must be between 60 and 86400")
+        grant_secret = gateway_room_grant_secret()
+        execution_policy = _profile_execution_policy(profile)
         token = issue_room_grant(
-            derive_room_grant_secret(
-                _api_server_key(profile if params.get("profile") else None)
-            ),
+            grant_secret,
             grant_id=str(params.get("grant_id") or f"grant-{os.urandom(16).hex()}"),
             room_id=str(params.get("room_id") or ""),
             home_install_id=str(params.get("home_install_id") or ""),
@@ -267,7 +293,14 @@ def _(rid, params: dict) -> dict:
             member_id=str(params.get("member_id") or ""),
             target_install_id=installation_id,
             target_profile=profile,
+            execution_policy_digest=execution_policy["policy_digest"],
             ttl_seconds=ttl,
+        )
+        claims = decode_room_grant(grant_secret, token, permission="status")
+        hosted_rooms.reserve_peer_room(
+            hosted_rooms.default_db_path(),
+            claims=claims,
+            expires_at=float(claims.get("status_expires_at", claims["expires_at"])),
         )
         catalog = local_catalog_mapping(
             installation_id=installation_id,
@@ -275,6 +308,8 @@ def _(rid, params: dict) -> dict:
             link_modes=("direct",),
             text=True,
             attachments=False,
+            target_profile=profile,
+            execution_policy=execution_policy,
         )
         return _ok(
             rid,
@@ -294,13 +329,11 @@ def _(rid, params: dict) -> dict:
     """Revoke one target-issued grant using its exact profile scope."""
     try:
         from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, derive_room_grant_secret
+        from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
 
         profile = _requested_profile(params)
         claims = decode_room_grant(
-            derive_room_grant_secret(
-                _api_server_key(profile if params.get("profile") else None)
-            ),
+            gateway_room_grant_secret(),
             str(params.get("grant") or ""),
             permission="status",
         )
@@ -385,6 +418,7 @@ def _(rid, params: dict) -> dict:
             target_install_id=catalog.installation_id,
             target_profile=target_profile,
             capability_digest=catalog.catalog_digest,
+            execution_policy_digest=catalog.execution_policy.policy_digest,
             cancellation_scope_id=str(
                 params.get("cancellation_scope_id")
                 or f"cancel-{params.get('room_id') or ''}"

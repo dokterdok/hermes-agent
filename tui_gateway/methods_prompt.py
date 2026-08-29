@@ -368,12 +368,36 @@ def _(rid, params: dict) -> dict:
                     from gateway.hosted_rooms import (
                         RoomNotFoundError,
                         default_db_path,
+                        peer_room_is_reserved,
                         room_state,
                     )
 
                     room_state(default_db_path(), room_id=room_id)
                 except RoomNotFoundError:
-                    pass
+                    from hermes_constants import named_profile_home
+
+                    session_profile_home = named_profile_home(
+                        str(session.get("profile_home") or "")
+                    )
+                    requested_profile = (
+                        (
+                            session_profile_home.name
+                            if session_profile_home is not None
+                            else ""
+                        )
+                        or str(params.get("profile") or "").strip()
+                        or str(_current_profile_name() or "default").strip()
+                    )
+                    if peer_room_is_reserved(
+                        default_db_path(),
+                        room_id=room_id,
+                        target_profile=requested_profile,
+                    ):
+                        return _err(
+                            rid,
+                            4122,
+                            "This room is managed by its home host. Update Hermes Desktop to continue it.",
+                        )
                 except Exception:
                     return _err(
                         rid,

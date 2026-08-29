@@ -12,11 +12,34 @@ from typing import Any, Dict, List, Optional
 
 try:
     from aiohttp import web
+    from aiohttp.web_request import RequestKey
 except ImportError:
     web = None  # type: ignore[assignment]
+    RequestKey = None  # type: ignore[assignment,misc]
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
+_ROOM_RETENTION_REQUEST_KEY = (
+    RequestKey("hermes.room_run_retention_until", float)
+    if RequestKey is not None
+    else "hermes.room_run_retention_until"
+)
+
+
+def _remember_room_retention(request: "web.Request", claims: dict[str, Any]) -> None:
+    value = float(claims.get("status_expires_at") or claims.get("expires_at") or 0)
+    try:
+        request[_ROOM_RETENTION_REQUEST_KEY] = value
+    except (AttributeError, TypeError):
+        setattr(request, "_hermes_room_run_retention_until", value)
+
+
+def _room_retention_until(request: "web.Request") -> float:
+    try:
+        value = request.get(_ROOM_RETENTION_REQUEST_KEY, 0)
+    except AttributeError:
+        value = getattr(request, "_hermes_room_run_retention_until", 0)
+    return max(0.0, float(value or 0))
 
 
 def _uses_room_run_auth(self, request: "web.Request") -> bool:
@@ -261,6 +284,7 @@ def _run_idempotency_scope(
                 else "dispatch"
             ),
         )
+        _remember_room_retention(request, claims)
         identity = (
             f"{claims['room_id']}\0{claims['home_install_id']}\0"
             f"{claims['authority_gateway_id']}\0{claims['authority_epoch']}\0"
@@ -307,10 +331,21 @@ def _durable_run_status(
     """Hydrate a scoped run status and fail stale owners closed."""
     status = self._run_statuses.get(run_id)
     if status is not None:
+        if run_id in self._run_idempotency_ids:
+            scope = self._run_idempotency_scope(request)
+            self._run_idempotency_store.extend_retention(
+                scope,
+                run_id,
+                _room_retention_until(request),
+            )
         return status
 
     scope = self._run_idempotency_scope(request)
-    record = self._run_idempotency_store.status_for_run(scope, run_id)
+    record = self._run_idempotency_store.status_for_run(
+        scope,
+        run_id,
+        retention_until=_room_retention_until(request),
+    )
     if record is None:
         return None
 
@@ -388,6 +423,18 @@ async def _handle_runs(
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
+    room_dispatch = (
+        body.get("hosted_room_dispatch")
+        if isinstance(body, dict)
+        and isinstance(body.get("hosted_room_dispatch"), dict)
+        else None
+    )
+    room_execution_policy = (
+        body.get("_room_execution_policy")
+        if isinstance(body, dict)
+        and isinstance(body.get("_room_execution_policy"), dict)
+        else None
+    )
 
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
     if idempotency_key and (
@@ -501,7 +548,10 @@ async def _handle_runs(
     # missing key; the atomic reserve below closes the concurrent-miss race.
     if idempotency_key:
         outcome, record = self._run_idempotency_store.lookup(
-            idempotency_scope, idempotency_key, idempotency_fingerprint
+            idempotency_scope,
+            idempotency_key,
+            idempotency_fingerprint,
+            retention_until=_room_retention_until(request),
         )
         if outcome == "conflict":
             return web.json_response(
@@ -595,6 +645,7 @@ async def _handle_runs(
             initial_status,
             owner_pid=self._run_owner_pid,
             owner_started=self._run_owner_started,
+            retention_until=_room_retention_until(request),
         )
         if outcome != "created":
             self._run_streams.pop(run_id, None)
@@ -663,6 +714,8 @@ async def _handle_runs(
                     requested_provider=agent_overrides.get("requested_provider"),
                     model_options=agent_overrides.get("model_options"),
                     route=route,
+                    room_dispatch=room_dispatch,
+                    room_execution_policy=room_execution_policy,
                 )
             self._active_run_agents[run_id] = agent
 
@@ -709,6 +762,7 @@ async def _handle_runs(
                 effective_task_id = session_id or run_id
                 approval_token = None
                 session_tokens = []
+                room_policy_token = None
                 with self._profile_scope(request_profile):
                     try:
                         # Bind approval/session identity for this API run via
@@ -734,6 +788,16 @@ async def _handle_runs(
                                 request_browser_control_transport_family
                             ),
                         )
+                        if room_dispatch is not None:
+                            from gateway.hosted_room_execution_policy import (
+                                RoomExecutionPolicy,
+                                bind_room_execution_policy,
+                            )
+
+                            policy = RoomExecutionPolicy.from_mapping(
+                                room_execution_policy or {}
+                            )
+                            room_policy_token = bind_room_execution_policy(policy)
                         register_gateway_notify(approval_session_key, _approval_notify)
                         # /v1/runs runs its own agent lifecycle (no
                         # TurnRunner, no _run_agent) — record turn process
@@ -763,6 +827,15 @@ async def _handle_runs(
                             if session_tokens:
                                 try:
                                     clear_session_vars(session_tokens)
+                                except Exception:
+                                    pass
+                            if room_policy_token is not None:
+                                try:
+                                    from gateway.hosted_room_execution_policy import (
+                                        reset_room_execution_policy,
+                                    )
+
+                                    reset_room_execution_policy(room_policy_token)
                                 except Exception:
                                     pass
                     u = {

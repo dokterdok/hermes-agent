@@ -1071,6 +1071,100 @@ class TestRunIdempotency:
         assert done_record is None
         store.close()
 
+    def test_room_terminal_receipt_survives_offline_home_until_grant_horizon(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.platforms import api_server_run_idempotency as idempotency
+
+        now = [100.0]
+        monkeypatch.setattr(idempotency.time, "time", lambda: now[0])
+        store = idempotency.RunIdempotencyStore(str(tmp_path / "idem.db"))
+        horizon = now[0] + 30 * 24 * 60 * 60
+        assert store.reserve(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+            "run-room",
+            {"run_id": "run-room", "status": "completed"},
+            retention_until=horizon,
+        )[0] == "created"
+
+        now[0] += idempotency.RunIdempotencyStore.RETENTION_SECONDS + 1
+        store.reserve(
+            "other-scope",
+            "other-key",
+            "other-fingerprint",
+            "run-other",
+            {"run_id": "run-other", "status": "queued"},
+        )
+        outcome, record = store.lookup(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+        )
+        assert outcome == "reused"
+        assert record["run_id"] == "run-room"
+
+        now[0] = horizon + 1
+        store.reserve(
+            "third-scope",
+            "third-key",
+            "third-fingerprint",
+            "run-third",
+            {"run_id": "run-third", "status": "queued"},
+        )
+        assert store.lookup(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+        ) == ("missing", None)
+        store.close()
+
+    def test_explicit_home_acknowledgement_releases_terminal_receipt(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.platforms import api_server_run_idempotency as idempotency
+
+        now = [100.0]
+        monkeypatch.setattr(idempotency.time, "time", lambda: now[0])
+        store = idempotency.RunIdempotencyStore(str(tmp_path / "idem.db"))
+        assert store.reserve(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+            "run-room",
+            {"run_id": "run-room", "status": "completed"},
+            retention_until=now[0] + 30 * 24 * 60 * 60,
+        )[0] == "created"
+        assert store.acknowledge_terminal("room-scope", "run-room") is True
+        store.reserve(
+            "other-scope",
+            "other-key",
+            "other-fingerprint",
+            "run-other",
+            {"run_id": "run-other", "status": "queued"},
+        )
+        assert store.lookup(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+        )[0] == "reused"
+
+        now[0] += store.ACKNOWLEDGED_RETENTION_SECONDS + 1
+        store.reserve(
+            "third-scope",
+            "third-key",
+            "third-fingerprint",
+            "run-third",
+            {"run_id": "run-third", "status": "queued"},
+        )
+        assert store.lookup(
+            "room-scope",
+            "room:task-1:1",
+            "room-fingerprint",
+        ) == ("missing", None)
+        store.close()
+
     @pytest.mark.asyncio
     async def test_missing_key_preserves_legacy_new_run_behavior(
         self, adapter, tmp_path
@@ -1413,6 +1507,7 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_refresh_survives_dispatch_expiry_but_not_horizon(
         self, auth_adapter, monkeypatch
     ):
+        from gateway import hosted_rooms
         from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
         from gateway.hosted_rooms import local_authority_gateway_id
 
@@ -1429,6 +1524,18 @@ class TestHostedRoomRuns:
             issued_at=100,
             ttl_seconds=10,
             status_expires_at=1000,
+        )
+        old_claims = decode_room_grant(
+            auth_adapter._room_grant_secret(),
+            old_grant,
+            permission="status",
+            now=100,
+        )
+        hosted_rooms.reserve_peer_room(
+            hosted_rooms.default_db_path(),
+            claims=old_claims,
+            expires_at=1000,
+            now=100,
         )
         monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
         app = _create_runs_app(auth_adapter)
@@ -1480,7 +1587,8 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_refresh_fails_after_secret_rotation(
         self, auth_adapter, monkeypatch
     ):
-        from gateway.hosted_room_peer import issue_room_grant
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
         from gateway.hosted_rooms import local_authority_gateway_id
 
         monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
@@ -1514,7 +1622,8 @@ class TestHostedRoomRuns:
     ):
         from types import SimpleNamespace
 
-        from gateway.hosted_room_peer import issue_room_grant
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
         from gateway.hosted_rooms import local_authority_gateway_id
 
         common = {
@@ -1541,6 +1650,17 @@ class TestHostedRoomRuns:
             grant_id="grant-other-member",
             **{**common, "member_id": "member-other"},
         )
+        for grant in (first, other_member):
+            claims = decode_room_grant(
+                auth_adapter._room_grant_secret(),
+                grant,
+                permission="status",
+            )
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(),
+                claims=claims,
+                expires_at=float(claims["status_expires_at"]),
+            )
 
         def request(token):
             return SimpleNamespace(
@@ -1557,7 +1677,8 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_revoke_is_idempotent_and_fences_prior_lineage(
         self, auth_adapter, monkeypatch
     ):
-        from gateway.hosted_room_peer import issue_room_grant
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
         from gateway.hosted_rooms import local_authority_gateway_id
 
         for target in (
@@ -1606,6 +1727,18 @@ class TestHostedRoomRuns:
                 issued_at=201,
                 ttl_seconds=300,
                 status_expires_at=1000,
+            )
+            future_claims = decode_room_grant(
+                auth_adapter._room_grant_secret(),
+                future_grant,
+                permission="status",
+                now=201,
+            )
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(),
+                claims=future_claims,
+                expires_at=1000,
+                now=201,
             )
             repaired = await cli.get(
                 "/v1/room-members/capabilities",
@@ -1702,6 +1835,9 @@ class TestHostedRoomRuns:
                 "prompt": prompt,
                 "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
                 "capability_digest": catalog["catalog_digest"],
+                "execution_policy_digest": catalog["execution_policy"][
+                    "policy_digest"
+                ],
                 "trace_id": "trace-room-1",
             }
             with patch.object(adapter, "_create_agent") as create:
@@ -1781,6 +1917,9 @@ class TestHostedRoomRuns:
                 "prompt": prompt,
                 "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
                 "capability_digest": "f" * 64,
+                "execution_policy_digest": invitation_body["catalog"][
+                    "execution_policy"
+                ]["policy_digest"],
                 "trace_id": "trace-room-1",
             }
             with patch.object(adapter, "_create_agent") as create:

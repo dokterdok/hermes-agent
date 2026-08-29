@@ -85,6 +85,9 @@ _LINK_SCHEMA_COLUMNS = frozenset({
 })
 _REMOTE_RUN_SCHEMA_COLUMNS = frozenset({
     "room_id",
+    "home_install_id",
+    "authority_gateway_id",
+    "authority_epoch",
     "member_id",
     "task_id",
     "execution_generation",
@@ -95,10 +98,32 @@ _REMOTE_RUN_SCHEMA_COLUMNS = frozenset({
     "created_at",
     "updated_at",
 })
+_REMOTE_RUN_IDENTITY_COLUMNS = (
+    "room_id",
+    "home_install_id",
+    "authority_gateway_id",
+    "authority_epoch",
+    "member_id",
+    "target_install_id",
+    "target_profile",
+    "task_id",
+    "execution_generation",
+)
 _REVOKED_GRANT_SCHEMA_COLUMNS = frozenset({
     "scope_key",
     "expires_at",
     "revoked_before",
+})
+_PEER_RESERVATION_SCHEMA_COLUMNS = frozenset({
+    "room_id",
+    "member_id",
+    "target_profile",
+    "authority_gateway_id",
+    "authority_epoch",
+    "expires_at",
+    "revoked_at",
+    "created_at",
+    "updated_at",
 })
 
 _EVENT_KINDS_BY_ACTOR = {
@@ -155,6 +180,80 @@ class AuthorityConflictError(HostedRoomError):
 
 class AuthoritySupersededError(AuthorityConflictError):
     """Raised when a successful authority claim was later superseded."""
+
+
+def _primary_key_columns(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    return tuple(
+        str(row[1])
+        for row in sorted(
+            (row for row in conn.execute(f"PRAGMA table_info({table})") if row[5]),
+            key=lambda row: int(row[5]),
+        )
+    )
+
+
+def _migrate_remote_run_schema(conn: sqlite3.Connection) -> None:
+    """Fence legacy receipts behind a complete authority-lineage key."""
+
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(hosted_room_remote_runs)")
+    }
+    if (
+        _REMOTE_RUN_SCHEMA_COLUMNS.issubset(columns)
+        and _primary_key_columns(conn, "hosted_room_remote_runs")
+        == _REMOTE_RUN_IDENTITY_COLUMNS
+    ):
+        return
+
+    conn.execute("DROP TABLE IF EXISTS hosted_room_remote_runs_migrating")
+    conn.execute(
+        """CREATE TABLE hosted_room_remote_runs_migrating (
+            room_id TEXT NOT NULL,
+            home_install_id TEXT NOT NULL,
+            authority_gateway_id TEXT NOT NULL,
+            authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
+            member_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            execution_generation INTEGER NOT NULL CHECK (execution_generation >= 1),
+            target_install_id TEXT NOT NULL,
+            target_profile TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (
+                room_id, home_install_id, authority_gateway_id, authority_epoch,
+                member_id, target_install_id, target_profile, task_id,
+                execution_generation
+            )
+        )"""
+    )
+    if columns:
+        home = "home_install_id" if "home_install_id" in columns else "'legacy'"
+        gateway = (
+            "authority_gateway_id"
+            if "authority_gateway_id" in columns
+            else "'legacy'"
+        )
+        epoch = "authority_epoch" if "authority_epoch" in columns else "1"
+        conn.execute(
+            f"""INSERT OR IGNORE INTO hosted_room_remote_runs_migrating(
+                    room_id, home_install_id, authority_gateway_id,
+                    authority_epoch, member_id, task_id,
+                    execution_generation, target_install_id, target_profile,
+                    run_id, session_id, created_at, updated_at
+                )
+                SELECT room_id, {home}, {gateway}, {epoch}, member_id, task_id,
+                       execution_generation, target_install_id, target_profile,
+                       run_id, session_id, created_at, updated_at
+                  FROM hosted_room_remote_runs"""
+        )
+    conn.execute("DROP TABLE hosted_room_remote_runs")
+    conn.execute(
+        "ALTER TABLE hosted_room_remote_runs_migrating "
+        "RENAME TO hosted_room_remote_runs"
+    )
 
 
 def default_db_path() -> Path:
@@ -229,6 +328,32 @@ def _validate_members(value: Any) -> tuple[list[dict[str, Any]], str]:
         max_bytes=MAX_MEMBERS_JSON_BYTES,
     )
     return members, encoded
+
+
+def _legacy_members_match(
+    existing_json: str,
+    proposed: list[dict[str, Any]],
+) -> bool:
+    """Allow adoption to add routing metadata an older room could not store."""
+
+    try:
+        existing = json.loads(existing_json)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(existing, list) or len(existing) != len(proposed):
+        return False
+    for previous, current in zip(existing, proposed, strict=True):
+        if not isinstance(previous, dict):
+            return False
+        previous = dict(previous)
+        current = dict(current)
+        previous_target = previous.pop("target", None)
+        current_target = current.pop("target", None)
+        if previous != current:
+            return False
+        if previous_target not in (None, {}) and previous_target != current_target:
+            return False
+    return True
 
 
 def _validate_event_kind(value: Any) -> str:
@@ -347,6 +472,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE IF NOT EXISTS hosted_room_remote_runs (
             room_id TEXT NOT NULL,
+            home_install_id TEXT NOT NULL,
+            authority_gateway_id TEXT NOT NULL,
+            authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
             member_id TEXT NOT NULL,
             task_id TEXT NOT NULL,
             execution_generation INTEGER NOT NULL CHECK (execution_generation >= 1),
@@ -356,7 +484,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             session_id TEXT NOT NULL,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL,
-            PRIMARY KEY (task_id, execution_generation)
+            PRIMARY KEY (
+                room_id, home_install_id, authority_gateway_id, authority_epoch,
+                member_id, target_install_id, target_profile, task_id,
+                execution_generation
+            )
         )"""
     )
     conn.execute(
@@ -364,6 +496,20 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             scope_key TEXT PRIMARY KEY,
             expires_at REAL NOT NULL,
             revoked_before REAL NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS hosted_room_peer_reservations (
+            room_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            target_profile TEXT NOT NULL,
+            authority_gateway_id TEXT NOT NULL,
+            authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
+            expires_at REAL NOT NULL,
+            revoked_at REAL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (room_id, member_id, target_profile)
         )"""
     )
     room_columns = {row[1] for row in conn.execute("PRAGMA table_info(hosted_rooms)")}
@@ -427,6 +573,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
            SELECT room_id, disbanded_at FROM hosted_rooms
             WHERE disbanded_at IS NOT NULL"""
     )
+    _migrate_remote_run_schema(conn)
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor
            ON hosted_room_events(room_id, seq)"""
@@ -455,6 +602,10 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         row[1]
         for row in conn.execute("PRAGMA table_info(hosted_room_revoked_grants)")
     )
+    peer_reservation_columns = frozenset(
+        row[1]
+        for row in conn.execute("PRAGMA table_info(hosted_room_peer_reservations)")
+    )
     if not _ROOM_SCHEMA_COLUMNS.issubset(room_columns):
         return False
     if not _EVENT_SCHEMA_COLUMNS.issubset(event_columns):
@@ -465,7 +616,14 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         return False
     if not _REMOTE_RUN_SCHEMA_COLUMNS.issubset(remote_run_columns):
         return False
+    if (
+        _primary_key_columns(conn, "hosted_room_remote_runs")
+        != _REMOTE_RUN_IDENTITY_COLUMNS
+    ):
+        return False
     if not _REVOKED_GRANT_SCHEMA_COLUMNS.issubset(revoked_grant_columns):
+        return False
+    if not _PEER_RESERVATION_SCHEMA_COLUMNS.issubset(peer_reservation_columns):
         return False
     index = conn.execute(
         """SELECT 1 FROM sqlite_master
@@ -622,6 +780,191 @@ def revoke_room_grant_scope(
                                       excluded.revoked_before)""",
             (scope_key, expiry, timestamp),
         )
+        conn.execute(
+            """UPDATE hosted_room_peer_reservations
+                  SET revoked_at=?, updated_at=?
+                WHERE room_id=? AND member_id=? AND target_profile=?
+                  AND authority_gateway_id=? AND authority_epoch=?""",
+            (
+                timestamp,
+                timestamp,
+                str(claims.get("room_id") or ""),
+                str(claims.get("member_id") or ""),
+                str(claims.get("target_profile") or ""),
+                str(claims.get("authority_gateway_id") or ""),
+                int(claims.get("authority_epoch") or 0),
+            ),
+        )
+
+
+def reserve_peer_room(
+    db_path: Path | str,
+    *,
+    claims: Mapping[str, Any],
+    expires_at: float,
+    now: float | None = None,
+) -> None:
+    """Fence direct Desktop prompts before the first peer run is admitted."""
+
+    timestamp = float(now if now is not None else time.time())
+    expiry = float(expires_at)
+    if expiry <= timestamp:
+        raise HostedRoomError("peer room reservation must expire in the future")
+    values = (
+        _validate_identifier(
+            claims.get("room_id"), label="room_id", max_chars=MAX_ROOM_ID_CHARS
+        ),
+        _validate_identifier(
+            claims.get("member_id"), label="member_id", max_chars=MAX_ACTOR_ID_CHARS
+        ),
+        _validate_identifier(
+            claims.get("target_profile"),
+            label="target_profile",
+            max_chars=MAX_ACTOR_ID_CHARS,
+        ),
+        _validate_identifier(
+            claims.get("authority_gateway_id"),
+            label="authority_gateway_id",
+            max_chars=MAX_ACTOR_ID_CHARS,
+        ),
+        int(claims.get("authority_epoch") or 0),
+    )
+    if values[4] < 1:
+        raise HostedRoomError("authority_epoch must be positive")
+    with _transaction(db_path, immediate=True) as conn:
+        conn.execute(
+            "DELETE FROM hosted_room_peer_reservations WHERE expires_at<=?",
+            (timestamp,),
+        )
+        authority_rows = conn.execute(
+            """SELECT authority_gateway_id, authority_epoch
+                 FROM hosted_room_peer_reservations
+                WHERE room_id=? AND target_profile=?
+                  AND expires_at>? AND revoked_at IS NULL""",
+            (values[0], values[2], timestamp),
+        ).fetchall()
+        if any(
+            int(row["authority_epoch"]) > values[4]
+            or (
+                int(row["authority_epoch"]) == values[4]
+                and str(row["authority_gateway_id"]) != values[3]
+            )
+            for row in authority_rows
+        ):
+            raise AuthorityConflictError("peer room reservation authority changed")
+        conn.execute(
+            """UPDATE hosted_room_peer_reservations
+                  SET revoked_at=?, updated_at=?
+                WHERE room_id=? AND target_profile=?
+                  AND authority_epoch<? AND revoked_at IS NULL""",
+            (timestamp, timestamp, values[0], values[2], values[4]),
+        )
+        existing = conn.execute(
+            """SELECT authority_gateway_id, authority_epoch
+                 FROM hosted_room_peer_reservations
+                WHERE room_id=? AND member_id=? AND target_profile=?""",
+            values[:3],
+        ).fetchone()
+        if existing is not None and (
+            int(existing["authority_epoch"]) > values[4]
+            or (
+                int(existing["authority_epoch"]) == values[4]
+                and str(existing["authority_gateway_id"]) != values[3]
+            )
+        ):
+            raise AuthorityConflictError("peer room reservation authority changed")
+        conn.execute(
+            """INSERT INTO hosted_room_peer_reservations(
+                   room_id, member_id, target_profile, authority_gateway_id,
+                   authority_epoch, expires_at, revoked_at, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+               ON CONFLICT(room_id, member_id, target_profile) DO UPDATE SET
+                   authority_gateway_id=excluded.authority_gateway_id,
+                   authority_epoch=excluded.authority_epoch,
+                   expires_at=MAX(hosted_room_peer_reservations.expires_at,
+                                  excluded.expires_at),
+                   revoked_at=NULL,
+                   updated_at=excluded.updated_at""",
+            (*values, expiry, timestamp, timestamp),
+        )
+
+
+def peer_room_is_reserved(
+    db_path: Path | str,
+    *,
+    room_id: str,
+    target_profile: str,
+    now: float | None = None,
+) -> bool:
+    """Return whether a live target-side RoomLink reservation fences Desktop."""
+
+    timestamp = float(now if now is not None else time.time())
+    with _transaction(db_path) as conn:
+        row = conn.execute(
+            """SELECT 1 FROM hosted_room_peer_reservations
+                WHERE room_id=? AND target_profile=?
+                  AND expires_at>? AND revoked_at IS NULL
+                LIMIT 1""",
+            (
+                _validate_identifier(
+                    room_id, label="room_id", max_chars=MAX_ROOM_ID_CHARS
+                ),
+                _validate_identifier(
+                    target_profile,
+                    label="target_profile",
+                    max_chars=MAX_ACTOR_ID_CHARS,
+                ),
+                timestamp,
+            ),
+        ).fetchone()
+    return row is not None
+
+
+def peer_room_grant_is_current(
+    db_path: Path | str,
+    *,
+    claims: Mapping[str, Any],
+    now: float | None = None,
+) -> bool:
+    """Require a grant to match the target's current live reservation."""
+
+    timestamp = float(now if now is not None else time.time())
+    room_id = _validate_identifier(
+        claims.get("room_id"), label="room_id", max_chars=MAX_ROOM_ID_CHARS
+    )
+    member_id = _validate_identifier(
+        claims.get("member_id"), label="member_id", max_chars=MAX_ACTOR_ID_CHARS
+    )
+    target_profile = _validate_identifier(
+        claims.get("target_profile"),
+        label="target_profile",
+        max_chars=MAX_ACTOR_ID_CHARS,
+    )
+    authority_gateway_id = _validate_identifier(
+        claims.get("authority_gateway_id"),
+        label="authority_gateway_id",
+        max_chars=MAX_ACTOR_ID_CHARS,
+    )
+    authority_epoch = int(claims.get("authority_epoch") or 0)
+    if authority_epoch < 1:
+        raise HostedRoomError("authority_epoch must be positive")
+    with _transaction(db_path) as conn:
+        row = conn.execute(
+            """SELECT 1 FROM hosted_room_peer_reservations
+                WHERE room_id=? AND member_id=? AND target_profile=?
+                  AND authority_gateway_id=? AND authority_epoch=?
+                  AND expires_at>? AND revoked_at IS NULL
+                LIMIT 1""",
+            (
+                room_id,
+                member_id,
+                target_profile,
+                authority_gateway_id,
+                authority_epoch,
+                timestamp,
+            ),
+        ).fetchone()
+    return row is not None
 
 
 def room_grant_is_revoked(
@@ -643,6 +986,10 @@ def room_grant_is_revoked(
     return row is not None and issued_at <= float(row["revoked_before"])
 
 
+def _remote_run_identity(record: Mapping[str, Any]) -> tuple[Any, ...]:
+    return tuple(record[column] for column in _REMOTE_RUN_IDENTITY_COLUMNS)
+
+
 def upsert_remote_run_receipt(
     db_path: Path | str,
     *,
@@ -651,50 +998,43 @@ def upsert_remote_run_receipt(
 ) -> None:
     """Durably bind one logical peer task attempt to its remote run handle."""
     timestamp = float(now if now is not None else time.time())
+    identity = _remote_run_identity(record)
     with _transaction(db_path, immediate=True) as conn:
         existing = conn.execute(
             """SELECT * FROM hosted_room_remote_runs
-                 WHERE task_id=? AND execution_generation=?""",
-            (record["task_id"], record["execution_generation"]),
+                 WHERE room_id=? AND home_install_id=?
+                   AND authority_gateway_id=? AND authority_epoch=?
+                   AND member_id=? AND target_install_id=?
+                   AND target_profile=? AND task_id=?
+                   AND execution_generation=?""",
+            identity,
         ).fetchone()
-        immutable = (
-            record["room_id"],
-            record["member_id"],
-            record["target_install_id"],
-            record["target_profile"],
-            record["run_id"],
-            record["session_id"],
-        )
+        immutable = (*identity, record["run_id"], record["session_id"])
         if existing is not None:
-            stored = (
-                existing["room_id"],
-                existing["member_id"],
-                existing["target_install_id"],
-                existing["target_profile"],
-                existing["run_id"],
-                existing["session_id"],
-            )
+            stored = (*_remote_run_identity(existing), existing["run_id"], existing["session_id"])
             if stored != immutable:
                 raise HostedRoomError(
                     "remote run receipt conflicts with its logical task"
                 )
             conn.execute(
                 """UPDATE hosted_room_remote_runs SET updated_at=?
-                     WHERE task_id=? AND execution_generation=?""",
-                (timestamp, record["task_id"], record["execution_generation"]),
+                     WHERE room_id=? AND home_install_id=?
+                       AND authority_gateway_id=? AND authority_epoch=?
+                       AND member_id=? AND target_install_id=?
+                       AND target_profile=? AND task_id=?
+                       AND execution_generation=?""",
+                (timestamp, *identity),
             )
             return
         conn.execute(
             """INSERT INTO hosted_room_remote_runs(
-                   room_id, member_id, task_id, execution_generation,
-                   target_install_id, target_profile, run_id, session_id,
-                   created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   room_id, home_install_id, authority_gateway_id,
+                   authority_epoch, member_id, target_install_id,
+                   target_profile, task_id, execution_generation, run_id,
+                   session_id, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                *immutable[:2],
-                record["task_id"],
-                record["execution_generation"],
-                *immutable[2:],
+                *immutable,
                 timestamp,
                 timestamp,
             ),
@@ -733,15 +1073,19 @@ def list_remote_run_receipts(
 def remote_run_receipt(
     db_path: Path | str,
     *,
-    task_id: str,
-    execution_generation: int,
+    record: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """Return the exact durable remote run handle for one task attempt."""
+    identity = _remote_run_identity(record)
     with _transaction(db_path) as conn:
         row = conn.execute(
             """SELECT * FROM hosted_room_remote_runs
-                 WHERE task_id=? AND execution_generation=?""",
-            (task_id, execution_generation),
+                 WHERE room_id=? AND home_install_id=?
+                   AND authority_gateway_id=? AND authority_epoch=?
+                   AND member_id=? AND target_install_id=?
+                   AND target_profile=? AND task_id=?
+                   AND execution_generation=?""",
+            identity,
         ).fetchone()
     return dict(row) if row is not None else None
 
@@ -903,6 +1247,16 @@ def _assert_event_capacity(
         )
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _prune_disbanded_rooms_locked(
     conn: sqlite3.Connection,
     *,
@@ -967,6 +1321,9 @@ def _prune_disbanded_rooms_locked(
         "hosted_room_policy_cursors",
         "hosted_room_driver_tasks",
         "hosted_room_driver_leases",
+        "hosted_room_remote_runs",
+        "hosted_room_links",
+        "hosted_room_peer_reservations",
         "hosted_room_events",
     )
     for table in dependent_tables:
@@ -1050,12 +1407,17 @@ def create_room(
         if existing is not None:
             if existing["disbanded_at"] is not None:
                 raise RoomConflictError("room_id belongs to a disbanded room")
-            if existing["name"] != name or existing["members_json"] != members_json:
-                raise RoomConflictError("room_id already exists with different state")
-            if (
+            legacy_adoption = (
                 existing["authority_gateway_id"] == "legacy"
                 and authority_gateway_id != "legacy"
-            ):
+            )
+            members_match = existing["members_json"] == members_json or (
+                legacy_adoption
+                and _legacy_members_match(existing["members_json"], normalized_members)
+            )
+            if existing["name"] != name or not members_match:
+                raise RoomConflictError("room_id already exists with different state")
+            if legacy_adoption:
                 target_epoch = int(existing["authority_epoch"]) + 1
                 seq = int(existing["next_seq"])
                 claim_actor_json = _canonical_json(
@@ -1101,13 +1463,14 @@ def create_room(
                 )
                 adopted = conn.execute(
                     """UPDATE hosted_rooms
-                          SET authority_gateway_id=?, authority_epoch=?,
+                          SET members_json=?, authority_gateway_id=?, authority_epoch=?,
                               next_seq=next_seq+1, revision=revision+1,
                               event_bytes=event_bytes+?, updated_at=?
                         WHERE room_id=? AND authority_gateway_id='legacy'
                           AND authority_epoch=? AND next_seq=?
                           AND disbanded_at IS NULL""",
                     (
+                        members_json,
                         authority_gateway_id,
                         target_epoch,
                         claim_bytes,
@@ -1237,7 +1600,7 @@ def rename_room(
     with _transaction(db_path, immediate=True) as conn:
         room = conn.execute(
             """SELECT room_id, name, members_json, authority_gateway_id,
-                      authority_epoch, next_seq, revision, created_at,
+                      authority_epoch, next_seq, event_bytes, revision, created_at,
                       updated_at, disbanded_at
                  FROM hosted_rooms WHERE room_id=?""",
             (room_id,),
@@ -1260,11 +1623,19 @@ def rename_room(
             return result
         seq = int(room["next_seq"])
         epoch = int(room["authority_epoch"])
+        event_bytes = _event_storage_bytes(
+            event_id=event_id,
+            kind="room.renamed",
+            actor_json=actor_json,
+            payload_json=payload_json,
+        )
+        _assert_event_capacity(conn, room=room, additional_bytes=event_bytes)
         conn.execute(
             """UPDATE hosted_rooms
-               SET name=?, next_seq=?, revision=revision+1, updated_at=?
+               SET name=?, next_seq=?, event_bytes=event_bytes+?,
+                   revision=revision+1, updated_at=?
                WHERE room_id=?""",
-            (name, seq + 1, now, room_id),
+            (name, seq + 1, event_bytes, now, room_id),
         )
         conn.execute(
             """INSERT INTO hosted_room_events(
@@ -1402,6 +1773,7 @@ def append_event(
                 "authority.claimed",
                 "authority.lost",
                 "room.disbanded",
+                "room.stop_requested",
             },
         )
         conn.execute(

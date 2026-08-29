@@ -105,6 +105,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
         target_install_id=catalog["installation_id"],
         target_profile="default",
         capability_digest=catalog["catalog_digest"],
+        execution_policy_digest=catalog["execution_policy"]["policy_digest"],
         cancellation_scope_id="cancel-room-1",
         trace_id="trace-room-1",
         grant=invitation["grant"],

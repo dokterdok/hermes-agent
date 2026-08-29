@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+from gateway.hosted_room_execution_policy import execution_policy_mapping
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog,
     HostedMemberDispatch,
@@ -16,6 +19,8 @@ from gateway.hosted_room_peer import (
     PROTOCOL_VERSION,
     RoomLinkProbe,
     catalog_mapping,
+    derive_room_grant_secret,
+    gateway_room_grant_secret,
     issue_room_grant,
     local_room_link_endpoint,
     select_room_link,
@@ -25,6 +30,43 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 
 SECRET = b"s" * 32
+EXECUTION_POLICY = execution_policy_mapping(target_profile="reviewer")
+
+
+def test_gateway_room_grant_secret_is_private_persistent_and_not_an_api_key(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    profile_home = home / "profiles" / "reviewer"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    first = gateway_room_grant_secret()
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        second = gateway_room_grant_secret()
+    finally:
+        reset_hermes_home_override(token)
+
+    secret_path = home / ".room-link-grant-secret"
+    assert first == second
+    assert len(first) == 32
+    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
+    assert secret_path.read_bytes() != first
+    assert first != derive_room_grant_secret("gateway-api-key-1234567890")
+
+
+def test_gateway_room_grant_secret_is_atomic_across_concurrent_workers(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        secrets = list(pool.map(lambda _index: gateway_room_grant_secret(), range(8)))
+
+    assert len(set(secrets)) == 1
+    assert (home / ".room-link-grant-secret").stat().st_size == 32
 
 
 def test_room_link_protocol_fixture_matches_backend_contract():
@@ -130,6 +172,7 @@ def _dispatch(**overrides):
         "prompt": prompt,
         "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
         "capability_digest": "a" * 64,
+        "execution_policy_digest": EXECUTION_POLICY["policy_digest"],
         "trace_id": "trace-1",
         **overrides,
     }

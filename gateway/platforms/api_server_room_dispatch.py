@@ -95,6 +95,10 @@ async def _normalize_room_dispatch(
             catalog_mapping,
             verify_room_grant,
         )
+        from gateway.hosted_room_execution_policy import (
+            RoomExecutionPolicy,
+            execution_policy_mapping,
+        )
 
         dispatch = HostedMemberDispatch.from_mapping(
             body.get("hosted_room_dispatch")
@@ -112,6 +116,10 @@ async def _normalize_room_dispatch(
             or dispatch.target_install_id != local_install
         ):
             raise ValueError("room dispatch target does not match this profile")
+        with self._profile_scope(active_profile):
+            execution_policy = execution_policy_mapping(
+                target_profile=active_profile
+            )
         catalog = GatewayRoomCatalog.from_mapping(
             catalog_mapping(
                 installation_id=local_install,
@@ -120,8 +128,18 @@ async def _normalize_room_dispatch(
                 persistent_process=True,
                 text=True,
                 attachments=False,
+                target_profile=active_profile,
+                execution_policy=execution_policy,
             )
         )
+        policy = RoomExecutionPolicy.from_mapping(
+            catalog.execution_policy.as_mapping()
+        )
+        if not hmac.compare_digest(
+            policy.policy_digest,
+            dispatch.execution_policy_digest,
+        ):
+            raise ValueError("room execution policy changed")
         if not hmac.compare_digest(
             catalog.catalog_digest,
             dispatch.capability_digest,
@@ -138,9 +156,18 @@ async def _normalize_room_dispatch(
             "input": dispatch.prompt,
             "session_id": session_id,
             "hosted_room_dispatch": dispatch.as_mapping(),
+            "_room_execution_policy": policy.as_mapping(),
         }, None
     except Exception as exc:
+        message = str(exc)
         return body, web.json_response(
-            _openai_error(str(exc), code="invalid_room_dispatch"),
+            _openai_error(
+                message,
+                code=(
+                    "room_execution_policy_changed"
+                    if "execution policy changed" in message.lower()
+                    else "invalid_room_dispatch"
+                ),
+            ),
             status=403,
         )

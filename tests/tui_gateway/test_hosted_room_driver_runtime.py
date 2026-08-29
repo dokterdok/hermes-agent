@@ -6,6 +6,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -342,6 +343,7 @@ def _peer_resolver(client: TerminalPeerClient):
         target_install_id="install-peer",
         target_profile=PROFILE,
         capability_digest="a" * 64,
+        execution_policy_digest="b" * 64,
         cancellation_scope_id="cancel-peer",
         trace_id="trace-peer",
         grant="signed-room-grant",
@@ -714,6 +716,104 @@ def test_not_admitted_room_does_not_block_other_rooms(tmp_path: Path):
     assert state.get_task(db, healthy_identity)["status"] == "settled"
 
 
+def test_waiting_room_does_not_block_an_independent_room(tmp_path: Path):
+    db = tmp_path / "state.db"
+    bindings = [
+        HostedRoomBinding("room-waiting", "gateway-a", 1),
+        HostedRoomBinding("room-healthy", "gateway-a", 1),
+    ]
+    identities = [
+        state.TaskIdentity("room-waiting", "task-waiting", "thread-a", "turn-a"),
+        state.TaskIdentity("room-healthy", "task-healthy", "thread-b", "turn-b"),
+    ]
+    profiles = ["profile-waiting", "profile-healthy"]
+    for binding, identity, profile in zip(bindings, identities, profiles):
+        hosted_rooms.create_room(
+            db,
+            room_id=binding.room_id,
+            name=binding.room_id,
+            members=[{"profile": profile, "handle": profile}],
+            authority_gateway_id=binding.gateway_id,
+            now=time.time(),
+        )
+        state.admit_task(
+            db,
+            identity,
+            payload={
+                "target_profile": profile,
+                "prompt": f"Run {binding.room_id}.",
+                "source_event_seq": 1,
+            },
+            clock=time.time,
+        )
+
+    waiting = FakeSessionRPC(auto_complete=False)
+    healthy = FakeSessionRPC()
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=bindings,
+        transport_resolver=lambda binding, _task: (
+            waiting if binding.room_id == "room-waiting" else healthy
+        ),
+        turn_lock=RecordingTurnLocks(),
+        lease_ttl_seconds=0.4,
+        poll_interval_seconds=0.01,
+        max_concurrent_rooms=2,
+    )
+
+    runtime.start()
+    assert waiting.submitted.wait(1.0)
+    _wait_for(lambda: state.get_task(db, identities[1])["status"] == "settled")
+    assert state.get_task(db, identities[0])["status"] == "running"
+    assert runtime.stop(timeout=1.0)
+
+
+def test_bounded_scheduler_eventually_runs_later_room(tmp_path: Path):
+    db = tmp_path / "state.db"
+    bindings = [
+        HostedRoomBinding(f"room-{index}", "gateway-a", 1)
+        for index in range(1, 4)
+    ]
+    for binding in bindings:
+        hosted_rooms.create_room(
+            db,
+            room_id=binding.room_id,
+            name=binding.room_id,
+            members=[{"profile": PROFILE, "handle": PROFILE}],
+            authority_gateway_id=binding.gateway_id,
+            now=time.time(),
+        )
+    identity = state.TaskIdentity(
+        "room-3",
+        "task-room-3",
+        "thread-room-3",
+        "turn-room-3",
+    )
+    state.admit_task(
+        db,
+        identity,
+        payload={
+            "target_profile": PROFILE,
+            "prompt": "Run the later room.",
+            "source_event_seq": 1,
+        },
+        clock=time.time,
+    )
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=bindings,
+        rpc=FakeSessionRPC(),
+        turn_lock=RecordingTurnLocks(),
+        lease_ttl_seconds=0.4,
+        poll_interval_seconds=0.01,
+        max_concurrent_rooms=2,
+    )
+
+    runtime.start()
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    assert runtime.stop(timeout=1.0)
+
+
 def test_existing_canonical_session_is_resumed_not_duplicated(db: Path):
     identity = _identity()
     _admit(db, identity)
@@ -840,6 +940,67 @@ def test_expired_local_attempt_is_deferred_without_implicit_history_replay(db: P
     assert state.get_task(db, identity)["status"] == "deferred"
     assert not [call for call in rpc.calls if call[0] in {"resume", "history"}]
     assert not [call for call in rpc.calls if call[0] == "submit"]
+
+
+def test_peer_recovery_probe_is_bounded_by_attempt_and_stale_age(db: Path):
+    identity = _identity()
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    old_lease = state.acquire_lease(
+        db,
+        room_id=ROOM_ID,
+        gateway_id=BINDING.gateway_id,
+        authority_epoch=BINDING.authority_epoch,
+        process_generation="old-process",
+        ttl_seconds=1,
+        clock=clock,
+    )
+    _admit(db, identity)
+    state.start_task(
+        db,
+        identity,
+        old_lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    now[0] = 102.0
+    runtime = _runtime(
+        db,
+        FakeSessionRPC(),
+        clock=clock,
+        lease_ttl_seconds=30,
+        indeterminate_defer_seconds=5,
+    )
+    recovery_lease = state.acquire_lease(
+        db,
+        room_id=ROOM_ID,
+        gateway_id=BINDING.gateway_id,
+        authority_epoch=BINDING.authority_epoch,
+        process_generation=runtime.process_generation,
+        ttl_seconds=30,
+        clock=clock,
+    )
+    state.recover_room(db, recovery_lease, clock=clock)
+    runtime.transport_resolver = lambda _binding, _task: object()
+    probes = []
+
+    def inspect(_binding, task):
+        probes.append((task["identity"].task_id, now[0]))
+        return SimpleNamespace(terminal=None, active=False, status=None)
+
+    runtime._inspect_recovery_session = inspect
+
+    assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is True
+    assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is True
+    assert probes == [(identity.task_id, 102.0)]
+
+    now[0] = 108.0
+    assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is False
+    assert probes == [(identity.task_id, 102.0), (identity.task_id, 108.0)]
+    assert state.get_task(db, identity)["status"] == "deferred"
 
 
 def test_retry_ignores_late_receipt_from_prior_execution_generation(db: Path):

@@ -194,6 +194,7 @@ class HostedRoomRuntime:
             tuple[str, str], dict[str, float]
         ] = {}
         self._blocked_rooms: set[str] = set()
+        self._inspected_indeterminate_attempts: set[tuple[str, str, int]] = set()
         self._status_lock = threading.Lock()
         self._current_tasks: dict[str, state.TaskIdentity] = {}
         self._room_schedule_cursor = 0
@@ -374,12 +375,10 @@ class HostedRoomRuntime:
                 self._blocked_rooms.discard(identity.room_id)
             self.wakeup()
             return retried
-        transport = self._transport_for(binding, task)
-        inspection = (
-            self._inspect_local_recovery_session(task)
-            if transport is self.rpc
-            else self._inspect_recovery_session(binding, task)
-        )
+        # Explicit Retry may resume the exact stored session. Use the returned
+        # runtime id for every subsequent history/info probe; an automatic
+        # abandoned-attempt scan remains non-resuming for local sessions.
+        inspection = self._inspect_recovery_session(binding, task)
         if inspection.terminal is not None:
             resolved = state.resolve_indeterminate_task(
                 self.db_path,
@@ -1131,59 +1130,38 @@ class HostedRoomRuntime:
             room_id=binding.room_id,
             status="indeterminate",
         )
-        if not unresolved:
-            with self._status_lock:
+        with self._status_lock:
+            if not unresolved:
                 self._blocked_rooms.discard(binding.room_id)
-            return False
+                return False
         for task in unresolved:
+            generation = int(task["execution_generation"])
+            attempt_key = (
+                binding.room_id,
+                task["identity"].task_id,
+                generation,
+            )
             deferred_at = float(
                 task.get("indeterminate_at")
                 or task.get("updated_at")
                 or task.get("created_at")
                 or self.clock()
             )
-            if self.clock() < deferred_at + self.indeterminate_defer_seconds:
+            deadline = deferred_at + self.indeterminate_defer_seconds
+            should_inspect = (
+                attempt_key not in self._inspected_indeterminate_attempts
+                or self.clock() >= deadline
+            )
+            inspection = _RecoveryInspection(terminal=None, active=False, status=None)
+            if should_inspect:
                 try:
                     if self._transport_for(binding, task) is not self.rpc:
                         inspection = self._inspect_recovery_session(binding, task)
-                        if inspection.status == "cancelled":
-                            state.resolve_indeterminate_cancellation(
-                                self.db_path,
-                                task["identity"],
-                                lease,
-                                expected_execution_generation=task[
-                                    "execution_generation"
-                                ],
-                                expected_cancel_generation=task["cancel_generation"],
-                                cancel_id=(
-                                    f"remote-cancel:{task['execution_generation']}"
-                                ),
-                                clock=self.clock,
-                            )
-                            continue
-                        if inspection.terminal is not None:
-                            state.resolve_indeterminate_task(
-                                self.db_path,
-                                task["identity"],
-                                lease,
-                                expected_execution_generation=task[
-                                    "execution_generation"
-                                ],
-                                expected_cancel_generation=task["cancel_generation"],
-                                settlement_id=inspection.terminal.settlement_id,
-                                status=inspection.terminal.status,
-                                result=inspection.terminal.result,
-                                clock=self.clock,
-                            )
-                            continue
                 except Exception as exc:
                     self._record_error(
                         f"task {task['identity'].task_id} recovery probe failed: {exc}"
                     )
-                with self._status_lock:
-                    self._blocked_rooms.add(binding.room_id)
-                return True
-            inspection = self._inspect_recovery_session(binding, task)
+                self._inspected_indeterminate_attempts.add(attempt_key)
             if inspection.status == "cancelled":
                 state.resolve_indeterminate_cancellation(
                     self.db_path,
@@ -1194,30 +1172,36 @@ class HostedRoomRuntime:
                     cancel_id=f"remote-cancel:{task['execution_generation']}",
                     clock=self.clock,
                 )
+                self._inspected_indeterminate_attempts.discard(attempt_key)
                 continue
             if inspection.terminal is not None:
                 state.resolve_indeterminate_task(
                     self.db_path,
                     task["identity"],
                     lease,
-                    expected_execution_generation=task["execution_generation"],
+                    expected_execution_generation=generation,
                     expected_cancel_generation=task["cancel_generation"],
                     settlement_id=inspection.terminal.settlement_id,
                     status=inspection.terminal.status,
                     result=inspection.terminal.result,
                     clock=self.clock,
                 )
+                self._inspected_indeterminate_attempts.discard(attempt_key)
                 continue
+            if self.clock() < deadline:
+                with self._status_lock:
+                    self._blocked_rooms.add(binding.room_id)
+                return True
             deferred = state.defer_indeterminate_task(
                 self.db_path,
                 task["identity"],
                 lease,
-                expected_execution_generation=task["execution_generation"],
+                expected_execution_generation=generation,
                 expected_cancel_generation=task["cancel_generation"],
                 reason="member_unavailable",
                 clock=self.clock,
             )
-            self._report_pending_action(task, session_id="", info={})
+            self._inspected_indeterminate_attempts.discard(attempt_key)
             if self.publish_terminal is not None:
                 self.publish_terminal(binding, deferred)
         with self._status_lock:

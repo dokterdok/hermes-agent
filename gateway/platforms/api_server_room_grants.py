@@ -44,10 +44,9 @@ def _room_grant_token(request: "web.Request") -> str:
 
 
 def _room_grant_secret(self) -> bytes:
-    from gateway.hosted_room_peer import derive_room_grant_secret
+    from gateway.hosted_room_peer import gateway_room_grant_secret
 
-    key = self._expected_api_key()
-    return derive_room_grant_secret(key or "")
+    return gateway_room_grant_secret()
 
 
 def _room_grant_claims(
@@ -73,6 +72,11 @@ def _room_grant_claims(
         claims=claims,
     ):
         raise ValueError("room grant is revoked")
+    if not hosted_rooms.peer_room_grant_is_current(
+        hosted_rooms.default_db_path(),
+        claims=claims,
+    ):
+        raise ValueError("room grant is no longer current")
     return claims
 
 
@@ -111,14 +115,18 @@ async def _handle_room_member_invitation(
         from gateway.hosted_room_peer import (
             PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
             catalog_mapping,
+            decode_room_grant,
             issue_room_grant,
         )
+        from gateway.hosted_room_execution_policy import execution_policy_mapping
 
         profile = _api_request_profile.get() or "default"
         target_install_id = hosted_rooms.local_authority_gateway_id()
         ttl = float(body.get("ttl_seconds", 3600))
         if not 60 <= ttl <= 24 * 60 * 60:
             raise ValueError("ttl_seconds must be between 60 and 86400")
+        with self._profile_scope(profile):
+            execution_policy = execution_policy_mapping(target_profile=profile)
         catalog = catalog_mapping(
             installation_id=target_install_id,
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
@@ -126,6 +134,8 @@ async def _handle_room_member_invitation(
             persistent_process=True,
             text=True,
             attachments=False,
+            target_profile=profile,
+            execution_policy=execution_policy,
         )
         token = issue_room_grant(
             self._room_grant_secret(),
@@ -137,8 +147,17 @@ async def _handle_room_member_invitation(
             member_id=str(body["member_id"]),
             target_install_id=target_install_id,
             target_profile=profile,
+            execution_policy_digest=execution_policy["policy_digest"],
             issued_at=time.time(),
             ttl_seconds=ttl,
+        )
+        claims = decode_room_grant(
+            self._room_grant_secret(), token, permission="status"
+        )
+        hosted_rooms.reserve_peer_room(
+            hosted_rooms.default_db_path(),
+            claims=claims,
+            expires_at=float(claims.get("status_expires_at", claims["expires_at"])),
         )
     except Exception as exc:
         return web.json_response(
@@ -170,6 +189,7 @@ async def _handle_room_member_capabilities(
             PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
             catalog_mapping,
         )
+        from gateway.hosted_room_execution_policy import execution_policy_mapping
 
         claims = self._room_grant_claims(request, permission="status")
         profile = _api_request_profile.get() or "default"
@@ -179,6 +199,8 @@ async def _handle_room_member_capabilities(
             or claims["target_install_id"] != installation_id
         ):
             raise ValueError("room grant target does not match this profile")
+        with self._profile_scope(profile):
+            execution_policy = execution_policy_mapping(target_profile=profile)
         catalog = catalog_mapping(
             installation_id=installation_id,
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
@@ -186,6 +208,8 @@ async def _handle_room_member_capabilities(
             persistent_process=True,
             text=True,
             attachments=False,
+            target_profile=profile,
+            execution_policy=execution_policy,
         )
     except Exception:
         return web.json_response(
@@ -235,6 +259,7 @@ async def _handle_room_member_grant_refresh(
             MAX_DISPATCH_GRANT_TTL_SECONDS,
             issue_room_grant,
         )
+        from gateway.hosted_room_execution_policy import execution_policy_mapping
 
         claims = self._room_grant_claims(request, permission="status")
         profile = _api_request_profile.get() or "default"
@@ -259,6 +284,8 @@ async def _handle_room_member_grant_refresh(
             MAX_DISPATCH_GRANT_TTL_SECONDS,
             remaining,
         )
+        with self._profile_scope(profile):
+            execution_policy = execution_policy_mapping(target_profile=profile)
         token = issue_room_grant(
             self._room_grant_secret(),
             grant_id=f"grant-refresh-{uuid.uuid4().hex}",
@@ -269,6 +296,7 @@ async def _handle_room_member_grant_refresh(
             member_id=claims["member_id"],
             target_install_id=installation_id,
             target_profile=profile,
+            execution_policy_digest=execution_policy["policy_digest"],
             permissions=claims["permissions"],
             issued_at=now,
             ttl_seconds=dispatch_ttl,
@@ -289,6 +317,7 @@ async def _handle_room_member_grant_refresh(
             "grant": token,
             "expires_at": now + dispatch_ttl,
             "status_expires_at": hard_expiry,
+            "execution_policy": execution_policy,
         }
     )
 

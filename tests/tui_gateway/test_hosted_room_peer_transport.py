@@ -22,6 +22,7 @@ ROUTE = PeerMemberRoute(
     target_install_id="install-peer",
     target_profile="reviewer",
     capability_digest="a" * 64,
+    execution_policy_digest="b" * 64,
     cancellation_scope_id="cancel-1",
     trace_id="trace-1",
     grant="signed-room-grant",
