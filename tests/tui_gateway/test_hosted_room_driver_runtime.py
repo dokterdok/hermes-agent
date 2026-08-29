@@ -1108,14 +1108,19 @@ def test_retry_cannot_advance_generation_while_original_attempt_is_active(
     db: Path,
 ):
     identity = _identity()
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
     old_lease = state.acquire_lease(
         db,
         room_id=ROOM_ID,
         gateway_id=BINDING.gateway_id,
         authority_epoch=BINDING.authority_epoch,
         process_generation="old-process",
-        ttl_seconds=0.05,
-        clock=time.time,
+        ttl_seconds=1,
+        clock=clock,
     )
     _admit(db, identity)
     attempt = state.start_task(
@@ -1123,9 +1128,9 @@ def test_retry_cannot_advance_generation_while_original_attempt_is_active(
         identity,
         old_lease,
         expected_cancel_generation=0,
-        clock=time.time,
+        clock=clock,
     )
-    time.sleep(0.06)
+    now[0] = 102.0
     recovery_lease = state.acquire_lease(
         db,
         room_id=ROOM_ID,
@@ -1133,14 +1138,14 @@ def test_retry_cannot_advance_generation_while_original_attempt_is_active(
         authority_epoch=BINDING.authority_epoch,
         process_generation="recovery-process",
         ttl_seconds=30,
-        clock=time.time,
+        clock=clock,
     )
-    state.recover_room(db, recovery_lease, clock=time.time)
-    state.release_lease(db, recovery_lease, clock=time.time)
+    state.recover_room(db, recovery_lease, clock=clock)
+    state.release_lease(db, recovery_lease, clock=clock)
     rpc = FakeSessionRPC(auto_complete=False)
     session_id = rpc.add_session(active=True, task_id=identity.task_id)
     rpc.states[session_id]["execution_generation"] = attempt.execution_generation
-    runtime = _runtime(db, rpc)
+    runtime = _runtime(db, rpc, clock=clock)
 
     with pytest.raises(state.InvalidTaskTransitionError, match="still active"):
         runtime.retry_indeterminate(identity)
@@ -1153,14 +1158,19 @@ def test_retry_cannot_advance_generation_while_original_attempt_is_active(
 
 def test_retry_uses_runtime_session_id_returned_by_resume(db: Path):
     identity = _identity()
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
     old_lease = state.acquire_lease(
         db,
         room_id=ROOM_ID,
         gateway_id=BINDING.gateway_id,
         authority_epoch=BINDING.authority_epoch,
         process_generation="old-process",
-        ttl_seconds=0.05,
-        clock=time.time,
+        ttl_seconds=1,
+        clock=clock,
     )
     _admit(db, identity)
     state.start_task(
@@ -1168,9 +1178,9 @@ def test_retry_uses_runtime_session_id_returned_by_resume(db: Path):
         identity,
         old_lease,
         expected_cancel_generation=0,
-        clock=time.time,
+        clock=clock,
     )
-    time.sleep(0.06)
+    now[0] = 102.0
     recovery_lease = state.acquire_lease(
         db,
         room_id=ROOM_ID,
@@ -1178,10 +1188,10 @@ def test_retry_uses_runtime_session_id_returned_by_resume(db: Path):
         authority_epoch=BINDING.authority_epoch,
         process_generation="recovery-process",
         ttl_seconds=30,
-        clock=time.time,
+        clock=clock,
     )
-    state.recover_room(db, recovery_lease, clock=time.time)
-    state.release_lease(db, recovery_lease, clock=time.time)
+    state.recover_room(db, recovery_lease, clock=clock)
+    state.release_lease(db, recovery_lease, clock=clock)
 
     rpc = FakeSessionRPC(auto_complete=False)
     stored_id = rpc.add_session(active=False, task_id=identity.task_id)
@@ -1207,7 +1217,7 @@ def test_retry_uses_runtime_session_id_returned_by_resume(db: Path):
     rpc.resume = resume
     rpc.history = history
     rpc.info = info
-    runtime = _runtime(db, rpc)
+    runtime = _runtime(db, rpc, clock=clock)
 
     retried = runtime.retry_indeterminate(identity)
 
@@ -1219,14 +1229,19 @@ def test_retry_reconciles_terminal_remote_cancellation_without_new_generation(
     db: Path,
 ):
     identity = _identity()
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
     old_lease = state.acquire_lease(
         db,
         room_id=ROOM_ID,
         gateway_id=BINDING.gateway_id,
         authority_epoch=BINDING.authority_epoch,
         process_generation="old-process",
-        ttl_seconds=0.05,
-        clock=time.time,
+        ttl_seconds=1,
+        clock=clock,
     )
     _admit(db, identity)
     attempt = state.start_task(
@@ -1234,9 +1249,9 @@ def test_retry_reconciles_terminal_remote_cancellation_without_new_generation(
         identity,
         old_lease,
         expected_cancel_generation=0,
-        clock=time.time,
+        clock=clock,
     )
-    time.sleep(0.06)
+    now[0] = 102.0
     recovery_lease = state.acquire_lease(
         db,
         room_id=ROOM_ID,
@@ -1244,10 +1259,10 @@ def test_retry_reconciles_terminal_remote_cancellation_without_new_generation(
         authority_epoch=BINDING.authority_epoch,
         process_generation="recovery-process",
         ttl_seconds=30,
-        clock=time.time,
+        clock=clock,
     )
-    state.recover_room(db, recovery_lease, clock=time.time)
-    state.release_lease(db, recovery_lease, clock=time.time)
+    state.recover_room(db, recovery_lease, clock=clock)
+    state.release_lease(db, recovery_lease, clock=clock)
     rpc = FakeSessionRPC(auto_complete=False)
     rpc.add_session(active=False, task_id=identity.task_id)
     original_info = rpc.info
@@ -1256,7 +1271,7 @@ def test_retry_reconciles_terminal_remote_cancellation_without_new_generation(
         return {**original_info(**kwargs), "status": "cancelled"}
 
     rpc.info = cancelled_info
-    runtime = _runtime(db, rpc)
+    runtime = _runtime(db, rpc, clock=clock)
 
     cancelled = runtime.retry_indeterminate(identity)
 
@@ -1643,6 +1658,11 @@ def test_completion_wins_a_race_with_unacknowledged_stop(db: Path):
 
 def test_restart_harvests_completion_before_retrying_durable_stop(db: Path):
     identity = _identity()
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
     _admit(db, identity)
     old_lease = state.acquire_lease(
         db,
@@ -1650,22 +1670,22 @@ def test_restart_harvests_completion_before_retrying_durable_stop(db: Path):
         gateway_id=BINDING.gateway_id,
         authority_epoch=BINDING.authority_epoch,
         process_generation="old-process",
-        ttl_seconds=0.05,
-        clock=time.time,
+        ttl_seconds=1,
+        clock=clock,
     )
     attempt = state.start_task(
         db,
         identity,
         old_lease,
         expected_cancel_generation=0,
-        clock=time.time,
+        clock=clock,
     )
     stopping = state.begin_task_cancel(
         db,
         identity,
         cancel_id="cancel-before-restart",
         expected_cancel_generation=attempt.cancel_generation,
-        clock=time.time,
+        clock=clock,
     )
     rpc = FakeSessionRPC(auto_complete=False)
     rpc.add_session(
@@ -1682,8 +1702,13 @@ def test_restart_harvests_completion_before_retrying_durable_stop(db: Path):
             }
         ],
     )
-    time.sleep(0.06)
-    runtime = _runtime(db, rpc, process_generation="new-process")
+    now[0] = 102.0
+    runtime = _runtime(
+        db,
+        rpc,
+        process_generation="new-process",
+        clock=clock,
+    )
 
     runtime.start()
     _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
@@ -1697,6 +1722,11 @@ def test_restart_harvests_completion_before_retrying_durable_stop(db: Path):
 
 def test_restart_acknowledges_inactive_local_stop_without_memory_marker(db: Path):
     identity = _identity()
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
     _admit(db, identity)
     old_lease = state.acquire_lease(
         db,
@@ -1704,26 +1734,31 @@ def test_restart_acknowledges_inactive_local_stop_without_memory_marker(db: Path
         gateway_id=BINDING.gateway_id,
         authority_epoch=BINDING.authority_epoch,
         process_generation="old-process",
-        ttl_seconds=0.05,
-        clock=time.time,
+        ttl_seconds=1,
+        clock=clock,
     )
     attempt = state.start_task(
         db,
         identity,
         old_lease,
         expected_cancel_generation=0,
-        clock=time.time,
+        clock=clock,
     )
     state.begin_task_cancel(
         db,
         identity,
         cancel_id="cancel-before-restart",
         expected_cancel_generation=attempt.cancel_generation,
-        clock=time.time,
+        clock=clock,
     )
     rpc = FakeSessionRPC(auto_complete=False)
-    time.sleep(0.06)
-    runtime = _runtime(db, rpc, process_generation="new-process")
+    now[0] = 102.0
+    runtime = _runtime(
+        db,
+        rpc,
+        process_generation="new-process",
+        clock=clock,
+    )
 
     cancelled = runtime.cancel(identity, cancel_id="cancel-before-restart")
 
