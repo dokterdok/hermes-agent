@@ -21,9 +21,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   BotRow,
-  GroupRow,
   groupAttentionRoomVisible,
   groupMainVisibilityAtom,
+  GroupRow,
   showGroupAttentionMarker
 } from './bot-row'
 import { translateBots } from './i18n-test-helper'
