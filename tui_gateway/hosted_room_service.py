@@ -260,6 +260,7 @@ class HostedRoomService:
                         reason in message
                         for reason in (
                             "expired or not active",
+                            "authorization is invalid or expired",
                             "grant is revoked",
                             "grant is no longer current",
                         )

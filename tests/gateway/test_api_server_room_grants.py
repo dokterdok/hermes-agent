@@ -139,6 +139,7 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
             **old_claims,
             "authority_gateway_id": "gateway-new",
             "authority_epoch": 2,
+            "member_id": "member-new",
         },
         expires_at=now + 3600,
         now=now,

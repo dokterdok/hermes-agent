@@ -373,10 +373,10 @@ class _UnavailableRevokePeerClient(_FakePeerClient):
 class _ExpiredRevokePeerClient(_FakePeerClient):
     def revoke_grant(self, **kwargs):
         raise PeerRunsHTTPError(
-            "room grant is expired or not active",
+            "Room authorization is invalid or expired.",
             status_code=401,
             error_code="invalid_room_grant",
-            error_message="room grant is expired or not active",
+            error_message="Room authorization is invalid or expired.",
         )
 
 
