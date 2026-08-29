@@ -755,6 +755,52 @@ def test_waiting_room_does_not_block_an_independent_room(tmp_path: Path):
     assert runtime.stop(timeout=1.0)
 
 
+def test_bounded_scheduler_eventually_runs_later_room(tmp_path: Path):
+    db = tmp_path / "state.db"
+    bindings = [
+        HostedRoomBinding(f"room-{index}", "gateway-a", 1)
+        for index in range(1, 4)
+    ]
+    for binding in bindings:
+        hosted_rooms.create_room(
+            db,
+            room_id=binding.room_id,
+            name=binding.room_id,
+            members=[{"profile": PROFILE, "handle": PROFILE}],
+            authority_gateway_id=binding.gateway_id,
+            now=time.time(),
+        )
+    identity = state.TaskIdentity(
+        "room-3",
+        "task-room-3",
+        "thread-room-3",
+        "turn-room-3",
+    )
+    state.admit_task(
+        db,
+        identity,
+        payload={
+            "target_profile": PROFILE,
+            "prompt": "Run the later room.",
+            "source_event_seq": 1,
+        },
+        clock=time.time,
+    )
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=bindings,
+        rpc=FakeSessionRPC(),
+        turn_lock=RecordingTurnLocks(),
+        lease_ttl_seconds=0.4,
+        poll_interval_seconds=0.01,
+        max_concurrent_rooms=2,
+    )
+
+    runtime.start()
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    assert runtime.stop(timeout=1.0)
+
+
 def test_existing_canonical_session_is_resumed_not_duplicated(db: Path):
     identity = _identity()
     _admit(db, identity)

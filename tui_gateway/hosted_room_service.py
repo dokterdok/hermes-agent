@@ -40,7 +40,7 @@ from gateway.hosted_room_peer import (
 )
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 from tui_gateway.hosted_room_peer_transport import (
     HostedRoomPeerClient,
     PeerHostedRoomTransport,
@@ -249,7 +249,24 @@ class HostedRoomService:
             revoke = getattr(client, "revoke_grant", None)
             if not callable(revoke):
                 raise RuntimeError("peer room grant cannot be revoked safely")
-            revoke(grant=route.grant)
+            try:
+                revoke(grant=route.grant)
+            except PeerRunsHTTPError as exc:
+                message = str(exc.error_message or exc).lower()
+                terminal = (
+                    exc.status_code in {401, 403}
+                    and exc.error_code == "invalid_room_grant"
+                    and any(
+                        reason in message
+                        for reason in (
+                            "expired or not active",
+                            "grant is revoked",
+                            "grant is no longer current",
+                        )
+                    )
+                )
+                if not terminal:
+                    raise
 
         hosted_rooms.delete_room_link_records(self.db_path, room_id=room_id)
         with self._policy_lock:

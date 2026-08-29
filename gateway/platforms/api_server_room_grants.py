@@ -74,6 +74,11 @@ def _room_grant_claims(
         claims=claims,
     ):
         raise ValueError("room grant is revoked")
+    if not hosted_rooms.peer_room_grant_is_current(
+        hosted_rooms.default_db_path(),
+        claims=claims,
+    ):
+        raise ValueError("room grant is no longer current")
     return claims
 
 

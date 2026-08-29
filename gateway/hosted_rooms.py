@@ -844,6 +844,53 @@ def peer_room_is_reserved(
     return row is not None
 
 
+def peer_room_grant_is_current(
+    db_path: Path | str,
+    *,
+    claims: Mapping[str, Any],
+    now: float | None = None,
+) -> bool:
+    """Require a grant to match the target's current live reservation."""
+
+    timestamp = float(now if now is not None else time.time())
+    room_id = _validate_identifier(
+        claims.get("room_id"), label="room_id", max_chars=MAX_ROOM_ID_CHARS
+    )
+    member_id = _validate_identifier(
+        claims.get("member_id"), label="member_id", max_chars=MAX_ACTOR_ID_CHARS
+    )
+    target_profile = _validate_identifier(
+        claims.get("target_profile"),
+        label="target_profile",
+        max_chars=MAX_ACTOR_ID_CHARS,
+    )
+    authority_gateway_id = _validate_identifier(
+        claims.get("authority_gateway_id"),
+        label="authority_gateway_id",
+        max_chars=MAX_ACTOR_ID_CHARS,
+    )
+    authority_epoch = int(claims.get("authority_epoch") or 0)
+    if authority_epoch < 1:
+        raise HostedRoomError("authority_epoch must be positive")
+    with _transaction(db_path) as conn:
+        row = conn.execute(
+            """SELECT 1 FROM hosted_room_peer_reservations
+                WHERE room_id=? AND member_id=? AND target_profile=?
+                  AND authority_gateway_id=? AND authority_epoch=?
+                  AND expires_at>? AND revoked_at IS NULL
+                LIMIT 1""",
+            (
+                room_id,
+                member_id,
+                target_profile,
+                authority_gateway_id,
+                authority_epoch,
+                timestamp,
+            ),
+        ).fetchone()
+    return row is not None
+
+
 def room_grant_is_revoked(
     db_path: Path | str,
     *,

@@ -370,6 +370,16 @@ class _UnavailableRevokePeerClient(_FakePeerClient):
         raise RuntimeError("peer is offline during revocation")
 
 
+class _ExpiredRevokePeerClient(_FakePeerClient):
+    def revoke_grant(self, **kwargs):
+        raise PeerRunsHTTPError(
+            "room grant is expired or not active",
+            status_code=401,
+            error_code="invalid_room_grant",
+            error_message="room grant is expired or not active",
+        )
+
+
 class _RefreshingPeerClient(_FakePeerClient):
     def __init__(self, replacement: str) -> None:
         super().__init__()
@@ -2170,6 +2180,39 @@ def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
         service.revoke_room_routes("room-1")
     assert ("room-1", "member-peer") in service.peer_routes
     assert len(hosted_room_links.load_room_links(db)) == 1
+
+
+def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
+    from gateway import hosted_room_links
+
+    db = tmp_path / "state.db"
+    catalog = GatewayRoomCatalog.from_mapping(
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
+    )
+    route = PeerMemberRoute(
+        home_install_id=hosted_rooms.local_authority_gateway_id(),
+        member_id="member-peer",
+        target_install_id="install-peer",
+        target_profile="reviewer",
+        capability_digest=catalog.catalog_digest,
+        execution_policy_digest=catalog.execution_policy.policy_digest,
+        cancellation_scope_id="cancel-room-1",
+        trace_id="trace-room-1",
+        grant="expired.room.grant",
+    )
+    service = HostedRoomService(_server(), db_path=db)
+    service.register_peer_route(
+        room_id="room-1",
+        member_id="member-peer",
+        route=route,
+        client=_ExpiredRevokePeerClient(),
+        target_url="https://peer.example.test",
+        catalog=catalog,
+    )
+
+    assert service.revoke_room_routes("room-1") == 1
+    assert ("room-1", "member-peer") not in service.peer_routes
+    assert hosted_room_links.load_room_links(db) == ()
 
 
 def test_expired_grant_surfaces_needs_reauthorization_without_secret(

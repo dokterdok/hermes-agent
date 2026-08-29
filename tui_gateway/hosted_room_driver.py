@@ -246,6 +246,7 @@ class HostedRoomRuntime:
         self._inspected_indeterminate_attempts: set[tuple[str, str, int]] = set()
         self._status_lock = threading.Lock()
         self._current_tasks: dict[str, state.TaskIdentity] = {}
+        self._room_schedule_cursor = 0
         self._last_error: str | None = None
         self._cycles = 0
 
@@ -692,7 +693,14 @@ class HostedRoomRuntime:
         if available <= 0:
             return
 
-        for binding in tuple(self._rooms_provider()):
+        bindings = tuple(self._rooms_provider())
+        if not bindings:
+            return
+        start = self._room_schedule_cursor % len(bindings)
+        ordered_bindings = bindings[start:] + bindings[:start]
+        self._room_schedule_cursor = (start + 1) % len(bindings)
+
+        for binding in ordered_bindings:
             if self._stop.is_set() or available <= 0:
                 return
             if binding.room_id in active_rooms:
