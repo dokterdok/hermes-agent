@@ -583,7 +583,8 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"room": renamed})
     except HostedRoomError as exc:
-        return _err(rid, 4117, str(exc))
+        reason = getattr(exc, "reason", None)
+        return _err(rid, 4117, str(exc), {"reason": reason} if reason else None)
     except Exception as exc:
         return _err(rid, 5117, str(exc))
 

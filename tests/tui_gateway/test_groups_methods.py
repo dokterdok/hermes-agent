@@ -789,21 +789,27 @@ def test_pruned_room_send_and_log_report_expired_history(home, monkeypatch):
         5,
         {"room_id": "room-1", "include_disbanded": True},
     )
+    renamed = srv._methods["groups.rename"](
+        6,
+        {"room_id": "room-1", "event_id": "stale-rename", "name": "Stale"},
+    )
 
     assert sent["error"]["code"] == 4111, sent
     assert logged["error"]["code"] == 4112, logged
+    assert renamed["error"]["code"] == 4117, renamed
     assert sent["error"]["data"] == {"reason": "room_history_expired"}
     assert logged["error"]["data"] == {"reason": "room_history_expired"}
+    assert renamed["error"]["data"] == {"reason": "room_history_expired"}
     assert "permanently retired" in sent["error"]["message"]
 
     recreated = srv._methods["groups.create"](
-        6,
+        7,
         {"room_id": "room-1", "name": "Replacement", "members": members},
     )
     assert recreated["error"]["code"] == 4110
     created = _result(
         srv._methods["groups.create"](
-            7,
+            8,
             {"room_id": "room-new", "name": "Fresh", "members": members},
         )
     )

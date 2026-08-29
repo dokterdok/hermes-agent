@@ -1605,7 +1605,9 @@ def rename_room(
                  FROM hosted_rooms WHERE room_id=?""",
             (room_id,),
         ).fetchone()
-        if room is None or room["disbanded_at"] is not None:
+        if room is None:
+            _raise_room_not_found(conn, room_id)
+        if room["disbanded_at"] is not None:
             raise RoomNotFoundError("hosted room not found")
         existing = conn.execute(
             """SELECT room_id, seq, event_id, kind, actor_json,
