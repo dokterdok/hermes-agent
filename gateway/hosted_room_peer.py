@@ -15,10 +15,12 @@ import json
 import math
 import os
 import re
+import stat
 import time
 import urllib.parse
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping
 
 from gateway.hosted_room_execution_policy import (
@@ -59,6 +61,72 @@ class HostedRoomPeerError(ValueError):
 
 class HostedRoomGrantError(HostedRoomPeerError):
     """Raised when a room-scoped grant is invalid or expired."""
+
+
+_ROOM_GRANT_SECRET_FILE = ".room-link-grant-secret"
+
+
+def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:
+    """Load or atomically mint the gateway-only RoomLink signing secret.
+
+    API keys are bearer credentials known to clients and may be profile scoped;
+    they must never become grant-signing authority. This secret lives in the
+    installation root, is not exposed by configuration or capability RPCs, and
+    is shared only by the gateway processes that serve this installation.
+    """
+
+    if root is None:
+        from hermes_constants import get_hermes_home
+
+        # Profile routing uses a context-local HERMES_HOME override. The process
+        # environment retains the installation root and is the authority here.
+        root = os.environ.get("HERMES_HOME") or get_hermes_home()
+    home = Path(root).expanduser()
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / _ROOM_GRANT_SECRET_FILE
+
+    def _read() -> bytes:
+        data = path.read_bytes()
+        if len(data) != 32:
+            raise HostedRoomGrantError("gateway RoomLink secret is invalid")
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode & 0o077:
+            path.chmod(0o600)
+        return data
+
+    try:
+        material = _read()
+    except FileNotFoundError:
+        material = os.urandom(32)
+        temporary = home / (
+            f".{_ROOM_GRANT_SECRET_FILE}.{os.getpid()}.{os.urandom(8).hex()}"
+        )
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb", closefd=True) as stream:
+                stream.write(material)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                material = _read()
+            else:
+                try:
+                    parent_fd = os.open(home, os.O_RDONLY)
+                    try:
+                        os.fsync(parent_fd)
+                    finally:
+                        os.close(parent_fd)
+                except OSError:
+                    pass
+        finally:
+            temporary.unlink(missing_ok=True)
+    return hmac.new(
+        material,
+        b"hermes-hosted-room-installation-grant-v1",
+        hashlib.sha256,
+    ).digest()
 
 
 def derive_room_grant_secret(api_key: str) -> bytes:

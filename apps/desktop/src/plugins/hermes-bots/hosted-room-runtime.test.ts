@@ -786,7 +786,7 @@ describe('hosted Group Chat runtime', () => {
         }
         if (method === 'groups.disband' || method === 'groups.peer.revoke') {
           if (!cleanupAvailable) {
-            throw new Error('host offline')
+            throw Object.assign(new Error('method not found'), { code: -32601 })
           }
 
           return { ok: true }
@@ -958,6 +958,53 @@ describe('hosted Group Chat runtime', () => {
     expect(loaded.storage.get('hosted-room-outbox-v1')).toMatchObject({
       commands: []
     })
+
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
+  it('keeps same-room sends ordered across a transient failure', async () => {
+    let releaseFirst = false
+    const sent: string[] = []
+    const loaded = await loadRuntime((method, params) => {
+      if (method === 'groups.capabilities') {
+        return { driver: true, persistent_process: true, authority_gateway_id: 'install:home' }
+      }
+      if (method === 'groups.list') {
+        return { rooms: [] }
+      }
+      if (method === 'groups.send') {
+        const eventId = String(params.event_id)
+
+        if (eventId === 'send-a' && !releaseFirst) {
+          throw new Error('connection closed')
+        }
+
+        sent.push(eventId)
+
+        return { ok: true }
+      }
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    loaded.chat.$groupChats.set({ Release: room() })
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+
+    const message = (id: string, text: string) => ({
+      at: 1,
+      from: { kind: 'user' as const, name: 'You' },
+      id,
+      text,
+      thread: 'thread-1'
+    })
+
+    await expect(loaded.runtime.sendHostedGroupChat('Release', message('send-a', 'A'), 'thread-1')).resolves.toBe(false)
+    await expect(loaded.runtime.sendHostedGroupChat('Release', message('send-b', 'B'), 'thread-1')).resolves.toBe(false)
+    expect(sent).toEqual([])
+
+    releaseFirst = true
+    await loaded.runtime.dispatchHostedRoomOutbox()
+    expect(sent).toEqual(['send-a', 'send-b'])
+    expect(loaded.storage.get('hosted-room-outbox-v1')).toMatchObject({ commands: [] })
 
     loaded.runtime.stopHostedRoomRuntime()
   })

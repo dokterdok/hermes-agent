@@ -37,6 +37,8 @@ export const HOSTED_ROOM_CLIENT_LIMITATIONS: HostedRoomClientLimitations = Objec
   stagedAttachmentManifest: true
 })
 
+const MAX_HOSTED_ROOM_OUTBOX_COMMANDS = 256
+
 export type HostedRoomCapabilityKind = 'driver-capable' | 'transient-failure' | 'unsupported'
 
 export interface HostedRoomCapability {
@@ -624,7 +626,7 @@ export function describeAutonomousRoomPlan(
     level: 'desktop' as const,
     title: 'Keep Desktop open for this Group Chat',
     description: needsSetup
-      ? `${unavailableLabel} needs Group Chat connections enabled in Hermes settings.`
+      ? `${unavailableLabel} is not ready to keep Group Chats running in the background. Update that Bot host, then retry.`
       : 'The selected Bots cannot continue this Group Chat on their own yet.'
   }
 }
@@ -1262,6 +1264,12 @@ export function reduceHostedRoomOutbox(state: HostedRoomOutbox, action: HostedRo
       }
 
       return current
+    }
+
+    if (current.commands.length >= MAX_HOSTED_ROOM_OUTBOX_COMMANDS) {
+      throw new TypeError(
+        'Too many Group Chat changes are waiting to sync. Reconnect the affected host and try again.'
+      )
     }
 
     return {

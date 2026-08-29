@@ -507,4 +507,31 @@ describe('hosted Group Chat command outbox', () => {
       }).commands
     ).toEqual([])
   })
+
+  it('fails closed before an offline host can grow the outbox without bound', () => {
+    let outbox = createHostedRoomOutbox()
+
+    for (let index = 0; index < 256; index += 1) {
+      outbox = reduceHostedRoomOutbox(outbox, {
+        type: 'enqueue',
+        command: {
+          ...command,
+          commandId: `command-${index}`,
+          payload: {
+            text: `Message ${index}`
+          }
+        }
+      })
+    }
+
+    expect(() =>
+      reduceHostedRoomOutbox(outbox, {
+        type: 'enqueue',
+        command: {
+          ...command,
+          commandId: 'command-overflow'
+        }
+      })
+    ).toThrow(/waiting to sync/)
+  })
 })

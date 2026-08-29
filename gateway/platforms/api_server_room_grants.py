@@ -46,13 +46,9 @@ def _room_grant_token(request: "web.Request") -> str:
 
 
 def _room_grant_secret(self) -> bytes:
-    from gateway.hosted_room_peer import derive_room_grant_secret
+    from gateway.hosted_room_peer import gateway_room_grant_secret
 
-    # RoomLink is gateway-owned even when the URL selects a named profile.
-    # The signed claims and every handler still bind and verify target_profile;
-    # ordinary Bearer auth continues to use the profile-scoped API key.
-    key = self._api_key
-    return derive_room_grant_secret(key or "")
+    return gateway_room_grant_secret()
 
 
 def _room_grant_claims(
@@ -116,6 +112,7 @@ async def _handle_room_member_invitation(
         from gateway.hosted_room_peer import (
             PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
             catalog_mapping,
+            decode_room_grant,
             issue_room_grant,
         )
         from gateway.hosted_room_execution_policy import execution_policy_mapping
@@ -154,6 +151,14 @@ async def _handle_room_member_invitation(
             execution_policy_digest=execution_policy["policy_digest"],
             issued_at=time.time(),
             ttl_seconds=ttl,
+        )
+        claims = decode_room_grant(
+            self._room_grant_secret(), token, permission="status"
+        )
+        hosted_rooms.reserve_peer_room(
+            hosted_rooms.default_db_path(),
+            claims=claims,
+            expires_at=float(claims.get("status_expires_at", claims["expires_at"])),
         )
     except Exception as exc:
         return web.json_response(

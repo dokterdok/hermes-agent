@@ -703,6 +703,58 @@ def test_not_admitted_room_does_not_block_other_rooms(tmp_path: Path):
     assert state.get_task(db, healthy_identity)["status"] == "settled"
 
 
+def test_waiting_room_does_not_block_an_independent_room(tmp_path: Path):
+    db = tmp_path / "state.db"
+    bindings = [
+        HostedRoomBinding("room-waiting", "gateway-a", 1),
+        HostedRoomBinding("room-healthy", "gateway-a", 1),
+    ]
+    identities = [
+        state.TaskIdentity("room-waiting", "task-waiting", "thread-a", "turn-a"),
+        state.TaskIdentity("room-healthy", "task-healthy", "thread-b", "turn-b"),
+    ]
+    profiles = ["profile-waiting", "profile-healthy"]
+    for binding, identity, profile in zip(bindings, identities, profiles):
+        hosted_rooms.create_room(
+            db,
+            room_id=binding.room_id,
+            name=binding.room_id,
+            members=[{"profile": profile, "handle": profile}],
+            authority_gateway_id=binding.gateway_id,
+            now=time.time(),
+        )
+        state.admit_task(
+            db,
+            identity,
+            payload={
+                "target_profile": profile,
+                "prompt": f"Run {binding.room_id}.",
+                "source_event_seq": 1,
+            },
+            clock=time.time,
+        )
+
+    waiting = FakeSessionRPC(auto_complete=False)
+    healthy = FakeSessionRPC()
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=bindings,
+        transport_resolver=lambda binding, _task: (
+            waiting if binding.room_id == "room-waiting" else healthy
+        ),
+        turn_lock=RecordingTurnLocks(),
+        lease_ttl_seconds=0.4,
+        poll_interval_seconds=0.01,
+        max_concurrent_rooms=2,
+    )
+
+    runtime.start()
+    assert waiting.submitted.wait(1.0)
+    _wait_for(lambda: state.get_task(db, identities[1])["status"] == "settled")
+    assert state.get_task(db, identities[0])["status"] == "running"
+    assert runtime.stop(timeout=1.0)
+
+
 def test_existing_canonical_session_is_resumed_not_duplicated(db: Path):
     identity = _identity()
     _admit(db, identity)

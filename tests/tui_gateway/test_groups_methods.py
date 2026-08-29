@@ -133,7 +133,7 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
     assert "monotonic_log" in result["features"]
     assert "groups.state" in result["methods"]
     assert "groups.send" in result["methods"]
-    assert result["room_link"]["enabled"] is False
+    assert result["room_link"]["enabled"] is True
     assert "groups.attachment.put" in result["methods"]
     assert "groups.attachment.read" in result["methods"]
     assert "attachment_same_gateway_delivery" in result["features"]
@@ -233,6 +233,13 @@ def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch
     assert invitation["catalog"] == result["room_link"]["catalog"]
     assert invitation["catalog"]["attachments"] is True
     assert "." in invitation["grant"]
+    from gateway import hosted_rooms
+
+    assert hosted_rooms.peer_room_is_reserved(
+        hosted_rooms.default_db_path(),
+        room_id="room-1",
+        target_profile="reviewer",
+    )
 
 
 def test_peer_revoke_discards_the_scoped_attachment_spool(home, monkeypatch):
@@ -393,6 +400,7 @@ def test_multiplexed_invitation_uses_gateway_secret_and_binds_profile(
         HostedRoomGrantError,
         decode_room_grant,
         derive_room_grant_secret,
+        gateway_room_grant_secret,
     )
 
     reviewer_home = home / "profiles" / "reviewer"
@@ -417,7 +425,7 @@ def test_multiplexed_invitation_uses_gateway_secret_and_binds_profile(
         )
     )
     claims = decode_room_grant(
-        derive_room_grant_secret(default_key),
+        gateway_room_grant_secret(home),
         invitation["grant"],
         permission="status",
     )
@@ -431,7 +439,12 @@ def test_multiplexed_invitation_uses_gateway_secret_and_binds_profile(
 
 
 def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
-    from gateway.hosted_room_peer import decode_room_grant, derive_room_grant_secret
+    from gateway.hosted_room_peer import (
+        HostedRoomGrantError,
+        decode_room_grant,
+        derive_room_grant_secret,
+        gateway_room_grant_secret,
+    )
 
     reviewer_home = home / "profiles" / "reviewer"
     reviewer_home.mkdir(parents=True)
@@ -453,11 +466,17 @@ def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
     )
 
     claims = decode_room_grant(
-        derive_room_grant_secret(gateway_key),
+        gateway_room_grant_secret(home),
         invitation["grant"],
         permission="status",
     )
     assert claims["target_profile"] == "reviewer"
+    with pytest.raises(HostedRoomGrantError, match="signature"):
+        decode_room_grant(
+            derive_room_grant_secret(gateway_key),
+            invitation["grant"],
+            permission="status",
+        )
 
 
 def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeypatch):
@@ -569,6 +588,7 @@ def test_create_list_send_and_log_roundtrip(home):
 
     listed = _result(srv._methods["groups.list"](2, {}))
     assert [item["room_id"] for item in listed["rooms"]] == ["room-1"]
+    assert listed["next_offset"] is None
     state = _result(srv._methods["groups.state"](3, {"room_id": "room-1"}))
     assert state["room"]["authority_gateway_id"] == _server_authority()
     assert state["room"]["authority_epoch"] == 1
@@ -602,6 +622,45 @@ def test_create_list_send_and_log_roundtrip(home):
         "text": "hello",
         "thread_id": "event-1",
     }
+
+
+def test_groups_list_returns_bounded_pages(home):
+    _create_room()
+    _result(
+        srv._methods["groups.create"](
+            2,
+            {
+                "room_id": "room-2",
+                "name": "Second room",
+                "members": [
+                    {
+                        "member_id": "default",
+                        "profile": "default",
+                        "handle": "hermes",
+                    },
+                    {"member_id": "ops", "profile": "ops", "handle": "ops"}
+                ],
+            },
+        )
+    )
+
+    first = _result(srv._methods["groups.list"](3, {"limit": 1}))
+    second = _result(
+        srv._methods["groups.list"](
+            4,
+            {"limit": 1, "offset": first["next_offset"]},
+        )
+    )
+
+    assert first["next_offset"] == 1
+    assert second["next_offset"] == 2
+    assert {first["rooms"][0]["room_id"], second["rooms"][0]["room_id"]} == {
+        "room-1",
+        "room-2",
+    }
+    final = _result(srv._methods["groups.list"](5, {"limit": 1, "offset": 2}))
+    assert final["rooms"] == []
+    assert final["next_offset"] is None
 
 
 def test_rpc_retry_is_idempotent_and_conflict_is_visible(home):

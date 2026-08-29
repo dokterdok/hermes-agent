@@ -67,16 +67,17 @@ def test_room_grant_helpers_delegate_through_legacy_adapter_methods(monkeypatch)
     claims.assert_called_once_with(adapter, request, permission="status")
 
 
-def test_room_grant_secret_stays_gateway_owned_on_named_profile():
-    from gateway.hosted_room_peer import derive_room_grant_secret
+def test_room_grant_secret_stays_gateway_owned_on_named_profile(
+    tmp_path, monkeypatch
+):
+    from gateway.hosted_room_peer import gateway_room_grant_secret
 
     adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
     adapter._api_key = "gateway-api-key-1234567890"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     profile_token = api_server._api_request_profile.set("reviewer")
     try:
-        assert adapter._room_grant_secret() == derive_room_grant_secret(
-            "gateway-api-key-1234567890"
-        )
+        assert adapter._room_grant_secret() == gateway_room_grant_secret()
     finally:
         api_server._api_request_profile.reset(profile_token)
 

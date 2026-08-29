@@ -48,6 +48,8 @@ export { describeAutonomousRoomPlan, describeHostedRoomCreationError } from './h
 const HOSTED_ROOM_OUTBOX_KEY = 'hosted-room-outbox-v1'
 const HOSTED_ROOM_CLEANUP_KEY = 'hosted-room-cleanup-v1'
 const HOSTED_ROOM_CLEANUP_LIMIT = 64
+const HOSTED_ROOM_LIST_PAGE_SIZE = 500
+const HOSTED_ROOM_LIST_MAX_PAGES = 4
 const HOSTED_ROOM_SYNC_INTERVAL_MS = 5000
 const GROUP_ATTACHMENT_CACHE_CHARS = 50_000_000
 
@@ -306,13 +308,16 @@ async function hostedRouteForReference(connectionId: string, profile = 'default'
   ) as ProfileRoute | null
 }
 
-function hostedCleanupAlreadySettled(error: unknown) {
+function hostedCleanupAlreadySettled(operation: HostedRoomCleanupOperation, error: unknown) {
   const candidate = record(error)
   const inner = record(candidate?.error)
   const code = Number(candidate?.code ?? inner?.code)
   const message = String(candidate?.message || inner?.message || error || '')
 
-  return code === 4007 || /not found|already (?:disbanded|revoked)|unknown room|unknown grant/i.test(message)
+  return (
+    operation.kind === 'home-disband' &&
+    (code === 4007 || (code === 4113 && /hosted room not found|already disbanded/i.test(message)))
+  )
 }
 
 async function dispatchHostedRoomCleanup() {
@@ -348,7 +353,7 @@ async function dispatchHostedRoomCleanup() {
           })
         }
       } catch (error) {
-        if (!hostedCleanupAlreadySettled(error)) {
+        if (!hostedCleanupAlreadySettled(operation, error)) {
           continue
         }
       }
@@ -568,13 +573,36 @@ export async function refreshHostedRooms() {
       }
 
       hostedAuthorityRoutes.set(capability.authorityId, route)
-      let listed: Record<string, unknown>
+      const listedRooms: unknown[] = []
+      let listOffset = 0
+      let listComplete = false
 
       try {
-        listed = await requestHostedConnection(route, 'groups.list', {
-          include_disbanded: true
-        })
+        for (let page = 0; page < HOSTED_ROOM_LIST_MAX_PAGES; page += 1) {
+          const listed = await requestHostedConnection<Record<string, unknown>>(route, 'groups.list', {
+            include_disbanded: true,
+            limit: HOSTED_ROOM_LIST_PAGE_SIZE,
+            offset: listOffset
+          })
+
+          listedRooms.push(...(Array.isArray(listed?.rooms) ? listed.rooms : []))
+
+          const nextOffset = Number(listed?.next_offset)
+
+          if (!Number.isSafeInteger(nextOffset) || nextOffset <= listOffset) {
+            listComplete = true
+            break
+          }
+
+          listOffset = nextOffset
+        }
       } catch {
+        markHostedConnectionUnavailable(connectionId)
+
+        continue
+      }
+
+      if (!listComplete) {
         markHostedConnectionUnavailable(connectionId)
 
         continue
@@ -584,13 +612,16 @@ export async function refreshHostedRooms() {
         return
       }
 
-      const listedRooms = Array.isArray(listed?.rooms) ? listed.rooms : []
-
       const disbandedIds = new Set(
         listedRooms
           .map(raw => (record(raw) || {}) as HostedRoomServerState)
           .filter(isDisbanded)
           .map(room => String(room.room_id || ''))
+          .filter(Boolean)
+      )
+      const listedIds = new Set(
+        listedRooms
+          .map(raw => String(record(raw)?.room_id || ''))
           .filter(Boolean)
       )
 
@@ -752,6 +783,33 @@ export async function refreshHostedRooms() {
           }
         }
       }
+
+      // A complete list is authoritative even after an old tombstone ages
+      // out. This prevents an offline Desktop from keeping a deleted room
+      // forever without making a partial or failed page destructive.
+      for (const [name, room] of Object.entries($groupChats.get())) {
+        if (
+          room.roomId &&
+          room.hostedConnectionId === connectionId &&
+          !listedIds.has(room.roomId)
+        ) {
+          updateGroupChat(
+            name,
+            current => ({
+              ...current,
+              running: false,
+              hostedStatus: {
+                state: 'deleted',
+                label: botsText().group.hostedDeleted
+              },
+              continuityIssue: botsText().group.hostedDeleteLocally
+            }),
+            {
+              sync: false
+            }
+          )
+        }
+      }
     }
 
     if (!hostedRoomSyncDisposed) {
@@ -819,8 +877,13 @@ export async function dispatchHostedRoomOutbox() {
 
   try {
     let state = $hostedRoomOutbox.get()
+    const blockedRooms = new Set<string>()
 
     for (const command of state.commands.filter(entry => entry.status === 'pending')) {
+      if (blockedRooms.has(command.roomId)) {
+        continue
+      }
+
       const route = (await hostedDefaultRoutes()).find(candidate => candidate.connectionId === command.connectionId)
 
       if (hostedRoomSyncDisposed) {
@@ -828,6 +891,7 @@ export async function dispatchHostedRoomOutbox() {
       }
 
       if (!route) {
+        blockedRooms.add(command.roomId)
         continue
       }
 
@@ -881,8 +945,9 @@ export async function dispatchHostedRoomOutbox() {
         })
         await persistHostedRoomOutbox()
       } catch (error) {
+        const terminal = terminalCommandFailure(error)
         state = transitionHostedRoomOutbox(
-          terminalCommandFailure(error)
+          terminal
             ? {
                 type: 'terminal-failure',
                 commandId: command.commandId,
@@ -894,6 +959,9 @@ export async function dispatchHostedRoomOutbox() {
               }
         )
         await persistHostedRoomOutbox()
+        if (!terminal) {
+          blockedRooms.add(command.roomId)
+        }
       }
     }
   } finally {

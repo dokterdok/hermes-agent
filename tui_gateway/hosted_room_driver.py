@@ -9,11 +9,11 @@ The adapter normalizes existing internal session RPCs into seven methods. A
 future server integration can implement those methods with the in-process
 handlers while tests use deterministic fakes and no models or network.
 
-One worker serializes rooms deliberately in this first slice. That keeps lease
-and recovery behavior auditable; per-room workers are a later scalability
-change, not an implicit guarantee here. Hosted member sessions intentionally
-reuse ``Group: <room_id>`` so a local-to-hosted migration preserves the same
-canonical transcript instead of forking a second conversation.
+One bounded supervisor schedules independent room workers. Profile turn locks
+still serialize Bots that share one profile, while a room waiting for approval
+cannot stop unrelated rooms from progressing. Hosted member sessions
+intentionally reuse ``Group: <room_id>`` so a local-to-hosted migration
+preserves the same canonical transcript instead of forking a second conversation.
 """
 
 from __future__ import annotations
@@ -188,6 +188,7 @@ class HostedRoomRuntime:
         unavailable_retry_min_seconds: float = 1.0,
         unavailable_retry_max_seconds: float = 30.0,
         indeterminate_defer_seconds: float = 60.0,
+        max_concurrent_rooms: int = 4,
         process_generation: str | None = None,
     ) -> None:
         if lease_ttl_seconds <= 0:
@@ -201,6 +202,8 @@ class HostedRoomRuntime:
             raise ValueError("unavailable retry bounds are invalid")
         if indeterminate_defer_seconds <= 0:
             raise ValueError("indeterminate_defer_seconds must be positive")
+        if not isinstance(max_concurrent_rooms, int) or max_concurrent_rooms < 1:
+            raise ValueError("max_concurrent_rooms must be a positive integer")
         if rpc is None and transport_resolver is None:
             raise ValueError("rpc or transport_resolver is required")
 
@@ -218,6 +221,7 @@ class HostedRoomRuntime:
         self.unavailable_retry_min_seconds = float(unavailable_retry_min_seconds)
         self.unavailable_retry_max_seconds = float(unavailable_retry_max_seconds)
         self.indeterminate_defer_seconds = float(indeterminate_defer_seconds)
+        self.max_concurrent_rooms = max_concurrent_rooms
         self.process_generation = process_generation or uuid.uuid4().hex
         self._rooms_provider: Callable[[], Iterable[HostedRoomBinding]]
         if callable(rooms):
@@ -231,6 +235,7 @@ class HostedRoomRuntime:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
+        self._room_threads: dict[str, threading.Thread] = {}
         self._leases: dict[str, state.DriverLease] = {}
         self._recovered_leases: set[tuple[str, int]] = set()
         self._ambiguous_rooms: dict[str, float] = {}
@@ -240,12 +245,12 @@ class HostedRoomRuntime:
         self._blocked_rooms: set[str] = set()
         self._inspected_indeterminate_attempts: set[tuple[str, str, int]] = set()
         self._status_lock = threading.Lock()
-        self._current_task: state.TaskIdentity | None = None
+        self._current_tasks: dict[str, state.TaskIdentity] = {}
         self._last_error: str | None = None
         self._cycles = 0
 
     def start(self) -> None:
-        """Start the single dedicated worker thread idempotently."""
+        """Start the bounded room-worker supervisor idempotently."""
         with self._status_lock:
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -253,7 +258,7 @@ class HostedRoomRuntime:
             self._wake.set()
             self._thread = threading.Thread(
                 target=self._worker_loop,
-                name="hosted-room-driver",
+                name="hosted-room-driver-supervisor",
                 daemon=True,
             )
             self._thread.start()
@@ -267,7 +272,14 @@ class HostedRoomRuntime:
         if thread is None:
             return True
         thread.join(max(0.0, timeout))
-        return not thread.is_alive()
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._status_lock:
+            room_threads = tuple(self._room_threads.values())
+        for room_thread in room_threads:
+            room_thread.join(max(0.0, deadline - time.monotonic()))
+        return not thread.is_alive() and all(
+            not room_thread.is_alive() for room_thread in room_threads
+        )
 
     def wakeup(self) -> None:
         """Wake the worker after task admission or a room-state change."""
@@ -277,12 +289,13 @@ class HostedRoomRuntime:
         """Return a transport-neutral snapshot of runtime health."""
         with self._status_lock:
             thread = self._thread
-            current = self._current_task
+            current_tasks = tuple(self._current_tasks.values())
             return {
                 "running": bool(thread and thread.is_alive()),
                 "stopping": self._stop.is_set(),
                 "process_generation": self.process_generation,
-                "current_task": current,
+                "current_task": current_tasks[0] if current_tasks else None,
+                "current_tasks": current_tasks,
                 "leased_rooms": tuple(sorted(self._leases)),
                 "blocked_rooms": tuple(sorted(self._blocked_rooms)),
                 "last_error": self._last_error,
@@ -658,20 +671,56 @@ class HostedRoomRuntime:
             self._release_idle_leases()
 
     def _run_cycle(self) -> None:
+        with self._status_lock:
+            supervisor = self._thread
+        if threading.current_thread() is not supervisor:
+            for binding in tuple(self._rooms_provider()):
+                if self._stop.is_set():
+                    return
+                self._run_room_once(binding)
+            return
+
+        with self._status_lock:
+            self._room_threads = {
+                room_id: thread
+                for room_id, thread in self._room_threads.items()
+                if thread.is_alive()
+            }
+            available = self.max_concurrent_rooms - len(self._room_threads)
+            active_rooms = set(self._room_threads)
+
+        if available <= 0:
+            return
+
         for binding in tuple(self._rooms_provider()):
-            if self._stop.is_set():
+            if self._stop.is_set() or available <= 0:
                 return
-            try:
-                self._process_room(binding)
-            except state.LeaseHeldError:
+            if binding.room_id in active_rooms:
                 continue
-            except (state.RoomUnavailableError, state.StaleLeaseError) as exc:
-                self._drop_lease(binding.room_id)
-                with self._status_lock:
-                    self._blocked_rooms.discard(binding.room_id)
-                self._record_error(f"room {binding.room_id}: {exc}")
-            except Exception as exc:
-                self._record_error(f"room {binding.room_id}: {exc}")
+            room_thread = threading.Thread(
+                target=self._run_room_once,
+                args=(binding,),
+                name=f"hosted-room-{binding.room_id[:24]}",
+                daemon=True,
+            )
+            with self._status_lock:
+                self._room_threads[binding.room_id] = room_thread
+            active_rooms.add(binding.room_id)
+            available -= 1
+            room_thread.start()
+
+    def _run_room_once(self, binding: HostedRoomBinding) -> None:
+        try:
+            self._process_room(binding)
+        except state.LeaseHeldError:
+            return
+        except (state.RoomUnavailableError, state.StaleLeaseError) as exc:
+            self._drop_lease(binding.room_id)
+            with self._status_lock:
+                self._blocked_rooms.discard(binding.room_id)
+            self._record_error(f"room {binding.room_id}: {exc}")
+        except Exception as exc:
+            self._record_error(f"room {binding.room_id}: {exc}")
 
     def _process_room(self, binding: HostedRoomBinding) -> None:
         if self.prepare_room is not None:
@@ -825,7 +874,7 @@ class HostedRoomRuntime:
         attachment_staging_active = False
         attachment_session_id: str | None = None
         with self._status_lock:
-            self._current_task = attempt.identity
+            self._current_tasks[binding.room_id] = attempt.identity
         try:
             with self.turn_lock(profile):
                 session = self._resolve_or_create(
@@ -1080,7 +1129,7 @@ class HostedRoomRuntime:
                 self._settle_failure_if_current(attempt, exc)
         finally:
             with self._status_lock:
-                self._current_task = None
+                self._current_tasks.pop(binding.room_id, None)
 
     def _finish_attachment_staging_after_error(
         self,
