@@ -121,6 +121,39 @@ export async function prepareDesktopRoomAuthority() {
   }
 }
 
+/** Make an explicitly opened classic Group Chat controllable from messaging.
+ * A projected hash without the local token belongs to another Desktop and is
+ * never replaced. */
+export async function ensureDesktopRoomAuthority(group: string) {
+  const room = $groupChats.get()[group]
+
+  if (!room || groupChatHostedGateway(room) || room.tombstone) {
+    return false
+  }
+
+  if (room.desktopAuthorityHash && !room.desktopAuthorityToken) {
+    return false
+  }
+
+  const consumerId = await ensureDesktopRoomCommandConsumerId()
+  const sameOwner = String(room.desktopCoordinatorId || '') === consumerId
+  const token = sameOwner && room.desktopAuthorityToken ? room.desktopAuthorityToken : mintAuthorityToken()
+  const hash = await authorityHash(token)
+
+  if (!hash) {
+    return false
+  }
+
+  updateGroupChat(group, current => ({
+    ...current,
+    desktopAuthorityHash: hash,
+    desktopAuthorityToken: token,
+    desktopCoordinatorId: consumerId
+  }))
+
+  return true
+}
+
 function hasDesktopRoomExecutionEvidence(room: GroupChat) {
   return Object.keys(room?.sessions || {}).length > 0 || Object.keys(room?.sessionOwners || {}).length > 0
 }

@@ -49,6 +49,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
+import { ensureDesktopRoomAuthority } from './desktop-room-command-runtime'
 import {
   $groupActivity,
   currentGroupActivity,
@@ -646,6 +647,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const composerKey = groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
   const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
+
+  useEffect(() => {
+    if (visible && !groupChatHostedGateway(room) && !room.desktopAuthorityHash) {
+      void ensureDesktopRoomAuthority(group)
+    }
+  }, [group, room.desktopAuthorityHash, room.roomId, visible])
 
   if (composerKeyRef.current !== composerKey) {
     migrateGroupComposerDraft(composerKeyRef.current, composerKey)

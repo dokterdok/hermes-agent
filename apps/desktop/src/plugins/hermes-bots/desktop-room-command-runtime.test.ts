@@ -100,6 +100,13 @@ describe('classic Group Chat command runtime', () => {
     expect(loaded.chat.$groupChats.get().Silent.desktopCoordinatorId).toBeUndefined()
     expect(loaded.chat.$groupChats.get().Hosted.desktopCoordinatorId).toBeUndefined()
 
+    await expect(loaded.runtime.ensureDesktopRoomAuthority('Silent')).resolves.toBe(true)
+    expect(loaded.chat.$groupChats.get().Silent).toMatchObject({
+      desktopAuthorityHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      desktopAuthorityToken: expect.stringMatching(/^authority:/),
+      desktopCoordinatorId: expect.stringMatching(/^desktop:/)
+    })
+
     loaded.runtime.stopDesktopRoomCommandRuntime()
   })
 })
