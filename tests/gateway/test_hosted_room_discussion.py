@@ -62,6 +62,8 @@ def _append_user(
         event_id=event_id,
         kind="message.user",
         actor={"kind": "user", "id": "local-user"},
+        authority_gateway_id=GATEWAY_ID,
+        authority_epoch=1,
         payload={"text": text, "thread_id": thread_id},
         now=time.time(),
     )
@@ -198,6 +200,8 @@ def test_room_stop_fences_old_work_but_allows_a_later_message(room_db):
         db,
         room_id=ROOM_ID,
         cancel_id="user-stop-1",
+        expected_gateway_id=str(room["authority_gateway_id"]),
+        expected_epoch=int(room["authority_epoch"]),
     )
     decision = discussion.plan_next_task(
         room,

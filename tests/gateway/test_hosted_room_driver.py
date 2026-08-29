@@ -144,7 +144,13 @@ def test_nonexistent_and_disbanded_rooms_cannot_lease_or_admit(db):
     with pytest.raises(driver.RoomUnavailableError, match="does not exist"):
         _admit(db, missing, clock)
 
-    rooms.disband_room(db, room_id="room-1", now=clock())
+    rooms.disband_room(
+        db,
+        room_id="room-1",
+        expected_gateway_id="gateway-a",
+        expected_epoch=1,
+        now=clock(),
+    )
     with pytest.raises(driver.RoomUnavailableError, match="disbanded"):
         _lease(db, clock)
     with pytest.raises(driver.RoomUnavailableError, match="disbanded"):
@@ -254,7 +260,13 @@ def test_room_disband_fences_active_lease_operations(db):
     identity = _identity()
     lease = _lease(db, clock)
     _admit(db, identity, clock)
-    rooms.disband_room(db, room_id="room-1", now=clock())
+    rooms.disband_room(
+        db,
+        room_id="room-1",
+        expected_gateway_id="gateway-a",
+        expected_epoch=1,
+        now=clock(),
+    )
 
     with pytest.raises(driver.RoomUnavailableError, match="disbanded"):
         driver.renew_lease(db, lease, ttl_seconds=30, clock=clock)

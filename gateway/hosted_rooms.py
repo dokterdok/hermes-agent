@@ -1129,6 +1129,27 @@ def _connect(db_path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+def _read_connection(db_path: Path | str) -> sqlite3.Connection:
+    """Open the room store without steady-state journal or migration writes."""
+
+    path = Path(db_path)
+    if not path.is_file():
+        initialized = _connect(path)
+        initialized.close()
+    conn = sqlite3.connect(path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    if _schema_is_current(conn):
+        return conn
+    conn.close()
+    migrated = _connect(path)
+    migrated.close()
+    conn = sqlite3.connect(path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
 @contextmanager
 def _transaction(
     db_path: Path | str, *, immediate: bool = False
@@ -1551,7 +1572,7 @@ def list_rooms(
     limit: int = MAX_ROOM_LIST_LIMIT,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    """Return one bounded page of rooms ordered by most recent change."""
+    """Return one bounded read-only page ordered by most recent change."""
     if (
         isinstance(limit, bool)
         or not isinstance(limit, int)
@@ -1560,8 +1581,8 @@ def list_rooms(
         raise HostedRoomError(f"limit must be between 1 and {MAX_ROOM_LIST_LIMIT}")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise HostedRoomError("offset must be a non-negative integer")
-    with _transaction(db_path, immediate=True) as conn:
-        _prune_disbanded_rooms_locked(conn, now=None)
+    conn = _read_connection(db_path)
+    try:
         rows = conn.execute(
             """SELECT room_id, name, members_json, authority_gateway_id,
                       authority_epoch, next_seq, revision, created_at, updated_at,
@@ -1572,6 +1593,8 @@ def list_rooms(
                LIMIT ? OFFSET ?""",
             (int(include_disbanded), limit, offset),
         ).fetchall()
+    finally:
+        conn.close()
     return [_room_from_row(row) for row in rows]
 
 
@@ -1867,6 +1890,8 @@ def request_room_stop(
     *,
     room_id: Any,
     cancel_id: Any,
+    expected_gateway_id: Any,
+    expected_epoch: Any,
 ) -> dict[str, Any]:
     """Append an idempotent fence that supersedes earlier user turns."""
 
@@ -1875,17 +1900,16 @@ def request_room_stop(
         label="cancel_id",
         max_chars=MAX_EVENT_ID_CHARS,
     )
-    room = room_state(db_path, room_id=room_id)
     digest = hashlib.sha256(cancel_id.encode()).hexdigest()[:32]
     return append_event(
         db_path,
-        room_id=room["room_id"],
+        room_id=room_id,
         event_id=f"room-stop:{digest}",
         kind="room.stop_requested",
-        actor={"kind": "gateway", "id": room["authority_gateway_id"]},
+        actor={"kind": "gateway", "id": expected_gateway_id},
         payload={"cancel_id": cancel_id},
-        authority_gateway_id=room["authority_gateway_id"],
-        authority_epoch=room["authority_epoch"],
+        authority_gateway_id=expected_gateway_id,
+        authority_epoch=expected_epoch,
     )
 
 

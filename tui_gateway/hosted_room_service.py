@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import threading
 import time
 from collections import Counter
@@ -34,6 +35,21 @@ from tui_gateway.hosted_room_peer_transport import (
     PeerHostedRoomTransport,
     PeerMemberRoute,
 )
+
+
+_HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
+_HOSTED_ROOM_ACTIVE_POLL_SECONDS = 0.25
+_HOSTED_ROOM_TERMINAL_GRACE_SECONDS = 30.0
+
+
+def _hosted_room_turn_timeout_seconds() -> float:
+    try:
+        agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "1800"))
+    except (TypeError, ValueError):
+        agent_timeout = 1800.0
+    if agent_timeout <= 0:
+        agent_timeout = 1800.0
+    return agent_timeout + _HOSTED_ROOM_TERMINAL_GRACE_SECONDS
 
 
 class HostedRoomService:
@@ -114,6 +130,9 @@ class HostedRoomService:
             prepare_room=self.prepare_room,
             publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
+            poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
+            active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
+            turn_timeout_seconds=_hosted_room_turn_timeout_seconds(),
         )
 
     @property
@@ -130,6 +149,7 @@ class HostedRoomService:
         return tuple(sorted(profiles))
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
+        local_gateway_id = hosted_rooms.local_authority_gateway_id()
         return tuple(
             HostedRoomBinding(
                 room_id=str(room["room_id"]),
@@ -137,7 +157,18 @@ class HostedRoomService:
                 authority_epoch=int(room["authority_epoch"]),
             )
             for room in hosted_rooms.list_rooms(self.db_path)
+            if str(room["authority_gateway_id"]) == local_gateway_id
         )
+
+    def _owned_room(self, room_id: str) -> dict[str, Any]:
+        room = hosted_rooms.room_state(self.db_path, room_id=room_id)
+        if str(room["authority_gateway_id"]) != (
+            hosted_rooms.local_authority_gateway_id()
+        ):
+            raise hosted_rooms.AuthorityConflictError(
+                "This Group Chat is managed by another gateway."
+            )
+        return room
 
     @contextlib.contextmanager
     def _turn_lock(self, profile: str) -> Iterator[None]:
@@ -656,7 +687,7 @@ class HostedRoomService:
         payload: Any,
     ) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
-        room = hosted_rooms.room_state(self.db_path, room_id=room_id)
+        room = self._owned_room(room_id)
         event = hosted_rooms.append_event(
             self.db_path,
             room_id=room_id,
@@ -688,10 +719,13 @@ class HostedRoomService:
         cancel_id: str,
         require_acknowledged: bool = False,
     ) -> int:
+        room = self._owned_room(room_id)
         hosted_rooms.request_room_stop(
             self.db_path,
             room_id=room_id,
             cancel_id=cancel_id,
+            expected_gateway_id=str(room["authority_gateway_id"]),
+            expected_epoch=int(room["authority_epoch"]),
         )
         cancelled = 0
         pending = 0

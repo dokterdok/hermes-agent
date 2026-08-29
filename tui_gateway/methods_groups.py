@@ -593,6 +593,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Permanently tombstone a hosted room id."""
     from gateway.hosted_rooms import (
+        AuthorityConflictError,
         HostedRoomError,
         RoomHistoryExpiredError,
         disband_room,
@@ -606,13 +607,18 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4123, _WORKER_UNAVAILABLE)
 
         def disband_with_state(state: dict | None = None) -> dict:
+            local_gateway_id = local_authority_gateway_id()
+            if state is not None and (
+                str(state["authority_gateway_id"]) != local_gateway_id
+            ):
+                raise AuthorityConflictError(
+                    "This Group Chat is managed by another gateway."
+                )
             return disband_room(
                 service.db_path,
                 room_id=params.get("room_id"),
                 expected_gateway_id=str(
-                    state["authority_gateway_id"]
-                    if state is not None
-                    else local_authority_gateway_id()
+                    local_gateway_id
                 ),
                 expected_epoch=int(
                     state["authority_epoch"] if state is not None else 1
