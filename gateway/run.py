@@ -17487,6 +17487,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "bg": self._handle_background_command,
             "btw": self._handle_btw_command,
             "kanban": self._handle_kanban_command,
+            "group": self._handle_rooms_command,
             "subgoal": self._handle_subgoal_command,
             "heartbeat": self._handle_heartbeat_command,
             "busy": self._handle_busy_command,
@@ -18792,6 +18793,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "personality":
             return await self._handle_personality_command(event)
+
+        if canonical == "kanban":
+            return await self._handle_kanban_command(event)
+
+        if canonical == "group":
+            return await self._handle_rooms_command(event)
 
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)

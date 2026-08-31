@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -15,6 +16,7 @@ from types import ModuleType
 from typing import Any
 
 from gateway import hosted_room_discussion as discussion
+from gateway import hosted_room_controls
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
 from gateway import hosted_rooms
@@ -35,6 +37,9 @@ from tui_gateway.hosted_room_peer_transport import (
     PeerHostedRoomTransport,
     PeerMemberRoute,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
@@ -137,6 +142,7 @@ class HostedRoomService:
             transport_resolver=self._resolve_member_transport,
             turn_lock=self._turn_lock,
             prepare_room=self.prepare_room,
+            prepare_leased_room=self._apply_pending_control_retries,
             publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
@@ -699,6 +705,73 @@ class HostedRoomService:
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 
+    def _apply_pending_control_retries(
+        self,
+        binding: HostedRoomBinding,
+        lease: driver.DriverLease,
+    ) -> None:
+        """Apply cross-process Retry commands under this worker's active lease."""
+
+        pending = hosted_room_controls.load_pending_control_retries(
+            self.db_path,
+            room_id=binding.room_id,
+        )
+        if not pending:
+            return
+        room = hosted_rooms.room_state(self.db_path, room_id=binding.room_id)
+        stopped_through_seq = self._policy_snapshot(room).stopped_through_seq
+        tasks = {
+            task["identity"].task_id: task
+            for task in driver.list_tasks(self.db_path, room_id=binding.room_id)
+        }
+        for command in pending:
+            try:
+                for task_id in command.task_ids:
+                    task = tasks.get(task_id)
+                    if task is None:
+                        continue
+                    status = str(task.get("status") or "")
+                    if status in driver.TERMINAL_STATUSES or status == "stopping":
+                        continue
+                    source_event_seq = int(
+                        (task.get("payload") or {}).get("source_event_seq") or 0
+                    )
+                    if source_event_seq < stopped_through_seq:
+                        self.runtime.cancel(
+                            task["identity"],
+                            cancel_id=f"stop-fence:{stopped_through_seq}",
+                        )
+                        continue
+                    if status in {"deferred", "indeterminate"}:
+                        self.retry_room_task(
+                            binding.room_id,
+                            task_id=task_id,
+                            retry_id=hosted_room_controls.control_retry_attempt_id(
+                                command.command_id, task_id
+                            ),
+                        )
+                hosted_room_controls.complete_control_retry(
+                    self.db_path,
+                    command_id=command.command_id,
+                    result={
+                        "action": "retry",
+                        "processed": len(command.task_ids),
+                    },
+                    lease=lease,
+                    now=self.runtime.clock(),
+                )
+            except Exception as exc:
+                hosted_room_controls.defer_control_retry(
+                    self.db_path,
+                    command_id=command.command_id,
+                    now=self.runtime.clock(),
+                )
+                logger.warning(
+                    "Hosted room retry command %s remains pending: %s",
+                    command.command_id,
+                    exc,
+                )
+
     def publish_terminal(
         self,
         binding: HostedRoomBinding,
@@ -742,6 +815,23 @@ class HostedRoomService:
         event_id: str,
         payload: Any,
     ) -> dict[str, Any]:
+        return self.send_server_owned(
+            room_id=room_id,
+            event_id=event_id,
+            payload=payload,
+            actor={"kind": "user", "id": "desktop"},
+        )
+
+    def send_server_owned(
+        self,
+        *,
+        room_id: str,
+        event_id: str,
+        payload: Any,
+        actor: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Append a user event whose actor was derived by trusted gateway code."""
+
         normalized = discussion.validate_user_payload(payload)
         room = self._owned_room(room_id)
         event = hosted_rooms.append_event(
@@ -749,7 +839,7 @@ class HostedRoomService:
             room_id=room_id,
             event_id=event_id,
             kind="message.user",
-            actor={"kind": "user", "id": "desktop"},
+            actor=dict(actor),
             payload=normalized,
             authority_gateway_id=str(room["authority_gateway_id"]),
             authority_epoch=int(room["authority_epoch"]),
@@ -821,16 +911,19 @@ class HostedRoomService:
         self.runtime.wakeup()
         return cancelled
 
-    def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
+    def retry_room_task(
+        self,
+        room_id: str,
+        *,
+        task_id: str,
+        retry_id: str | None = None,
+    ) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
 
         task = next(
             (
                 candidate
-                for status in ("indeterminate", "deferred")
-                for candidate in driver.list_tasks(
-                    self.db_path, room_id=room_id, status=status
-                )
+                for candidate in driver.list_tasks(self.db_path, room_id=room_id)
                 if candidate["identity"].task_id == task_id
             ),
             None,
@@ -839,7 +932,18 @@ class HostedRoomService:
             raise driver.InvalidTaskTransitionError(
                 "no retryable room task matches task_id"
             )
-        return self.runtime.retry_indeterminate(task["identity"])
+        if retry_id and driver.retry_receipt_exists(
+            self.db_path,
+            room_id=room_id,
+            task_id=task_id,
+            retry_id=retry_id,
+        ):
+            return {**task, "idempotent": True}
+        if task["status"] not in {"indeterminate", "deferred"}:
+            raise driver.InvalidTaskTransitionError(
+                "no retryable room task matches task_id"
+            )
+        return self.runtime.retry_indeterminate(task["identity"], retry_id=retry_id)
 
     def approve_room_task(
         self,

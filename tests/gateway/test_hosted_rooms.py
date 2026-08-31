@@ -1107,6 +1107,66 @@ def test_policy_sync_cannot_recreate_projection_after_room_pruning(
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
 
+def test_terminal_retry_reconstructs_from_compacted_thread_transcript(tmp_path):
+    db = tmp_path / "state.db"
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="user-retry",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "retry me", "thread_id": "thread-1"},
+        now=11,
+    )
+    _append(
+        db,
+        room_id="room-1",
+        event_id="deferred-1",
+        kind="turn.deferred",
+        actor={"kind": "gateway", "id": "gateway-a"},
+        payload={
+            "discussion_event_id": "user-retry",
+            "execution_generation": 1,
+            "member_id": "bot-1",
+            "seen_through_seq": 1,
+            "task_id": "task-retry",
+            "thread_id": "thread-1",
+        },
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+        now=12,
+    )
+    _append(
+        db,
+        room_id="room-1",
+        event_id="activity-1",
+        kind="room.activity",
+        actor={"kind": "gateway", "id": "gateway-a"},
+        payload={
+            "discussion_event_id": "user-retry",
+            "reason_code": "silent_round",
+            "status": "settled",
+            "thread_id": "thread-1",
+        },
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+        now=13,
+    )
+    checkpoint = HostedRoomPolicyCheckpoint(db)
+    checkpoint.sync(room_id="room-1", latest_seq=3)
+
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) FROM hosted_room_policy_events
+               WHERE room_id='room-1'"""
+        ).fetchone()[0] == 0
+    events = checkpoint.events_for_task(room_id="room-1", source_event_seq=1)
+    assert [(event["seq"], event["kind"]) for event in events] == [
+        (1, "message.user")
+    ]
+
+
 def test_pre_actor_draft_database_migrates_with_explicit_legacy_identity(tmp_path):
     db = tmp_path / "state.db"
     _create_pre_actor_database(db)

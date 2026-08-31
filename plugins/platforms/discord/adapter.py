@@ -6431,6 +6431,8 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             chat_topic=chat_topic,
         )
+        source.is_one_to_one = is_dm
+        source.message_is_edit = False
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
@@ -8299,6 +8301,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
+        source.is_one_to_one = isinstance(message.channel, discord.DMChannel)
+        source.message_is_edit = getattr(message, "edited_at", None) is not None
 
         # Build media URLs -- download image attachments to local cache so the
         # vision tool can access them reliably (Discord CDN URLs can expire).
