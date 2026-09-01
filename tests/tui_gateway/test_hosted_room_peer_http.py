@@ -862,6 +862,60 @@ def test_ambiguous_admission_malformed_replay_keeps_recovery_backoff(tmp_path):
     assert len(requests) == 2
 
 
+def test_initial_missing_run_id_replays_once_then_backs_off(tmp_path):
+    now = [0.0]
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+        clock=lambda: now[0],
+    )
+    requests = []
+
+    def missing_run_id(path, **kwargs):
+        requests.append((path, kwargs))
+        return {}
+
+    client._request = missing_run_id
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+    assert len(requests) == 2
+    assert requests[0][1]["headers"] == requests[1][1]["headers"]
+    assert requests[0][1]["body"] == requests[1][1]["body"]
+
+    with pytest.raises(PeerRunsHTTPError, match="backing off"):
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("body", [b"not-json", b"[]"])
+def test_malformed_post_success_is_ambiguous(monkeypatch, body):
+    monkeypatch.setattr(
+        "hermes_cli.urllib_security.open_credentialed_url",
+        lambda *_args, **_kwargs: io.BytesIO(body),
+    )
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+    )
+
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client._request(
+            "/v1/runs",
+            method="POST",
+            body={},
+            room_grant="signed.room.grant",
+        )
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+
+
 def test_ambiguous_admission_recovery_is_bounded_and_backed_off(tmp_path):
     now = [0.0]
     client = PeerRunsHTTPClient(
