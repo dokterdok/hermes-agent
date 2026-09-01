@@ -74,6 +74,13 @@ class TestFormatMessageBasic:
         assert "\\." in result
         assert "\\!" in result
 
+    def test_preserves_explicitly_escaped_markdown(self, adapter):
+        source = r"\*literal\* \`deploy\_a\` \> \{prod\}"
+
+        result = adapter.format_message(source)
+
+        assert result.replace("\\", "") == "*literal* `deploy_a` > {prod}"
+
 
 # =========================================================================
 # format_message - code blocks

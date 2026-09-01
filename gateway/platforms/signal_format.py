@@ -41,6 +41,35 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
             parts[idx] = re.sub(r"(?m)^([ \t]{0,3})[-*+]\s+", r"\1• ", part)
         return "".join(parts)
 
+    def _protect_escaped_markdown(source: str) -> tuple[str, dict[str, str]]:
+        """Hide escaped Markdown punctuation from the style parser."""
+
+        escaped = re.compile(r"\\([\\`*_{}\[\]()#+.!|>~\-])")
+        matches = list(escaped.finditer(source))
+        if not matches:
+            return source, {}
+
+        replacement_by_char: dict[str, str] = {}
+        char_by_replacement: dict[str, str] = {}
+        candidate = 0xE000
+        for match in matches:
+            char = match.group(1)
+            if char in replacement_by_char:
+                continue
+            while chr(candidate) in source:
+                candidate += 1
+            replacement = chr(candidate)
+            candidate += 1
+            replacement_by_char[char] = replacement
+            char_by_replacement[replacement] = char
+
+        protected = escaped.sub(
+            lambda match: replacement_by_char[match.group(1)],
+            source,
+        )
+        return protected, char_by_replacement
+
+    text, escaped_markdown = _protect_escaped_markdown(text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = text.strip()
     text = _normalize_bullet_markers(text)
@@ -126,6 +155,9 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
         last_end = me
     result += text[last_end:]
     text = result
+
+    if escaped_markdown:
+        text = text.translate(str.maketrans(escaped_markdown))
 
     styles = adjusted_prior + inline_styles
 

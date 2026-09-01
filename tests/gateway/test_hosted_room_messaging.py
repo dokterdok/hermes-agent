@@ -1347,7 +1347,7 @@ def test_group_detail_escapes_untrusted_markup(tmp_path):
         authority_epoch=1,
         payload={
             "member_id": "ops",
-            "text": "*not a command*",
+            "text": "*not a command* `deploy_a` > {prod} @ops",
             "thread_id": "thread-markup",
         },
     )
@@ -1361,8 +1361,10 @@ def test_group_detail_escapes_untrusted_markup(tmp_path):
 
     assert "💬 **Admin**" in detail
     assert "• System (`@ops`)" in detail
-    assert "not a command" in detail
-    assert "*not a command*" not in detail
+    assert (
+        r"\*not a command\* \`deploy\_a\` \> \{prod\} ＠ops"
+        in detail
+    )
     assert room_choices[0]["label"] == "🟢 1. Admin (2)"
     assert bot_choices[1]["label"] == "🤖 System · ops"
     unsafe_room = {**room, "name": "@room [Docs](https://invalid.example)"}
@@ -1382,6 +1384,8 @@ def test_group_detail_escapes_untrusted_markup(tmp_path):
     for rendered in (telegram, whatsapp, signal):
         assert "**Admin**" not in rendered
         assert r"\*\*Admin" not in rendered
+        literal = rendered.replace("\\", "")
+        assert "*not a command* `deploy_a` > {prod} ＠ops" in literal
 
 
 def test_bot_controls_preserve_valid_colon_handles_without_collision(tmp_path):
@@ -1428,6 +1432,19 @@ def test_bot_controls_preserve_valid_colon_handles_without_collision(tmp_path):
     )
     collision_choices = room_bot_picker_choices(service, collision_room)
     assert len({choice["value"] for choice in collision_choices}) == 2
+
+
+def test_duplicate_bot_picker_tokens_fail_closed(tmp_path, monkeypatch):
+    db, release, _ = _seed_rooms(tmp_path)
+    service = _FakeService(db)
+    monkeypatch.setattr(
+        hosted_room_messaging,
+        "_room_member_picker_value",
+        lambda *_args: "p=duplicate",
+    )
+
+    with pytest.raises(RoomControlError, match="No Bot"):
+        format_room_bot_detail(service, release, "p=duplicate")
 
 
 def test_group_detail_never_invents_a_missing_bot_handle(tmp_path):

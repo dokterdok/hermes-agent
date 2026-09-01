@@ -110,6 +110,14 @@ class TestFormatMessage:
         # Already-WhatsApp _italic_ passes through unchanged
         assert adapter.format_message("_italic_") == "_italic_"
 
+    def test_preserves_explicitly_escaped_markdown(self):
+        adapter = _make_adapter()
+        source = r"\*literal\* \`deploy\_a\` \> \{prod\}"
+
+        result = adapter.format_message(source)
+
+        assert result.replace("\\", "") == "*literal* `deploy_a` > {prod}"
+
 
 # ---------------------------------------------------------------------------
 # MAX_MESSAGE_LENGTH tests

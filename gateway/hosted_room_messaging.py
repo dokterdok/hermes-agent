@@ -1085,6 +1085,14 @@ def _plain_display_label(value: Any, *, limit: int = MAX_PREVIEW_CHARS) -> str:
     return text.replace("@", "＠") or "Unnamed"
 
 
+def _plain_preview_text(value: Any, *, limit: int = MAX_PREVIEW_CHARS) -> str:
+    """Escape rich markup without deleting message content or pinging users."""
+
+    text = _clean_line(value, limit=limit).replace("@", "＠")
+    text = text.replace("\\", "\\\\")
+    return re.sub(r"([`*_{}\[\]#|>~])", r"\\\1", text)
+
+
 def parse_room_command(args: str, *, command_root: str = "/group") -> RoomCommand:
     """Parse the number-first send/retry/stop grammar used by messaging clients."""
 
@@ -1448,7 +1456,7 @@ def format_room_detail(
                 text = payload.get("text")
             lines.append(
                 f"• **{_plain_display_label(label, limit=48)}:** "
-                f"{_plain_display_label(text)}"
+                f"{_plain_preview_text(text)}"
             )
     else:
         lines.extend(["", "No messages yet."])

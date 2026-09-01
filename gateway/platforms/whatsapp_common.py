@@ -437,6 +437,21 @@ class WhatsAppBehaviorMixin:
 
         content = self._sanitize_outbound_text(content)
 
+        # Keep explicitly escaped Markdown literal while the WhatsApp markup
+        # conversions run. The original escape is restored for the client.
+        _ESCAPED_PH = "\x00ESCAPED"
+        escaped_markdown: list[str] = []
+
+        def _save_escaped_markdown(match: re.Match) -> str:
+            escaped_markdown.append(match.group(0))
+            return f"{_ESCAPED_PH}{len(escaped_markdown) - 1}\x00"
+
+        content = re.sub(
+            r"\\([*_{}\[\]()#+.!|>~\-])",
+            _save_escaped_markdown,
+            content,
+        )
+
         # --- 1. Protect fenced code blocks from formatting changes ---
         _FENCE_PH = "\x00FENCE"
         fences: list[str] = []
@@ -495,6 +510,8 @@ class WhatsAppBehaviorMixin:
             result = result.replace(f"{_FENCE_PH}{i}\x00", fence)
         for i, code in enumerate(codes):
             result = result.replace(f"{_CODE_PH}{i}\x00", code)
+        for i, escaped in enumerate(escaped_markdown):
+            result = result.replace(f"{_ESCAPED_PH}{i}\x00", escaped)
 
         return result
 
