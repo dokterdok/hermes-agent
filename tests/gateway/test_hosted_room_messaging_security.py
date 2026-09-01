@@ -116,7 +116,7 @@ async def test_mutating_group_chat_commands_have_a_per_sender_rate_limit(
     monkeypatch.setattr(
         "gateway.hosted_room_messaging.current_room_backend", lambda: service
     )
-    monkeypatch.setattr("gateway.slash_commands._GROUP_CHAT_MUTATION_RATE_LIMIT", 2)
+    monkeypatch.setattr("gateway.group_chat_slash._GROUP_CHAT_MUTATION_RATE_LIMIT", 2)
 
     first = await runner._handle_rooms_command(
         _event("/group 1 send first", message_id="rate-1")
