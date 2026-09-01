@@ -75,7 +75,12 @@ vi.mock('./group-chat', async () => {
     $groupChats: nanoAtom({}),
     $groupChatWorkspace: nanoAtom(null),
     assignLegacyThreads: (log: unknown[]) => log,
+    boundedDesktopCommandSettled: (value: unknown) => value || {},
+    durableHostedAttention: (value: Record<string, unknown> | null) =>
+      Number(value?.attentionSourceSeq || 0) > 0 ? value : null,
+    groupChatHostedGateway: (room: Record<string, unknown>) => room?.hosted || null,
     handleSessionsGatewayTransition: vi.fn(),
+    mintGroupRoomId: () => 'room-test',
     pullGroupChatServerState: async () => false,
     scheduleGroupChatServerSync: vi.fn(),
     setGroupChatSyncDisposed: vi.fn(),
@@ -188,6 +193,47 @@ describe('the Bots pane dock', () => {
 })
 
 describe('hosted Group Chat startup', () => {
+  it('hydrates the durable attention marker with fresh localized copy', async () => {
+    paneStores()
+    const chat = await import('./group-chat')
+    chat.$groupChats.set({})
+    const harness = recordingContext(async key =>
+      key === 'group-chats'
+        ? {
+            Release: {
+              hostedAttachmentReplayCursor: 123,
+              hostedAttachmentReplayVersion: 1,
+              hostedAttention: {
+                attentionSourceSeq: 1,
+                member: 'Builder',
+                reasonCode: 'provider_auth_or_access'
+              },
+              log: [],
+              watermarks: {}
+            }
+          }
+        : undefined
+    )
+
+    plugin.register(harness.ctx)
+    await settle()
+
+    expect(chat.$groupChats.get().Release.hostedStatus).toMatchObject({
+      attentionSourceSeq: 1,
+      reasonCode: 'provider_auth_or_access',
+      state: 'needs-attention'
+    })
+    expect(chat.$groupChats.get().Release.hostedAttachmentReplayVersion).toBe(1)
+    expect(chat.$groupChats.get().Release.hostedAttachmentReplayCursor).toBe(123)
+    expect(chat.$groupChats.get().Release.hostedStatus?.label).not.toBe('stale localized copy')
+    expect(chat.$groupChats.get().Release.hostedAttention).toEqual({
+      attentionSourceSeq: 1,
+      member: 'Builder',
+      reasonCode: 'provider_auth_or_access'
+    })
+    harness.dispose()
+  })
+
   it('does not probe or replay hosted rooms before local Group Chat hydration settles', async () => {
     paneStores()
     let releaseRooms: (value: unknown) => void = () => undefined

@@ -51,6 +51,7 @@ function room(overrides: Partial<GroupChat> = {}): GroupChat {
     hostedEpoch: 1,
     hostedConnectionId: 'gateway-a',
     hostedSeq: 0,
+    hostedAttachmentReplayVersion: 1,
     continuityMode: 'gateway',
     ...overrides
   }
@@ -165,6 +166,289 @@ afterEach(() => {
 })
 
 describe('hosted Group Chat runtime', () => {
+  it('reads a history-bound attachment through the authority route', async () => {
+    const runtime = await loadRuntime((method, params) => {
+      if (method !== 'groups.attachment.read') {
+        return {}
+      }
+
+      return {
+        attachment: {
+          attachment_id: params.attachment_id,
+          event_id: params.event_id,
+          kind: 'file',
+          mime: 'text/markdown',
+          name: 'launch.md',
+          size: 12
+        },
+        content_base64: 'IyBMYXVuY2gK'
+      }
+    })
+    runtime.chat.$groupChats.set({ Release: room() })
+
+    await expect(
+      runtime.runtime.readHostedGroupChatAttachment('Release', {
+        attachmentId: 'att_00000000000000000000000000000001',
+        eventId: 'message-1',
+        kind: 'file',
+        mime: 'text/markdown',
+        name: 'launch.md',
+        size: 12
+      })
+    ).resolves.toEqual({
+      contentBase64: 'IyBMYXVuY2gK',
+      mime: 'text/markdown',
+      name: 'launch.md',
+      size: 12
+    })
+    expect(runtime.calls).toContainEqual({
+      connectionId: 'gateway-a',
+      method: 'groups.attachment.read',
+      params: {
+        room_id: 'room-1',
+        attachment_id: 'att_00000000000000000000000000000001',
+        event_id: 'message-1',
+        purpose: 'viewer'
+      }
+    })
+  })
+
+  it('retains a discussion-bound attention marker across a terminal-only poll', async () => {
+    const loaded = await loadRuntime(method => {
+      if (method === 'groups.capabilities') {
+        return {
+          driver: true,
+          persistent_process: true,
+          authority_gateway_id: 'install:home',
+          max_log_limit: 100
+        }
+      }
+      if (method === 'groups.list') {
+        return {
+          rooms: [
+            {
+              room_id: 'room-1',
+              name: 'Release',
+              members: MEMBERS,
+              authority_gateway_id: 'install:home',
+              authority_epoch: 1,
+              latest_seq: 3,
+              revision: 1,
+              disbanded_at: null
+            }
+          ]
+        }
+      }
+      if (method === 'groups.state') {
+        return {
+          room: {
+            room_id: 'room-1',
+            name: 'Release',
+            members: MEMBERS,
+            authority_gateway_id: 'install:home',
+            authority_epoch: 1,
+            latest_seq: 3,
+            revision: 1,
+            disbanded_at: null
+          },
+          driver_status: { working: false }
+        }
+      }
+      if (method === 'groups.log') {
+        return {
+          events: [
+            hostedEvent(3, 'activity-1', 'room.activity', {
+              discussion_event_id: 'user-1',
+              reason_code: 'silent_round',
+              status: 'settled',
+              thread_id: 'thread-1'
+            })
+          ],
+          has_more: false,
+          latest_seq: 3
+        }
+      }
+      throw new Error(`unexpected method: ${method}`)
+    })
+    loaded.chat.$groupChats.set({
+      Release: room({
+        hostedAttention: {
+          attentionSourceSeq: 1,
+          member: 'Builder',
+          reasonCode: 'provider_auth_or_access'
+        },
+        hostedSeq: 2,
+        hostedStatus: {
+          attentionSourceSeq: 1,
+          label: 'Builder needs your attention.',
+          member: 'Builder',
+          reasonCode: 'provider_auth_or_access',
+          state: 'needs-attention'
+        },
+        log: [
+          {
+            at: 1,
+            eventId: 'user-1',
+            from: { kind: 'user', name: 'You' },
+            id: 'user-1',
+            seq: 1,
+            text: '@builder work',
+            thread: 'thread-1'
+          }
+        ]
+      })
+    })
+
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+
+    expect(loaded.chat.$groupChats.get().Release.hostedStatus).toMatchObject({
+      attentionSourceSeq: 1,
+      member: 'Builder',
+      reasonCode: 'provider_auth_or_access',
+      state: 'needs-attention'
+    })
+    expect(loaded.chat.$groupChats.get().Release.hostedAttention).toEqual({
+      attentionSourceSeq: 1,
+      member: 'Builder',
+      reasonCode: 'provider_auth_or_access'
+    })
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
+  it('replays once from zero to backfill attachment refs dropped by older Desktop builds', async () => {
+    let sinceSeq = -1
+    const loaded = await loadRuntime((method, params) => {
+      if (method === 'groups.capabilities') {
+        return {
+          driver: true,
+          persistent_process: true,
+          authority_gateway_id: 'install:home',
+          max_log_limit: 100
+        }
+      }
+      if (method === 'groups.list') {
+        return {
+          rooms: [
+            {
+              room_id: 'room-1',
+              name: 'Release',
+              members: MEMBERS,
+              authority_gateway_id: 'install:home',
+              authority_epoch: 1,
+              latest_seq: 1,
+              revision: 1,
+              disbanded_at: null
+            }
+          ]
+        }
+      }
+      if (method === 'groups.state') {
+        return {
+          room: {
+            room_id: 'room-1',
+            name: 'Release',
+            members: MEMBERS,
+            authority_gateway_id: 'install:home',
+            authority_epoch: 1,
+            latest_seq: 1,
+            revision: 1,
+            disbanded_at: null
+          },
+          driver_status: { working: false }
+        }
+      }
+      if (method === 'groups.log') {
+        sinceSeq = Number(params.since_seq)
+
+        return {
+          events: [
+            hostedEvent(
+              1,
+              'message-1',
+              'message.member',
+              {
+                attachments: [
+                  {
+                    attachment_id: 'att_00000000000000000000000000000001',
+                    kind: 'file',
+                    mime: 'text/markdown',
+                    name: 'launch.md',
+                    size: 9
+                  }
+                ],
+                text: 'Final artifact attached.',
+                thread_id: 'thread-1'
+              },
+              { kind: 'member', id: 'builder', display_name: 'Builder' }
+            )
+          ],
+          has_more: false,
+          latest_seq: 1
+        }
+      }
+      throw new Error(`unexpected method: ${method}`)
+    })
+    loaded.chat.$groupChats.set({
+      Release: room({
+        hostedAttachmentReplayVersion: 0,
+        hostedSeq: 1,
+        log: [
+          {
+            at: 1,
+            eventId: 'message-1',
+            from: { kind: 'member', name: 'Builder' },
+            id: 'message-1',
+            seq: 1,
+            text: 'Final artifact attached.',
+            thread: 'thread-1'
+          }
+        ]
+      })
+    })
+
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+
+    expect(sinceSeq).toBe(0)
+    expect(loaded.chat.$groupChats.get().Release).toMatchObject({
+      hostedAttachmentReplayVersion: 1,
+      hostedSeq: 1,
+      log: [
+        expect.objectContaining({
+          hostedAttachments: [
+            expect.objectContaining({
+              attachmentId: 'att_00000000000000000000000000000001',
+              name: 'launch.md'
+            })
+          ]
+        })
+      ]
+    })
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
+  it('resumes a bounded attachment backfill without rewinding the live cursor', async () => {
+    const loaded = await loadRuntime(() => ({}))
+
+    expect(
+      loaded.runtime.hostedRoomReplayStartCursor(
+        room({
+          hostedAttachmentReplayCursor: 2_000,
+          hostedAttachmentReplayVersion: 0,
+          hostedSeq: 50_000
+        })
+      )
+    ).toBe(2_000)
+    expect(
+      loaded.runtime.hostedRoomReplayStartCursor(
+        room({
+          hostedAttachmentReplayCursor: 2_000,
+          hostedAttachmentReplayVersion: 1,
+          hostedSeq: 50_000
+        })
+      )
+    ).toBe(50_000)
+  })
+
   it('hydrates after local state, reconciles optimistic ids, and replays one contiguous gateway log', async () => {
     const events = [
       hostedEvent(1, 'created-1', 'room.created', {

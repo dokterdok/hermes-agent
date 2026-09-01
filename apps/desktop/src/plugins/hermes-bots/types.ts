@@ -128,6 +128,15 @@ export interface Attachment {
   name: string
 }
 
+export interface HostedAttachmentRef {
+  attachmentId: string
+  eventId: string
+  kind: AttachmentKind
+  mime: string
+  name: string
+  size: number
+}
+
 export interface GroupMessageAuthor {
   kind: 'member' | 'user'
   name: string
@@ -143,6 +152,7 @@ export interface GroupMessage {
   /** True for an idempotent message accepted through a messaging bridge. */
   external?: boolean
   from: GroupMessageAuthor
+  hostedAttachments?: HostedAttachmentRef[]
   id?: string
   images?: Attachment[]
   /** Monotonic gateway order for hosted-room events. */
@@ -155,6 +165,12 @@ export interface GroupMessage {
 export interface GroupHold {
   at?: number
   noted?: boolean
+}
+
+export interface HostedAttentionMarker {
+  attentionSourceSeq: number
+  member?: string
+  reasonCode: string
 }
 
 export interface GroupChat {
@@ -185,11 +201,20 @@ export interface GroupChat {
   hostedEpoch?: null | number
   /** Last contiguous hosted-room event sequence applied locally. */
   hostedSeq?: number
+  /** One-time Desktop replay migration for hosted attachment references. */
+  hostedAttachmentReplayVersion?: number
+  /** Bounded progress when that one-time replay spans multiple polls. */
+  hostedAttachmentReplayCursor?: number
+  /** Durable user-action marker, independent from transient connection state. */
+  hostedAttention?: HostedAttentionMarker | null
   hostedStatus?: null | {
+    attentionSourceSeq?: number
     canReconnect?: boolean
     canRetry?: boolean
     canStop?: boolean
     label: string
+    member?: string
+    reasonCode?: string
     reconnectMemberId?: string
     state: string
     taskId?: string

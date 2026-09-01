@@ -285,6 +285,80 @@ describe('hosted Group Chat replay', () => {
     expect(replayed.messages[0].at).toBe(seconds * 1000)
   })
 
+  it('keeps bounded attachment references without persisting file bytes', () => {
+    const replayed = reduceHostedRoomEvents(createHostedRoomReplayState({ roomId: 'room-1' }), [
+      event(1, 'message-1', 'message.member', {
+        text: 'Final artifact attached.',
+        attachments: [
+          {
+            attachment_id: 'att_00000000000000000000000000000001',
+            kind: 'file',
+            mime: 'text/markdown',
+            name: 'launch.md',
+            content_base64: 'must-not-survive',
+            size: 2040
+          }
+        ]
+      })
+    ])
+
+    expect(replayed.messages[0].attachments).toEqual([
+      {
+        attachmentId: 'att_00000000000000000000000000000001',
+        eventId: 'message-1',
+        kind: 'file',
+        mime: 'text/markdown',
+        name: 'launch.md',
+        size: 2040
+      }
+    ])
+    expect(JSON.stringify(replayed.messages)).not.toContain('must-not-survive')
+  })
+
+  it('rejects attachment references beyond the gateway count and byte bounds', () => {
+    const oversized = reduceHostedRoomEvents(createHostedRoomReplayState({ roomId: 'room-1' }), [
+      event(1, 'message-1', 'message.member', {
+        attachments: Array.from({ length: 9 }, (_, index) => ({
+          attachment_id: `att_${index.toString(16).padStart(32, '0')}`,
+          kind: 'file',
+          mime: 'application/octet-stream',
+          name: `${index}.bin`,
+          size: 1
+        }))
+      })
+    ])
+    const tooLarge = reduceHostedRoomEvents(createHostedRoomReplayState({ roomId: 'room-1' }), [
+      event(1, 'message-2', 'message.member', {
+        attachments: [
+          {
+            attachment_id: 'att_ffffffffffffffffffffffffffffffff',
+            kind: 'file',
+            mime: 'application/octet-stream',
+            name: 'large.bin',
+            size: 15_000_001
+          }
+        ]
+      })
+    ])
+    const badMetadata = reduceHostedRoomEvents(createHostedRoomReplayState({ roomId: 'room-1' }), [
+      event(1, 'message-3', 'message.member', {
+        attachments: [
+          {
+            attachment_id: 'not-an-attachment-id',
+            kind: 'file',
+            mime: 'application/octet-stream',
+            name: `${'x'.repeat(256)}.bin`,
+            size: 1
+          }
+        ]
+      })
+    ])
+
+    expect(oversized.messages[0].attachments).toEqual([])
+    expect(tooLarge.messages[0].attachments).toEqual([])
+    expect(badMetadata.messages[0].attachments).toEqual([])
+  })
+
   it('orders, deduplicates, and advances across unknown event kinds without applying them', () => {
     const initial = createHostedRoomReplayState({
       roomId: 'room-1',
@@ -409,6 +483,95 @@ describe('hosted Group Chat replay', () => {
       reasonCode: 'provider_auth_or_access'
     })
     expect(JSON.stringify(friendly)).not.toContain('secret upstream payload')
+  })
+
+  it('keeps a current-turn failure visible after the terminal room activity', () => {
+    const state = reduceHostedRoomEvents(createHostedRoomReplayState({ roomId: 'room-1', connectionId: 'gateway-a' }), [
+      event(1, 'user-1', 'message.user', { text: '@builder work', thread_id: 'thread-1' }),
+      event(2, 'failed-1', 'turn.failed', {
+        member_display_name: 'Builder',
+        reason_code: 'provider_auth_or_access'
+      }),
+      event(3, 'activity-1', 'room.activity', {
+        discussion_event_id: 'user-1',
+        reason_code: 'silent_round',
+        status: 'settled',
+        thread_id: 'thread-1'
+      })
+    ])
+
+    expect(deriveFriendlyHostedRoomStatus(state)).toMatchObject({
+      kind: 'needs-attention',
+      member: 'Builder',
+      reasonCode: 'provider_auth_or_access'
+    })
+  })
+
+  it('surfaces an unresolved mention until a later healthy user turn', () => {
+    const unresolved = reduceHostedRoomEvents(
+      createHostedRoomReplayState({ roomId: 'room-1', connectionId: 'gateway-a' }),
+      [
+        event(1, 'user-1', 'message.user', { text: '@typo work', thread_id: 'thread-1' }),
+        event(2, 'activity-1', 'room.activity', {
+          discussion_event_id: 'user-1',
+          reason_code: 'unresolved_mention',
+          status: 'settled',
+          thread_id: 'thread-1'
+        })
+      ]
+    )
+
+    expect(deriveFriendlyHostedRoomStatus(unresolved)).toMatchObject({
+      kind: 'needs-attention',
+      reasonCode: 'unresolved_mention'
+    })
+
+    const recovered = reduceHostedRoomEvents(unresolved, [
+      event(3, 'user-2', 'message.user', { text: '@builder work', thread_id: 'thread-2' }),
+      event(4, 'settled-2', 'turn.settled', { member_display_name: 'Builder' })
+    ])
+    expect(deriveFriendlyHostedRoomStatus(recovered).kind).toBe('ready')
+  })
+
+  it('does not let a delayed older-discussion failure override a newer turn', () => {
+    const state = reduceHostedRoomEvents(createHostedRoomReplayState({ roomId: 'room-1', connectionId: 'gateway-a' }), [
+      event(1, 'user-1', 'message.user', { text: '@builder first', thread_id: 'thread-1' }),
+      event(2, 'user-2', 'message.user', { text: '@builder second', thread_id: 'thread-2' }),
+      event(3, 'failed-1', 'turn.failed', {
+        discussion_event_id: 'user-1',
+        member_display_name: 'Builder',
+        reason_code: 'provider_auth_or_access'
+      }),
+      event(4, 'activity-1', 'room.activity', {
+        discussion_event_id: 'user-1',
+        reason_code: 'silent_round',
+        status: 'settled',
+        thread_id: 'thread-1'
+      }),
+      event(5, 'settled-2', 'turn.settled', {
+        discussion_event_id: 'user-2',
+        member_display_name: 'Builder'
+      })
+    ])
+
+    expect(deriveFriendlyHostedRoomStatus(state).kind).toBe('ready')
+  })
+
+  it('does not reclassify a delayed older failure through the fallback branch', () => {
+    const state = reduceHostedRoomEvents(
+      createHostedRoomReplayState({ roomId: 'room-1', connectionId: 'gateway-a' }),
+      [
+        event(1, 'user-1', 'message.user', { text: '@builder first', thread_id: 'thread-1' }),
+        event(2, 'user-2', 'message.user', { text: '@builder second', thread_id: 'thread-2' }),
+        event(3, 'failed-1', 'turn.failed', {
+          discussion_event_id: 'user-1',
+          member_display_name: 'Builder',
+          reason_code: 'provider_auth_or_access'
+        })
+      ]
+    )
+
+    expect(deriveFriendlyHostedRoomStatus(state).kind).toBe('ready')
   })
 })
 

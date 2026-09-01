@@ -18,6 +18,7 @@ import type {
   Attachment,
   GroupChat,
   GroupHold,
+  HostedAttentionMarker,
   GroupMember,
   GroupMessage,
   GroupMessageAuthor,
@@ -991,6 +992,34 @@ export function boundedDesktopCommandSettled(value: unknown, limit = 128) {
   )
 }
 
+const HOSTED_ATTENTION_REASONS = new Set([
+  'agent_blocked',
+  'missing_config',
+  'provider_auth_or_access',
+  'provider_quota_limit',
+  'unresolved_mention'
+])
+
+export function durableHostedAttention(value: unknown): HostedAttentionMarker | null {
+  const candidate = value && typeof value === 'object' ? (value as Record<string, unknown>) : null
+  const attentionSourceSeq = Math.max(0, Number(candidate?.attentionSourceSeq || 0))
+  const reasonCode = String(candidate?.reasonCode || '')
+
+  if (
+    (candidate?.state !== undefined && candidate.state !== 'needs-attention') ||
+    attentionSourceSeq < 1 ||
+    !HOSTED_ATTENTION_REASONS.has(reasonCode)
+  ) {
+    return null
+  }
+
+  return {
+    attentionSourceSeq,
+    member: String(candidate?.member || '').slice(0, 200),
+    reasonCode
+  }
+}
+
 export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupChats.get()) {
   const durable: Record<string, GroupChat> = {}
 
@@ -1029,6 +1058,9 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       hostedConnectionId:
         typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
       hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+      hostedAttachmentReplayVersion: Math.max(0, Math.min(1, Number(room.hostedAttachmentReplayVersion || 0))),
+      hostedAttachmentReplayCursor: Math.max(0, Number(room.hostedAttachmentReplayCursor || 0)),
+      hostedAttention: durableHostedAttention(room.hostedAttention || room.hostedStatus),
       continuityMode: groupChatContinuityMode(room),
       image: room.image || null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
@@ -1638,6 +1670,9 @@ export function updateGroupChat(
         hostedConnectionId:
           typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
         hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+        hostedAttachmentReplayVersion: Math.max(0, Math.min(1, Number(room.hostedAttachmentReplayVersion || 0))),
+        hostedAttachmentReplayCursor: Math.max(0, Number(room.hostedAttachmentReplayCursor || 0)),
+        hostedAttention: durableHostedAttention(room.hostedAttention || room.hostedStatus),
         continuityMode: groupChatContinuityMode(room),
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,

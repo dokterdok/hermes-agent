@@ -358,6 +358,54 @@ describe('durable projection', () => {
     expect(rooms.Legacy.roomId).toBeNull()
   })
 
+  it('persists only the bounded nonlocalized hosted attention marker', async () => {
+    const { chat } = await loadRoom()
+    const rooms = chat.durableGroupChatRooms({
+      Team: {
+        hostedAttachmentReplayCursor: 123,
+        hostedAttachmentReplayVersion: 1,
+        hostedStatus: {
+          attentionSourceSeq: 7,
+          label: 'Localized runtime copy',
+          member: 'Builder',
+          reasonCode: 'provider_auth_or_access',
+          state: 'needs-attention'
+        },
+        log: [],
+        watermarks: {}
+      },
+      Working: {
+        hostedStatus: { label: 'Working', state: 'working' },
+        log: [],
+        watermarks: {}
+      },
+      Offline: {
+        hostedAttention: {
+          attentionSourceSeq: 7,
+          member: 'Builder',
+          reasonCode: 'provider_auth_or_access'
+        },
+        hostedStatus: { label: 'Offline', state: 'offline' },
+        log: [],
+        watermarks: {}
+      }
+    })
+
+    expect(rooms.Team.hostedAttention).toEqual({
+      attentionSourceSeq: 7,
+      member: 'Builder',
+      reasonCode: 'provider_auth_or_access'
+    })
+    expect(rooms.Team.hostedAttachmentReplayVersion).toBe(1)
+    expect(rooms.Team.hostedAttachmentReplayCursor).toBe(123)
+    expect(rooms.Working.hostedAttention).toBeNull()
+    expect(rooms.Offline.hostedAttention).toEqual({
+      attentionSourceSeq: 7,
+      member: 'Builder',
+      reasonCode: 'provider_auth_or_access'
+    })
+  })
+
   it('never persists a tombstone that a remote merge forwarded', async () => {
     const room = await loadRoom()
     // A drive still mid-turn at disband time leaves a live tombstone.

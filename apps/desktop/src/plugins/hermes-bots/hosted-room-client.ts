@@ -8,12 +8,19 @@
  * from React and the plugin lifecycle.
  */
 
-import type { GroupMember, GroupMessageAuthor } from './types'
+import type { GroupMember, GroupMessageAuthor, HostedAttachmentRef } from './types'
 
 const MIN_ROOM_MEMBERS = 2
 const MAX_ROOM_MEMBERS = 6
 const MAX_REPLAY_PAGE_SIZE = 500
 const MAX_REPLAY_PAGES = 100
+const MAX_ATTACHMENTS_PER_MESSAGE = 8
+const MAX_ATTACHMENT_BYTES = 15_000_000
+const MAX_MESSAGE_ATTACHMENT_BYTES = 25_000_000
+const MAX_ATTACHMENT_NAME_CHARS = 255
+const MAX_ATTACHMENT_MIME_CHARS = 127
+const ATTACHMENT_ID_RE = /^att_[0-9a-f]{32}$/
+const ATTACHMENT_MIME_RE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/
 const FORBIDDEN_TRANSPORT_FIELD_TOKENS = new Set(['base64', 'byte', 'bytes', 'data', 'path', 'paths'])
 export const ROOM_LINK_PROTOCOL_VERSION = 2
 
@@ -89,6 +96,7 @@ export interface HostedRoomEvent {
 }
 
 export interface HostedReplayMessage {
+  attachments: HostedAttachmentRef[]
   at: number
   eventId: string
   from: GroupMessageAuthor
@@ -99,6 +107,7 @@ export interface HostedReplayMessage {
 
 export interface HostedRoomActivity {
   at: number
+  discussionEventId: null | string
   eventId: string
   kind: string
   member: string
@@ -125,6 +134,7 @@ export interface HostedRoomReplayState {
 }
 
 export interface FriendlyHostedRoomStatus {
+  attentionSourceSeq?: number
   canRetry?: boolean
   canStop?: boolean
   kind: string
@@ -728,10 +738,63 @@ function memberLabel(event: HostedRoomEvent): string {
   )
 }
 
+function attachmentsFromEvent(event: HostedRoomEvent): HostedAttachmentRef[] {
+  const values = Array.isArray(event.payload.attachments) ? event.payload.attachments : []
+
+  if (values.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    return []
+  }
+
+  const attachments: HostedAttachmentRef[] = []
+  let totalBytes = 0
+
+  for (const value of values) {
+    const candidate = record(value)
+    const attachmentId = text(candidate?.attachment_id)
+    const name = text(candidate?.name)
+    const mime = text(candidate?.mime)
+    const size = positiveInteger(candidate?.size, 0) || 0
+    const kind = text(candidate?.kind)
+
+    totalBytes += size
+    if (
+      !attachmentId ||
+      !ATTACHMENT_ID_RE.test(attachmentId) ||
+      !name ||
+      name !== name.trim() ||
+      name.length > MAX_ATTACHMENT_NAME_CHARS ||
+      ['.', '..'].includes(name) ||
+      /[/\\\0\n\r]/.test(name) ||
+      !mime ||
+      mime !== mime.trim().toLowerCase() ||
+      mime.length > MAX_ATTACHMENT_MIME_CHARS ||
+      !ATTACHMENT_MIME_RE.test(mime) ||
+      !['file', 'image', 'pdf'].includes(kind || '') ||
+      size <= 0 ||
+      size > MAX_ATTACHMENT_BYTES ||
+      totalBytes > MAX_MESSAGE_ATTACHMENT_BYTES
+    ) {
+      return []
+    }
+    attachments.push({
+      attachmentId,
+      eventId: event.eventId,
+      kind: kind as HostedAttachmentRef['kind'],
+      mime,
+      name,
+      size
+    })
+  }
+
+  return attachments
+}
+
 function messageFromEvent(event: HostedRoomEvent): HostedReplayMessage {
   const user = event.kind === 'message.user'
+  const attachments = attachmentsFromEvent(event)
 
   return {
+    attachments,
     seq: event.seq,
     eventId: event.eventId,
     from: {
@@ -787,6 +850,7 @@ function applyReplayEvent(state: HostedRoomReplayState, event: HostedRoomEvent):
   if (STATUS_EVENT_KINDS.has(event.kind)) {
     state.activity.push({
       seq: event.seq,
+      discussionEventId: text(event.payload.discussion_event_id),
       eventId: event.eventId,
       kind: event.kind,
       member: memberLabel(event),
@@ -850,7 +914,7 @@ export function reduceHostedRoomEvents(state: HostedRoomReplayState, incomingEve
 
 function status(
   kind: string,
-  options: Pick<FriendlyHostedRoomStatus, 'canRetry' | 'canStop' | 'member' | 'reasonCode'> = {}
+  options: Pick<FriendlyHostedRoomStatus, 'attentionSourceSeq' | 'canRetry' | 'canStop' | 'member' | 'reasonCode'> = {}
 ): FriendlyHostedRoomStatus {
   return {
     kind,
@@ -884,6 +948,41 @@ export function deriveFriendlyHostedRoomStatus(state: HostedRoomReplayState): Fr
     })
   }
 
+  const latestUserSeq = Math.max(
+    0,
+    ...state.messages.filter(message => message.from.kind === 'user').map(message => message.seq)
+  )
+  const attentionSourceSeq = (activity: HostedRoomActivity) => {
+    if (!activity.discussionEventId) {
+      return activity.seq
+    }
+
+    return (
+      state.messages.find(message => message.from.kind === 'user' && message.eventId === activity.discussionEventId)
+        ?.seq || 0
+    )
+  }
+  const needsAttention = [...state.activity]
+    .reverse()
+    .find(
+      activity =>
+        attentionSourceSeq(activity) >= latestUserSeq &&
+        ((activity.kind === 'room.activity' && activity.reasonCode === 'unresolved_mention') ||
+          (activity.kind === 'turn.failed' &&
+            ['provider_auth_or_access', 'provider_quota_limit', 'missing_config', 'agent_blocked'].includes(
+              activity.reasonCode || ''
+            )))
+    )
+
+  if (needsAttention) {
+    return status('needs-attention', {
+      member: needsAttention.member,
+      reasonCode: needsAttention.reasonCode,
+      attentionSourceSeq: attentionSourceSeq(needsAttention),
+      canRetry: false
+    })
+  }
+
   if (event.kind === 'member.unavailable') {
     return status('member-unavailable', {
       member,
@@ -893,6 +992,14 @@ export function deriveFriendlyHostedRoomStatus(state: HostedRoomReplayState): Fr
 
   if (event.kind === 'turn.failed') {
     const reason = text(event.payload.reason_code)
+    const discussionEventId = text(event.payload.discussion_event_id)
+    const sourceUserSeq = discussionEventId
+      ? state.messages.find(message => message.from.kind === 'user' && message.eventId === discussionEventId)?.seq || 0
+      : 0
+
+    if (sourceUserSeq > 0 && sourceUserSeq < latestUserSeq) {
+      return status('ready')
+    }
 
     const needsAttention = [
       'provider_auth_or_access',

@@ -103,6 +103,7 @@ import {
   beginHostedRoomMutation,
   disbandHostedGroupChat,
   markHostedRoomLocallyDeleted,
+  readHostedGroupChatAttachment,
   renameHostedGroupChat,
   retryHostedGroupChat,
   retryHostedRoomReplay
@@ -111,7 +112,7 @@ import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
-import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
+import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, HostedAttachmentRef, RosterRow } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 
@@ -570,9 +571,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
   const hostedState = String(room.hostedStatus?.state || '')
   const hostedDeleted = Boolean(groupChatHostedGateway(room) && hostedState === 'deleted')
-  const canStop = Boolean(
-    room.running && hostedState !== 'stopping' && room.hostedStatus?.canStop !== false
-  )
+  const canStop = Boolean(room.running && hostedState !== 'stopping' && room.hostedStatus?.canStop !== false)
 
   const composerKey = groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
@@ -626,6 +625,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
   const [revealedSpeaker, setRevealedSpeaker] = useState<null | string>(null)
+  const [downloadingAttachment, setDownloadingAttachment] = useState<null | string>(null)
   // Threads, the Slack/Discord shape: entries carry a thread id. The most
   // recently active thread renders open; older ones collapse to summary rows.
   // `openThreads` is the user's explicit expand/collapse overrides, and
@@ -690,6 +690,39 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     wasVisibleRef.current = visible
   }, [visible])
   const imagesFor = (thread: null | string) => pendingImages[thread ?? 'main'] || []
+
+  const downloadHostedAttachment = async (attachment: HostedAttachmentRef) => {
+    if (downloadingAttachment) {
+      return
+    }
+
+    setDownloadingAttachment(attachment.attachmentId)
+    try {
+      const file = await readHostedGroupChatAttachment(group, attachment)
+      const binary = globalThis.atob(file.contentBase64)
+
+      if (binary.length !== file.size) {
+        throw new Error('Downloaded Group Chat file size did not match its history reference')
+      }
+      const bytes = Uint8Array.from(binary, value => value.charCodeAt(0))
+      const url = URL.createObjectURL(new Blob([bytes], { type: file.mime }))
+      const link = document.createElement('a')
+
+      link.href = url
+      link.download = file.name
+      document.body.append(link)
+      link.click()
+      link.remove()
+      globalThis.setTimeout(() => URL.revokeObjectURL(url), 0)
+    } catch {
+      host.notify({
+        kind: 'error',
+        message: b.group.hostedAttachmentReadFailed
+      })
+    } finally {
+      setDownloadingAttachment(null)
+    }
+  }
 
   const addImages = (thread: null | string, picked: Attachment[]) => {
     if (!picked.length) {
@@ -1224,6 +1257,35 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   />
                 )
               )}
+            </div>
+          ) : null}
+          {Array.isArray(entry.hostedAttachments) && entry.hostedAttachments.length ? (
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {entry.hostedAttachments.map(attachment => (
+                <Button
+                  className="max-w-64 gap-1.5 border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
+                  disabled={Boolean(downloadingAttachment)}
+                  key={`${entryKey}:hosted:${attachment.attachmentId}`}
+                  onClick={() => void downloadHostedAttachment(attachment)}
+                  size="inline"
+                  title={attachment.name}
+                  variant="text"
+                >
+                  <Codicon
+                    className="text-[0.8rem]"
+                    name={
+                      downloadingAttachment === attachment.attachmentId
+                        ? 'loading'
+                        : attachment.kind === 'pdf'
+                          ? 'file-pdf'
+                          : attachment.kind === 'image'
+                            ? 'file-media'
+                            : 'cloud-download'
+                    }
+                  />
+                  <span className="truncate">{attachment.name}</span>
+                </Button>
+              ))}
             </div>
           ) : null}
         </div>

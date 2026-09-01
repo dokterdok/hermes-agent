@@ -172,6 +172,7 @@ type BotsMessages = {
     thisHost: string
     hostedFallbackToDesktop: (host: string) => string
     hostedAttachmentsUnavailable: string
+    hostedAttachmentReadFailed: string
     hostedSending: string
     hostedWorking: string
     hostedQueued: (host: string) => string
@@ -208,6 +209,7 @@ type BotsMessages = {
     aBot: string
     memberUnavailable: (member: string) => string
     memberNeedsAttention: (member: string) => string
+    unknownMention: string
     memberReconnectToContinue: (member: string) => string
     memberCouldNotRespond: (member: string) => string
     memberRetryWhenOnline: (member: string) => string
@@ -423,9 +425,9 @@ const en: BotsMessages = {
     creating: 'Creating…',
     pickAtLeastTwo: 'Pick at least 2 bots',
     thisHost: 'this device',
-    hostedFallbackToDesktop: host =>
-      `${host} can't keep this Group Chat running yet. Keep Desktop open.`,
+    hostedFallbackToDesktop: host => `${host} can't keep this Group Chat running yet. Keep Desktop open.`,
     hostedAttachmentsUnavailable: 'Attachments need Desktop mode for now.',
+    hostedAttachmentReadFailed: 'Could not download this file. Try again.',
     hostedSending: 'Sending…',
     hostedWorking: 'Working',
     hostedQueued: host => `Waiting for ${host}`,
@@ -462,6 +464,7 @@ const en: BotsMessages = {
     aBot: 'A bot',
     memberUnavailable: member => `${member} is unavailable.`,
     memberNeedsAttention: member => `${member} needs your attention.`,
+    unknownMention: 'Check the Bot name and send again.',
     memberReconnectToContinue: member => `Reconnect ${member} to continue this Group Chat.`,
     memberCouldNotRespond: member => `${member} could not respond.`,
     memberRetryWhenOnline: member => `${member} will retry when online.`,
@@ -673,6 +676,7 @@ const ja: BotsMessages = {
     hostedFallbackToDesktop: host =>
       `${host} ではまだこのグループチャットを継続できません。Desktopを開いたままにしてください。`,
     hostedAttachmentsUnavailable: '現在、添付ファイルにはDesktopモードが必要です。',
+    hostedAttachmentReadFailed: 'ファイルをダウンロードできませんでした。もう一度お試しください。',
     hostedSending: '送信中…',
     hostedWorking: '作業中',
     hostedQueued: host => `${host} を待っています`,
@@ -709,6 +713,7 @@ const ja: BotsMessages = {
     aBot: 'ボット',
     memberUnavailable: member => `${member} は利用できません。`,
     memberNeedsAttention: member => `${member} に確認が必要です。`,
+    unknownMention: 'ボット名を確認して、もう一度送信してください。',
     memberReconnectToContinue: member => `このグループチャットを続けるには ${member} を再接続してください。`,
     memberCouldNotRespond: member => `${member} は応答できませんでした。`,
     memberRetryWhenOnline: member => `${member} はオンラインになると再試行します。`,
@@ -918,6 +923,7 @@ const zh: BotsMessages = {
     thisHost: '此设备',
     hostedFallbackToDesktop: host => `${host} 暂时无法保持此群聊运行。请保持 Desktop 打开。`,
     hostedAttachmentsUnavailable: '附件目前需要 Desktop 模式。',
+    hostedAttachmentReadFailed: '无法下载此文件。请重试。',
     hostedSending: '正在发送…',
     hostedWorking: '正在工作',
     hostedQueued: host => `正在等待 ${host}`,
@@ -954,6 +960,7 @@ const zh: BotsMessages = {
     aBot: '一个机器人',
     memberUnavailable: member => `${member} 不可用。`,
     memberNeedsAttention: member => `${member} 需要你的处理。`,
+    unknownMention: '请检查机器人名称并重新发送。',
     memberReconnectToContinue: member => `请重新连接 ${member} 以继续此群聊。`,
     memberCouldNotRespond: member => `${member} 无法回复。`,
     memberRetryWhenOnline: member => `${member} 上线后将重试。`,
@@ -1163,6 +1170,7 @@ const zhHant: BotsMessages = {
     thisHost: '此裝置',
     hostedFallbackToDesktop: host => `${host} 暫時無法保持此群組聊天運作。請保持 Desktop 開啟。`,
     hostedAttachmentsUnavailable: '附件目前需要 Desktop 模式。',
+    hostedAttachmentReadFailed: '無法下載此檔案。請再試一次。',
     hostedSending: '正在傳送…',
     hostedWorking: '正在工作',
     hostedQueued: host => `正在等待 ${host}`,
@@ -1199,6 +1207,7 @@ const zhHant: BotsMessages = {
     aBot: '一個機器人',
     memberUnavailable: member => `${member} 無法使用。`,
     memberNeedsAttention: member => `${member} 需要您的處理。`,
+    unknownMention: '請檢查機器人名稱並重新傳送。',
     memberReconnectToContinue: member => `請重新連接 ${member} 以繼續此群組聊天。`,
     memberCouldNotRespond: member => `${member} 無法回覆。`,
     memberRetryWhenOnline: member => `${member} 上線後將重試。`,

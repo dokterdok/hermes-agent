@@ -50,7 +50,7 @@ import type {
 } from './hosted-room-client'
 import { botsText } from './i18n'
 import { requestForBot } from './routing'
-import type { GroupChat, GroupMember, GroupMessage, ProfileRoute } from './types'
+import type { GroupChat, GroupMember, GroupMessage, HostedAttachmentRef, ProfileRoute } from './types'
 
 export { $hostedRoomCleanup } from './hosted-room-cleanup'
 export { describeAutonomousRoomPlan, describeHostedRoomCreationError } from './hosted-room-client'
@@ -550,7 +550,8 @@ function hostedStatus(status: FriendlyHostedRoomStatus, connectionName: string) 
     stopping: b.group.hostedStopping,
     working: b.group.memberThinking(member),
     'member-unavailable': b.group.memberUnavailable(member),
-    'needs-attention': b.group.memberNeedsAttention(member),
+    'needs-attention':
+      status.reasonCode === 'unresolved_mention' ? b.group.unknownMention : b.group.memberNeedsAttention(member),
     failed: b.group.memberCouldNotRespond(member),
     waiting: b.group.memberRetryWhenOnline(member),
     stopped: b.group.hostedStopped,
@@ -560,6 +561,13 @@ function hostedStatus(status: FriendlyHostedRoomStatus, connectionName: string) 
   return {
     state: status.kind,
     label: labels[status.kind] || b.roster.statusUnknown,
+    ...(status.attentionSourceSeq
+      ? {
+          attentionSourceSeq: status.attentionSourceSeq
+        }
+      : {}),
+    ...(status.member ? { member: status.member } : {}),
+    ...(status.reasonCode ? { reasonCode: status.reasonCode } : {}),
     ...(status.canRetry === undefined
       ? {}
       : {
@@ -579,10 +587,80 @@ function replayMessages(messages: ReturnType<typeof createHostedRoomReplayState>
     from: message.from,
     id: message.eventId,
     eventId: message.eventId,
+    ...(message.attachments.length ? { hostedAttachments: message.attachments } : {}),
     seq: message.seq,
     text: message.text,
     thread: message.thread
   }))
+}
+
+function replaySeedMessages(messages: GroupMessage[]): ReturnType<typeof createHostedRoomReplayState>['messages'] {
+  return messages.flatMap(message => {
+    const seq = Number(message.seq || 0)
+    const eventId = String(message.eventId || message.id || '')
+
+    return message.from?.kind === 'user' && Number.isSafeInteger(seq) && seq > 0 && eventId
+      ? [
+          {
+            attachments: [],
+            at: Number(message.at || 0),
+            eventId,
+            from: message.from,
+            seq,
+            text: String(message.text || ''),
+            thread: String(message.thread || 'legacy')
+          }
+        ]
+      : []
+  })
+}
+
+export function hostedRoomReplayStartCursor(room: GroupChat | null | undefined) {
+  return Number(room?.hostedAttachmentReplayVersion || 0) >= 1
+    ? Math.max(0, Number(room?.hostedSeq || 0))
+    : Math.max(0, Number(room?.hostedAttachmentReplayCursor || 0))
+}
+
+export async function readHostedGroupChatAttachment(
+  group: string,
+  attachment: HostedAttachmentRef
+): Promise<{ contentBase64: string; mime: string; name: string; size: number }> {
+  const room = $groupChats.get()[group]
+  const route = room ? await hostedRouteForRoom(room) : null
+
+  if (!room?.roomId || !route) {
+    throw new Error(botsText().group.hostRouteMissing)
+  }
+
+  const response = record(
+    await requestHostedConnection(route, 'groups.attachment.read', {
+      room_id: room.roomId,
+      attachment_id: attachment.attachmentId,
+      event_id: attachment.eventId,
+      purpose: 'viewer'
+    })
+  )
+  const stored = record(response?.attachment)
+  const contentBase64 = String(response?.content_base64 || '')
+  const name = String(stored?.name || '')
+  const mime = String(stored?.mime || 'application/octet-stream')
+  const size = Number(stored?.size || 0)
+
+  if (
+    !contentBase64 ||
+    contentBase64.length > Math.ceil(size / 3) * 4 + 4 ||
+    stored?.attachment_id !== attachment.attachmentId ||
+    stored?.event_id !== attachment.eventId ||
+    stored?.kind !== attachment.kind ||
+    mime !== attachment.mime ||
+    name !== attachment.name ||
+    !Number.isSafeInteger(size) ||
+    size !== attachment.size
+  ) {
+    throw new Error('Group Chat file response did not match its history reference')
+  }
+
+  return { contentBase64, mime, name, size }
 }
 
 function isDisbanded(room: HostedRoomServerState) {
@@ -903,7 +981,8 @@ export async function refreshHostedRooms() {
             authorityId: String(serverRoom.authority_gateway_id || capability.authorityId),
             authorityEpoch: Number(serverRoom.authority_epoch || 1),
             connectionId,
-            cursor: Number(existing?.hostedSeq || 0)
+            cursor: hostedRoomReplayStartCursor(existing),
+            messages: replaySeedMessages(existing?.log || [])
           }),
           fetchPage: request =>
             requestHostedConnection(route, 'groups.log', {
@@ -969,7 +1048,7 @@ export async function refreshHostedRooms() {
               command.roomId === roomId && ['disband', 'stop'].includes(command.kind) && command.status !== 'failed'
           )
 
-        const friendly = reconnectMemberId
+        const derivedFriendly = reconnectMemberId
           ? {
               ...replayStatus,
               kind: 'needs-attention' as const,
@@ -978,6 +1057,35 @@ export async function refreshHostedRooms() {
               canStop: false
             }
           : hostedRoomDriverDisplayStatus(replayStatus, driver, { stopping })
+        const previousAttention = existing?.hostedAttention || null
+        const latestUserSeq = Math.max(
+          0,
+          ...replay.state.messages
+            .filter(message => message.from?.kind === 'user')
+            .map(message => Number(message.seq || 0))
+        )
+        const friendly =
+          derivedFriendly.kind === 'ready' &&
+          Number(previousAttention?.attentionSourceSeq || 0) >= latestUserSeq &&
+          Number(previousAttention?.attentionSourceSeq || 0) > 0
+            ? {
+                kind: 'needs-attention',
+                member: previousAttention?.member || '',
+                reasonCode: previousAttention?.reasonCode || null,
+                attentionSourceSeq: Number(previousAttention?.attentionSourceSeq || 0),
+                canRetry: false
+              }
+            : derivedFriendly
+        const hostedAttention =
+          friendly.kind === 'needs-attention' && Number(friendly.attentionSourceSeq || 0) > 0
+            ? {
+                attentionSourceSeq: Number(friendly.attentionSourceSeq),
+                member: String(friendly.member || ''),
+                reasonCode: String(friendly.reasonCode || '')
+              }
+            : previousAttention && previousAttention.attentionSourceSeq >= latestUserSeq
+              ? previousAttention
+              : null
         const running = ['queued', 'stopping', 'working'].includes(friendly.kind)
 
         const retryAction = (Array.isArray(driver?.pending_actions) ? driver.pending_actions : [])
@@ -995,7 +1103,12 @@ export async function refreshHostedRooms() {
               members: hostedMemberDescriptors(serverRoom, connectionId, current.members || [], capabilities),
               log: mergeGroupChatSyncEntries(current.log || [], replayMessages(replay.state.messages)),
               hostedConnectionId: connectionId,
-              hostedSeq: replay.state.cursor,
+              hostedSeq: Math.max(Number(current.hostedSeq || 0), replay.state.cursor),
+              hostedAttachmentReplayVersion: replay.complete
+                ? 1
+                : Math.max(0, Number(current.hostedAttachmentReplayVersion || 0)),
+              hostedAttachmentReplayCursor: replay.complete ? 0 : replay.state.cursor,
+              hostedAttention,
               hostedStatus: {
                 ...hostedStatus(friendly, sourceLabel(connectionId)),
                 ...(retryAction ? { taskId: String(retryAction.task_id) } : {}),

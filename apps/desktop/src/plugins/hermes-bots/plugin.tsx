@@ -47,6 +47,7 @@ import {
   $groupChats,
   $groupChatWorkspace,
   assignLegacyThreads,
+  durableHostedAttention,
   handleSessionsGatewayTransition,
   pullGroupChatServerState,
   scheduleGroupChatServerSync,
@@ -59,7 +60,7 @@ import { renameGroupChat } from './group-chat-view'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { startHostedRoomRuntime, stopHostedRoomRuntime } from './hosted-room-runtime'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
-import { BOTS_LOCALES } from './i18n'
+import { BOTS_LOCALES, botsText } from './i18n'
 import { displayName } from './labels'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
@@ -263,6 +264,9 @@ export default {
 
             for (const [name, room] of Object.entries(value)) {
               if (room && Array.isArray(room.log)) {
+                const attention = durableHostedAttention(room.hostedAttention || room.hostedStatus)
+                const attentionMember = attention?.member || botsText().group.aBot
+
                 rooms[name] = {
                   // Pre-thread entries get synthetic thread ids on hydrate so
                   // every UI/engine path can assume entry.thread exists.
@@ -296,6 +300,22 @@ export default {
                       ? room.hostedConnectionId
                       : null,
                   hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+                  hostedAttachmentReplayVersion: Math.max(
+                    0,
+                    Math.min(1, Number(room.hostedAttachmentReplayVersion || 0))
+                  ),
+                  hostedAttachmentReplayCursor: Math.max(0, Number(room.hostedAttachmentReplayCursor || 0)),
+                  hostedAttention: attention,
+                  hostedStatus: attention
+                    ? {
+                        ...attention,
+                        label:
+                          attention.reasonCode === 'unresolved_mention'
+                            ? botsText().group.unknownMention
+                            : botsText().group.memberNeedsAttention(attentionMember),
+                        state: 'needs-attention'
+                      }
+                    : null,
                   continuityMode: room.hosted ? 'gateway' : room.continuityMode === 'gateway' ? 'gateway' : 'desktop',
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   syncRevision: Math.max(0, Number(room.syncRevision || 0)),

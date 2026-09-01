@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
@@ -24,6 +24,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     DialogHeader: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
     DialogTitle: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
     Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
+    profileColor: () => '#2563eb',
     relativeTime: () => 'now',
     RowButton: (props: React.ComponentProps<'button'>) => <button type="button" {...props} />,
     Tip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
@@ -57,6 +58,54 @@ afterEach(() => {
 })
 
 describe('durable group holds', () => {
+  it('renders Bot-shared hosted files as on-demand downloads', async () => {
+    const [runtime, chat] = await Promise.all([import('./hosted-room-runtime'), import('./group-chat')])
+    const read = vi.spyOn(runtime, 'readHostedGroupChatAttachment').mockResolvedValue({
+      contentBase64: 'IyBMYXVuY2gK',
+      mime: 'text/markdown',
+      name: 'launch.md',
+      size: 9
+    })
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:launch')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    const { GroupChatWorkspace } = await import('./group-chat-view')
+
+    chat.$groupChats.set({
+      Core: {
+        continuityMode: 'gateway',
+        hosted: 'install:home',
+        hostedConnectionId: 'gateway-a',
+        log: [
+          {
+            at: 1,
+            from: { kind: 'member', name: 'Builder' },
+            hostedAttachments: [
+              {
+                attachmentId: 'att_00000000000000000000000000000001',
+                eventId: 'message-1',
+                kind: 'file',
+                mime: 'text/markdown',
+                name: 'launch.md',
+                size: 9
+              }
+            ],
+            text: 'Final artifact attached.'
+          }
+        ],
+        members: MEMBERS,
+        roomId: 'room-1',
+        watermarks: {}
+      }
+    })
+
+    render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
+    fireEvent.click(screen.getByRole('button', { name: 'launch.md' }))
+
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1))
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+  })
+
   it('shows an accessible all-members status without relying on the activity feed', async () => {
     const { GroupHoldStatus } = await import('./group-hold-status')
 
