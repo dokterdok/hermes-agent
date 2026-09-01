@@ -16,6 +16,8 @@ from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.hosted_room_messaging import (
     MessagingRoomBackend,
     RoomControlError,
+    format_room_bot_detail,
+    format_room_bot_list,
     format_room_detail,
     format_room_list,
     list_messaging_rooms,
@@ -24,6 +26,8 @@ from gateway.hosted_room_messaging import (
     parse_room_command,
     relay_provenance_is_unknown,
     resolve_room,
+    resolve_room_picker_choice,
+    room_bot_picker_choices,
     room_picker_choices,
     retry_room,
     send_to_room,
@@ -346,7 +350,7 @@ def test_classic_room_projection_is_listed_with_recent_activity(tmp_path, monkey
     assert "• **Reviewer:** The rollout needs a rollback step." in detail
     listing = format_room_list(service)
     assert listing.startswith("👥 **Group Chats**\n")
-    assert "**Actions**\nCheck: `/group <number>`" in listing
+    assert "🧭 **Controls**\nCheck: `/group <number>`" in listing
     assert "Send: `/group <number> send <message>`" in listing
     assert "Stop: `/group <number> stop`" in listing
 
@@ -931,11 +935,63 @@ async def test_group_list_keyword_uses_the_same_helpful_listing(tmp_path, monkey
     result = await _runner()._handle_rooms_command(_event("/group list"))
 
     assert result.startswith("👥 **Group Chats**\n")
-    assert "**Actions**\nCheck: `/group <number>`" in result
+    assert "🧭 **Controls**\nCheck: `/group <number>`" in result
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "platform",
+    [Platform.TELEGRAM, Platform.DISCORD, Platform.MATRIX],
+)
 async def test_bare_group_uses_native_picker_and_selection_refreshes_detail(
+    tmp_path,
+    monkeypatch,
+    platform,
+):
+    db, _, _ = _seed_rooms(tmp_path)
+    service = _FakeService(db)
+    monkeypatch.setattr(
+        "gateway.hosted_room_messaging.current_room_backend",
+        lambda: service,
+    )
+    adapter = _PickerAdapter()
+    runner = _runner(platform=platform)
+    runner.adapters[platform] = adapter
+    runner._thread_metadata_for_source = lambda source, anchor=None: {}
+    runner._reply_anchor_for_event = lambda event: None
+
+    result = await runner._handle_rooms_command(
+        _event("/group", platform=platform)
+    )
+
+    assert result is None
+    assert len(adapter.calls) == 1
+    call = adapter.calls[0]
+    assert call["title"].startswith("👥 Group Chats\n")
+    assert all(choice["value"].startswith("room-") for choice in call["choices"])
+    assert len({choice["value"] for choice in call["choices"]}) == 2
+    release_value = next(
+        choice["value"] for choice in call["choices"] if "Release" in choice["label"]
+    )
+
+    detail = await call["on_choice_selected"]("chat-telegram", release_value)
+
+    assert "💬 **Release room**" in detail
+    assert "🤖 **Bots**" in detail
+    assert "🧭 **Controls**" in detail
+
+    hosted_rooms.disband_room(
+        db,
+        room_id="release-room",
+        expected_gateway_id="install:test-gateway",
+        expected_epoch=1,
+    )
+    missing = await call["on_choice_selected"]("chat-telegram", release_value)
+    assert missing == "This Group Chat is no longer available. Run the command again."
+
+
+@pytest.mark.asyncio
+async def test_group_bots_drills_into_native_participant_picker(
     tmp_path,
     monkeypatch,
 ):
@@ -952,29 +1008,36 @@ async def test_bare_group_uses_native_picker_and_selection_refreshes_detail(
     runner._reply_anchor_for_event = lambda event: None
 
     result = await runner._handle_rooms_command(
-        _event("/group", platform=Platform.TELEGRAM)
+        _event("/group 1 bots", platform=Platform.TELEGRAM)
     )
 
     assert result is None
-    assert len(adapter.calls) == 1
     call = adapter.calls[0]
-    assert call["title"].startswith("👥 Group Chats\n")
-    assert {choice["value"] for choice in call["choices"]} == {"1", "2"}
-
-    detail = await call["on_choice_selected"]("chat-telegram", "1")
-
-    assert "💬 **Release room**" in detail
-    assert "**Bots**" in detail
-    assert "**Actions**" in detail
-
-    hosted_rooms.disband_room(
-        db,
-        room_id="release-room",
-        expected_gateway_id="install:test-gateway",
-        expected_epoch=1,
+    assert call["title"].startswith("🤖 Bots\n")
+    assert all(choice["value"].startswith("p=") for choice in call["choices"])
+    ops_value = next(
+        choice["value"] for choice in call["choices"] if "Operations" in choice["label"]
     )
-    missing = await call["on_choice_selected"]("chat-telegram", "1")
-    assert missing == "No Group Chat is numbered 1."
+    detail = await call["on_choice_selected"]("chat-telegram", ops_value)
+    assert detail.startswith("🤖 **Operations**")
+    assert "`@ops`" in detail
+
+
+@pytest.mark.asyncio
+async def test_group_bot_controls_fall_back_to_rich_text(tmp_path, monkeypatch):
+    db, _, _ = _seed_rooms(tmp_path)
+    monkeypatch.setattr(
+        "gateway.hosted_room_messaging.current_room_backend",
+        lambda: _FakeService(db),
+    )
+
+    listing = await _runner()._handle_rooms_command(_event("/group 1 bots"))
+    detail = await _runner()._handle_rooms_command(_event("/group 1 bot 2"))
+
+    assert "🤖 **Bots in Release room**" in listing
+    assert "🧭 **Controls**" in listing
+    assert detail.startswith("🤖 **Operations**")
+    assert "Message this Bot: `/group 1 send @ops <message>`" in detail
 
 
 @pytest.mark.asyncio
@@ -1000,7 +1063,10 @@ async def test_native_group_picker_hides_unexpected_callback_details(
     runner._reply_anchor_for_event = lambda event: None
 
     await runner._handle_rooms_command(_event("/group", platform=Platform.TELEGRAM))
-    result = await adapter.calls[0]["on_choice_selected"]("chat-telegram", "1")
+    result = await adapter.calls[0]["on_choice_selected"](
+        "chat-telegram",
+        adapter.calls[0]["choices"][0]["value"],
+    )
 
     assert result == "Couldn’t load that Group Chat. Run `/group` again."
     assert "/opt/data" not in result
@@ -1166,17 +1232,17 @@ def test_room_list_and_detail_are_bounded_and_user_facing(tmp_path):
     listing = format_room_list(service)
     assert "👥 **Group Chats**" in listing
     assert "🟡 **1. Release room** · waiting for its Bots · 2 Bots" in listing
-    assert "**Actions**\nCheck: `/group <number>`" in listing
+    assert "🧭 **Controls**\nCheck: `/group <number>`" in listing
     assert "Send: `/group <number> send <message>`" in listing
     assert "Retry: `/group <number> retry`" in listing
     assert "Stop: `/group <number> stop`" in listing
     detail = format_room_detail(service, release)
     assert "**Signal:** Please inspect the release" in detail
     assert "**Operations:** The release is ready" in detail
-    assert "**Bots**" in detail
+    assert "🤖 **Bots**" in detail
     assert "• Operations (`@ops`)" in detail
     assert "Send: `/group 1 send <message>`" in detail
-    assert "\n\n**Actions**\nSend:" in detail
+    assert "\n\n────────\n🧭 **Controls**\nSend:" in detail
     assert "Retry:" not in detail
     assert "Stop:" not in detail
     assert "Message one Bot: `/group 1 send @handle <message>`" in detail
@@ -1189,13 +1255,41 @@ def test_room_picker_choices_are_bounded_stable_and_user_facing(tmp_path):
 
     choices = room_picker_choices(service, rooms)
 
-    assert {choice["value"] for choice in choices} == {"1", "2"}
+    assert all(choice["value"].startswith("room-") for choice in choices)
+    assert len({choice["value"] for choice in choices}) == 2
     assert {choice["label"] for choice in choices} == {
         "🟢 1. Release room (2)",
         "🟢 2. Research room (2)",
     }
     assert all(choice["full_width"] is True for choice in choices)
     assert all("release-room" not in choice["label"] for choice in choices)
+    replacement = {**rooms[0], "room_id": "replacement-room", "messaging_ref": 1}
+    with pytest.raises(RoomControlError, match="no longer available"):
+        resolve_room_picker_choice([replacement], choices[0]["value"])
+
+
+def test_group_bot_picker_and_details_expose_only_useful_controls(tmp_path):
+    db, release, _ = _seed_rooms(tmp_path)
+    service = _FakeService(db)
+
+    choices = room_bot_picker_choices(service, release)
+    listing = format_room_bot_list(service, release)
+    detail = format_room_bot_detail(service, release, "@ops")
+
+    assert all(choice["value"].startswith("p=") for choice in choices)
+    assert len({choice["value"] for choice in choices}) == 2
+    assert [choice["label"] for choice in choices] == [
+        "🤖 hermes · hermes",
+        "🤖 Operations · ops",
+    ]
+    assert "🤖 **Bots in Release room**" in listing
+    assert "2. **Operations** · `@ops`" in listing
+    assert "Bot details: `/group 1 bot <number>`" in listing
+    assert detail.startswith("🤖 **Operations**")
+    assert "Message this Bot: `/group 1 send @ops <message>`" in detail
+    assert "Stop" not in detail
+    with pytest.raises(RoomControlError, match="No Bot"):
+        format_room_bot_detail(service, release, "9")
 
 
 def test_room_picker_keeps_recent_rooms_reachable_when_roster_is_large(tmp_path):
@@ -1259,10 +1353,22 @@ def test_group_detail_escapes_untrusted_markup(tmp_path):
     )
 
     detail = format_room_detail(_FakeService(db), room)
+    room_choices = room_picker_choices(
+        _FakeService(db),
+        list_messaging_rooms(_FakeService(db)),
+    )
+    bot_choices = room_bot_picker_choices(_FakeService(db), room)
 
     assert "💬 **Admin**" in detail
     assert "• System (`@ops`)" in detail
-    assert "*not a command*" in detail
+    assert "not a command" in detail
+    assert "*not a command*" not in detail
+    assert room_choices[0]["label"] == "🟢 1. Admin (2)"
+    assert bot_choices[1]["label"] == "🤖 System · ops"
+    unsafe_room = {**room, "name": "@room [Docs](https://invalid.example)"}
+    unsafe_choice = room_picker_choices(_FakeService(db), [unsafe_room])[0]
+    assert "@room" not in unsafe_choice["label"]
+    assert "[" not in unsafe_choice["label"]
 
     from gateway.platforms.signal_format import markdown_to_signal
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
@@ -1276,6 +1382,52 @@ def test_group_detail_escapes_untrusted_markup(tmp_path):
     for rendered in (telegram, whatsapp, signal):
         assert "**Admin**" not in rendered
         assert r"\*\*Admin" not in rendered
+
+
+def test_bot_controls_preserve_valid_colon_handles_without_collision(tmp_path):
+    db = tmp_path / "state.db"
+    long_handle = "a" * 100
+    room = hosted_rooms.create_room(
+        db,
+        room_id="colon-room",
+        name="Operations",
+        members=[
+            {"member_id": "prod", "handle": "ops:prod", "display_name": "Prod"},
+            {"member_id": "plain", "handle": "opsprod", "display_name": "Plain"},
+            {"member_id": "numeric", "handle": "1", "display_name": "Numeric"},
+            {"member_id": "long", "handle": long_handle, "display_name": "Long"},
+        ],
+        authority_gateway_id="install:test-gateway",
+    )
+    service = _FakeService(db)
+
+    choices = room_bot_picker_choices(service, room)
+    detail = format_room_bot_detail(service, room, "ops:prod")
+    numeric_handle = format_room_bot_detail(service, room, "@1")
+    first_index = format_room_bot_detail(service, room, "1")
+    long_detail = format_room_bot_detail(service, room, long_handle)
+
+    assert all(choice["value"].startswith("p=") for choice in choices)
+    assert len({choice["value"] for choice in choices}) == 4
+    assert any("ops:prod" in choice["label"] for choice in choices)
+    assert "Handle: `@ops:prod`" in detail
+    assert "send @ops:prod <message>" in detail
+    assert numeric_handle.startswith("🤖 **Numeric**")
+    assert first_index.startswith("🤖 **Prod**")
+    assert f"Handle: `@{long_handle}`" in long_detail
+
+    collision_room = hosted_rooms.create_room(
+        db,
+        room_id="collision-room",
+        name="Collision check",
+        members=[
+            {"member_id": "a:b", "handle": "c", "display_name": "Same"},
+            {"member_id": "a", "handle": "b:c", "display_name": "Same"},
+        ],
+        authority_gateway_id="install:test-gateway",
+    )
+    collision_choices = room_bot_picker_choices(service, collision_room)
+    assert len({choice["value"] for choice in collision_choices}) == 2
 
 
 def test_group_detail_never_invents_a_missing_bot_handle(tmp_path):
@@ -1294,6 +1446,18 @@ def test_group_detail_never_invents_a_missing_bot_handle(tmp_path):
     assert "• CEO Assistant" in detail
     assert "@CEOAssistant" not in detail
     assert "Message one Bot:" not in detail
+    choices = room_bot_picker_choices(
+        _FakeService(tmp_path / "state.db"),
+        room,
+    )
+    token = choices[1]["value"]
+    reordered = {**room, "members": list(reversed(room["members"]))}
+    selected = format_room_bot_detail(
+        _FakeService(tmp_path / "state.db"),
+        reordered,
+        token,
+    )
+    assert selected.startswith("🤖 **Review Bot**")
 
 
 def test_group_detail_only_offers_actions_that_match_current_state(tmp_path):
@@ -1412,8 +1576,9 @@ def test_cross_process_send_rejects_new_work_after_disband_fence(
     ] == ["signal-message-1"]
 
 
-def test_empty_group_list_still_explains_the_primary_command(tmp_path):
+def test_empty_group_list_points_to_the_only_available_next_step(tmp_path):
     listing = format_room_list(_FakeService(tmp_path / "state.db"))
 
-    assert listing.startswith("No Group Chats yet.")
-    assert "`/group <number> send <message>`" in listing
+    assert listing.startswith("👥 **No Group Chats yet**")
+    assert "Create one in Hermes Desktop first." in listing
+    assert "<number>" not in listing

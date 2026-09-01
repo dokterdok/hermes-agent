@@ -400,6 +400,12 @@ def _room_status_icon(status: str) -> str:
     return "🟢"
 
 
+def _picker_display_label(value: Any, *, limit: int) -> str:
+    """Neutralize rich markup and notification-shaped @mentions in pickers."""
+
+    return _plain_display_label(value, limit=limit)
+
+
 def room_picker_choices(
     service: Any,
     rooms: list[Mapping[str, Any]],
@@ -420,13 +426,39 @@ def room_picker_choices(
         count = _room_member_count(room)
         choices.append(
             {
-                "value": reference,
-                "label": f"{_room_status_icon(status)} {reference}. {name} ({count})",
+                "value": _room_picker_value(room),
+                "label": (
+                    f"{_room_status_icon(status)} {reference}. "
+                    f"{_picker_display_label(name, limit=42)} ({count})"
+                ),
                 "full_width": True,
                 "is_current": False,
             }
         )
     return choices
+
+
+def _room_picker_value(room: Mapping[str, Any]) -> str:
+    seed = ":".join(
+        (
+            str(room.get("_room_mode") or "hosted"),
+            str(room.get("connection_id") or room.get("_connection_id") or ""),
+            str(room.get("room_id") or ""),
+        )
+    )
+    return f"room-{hashlib.sha256(seed.encode()).hexdigest()[:16]}"
+
+
+def resolve_room_picker_choice(
+    rooms: list[Mapping[str, Any]],
+    value: str,
+) -> Mapping[str, Any]:
+    """Resolve an exact native-picker room token without number reuse."""
+
+    selected = [room for room in rooms if _room_picker_value(room) == str(value)]
+    if len(selected) != 1:
+        raise RoomControlError("This Group Chat is no longer available. Run the command again.")
+    return selected[0]
 
 
 def _room_participant_lines(room: Mapping[str, Any]) -> list[str]:
@@ -437,22 +469,205 @@ def _room_participant_lines(room: Mapping[str, Any]) -> list[str]:
     for raw in raw_members[:MAX_GROUP_MEMBERS]:
         if not isinstance(raw, Mapping):
             continue
-        name = _clean_line(
-            raw.get("display_name")
-            or raw.get("displayName")
-            or raw.get("name")
-            or raw.get("handle")
-            or "Bot",
-            limit=48,
-        )
-        handle = re.sub(
-            r"[^A-Za-z0-9_.-]",
-            "",
-            _clean_line(raw.get("handle"), limit=48).lstrip("@"),
-        )
+        name = _room_member_name(raw)
+        handle = _room_member_handle(raw)
         suffix = f" (`@{handle}`)" if handle else ""
         lines.append(f"• {_plain_display_label(name)}{suffix}")
     return lines
+
+
+def _room_member_name(member: Mapping[str, Any]) -> str:
+    return _clean_line(
+        member.get("display_name")
+        or member.get("displayName")
+        or member.get("name")
+        or member.get("handle")
+        or "Bot",
+        limit=48,
+    )
+
+
+def _room_member_handle(member: Mapping[str, Any]) -> str:
+    handle = _clean_line(
+        member.get("handle"),
+        limit=driver.MAX_IDENTIFIER_CHARS,
+    ).lstrip("@")
+    return handle if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", handle) else ""
+
+
+def _room_member_picker_value(
+    room: Mapping[str, Any],
+    member: Mapping[str, Any],
+) -> str:
+    seed = json.dumps(
+        [
+            str(room.get("room_id") or ""),
+            str(member.get("member_id") or ""),
+            _room_member_handle(member),
+            _room_member_name(member),
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"p={hashlib.sha256(seed.encode()).hexdigest()[:16]}"
+
+
+def _room_display_members(service: Any, room: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    if room.get("_room_mode") == "remote":
+        summary = _remote_summary(service, room)
+        remote_room = summary.get("room")
+        raw_members = (
+            remote_room.get("members")
+            if isinstance(remote_room, Mapping)
+            else None
+        )
+    else:
+        raw_members = room.get("members")
+    return [
+        member
+        for member in (raw_members if isinstance(raw_members, list) else [])
+        if isinstance(member, Mapping)
+    ][:MAX_GROUP_MEMBERS]
+
+
+def _room_with_messaging_reference(
+    service: Any,
+    room: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if isinstance(room.get("messaging_ref"), int):
+        return room
+    room_id = str(room.get("room_id") or "")
+    return next(
+        (
+            candidate
+            for candidate in list_messaging_rooms(service)
+            if str(candidate.get("room_id") or "") == room_id
+        ),
+        room,
+    )
+
+
+def room_bot_picker_choices(
+    service: Any,
+    room: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Build a native participant picker without exposing profile internals."""
+
+    room = _room_with_messaging_reference(service, room)
+    choices: list[dict[str, Any]] = []
+    for member in _room_display_members(service, room):
+        name = _room_member_name(member)
+        handle = _room_member_handle(member)
+        choices.append(
+            {
+                "value": _room_member_picker_value(room, member),
+                "label": f"🤖 {_picker_display_label(name, limit=48)}"
+                + (f" · {handle}" if handle else ""),
+                "full_width": True,
+                "is_current": False,
+            }
+        )
+    return choices
+
+
+def format_room_bot_list(
+    service: Any,
+    room: Mapping[str, Any],
+    *,
+    room_command: str = "/group",
+) -> str:
+    """Render a bounded participant list with one stable in-roster number."""
+
+    room = _room_with_messaging_reference(service, room)
+    members = _room_display_members(service, room)
+    name = _clean_line(room.get("name") or room.get("room_id"), limit=72)
+    reference = room_reference(room)
+    lines = [f"🤖 **Bots in {_plain_display_label(name, limit=72)}**"]
+    for index, member in enumerate(members, start=1):
+        member_name = _room_member_name(member)
+        handle = _room_member_handle(member)
+        lines.append(
+            f"{index}. **{_plain_display_label(member_name)}**"
+            + (f" · `@{handle}`" if handle else "")
+        )
+    if not members:
+        lines.append("No Bots are available in this Group Chat.")
+    lines.extend(
+        [
+            "",
+            "────────",
+            "🧭 **Controls**",
+            f"Bot details: `{room_command} {reference} bot <number>`",
+            f"Back to Group Chat: `{room_command} {reference}`",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_room_bot_detail(
+    service: Any,
+    room: Mapping[str, Any],
+    bot_query: str,
+    *,
+    room_command: str = "/group",
+) -> str:
+    """Show one participant and only the controls the room contract supports."""
+
+    room = _room_with_messaging_reference(service, room)
+    members = _room_display_members(service, room)
+    raw_query = str(bot_query or "").strip()
+    normalized = raw_query.lstrip("@").casefold()
+    selected: Mapping[str, Any] | None = None
+    if raw_query.startswith("p="):
+        token_matches = [
+            member
+            for member in members
+            if _room_member_picker_value(room, member) == raw_query
+        ]
+        if len(token_matches) == 1:
+            selected = token_matches[0]
+    elif not raw_query.startswith("@") and normalized.isdecimal():
+        index = int(normalized)
+        if 1 <= index <= len(members):
+            selected = members[index - 1]
+    else:
+        matches = [
+            member
+            for member in members
+            if normalized
+            in {
+                _room_member_handle(member).casefold(),
+                _room_member_name(member).casefold(),
+                _room_member_picker_value(room, member).casefold(),
+            }
+        ]
+        if len(matches) == 1:
+            selected = matches[0]
+    if selected is None:
+        raise RoomControlError("No Bot in this Group Chat matches that number or handle.")
+
+    room_name = _clean_line(room.get("name") or room.get("room_id"), limit=72)
+    reference = room_reference(room)
+    member_name = _room_member_name(selected)
+    handle = _room_member_handle(selected)
+    lines = [
+        f"🤖 **{_plain_display_label(member_name)}**",
+        f"Group Chat: {_plain_display_label(room_name, limit=72)}",
+    ]
+    if handle:
+        lines.append(f"Handle: `@{handle}`")
+    lines.extend(["", "────────", "🧭 **Controls**"])
+    if handle:
+        lines.append(
+            f"Message this Bot: `{room_command} {reference} send @{handle} <message>`"
+        )
+    lines.extend(
+        [
+            f"All Bots: `{room_command} {reference} bots`",
+            f"Back to Group Chat: `{room_command} {reference}`",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _room_has_targetable_handle(room: Mapping[str, Any]) -> bool:
@@ -867,7 +1082,7 @@ def _plain_display_label(value: Any, *, limit: int = MAX_PREVIEW_CHARS) -> str:
     text = _clean_line(value, limit=limit)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     text = re.sub(r"[\\`*_{}\[\]#|>~]", "", text).strip()
-    return text or "Unnamed"
+    return text.replace("@", "＠") or "Unnamed"
 
 
 def parse_room_command(args: str, *, command_root: str = "/group") -> RoomCommand:
@@ -1058,10 +1273,7 @@ def format_room_list(
 
     rooms = list_messaging_rooms(service) if rooms is None else list(rooms)
     if not rooms:
-        return (
-            "No Group Chats yet. Create one in Hermes Desktop first.\n\n"
-            f"Send: `{rooms_command} <number> send <message>`"
-        )
+        return "👥 **No Group Chats yet**\nCreate one in Hermes Desktop first."
     rooms = sorted(rooms, key=lambda room: int(room.get("messaging_ref") or 0))
     if not isinstance(page, int) or page < 1:
         raise RoomControlError("Page numbers start at 1.")
@@ -1088,9 +1300,11 @@ def format_room_list(
     lines.extend(
         [
             "",
-            "**Actions**",
+            "────────",
+            "🧭 **Controls**",
             f"Check: `{rooms_command} <number>`",
             f"Send: `{rooms_command} <number> send <message>`",
+            f"Bots: `{rooms_command} <number> bots`",
             f"Retry: `{rooms_command} <number> retry`",
             f"Stop: `{rooms_command} <number> stop`",
         ]
@@ -1220,9 +1434,9 @@ def format_room_detail(
     ]
     participant_lines = _room_participant_lines(room)
     if participant_lines:
-        lines.extend(["", "**Bots**", *participant_lines])
+        lines.extend(["", "🤖 **Bots**", *participant_lines])
     if visible:
-        lines.extend(["", "**Recent activity**"])
+        lines.extend(["", "🕘 **Recent activity**"])
         for event in visible:
             if desktop_mode:
                 source = event.get("from") if isinstance(event.get("from"), Mapping) else {}
@@ -1234,7 +1448,7 @@ def format_room_detail(
                 text = payload.get("text")
             lines.append(
                 f"• **{_plain_display_label(label, limit=48)}:** "
-                f"{_clean_line(text)}"
+                f"{_plain_display_label(text)}"
             )
     else:
         lines.extend(["", "No messages yet."])
@@ -1256,10 +1470,11 @@ def format_room_detail(
             )
             + " Retry here or open this Group Chat in Hermes Desktop."
         )
-    lines.extend(["", "**Actions**"])
+    lines.extend(["", "────────", "🧭 **Controls**"])
     lines.append(
         f"Send: `{room_command} {room_reference(room)} send <message>`"
     )
+    lines.append(f"Bots: `{room_command} {room_reference(room)} bots`")
     if show_retry:
         lines.append(f"Retry: `{room_command} {room_reference(room)} retry`")
     if show_stop:

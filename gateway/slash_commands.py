@@ -811,6 +811,8 @@ class GatewaySlashCommandsMixin:
         from gateway.hosted_room_messaging import (
             RoomControlError,
             current_room_backend,
+            format_room_bot_detail,
+            format_room_bot_list,
             format_room_detail,
             format_room_list,
             is_message_edit,
@@ -818,6 +820,8 @@ class GatewaySlashCommandsMixin:
             list_messaging_rooms,
             relay_provenance_is_unknown,
             resolve_room,
+            resolve_room_picker_choice,
+            room_bot_picker_choices,
             room_picker_choices,
         )
 
@@ -853,7 +857,86 @@ class GatewaySlashCommandsMixin:
                 service,
                 profile=profile,
             )
-            if not query and event.source.platform == Platform.TELEGRAM:
+            if (
+                len(words) >= 2
+                and words[0].isdecimal()
+                and words[1].casefold() in {"bot", "bots"}
+            ):
+                room = resolve_room(rooms, words[0])
+                if words[1].casefold() == "bot":
+                    if len(words) != 3:
+                        return f"Use `{rooms_command} {words[0]} bot <number or handle>`."
+                    return await asyncio.to_thread(
+                        format_room_bot_detail,
+                        service,
+                        room,
+                        words[2],
+                        room_command=rooms_command,
+                    )
+                if len(words) != 2:
+                    return f"Use `{rooms_command} {words[0]} bots`."
+                choices = await asyncio.to_thread(
+                    room_bot_picker_choices,
+                    service,
+                    room,
+                )
+                source = await asyncio.to_thread(
+                    self._normalize_source_for_session_key,
+                    event.source,
+                )
+                session_key = self._session_key_for_source(source)
+
+                async def _on_bot_selected(_chat_id: str, value: str) -> str:
+                    if not self._can_control_group_chats(event):
+                        return self._group_chat_control_denial(event)
+                    current_denial = self._group_chat_rate_limit_denial(
+                        event,
+                        action="read",
+                    )
+                    if current_denial:
+                        return current_denial
+                    try:
+                        current_rooms = await asyncio.to_thread(
+                            list_messaging_rooms,
+                            service,
+                            profile=profile,
+                        )
+                        current_room = resolve_room(current_rooms, words[0])
+                        return await asyncio.to_thread(
+                            format_room_bot_detail,
+                            service,
+                            current_room,
+                            value,
+                            room_command=rooms_command,
+                        )
+                    except (RoomControlError, hosted_rooms.HostedRoomError) as exc:
+                        return str(exc)
+                    except Exception:
+                        logger.exception("Failed to open Group Chat Bot from messaging")
+                        return (
+                            "Couldn’t load that Bot. "
+                            f"Run `{rooms_command} {words[0]} bots` again."
+                        )
+
+                picker_sent = await self._try_send_choice_picker(
+                    event,
+                    session_key,
+                    title=(
+                        "🤖 Bots\n"
+                        "Choose a Bot to see its handle and available controls."
+                    ),
+                    choices=choices,
+                    on_choice_selected=_on_bot_selected,
+                )
+                if picker_sent:
+                    return None
+                return await asyncio.to_thread(
+                    format_room_bot_list,
+                    service,
+                    room,
+                    room_command=rooms_command,
+                )
+            if not query:
                 choices = await asyncio.to_thread(
                     room_picker_choices,
                     service,
@@ -880,7 +963,7 @@ class GatewaySlashCommandsMixin:
                             service,
                             profile=profile,
                         )
-                        selected = resolve_room(current_rooms, value)
+                        selected = resolve_room_picker_choice(current_rooms, value)
                         return await asyncio.to_thread(
                             format_room_detail,
                             service,

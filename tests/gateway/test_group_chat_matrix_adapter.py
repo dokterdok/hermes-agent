@@ -68,3 +68,17 @@ async def test_room_control_normalizes_and_keeps_matrix_event_id():
     assert len(captured) == 1
     assert captured[0].text == "/group 1 send hello"
     assert messaging_event_id(captured[0]) == messaging_event_id(captured[0])
+
+
+def test_picker_literal_at_signs_do_not_emit_matrix_mentions():
+    adapter = _make_adapter()
+    adapter._allow_room_mentions = True
+
+    content = adapter._build_text_message_content(
+        "🟢 1. ＠room\n"
+        "🤖 Operator · alice:example.org\n"
+        "💬 **＠alice:example.org**\n"
+        "• **Operator (`@alice:example.org`):** ＠room status"
+    )
+
+    assert "m.mentions" not in content

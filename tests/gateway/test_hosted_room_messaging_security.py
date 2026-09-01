@@ -87,7 +87,7 @@ async def test_native_distinct_dm_proves_private_owner_surface(tmp_path, monkeyp
         )
     )
 
-    assert result.startswith("No Group Chats yet")
+    assert result.startswith("👥 **No Group Chats yet**")
 
 
 @pytest.mark.asyncio

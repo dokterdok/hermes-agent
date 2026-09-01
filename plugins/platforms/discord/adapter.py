@@ -7872,8 +7872,10 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
+            navigation = any(choice.get("full_width") for choice in choices)
+            first_line = title.splitlines()[0] if title else "Choose an option"
             embed = discord.Embed(
-                title="⚙ " + (title.splitlines()[0] if title else "Choose an option"),
+                title=first_line if navigation else f"⚙ {first_line}",
                 description="\n".join(title.splitlines()[1:]) or None,
                 color=discord.Color.blue(),
             )
@@ -7883,6 +7885,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 on_choice_selected=on_choice_selected,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                requester_user_id=str((metadata or {}).get("requester_user_id") or "")
+                or None,
+                navigation=navigation,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -9551,12 +9556,16 @@ def _define_discord_view_classes() -> None:
             on_choice_selected,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            requester_user_id: Optional[str] = None,
+            navigation: bool = False,
         ):
             super().__init__(timeout=120)
             self.choices = list(choices)[:_DISCORD_SELECT_MAX_OPTIONS]
             self.on_choice_selected = on_choice_selected
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.requester_user_id = requester_user_id
+            self.navigation = navigation
             self.resolved = False
             self._message = None
 
@@ -9580,6 +9589,10 @@ def _define_discord_view_classes() -> None:
             self.add_item(select)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
+            if self.requester_user_id and self.requester_user_id != str(
+                getattr(getattr(interaction, "user", None), "id", "")
+            ):
+                return False
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids,
             )
@@ -9587,7 +9600,11 @@ def _define_discord_view_classes() -> None:
         async def _on_select(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "⛔ You are not authorized to change this setting.",
+                    (
+                        "⛔ You are not authorized to use this menu."
+                        if self.navigation
+                        else "⛔ You are not authorized to change this setting."
+                    ),
                     ephemeral=True,
                 )
                 return
@@ -9607,7 +9624,11 @@ def _define_discord_view_classes() -> None:
 
             embed = discord.Embed(
                 description=result_text,
-                color=discord.Color.green(),
+                color=(
+                    discord.Color.blue()
+                    if self.navigation
+                    else discord.Color.green()
+                ),
             )
             self.clear_items()
             self.stop()
@@ -9620,7 +9641,11 @@ def _define_discord_view_classes() -> None:
             if msg is not None:
                 try:
                     embed = discord.Embed(
-                        description="⏱ Selection expired — no change made.",
+                        description=(
+                            "⏱ Menu expired — run the command again."
+                            if self.navigation
+                            else "⏱ Selection expired — no change made."
+                        ),
                         color=discord.Color.greyple(),
                     )
                     self.clear_items()
