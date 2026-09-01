@@ -1086,11 +1086,28 @@ def _plain_display_label(value: Any, *, limit: int = MAX_PREVIEW_CHARS) -> str:
 
 
 def _plain_preview_text(value: Any, *, limit: int = MAX_PREVIEW_CHARS) -> str:
-    """Escape rich markup without deleting message content or pinging users."""
+    """Neutralize preview markup without deleting message content."""
 
-    text = _clean_line(value, limit=limit).replace("@", "＠")
-    text = text.replace("\\", "\\\\")
-    return re.sub(r"([`*_{}\[\]#|>~])", r"\\\1", text)
+    text = _clean_line(value, limit=limit)
+    return text.translate(
+        str.maketrans(
+            {
+                "@": "＠",
+                "\\": "＼",
+                "`": "｀",
+                "*": "＊",
+                "_": "＿",
+                "{": "｛",
+                "}": "｝",
+                "[": "［",
+                "]": "］",
+                "#": "＃",
+                "|": "｜",
+                ">": "＞",
+                "~": "～",
+            }
+        )
+    )
 
 
 def parse_room_command(args: str, *, command_root: str = "/group") -> RoomCommand:

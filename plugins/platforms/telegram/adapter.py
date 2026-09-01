@@ -8754,14 +8754,6 @@ class TelegramAdapter(BasePlatformAdapter):
         #    before the normal MarkdownV2 conversions run.
         text = _wrap_markdown_tables(text)
 
-        # Preserve explicitly escaped Markdown as literal punctuation. Hide it
-        # from the rich-markup passes, then restore Telegram-safe escapes.
-        text = re.sub(
-            r"\\([*_{}\[\]()#+.!|>~\-])",
-            lambda m: _ph(_escape_mdv2(m.group(1))),
-            text,
-        )
-
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
         def _protect_fenced(m):

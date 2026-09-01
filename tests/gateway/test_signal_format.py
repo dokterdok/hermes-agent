@@ -187,15 +187,6 @@ class TestEdgeCases:
         # Should not crash; any italic match would be a false positive
         assert "5" in text and "15" in text
 
-    def test_escaped_markdown_is_preserved_as_literal_text(self):
-        source = r"\*literal\* \`deploy\_a\` \> \{prod\} ＠ops"
-
-        text, styles = _m2s(source)
-
-        assert text == "*literal* `deploy_a` > {prod} ＠ops"
-        assert styles == []
-
-
 # ===========================================================================
 # signal-markdown-strip-patch: core conversion pipeline
 # ===========================================================================

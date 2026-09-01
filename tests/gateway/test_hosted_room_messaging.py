@@ -1361,10 +1361,8 @@ def test_group_detail_escapes_untrusted_markup(tmp_path):
 
     assert "💬 **Admin**" in detail
     assert "• System (`@ops`)" in detail
-    assert (
-        r"\*not a command\* \`deploy\_a\` \> \{prod\} ＠ops"
-        in detail
-    )
+    safe_preview = "＊not a command＊ ｀deploy＿a｀ ＞ ｛prod｝ ＠ops"
+    assert safe_preview in detail
     assert room_choices[0]["label"] == "🟢 1. Admin (2)"
     assert bot_choices[1]["label"] == "🤖 System · ops"
     unsafe_room = {**room, "name": "@room [Docs](https://invalid.example)"}
@@ -1374,6 +1372,7 @@ def test_group_detail_escapes_untrusted_markup(tmp_path):
 
     from gateway.platforms.signal_format import markdown_to_signal
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+    from plugins.platforms.slack.adapter import SlackAdapter
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     telegram = object.__new__(TelegramAdapter).format_message(detail)
@@ -1381,11 +1380,11 @@ def test_group_detail_escapes_untrusted_markup(tmp_path):
     whatsapp_adapter._sanitize_outbound_text = lambda text: text
     whatsapp = whatsapp_adapter.format_message(detail)
     signal, _styles = markdown_to_signal(detail)
-    for rendered in (telegram, whatsapp, signal):
+    slack = object.__new__(SlackAdapter).format_message(detail)
+    for rendered in (telegram, whatsapp, signal, slack):
         assert "**Admin**" not in rendered
         assert r"\*\*Admin" not in rendered
-        literal = rendered.replace("\\", "")
-        assert "*not a command* `deploy_a` > {prod} ＠ops" in literal
+        assert safe_preview in rendered
 
 
 def test_bot_controls_preserve_valid_colon_handles_without_collision(tmp_path):
