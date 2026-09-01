@@ -62,6 +62,23 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     return await asyncio.to_thread(ensure)
 
 
+def _public_dispatch_error(exc: Exception) -> tuple[str, str]:
+    """Map untrusted dispatch failures to a bounded public contract."""
+
+    lowered = str(exc).lower()
+    if "execution policy" in lowered or "remote room execution requires" in lowered:
+        return (
+            "Room execution policy changed; reauthorization is required.",
+            "room_execution_policy_changed",
+        )
+    if "capability catalog changed" in lowered:
+        return (
+            "Room capability catalog changed; reauthorization is required.",
+            "room_capability_catalog_changed",
+        )
+    return "Room dispatch was rejected.", "invalid_room_dispatch"
+
+
 async def _normalize_room_dispatch(
     self,
     request: "web.Request",
@@ -103,11 +120,14 @@ async def _normalize_room_dispatch(
         dispatch = HostedMemberDispatch.from_mapping(
             body.get("hosted_room_dispatch")
         )
-        verify_room_grant(
+        grant_claims = verify_room_grant(
             self._room_grant_secret(),
             room_token,
             dispatch,
             permission="dispatch",
+        )
+        artifact_publication = {"artifact.ack", "artifact.read"} <= set(
+            grant_claims.get("permissions") or ()
         )
         active_profile = _api_request_profile.get() or "default"
         local_install = hosted_rooms.local_authority_gateway_id()
@@ -120,6 +140,9 @@ async def _normalize_room_dispatch(
             execution_policy = execution_policy_mapping(
                 target_profile=active_profile
             )
+        from gateway.platforms.api_server_room_attachments import (
+            roomlink_attachments_available,
+        )
         catalog = GatewayRoomCatalog.from_mapping(
             catalog_mapping(
                 installation_id=local_install,
@@ -127,7 +150,7 @@ async def _normalize_room_dispatch(
                 link_modes=("direct",),
                 persistent_process=True,
                 text=True,
-                attachments=False,
+                attachments=roomlink_attachments_available(),
                 target_profile=active_profile,
                 execution_policy=execution_policy,
             )
@@ -152,35 +175,24 @@ async def _normalize_room_dispatch(
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
         session_id = await self._ensure_hosted_member_session(dispatch)
-        return {
+        normalized = {
             "input": dispatch.prompt,
             "session_id": session_id,
             "hosted_room_dispatch": dispatch.as_mapping(),
             "_room_execution_policy": policy.as_mapping(),
-        }, None
-    except Exception as exc:
-        message = str(exc)
-        lowered = message.lower()
-        policy_changed = (
-            "execution policy" in lowered
-            or "remote room execution requires" in lowered
+            "_room_artifact_publication": artifact_publication,
+        }
+        from gateway.platforms.api_server_room_attachments import (
+            _validate_dispatch_attachments,
         )
+
+        return await _validate_dispatch_attachments(
+            normalized,
+            _openai_error=_openai_error,
+        )
+    except Exception as exc:
+        message, code = _public_dispatch_error(exc)
         return body, web.json_response(
-            _openai_error(
-                (
-                    "Room execution policy changed; reauthorization is required."
-                    if policy_changed
-                    else "Room capability catalog changed; reauthorization is required."
-                    if "capability catalog changed" in lowered
-                    else message
-                ),
-                code=(
-                    "room_execution_policy_changed"
-                    if policy_changed
-                    else "room_capability_catalog_changed"
-                    if "capability catalog changed" in lowered
-                    else "invalid_room_dispatch"
-                ),
-            ),
+            _openai_error(message, code=code),
             status=403,
         )

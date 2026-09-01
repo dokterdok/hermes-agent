@@ -1361,6 +1361,57 @@ def test_group_detail_only_offers_actions_that_match_current_state(tmp_path):
     assert "Stop: `/group 3 stop`" in pending
 
 
+def test_cross_process_send_rejects_new_work_after_disband_fence(
+    tmp_path,
+    monkeypatch,
+):
+    db, release, _ = _seed_rooms(tmp_path)
+    monkeypatch.setattr(
+        hosted_rooms,
+        "local_authority_gateway_id",
+        lambda: "install:test-gateway",
+    )
+    backend = MessagingRoomBackend(db_path=db, service=None)
+    actor = {
+        "kind": "user",
+        "id": "messaging:signal:owner",
+        "display_name": "Signal",
+    }
+    payload = {"text": "Ship it", "thread_id": "signal-thread"}
+    first = backend.send(
+        room_id=release["room_id"],
+        event_id="signal-message-1",
+        payload=payload,
+        actor=actor,
+    )
+
+    service = _TestHostedRoomService(db)
+    service.begin_room_disband(release["room_id"])
+
+    replay = backend.send(
+        room_id=release["room_id"],
+        event_id="signal-message-1",
+        payload=payload,
+        actor=actor,
+    )
+    with pytest.raises(hosted_rooms.RoomConflictError, match="being disbanded"):
+        backend.send(
+            room_id=release["room_id"],
+            event_id="signal-message-2",
+            payload={"text": "New work", "thread_id": "signal-thread"},
+            actor=actor,
+        )
+
+    assert first["seq"] == replay["seq"]
+    assert replay["idempotent"] is True
+    assert [
+        event["event_id"]
+        for event in hosted_rooms.read_events(db, room_id=release["room_id"])[
+            "events"
+        ]
+    ] == ["signal-message-1"]
+
+
 def test_empty_group_list_still_explains_the_primary_command(tmp_path):
     listing = format_room_list(_FakeService(tmp_path / "state.db"))
 

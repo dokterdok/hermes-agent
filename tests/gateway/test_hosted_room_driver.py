@@ -847,7 +847,7 @@ def test_indeterminate_retry_is_explicit_and_advances_execution_generation(db):
     assert retried.execution_generation == original.execution_generation + 1
 
 
-def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
+def test_indeterminate_task_can_be_deferred_and_retried_but_not_fast_cancelled(db):
     clock = FakeClock()
     identity = _identity()
     first = _lease(db, clock, ttl=5)
@@ -918,11 +918,44 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         reason="member_unavailable",
         clock=clock,
     )
+    with pytest.raises(
+        driver.InvalidTaskTransitionError,
+        match="uncertain work requires acknowledged two-phase cancellation",
+    ):
+        driver.cancel_task(
+            db,
+            identity,
+            cancel_id="cancel-deferred",
+            expected_cancel_generation=0,
+            clock=clock,
+        )
+
+
+def test_proven_not_admitted_deferred_task_can_be_fast_cancelled(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock)
+    admitted = _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=admitted["cancel_generation"],
+        clock=clock,
+    )
+    deferred = driver.defer_not_admitted_task(
+        db,
+        attempt,
+        reason="member_unavailable",
+        clock=clock,
+    )
+
+    assert driver.task_is_proven_not_admitted(deferred) is True
     cancelled = driver.cancel_task(
         db,
         identity,
-        cancel_id="cancel-deferred",
-        expected_cancel_generation=0,
+        cancel_id="cancel-not-admitted",
+        expected_cancel_generation=attempt.cancel_generation,
         clock=clock,
     )
     assert cancelled["status"] == "cancelled"
@@ -1056,6 +1089,73 @@ def test_prune_removes_only_old_published_terminal_tasks(db):
     assert [
         task["identity"].task_id for task in driver.list_tasks(db, room_id="room-1")
     ] == ["task-unpublished"]
+
+
+def test_prune_keeps_task_that_owns_pending_artifact_retry(db):
+    clock = FakeClock()
+    lease = _lease(db, clock)
+    identity = _identity("task-retry", turn_id="turn-retry")
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    driver.settle_task(
+        db,
+        attempt,
+        settlement_id="result:task-retry",
+        status="settled",
+        result={"text": "done"},
+        clock=clock,
+    )
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """CREATE TABLE hosted_room_policy_publications (
+                room_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                execution_generation INTEGER NOT NULL DEFAULT 0,
+                seq INTEGER NOT NULL,
+                PRIMARY KEY(room_id, task_id, kind, execution_generation)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_publications
+               VALUES ('room-1', 'task-retry', 'turn.settled', 0, 3)"""
+        )
+        conn.execute(
+            """CREATE TABLE hosted_room_artifact_retries (
+                room_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                execution_generation INTEGER NOT NULL,
+                PRIMARY KEY(room_id, task_id, execution_generation)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_artifact_retries
+               VALUES ('room-1', 'task-retry', 1)"""
+        )
+
+    clock.advance(driver.TERMINAL_TASK_RETENTION_SECONDS + 1)
+    assert driver.prune_published_terminal_tasks(
+        db,
+        room_id="room-1",
+        clock=clock,
+        retain=0,
+    ) == 0
+    assert driver.get_task(db, identity)["status"] == "settled"
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM hosted_room_artifact_retries")
+    assert driver.prune_published_terminal_tasks(
+        db,
+        room_id="room-1",
+        clock=clock,
+        retain=0,
+    ) == 1
 
 
 def test_unpublished_legacy_driver_schema_fails_closed(db):

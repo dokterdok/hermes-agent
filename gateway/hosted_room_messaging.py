@@ -761,6 +761,7 @@ class MessagingRoomBackend:
             payload=normalized,
             authority_gateway_id=str(room["authority_gateway_id"]),
             authority_epoch=int(room["authority_epoch"]),
+            reject_if_disbanding=True,
         )
 
     def stop_room(self, room_id: str, *, cancel_id: str) -> int:

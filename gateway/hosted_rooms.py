@@ -409,6 +409,7 @@ def append_event(
     payload: Any,
     authority_gateway_id: Any = None,
     authority_epoch: Any = None,
+    reject_if_disbanding: bool = False,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically.
@@ -486,6 +487,17 @@ def append_event(
                     "event_id already exists with different content"
                 )
             return _event_from_row(existing, idempotent=True)
+
+        if reject_if_disbanding:
+            fence_table = conn.execute(
+                """SELECT 1 FROM sqlite_master
+                     WHERE type='table' AND name='hosted_room_disband_fences'"""
+            ).fetchone()
+            if fence_table is not None and conn.execute(
+                "SELECT 1 FROM hosted_room_disband_fences WHERE room_id=?",
+                (room_id,),
+            ).fetchone() is not None:
+                raise RoomConflictError("hosted room is being disbanded")
 
         room = conn.execute(
             """SELECT next_seq, event_bytes, authority_gateway_id, authority_epoch

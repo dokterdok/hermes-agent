@@ -54,7 +54,11 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset(
     {"target_profile", "prompt", "source_event_seq"}
 )
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id"})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({
+    "attachments",
+    "recipient_member_ids",
+    "target_member_id",
+})
 _LEASE_COLUMNS = frozenset({
     "room_id",
     "gateway_id",
@@ -256,6 +260,23 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         normalized["target_member_id"] = _identifier(
             value["target_member_id"], label="target_member_id"
         )
+    if "recipient_member_ids" in value:
+        raw_recipients = value["recipient_member_ids"]
+        if not isinstance(raw_recipients, list) or not 1 <= len(raw_recipients) <= 6:
+            raise DriverValidationError("recipient_member_ids must contain 1-6 members")
+        recipients = [
+            _identifier(item, label="recipient_member_id") for item in raw_recipients
+        ]
+        if len(set(recipients)) != len(recipients):
+            raise DriverValidationError("recipient_member_ids must be unique")
+        normalized["recipient_member_ids"] = recipients
+    if "attachments" in value:
+        from gateway.hosted_room_attachments import validate_task_manifest
+
+        attachments = validate_task_manifest(value["attachments"])
+        if not attachments:
+            raise DriverValidationError("attachments must not be empty when present")
+        normalized["attachments"] = attachments
     encoded = json.dumps(
         normalized,
         ensure_ascii=True,
@@ -693,6 +714,25 @@ def _task_from_row(row: sqlite3.Row, *, idempotent: bool = False) -> dict[str, A
         ),
         "idempotent": idempotent,
     }
+
+
+def task_is_proven_not_admitted(task: Any) -> bool:
+    """Return whether a deferred task carries durable non-admission proof."""
+
+    if not isinstance(task, dict) or task.get("status") != "deferred":
+        return False
+    result = task.get("result")
+    return isinstance(result, dict) and result.get("not_admitted") is True
+
+
+def _row_is_proven_not_admitted(row: sqlite3.Row) -> bool:
+    if row["status"] != "deferred" or row["result_json"] is None:
+        return False
+    try:
+        result = json.loads(row["result_json"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(result, dict) and result.get("not_admitted") is True
 
 
 def _load_task(conn: sqlite3.Connection, identity: TaskIdentity) -> sqlite3.Row:
@@ -1584,6 +1624,56 @@ def defer_indeterminate_task(
         return _task_from_row(_load_task(conn, identity))
 
 
+def defer_not_admitted_task(
+    db_path: Path | str,
+    attempt: TaskAttempt,
+    *,
+    reason: Any,
+    clock: Clock,
+) -> dict[str, Any]:
+    """Publish a proven pre-admission outage without blocking later members."""
+
+    reason = _identifier(reason, label="defer_reason")
+    result_json = _canonical_json(
+        {"reason": reason, "retryable": True, "not_admitted": True}
+    )
+    now = _timestamp(clock)
+    with _transaction(db_path) as conn:
+        _require_active_lease(conn, attempt.lease, now=now)
+        row = _load_task(conn, attempt.identity)
+        if (
+            row["status"] == "deferred"
+            and int(row["execution_generation"]) == attempt.execution_generation
+            and int(row["cancel_generation"]) == attempt.cancel_generation
+            and row["result_json"] == result_json
+        ):
+            return _task_from_row(row, idempotent=True)
+        if (
+            row["status"] != "running"
+            or int(row["execution_generation"]) != attempt.execution_generation
+            or int(row["cancel_generation"]) != attempt.cancel_generation
+        ):
+            raise StaleTaskError("running task generation changed during deferral")
+        updated = conn.execute(
+            """UPDATE hosted_room_driver_tasks
+                  SET status='deferred', result_json=?, terminal_at=?, updated_at=?
+                WHERE room_id=? AND task_id=? AND status='running'
+                  AND execution_generation=? AND cancel_generation=?""",
+            (
+                result_json,
+                now,
+                now,
+                attempt.identity.room_id,
+                attempt.identity.task_id,
+                attempt.execution_generation,
+                attempt.cancel_generation,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise StaleTaskError("running task changed during deferral")
+        return _task_from_row(_load_task(conn, attempt.identity))
+
+
 def requeue_deferred_task(
     db_path: Path | str,
     identity: TaskIdentity,
@@ -1713,7 +1803,7 @@ def cancel_task(
     expected_cancel_generation: int,
     clock: Clock,
 ) -> dict[str, Any]:
-    """Cancel a queued task before any external work was admitted."""
+    """Cancel a queued or durably proven-not-admitted deferred task."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
     if (
         not isinstance(expected_cancel_generation, int)
@@ -1729,9 +1819,9 @@ def cancel_task(
             raise InvalidTaskTransitionError(
                 f"cannot cancel task in state '{row['status']}'"
             )
-        if row["status"] not in {"queued", "deferred"}:
+        if row["status"] != "queued" and not _row_is_proven_not_admitted(row):
             raise InvalidTaskTransitionError(
-                "running work requires acknowledged two-phase cancellation"
+                "running or uncertain work requires acknowledged two-phase cancellation"
             )
         if int(row["cancel_generation"]) != expected_cancel_generation:
             raise StaleTaskError("task cancellation generation changed")
@@ -1741,9 +1831,8 @@ def cancel_task(
             """UPDATE hosted_room_driver_tasks
                SET status='cancelled', cancel_generation=?, cancel_id=?,
                    terminal_at=?, updated_at=?
-               WHERE room_id=? AND task_id=?
-                 AND status IN ('queued', 'deferred')
-                 AND cancel_generation=?""",
+               WHERE room_id=? AND task_id=? AND status=?
+                 AND result_json IS ? AND cancel_generation=?""",
             (
                 next_generation,
                 cancel_id,
@@ -1751,6 +1840,8 @@ def cancel_task(
                 now,
                 identity.room_id,
                 identity.task_id,
+                row["status"],
+                row["result_json"],
                 expected_cancel_generation,
             ),
         )
@@ -1976,8 +2067,20 @@ def prune_published_terminal_tasks(
         ).fetchone()
         if publications is None:
             return 0
+        retries = conn.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type='table' AND name='hosted_room_artifact_retries'"""
+        ).fetchone()
+        retry_guard = (
+            """AND NOT EXISTS (
+                   SELECT 1 FROM hosted_room_artifact_retries r
+                    WHERE r.room_id=t.room_id AND r.task_id=t.task_id
+               )"""
+            if retries is not None
+            else ""
+        )
         rows = conn.execute(
-            """SELECT t.task_id, t.terminal_at
+            f"""SELECT t.task_id, t.terminal_at
                  FROM hosted_room_driver_tasks t
                 WHERE t.room_id=?
                   AND t.status IN ('settled', 'failed', 'cancelled')
@@ -1988,6 +2091,7 @@ def prune_published_terminal_tasks(
                              'turn.settled', 'turn.failed', 'turn.cancelled'
                          )
                   )
+                  {retry_guard}
                 ORDER BY t.terminal_at DESC, t.task_id ASC""",
             (room_id,),
         ).fetchall()

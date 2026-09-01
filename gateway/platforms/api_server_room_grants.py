@@ -3,6 +3,7 @@
 import asyncio
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 try:
@@ -50,6 +51,12 @@ def _room_grant_error_response(exc: Exception, *, _openai_error) -> "web.Respons
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
+    from gateway.platforms import (
+        api_server_room_artifacts,
+        api_server_room_attachments,
+        api_server_room_controls,
+    )
+
     routes = [
         (
             "POST",
@@ -72,9 +79,9 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
             self._handle_room_member_grant_revoke,
         ),
     ]
-    from gateway.platforms import api_server_room_controls
-
     routes.extend(api_server_room_controls._http_routes(self))
+    routes.extend(api_server_room_attachments._http_routes(self))
+    routes.extend(api_server_room_artifacts._http_routes(self))
     return routes
 
 
@@ -175,13 +182,16 @@ async def _handle_room_member_invitation(
             )
         with self._profile_scope(profile):
             execution_policy = execution_policy_mapping(target_profile=profile)
+        from gateway.platforms.api_server_room_attachments import (
+            roomlink_attachments_available,
+        )
         catalog = catalog_mapping(
             installation_id=target_install_id,
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
             link_modes=("direct",),
             persistent_process=True,
             text=True,
-            attachments=False,
+            attachments=roomlink_attachments_available(),
             target_profile=profile,
             execution_policy=execution_policy,
         )
@@ -252,13 +262,16 @@ async def _handle_room_member_capabilities(
             raise ValueError("room grant target does not match this profile")
         with self._profile_scope(profile):
             execution_policy = execution_policy_mapping(target_profile=profile)
+        from gateway.platforms.api_server_room_attachments import (
+            roomlink_attachments_available,
+        )
         catalog = catalog_mapping(
             installation_id=installation_id,
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
             link_modes=("direct",),
             persistent_process=True,
             text=True,
-            attachments=False,
+            attachments=roomlink_attachments_available(),
             target_profile=profile,
             execution_policy=execution_policy,
         )
@@ -412,6 +425,28 @@ async def _handle_room_member_grant_revoke(
                 claims.get("status_expires_at", claims["expires_at"])
             ),
         )
+        try:
+            from gateway.platforms.api_server_room_attachments import (
+                _default_spool,
+            )
+
+            await asyncio.to_thread(_default_spool().discard_scope, claims)
+        except Exception:
+            # Authorization is already revoked. A failed cleanup cannot make
+            # the grant live again; bounded spool expiry remains the backstop.
+            pass
+        try:
+            from gateway.hosted_room_artifacts import RoomArtifactOutbox
+            from hermes_constants import get_hermes_home
+
+            await asyncio.to_thread(
+                RoomArtifactOutbox(Path(get_hermes_home()) / "state.db").discard_claims,
+                claims,
+            )
+        except Exception:
+            # Revocation still closes access immediately. Keep cleanup
+            # best-effort so a local disk fault cannot resurrect the grant.
+            pass
     except Exception:
         return web.json_response(
             _openai_error(
