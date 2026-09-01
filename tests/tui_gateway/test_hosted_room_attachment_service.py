@@ -39,6 +39,14 @@ from tests.tui_gateway.test_hosted_room_service import (
 )
 
 
+def _service_with_test_peer(db_path, route, peer):
+    service = HostedRoomService(_server(), db_path=db_path)
+    key = ("room-1", route.member_id)
+    service.peer_routes[key] = route
+    service.peer_clients[key] = peer
+    return service
+
+
 class _FakeRPC:
     def __init__(self) -> None:
         self.sessions = {}
@@ -551,12 +559,7 @@ def test_peer_attachment_failure_does_not_block_healthy_member(
         grant="signed-room-grant",
         attachments=True,
     )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-peer"): route},
-        peer_clients={"install-peer": peer_client()},
-    )
+    service = _service_with_test_peer(db, route, peer_client())
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
     service.local_profiles = lambda: ("local",)
@@ -650,12 +653,7 @@ def test_mixed_version_file_peer_is_deferred_without_wedging_the_room(tmp_path: 
         grant="signed-room-grant",
         attachments=False,
     )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-peer"): route},
-        peer_clients={"install-peer": _FakePeerClient()},
-    )
+    service = _service_with_test_peer(db, route, _FakePeerClient())
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
     service.local_profiles = lambda: ("local",)

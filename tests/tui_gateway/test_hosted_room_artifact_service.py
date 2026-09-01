@@ -46,6 +46,14 @@ from tests.tui_gateway.test_hosted_room_service import (
 from tests.tui_gateway.test_hosted_room_attachment_service import _FakeRPC
 
 
+def _service_with_test_peer(db_path, route, peer, **kwargs):
+    service = HostedRoomService(_server(), db_path=db_path, **kwargs)
+    key = ("room-1", route.member_id)
+    service.peer_routes[key] = route
+    service.peer_clients[key] = peer
+    return service
+
+
 class _ArtifactRPC(_FakeRPC):
     def __init__(self, db_path: Path) -> None:
         super().__init__()
@@ -492,12 +500,7 @@ def test_upgrade_retires_legacy_peer_file_before_failing_closed(tmp_path: Path):
         grant="signed-room-grant",
         attachments=True,
     )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-reviewer"): route},
-        peer_clients={"install-peer": peer},
-    )
+    service = _service_with_test_peer(db, route, peer)
     service.local_profiles = lambda: ("ops",)
     service.create_room(
         room_id="room-1",
@@ -559,12 +562,12 @@ def test_upgrade_retires_legacy_peer_file_before_failing_closed(tmp_path: Path):
         ).fetchone()["blocked"] == 1
 
     replacement = _ArtifactPeerClient()
-    service.register_peer_route(
-        room_id="room-1",
-        member_id="member-reviewer",
-        route=route,
-        client=replacement,
-    )
+    key = ("room-1", "member-reviewer")
+    service.peer_routes[key] = route
+    service.peer_clients[key] = replacement
+    service._peer_route_status[key] = "ready"
+    service._unblock_artifact_retries(*key)
+    service.runtime.wakeup()
     _wait_for(lambda: bool(replacement.acks))
 
     def artifact_retry_count():
@@ -609,12 +612,7 @@ def test_peer_bot_file_is_canonicalized_before_next_local_bot_receives_it(
         grant="signed-room-grant",
         attachments=True,
     )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-reviewer"): route},
-        peer_clients={"install-peer": peer},
-    )
+    service = _service_with_test_peer(db, route, peer)
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
@@ -688,12 +686,7 @@ def test_peer_verification_failure_discards_source_before_failed_publication(
         grant="signed-room-grant",
         attachments=True,
     )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-reviewer"): route},
-        peer_clients={"install-peer": peer},
-    )
+    service = _service_with_test_peer(db, route, peer)
     service.local_profiles = lambda: ("ops",)
     service.create_room(
         room_id="room-1",
@@ -756,12 +749,7 @@ def test_peer_retirement_requires_typed_success_receipt(tmp_path: Path):
         grant="signed-room-grant",
         attachments=True,
     )
-    service = HostedRoomService(
-        _server(),
-        db_path=tmp_path / "state.db",
-        peer_routes={("room-1", "member-reviewer"): route},
-        peer_clients={"install-peer": peer},
-    )
+    service = _service_with_test_peer(tmp_path / "state.db", route, peer)
     plan = SimpleNamespace(
         identity=SimpleNamespace(task_id="dtask:one"),
         member=SimpleNamespace(
@@ -807,11 +795,10 @@ def test_lost_peer_artifact_ack_retries_without_duplicate_member_message(
         grant="signed-room-grant",
         attachments=True,
     )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-reviewer"): route},
-        peer_clients={"install-peer": peer},
+    service = _service_with_test_peer(
+        db,
+        route,
+        peer,
         artifact_clock=lambda: now[0],
         artifact_retry_min_seconds=10,
         artifact_retry_max_seconds=40,
@@ -847,11 +834,10 @@ def test_lost_peer_artifact_ack_retries_without_duplicate_member_message(
     )
     _wait_for(lambda: len(peer.acks) == 1)
     assert service.stop(timeout=1.0)
-    resumed = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-reviewer"): route},
-        peer_clients={"install-peer": peer},
+    resumed = _service_with_test_peer(
+        db,
+        route,
+        peer,
         artifact_clock=lambda: now[0],
         artifact_retry_min_seconds=10,
         artifact_retry_max_seconds=40,

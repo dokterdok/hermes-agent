@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
+from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 from tui_gateway.hosted_room_service import HostedRoomService
 
@@ -25,8 +27,10 @@ def _route(grant: str) -> PeerMemberRoute:
     )
 
 
-def _service() -> HostedRoomService:
+def _service(db_path=None) -> HostedRoomService:
     service = object.__new__(HostedRoomService)
+    if db_path is not None:
+        service.db_path = db_path
     service._policy_lock = threading.RLock()
     service._peer_route_status = {("room-1", "member-peer"): "ready"}
     service._persisted_peer_route_keys = set()
@@ -86,10 +90,23 @@ def test_route_status_and_fingerprint_are_one_locked_snapshot():
     ).hexdigest()
 
 
-def test_peer_registration_compares_and_swaps_the_observed_grant():
-    service = _service()
+def test_peer_registration_compares_and_swaps_the_observed_grant(tmp_path):
+    service = _service(tmp_path / "state.db")
+    catalog = GatewayRoomCatalog.from_mapping(
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
+    )
+    current = replace(
+        _route("signed.room.grant"),
+        capability_digest=catalog.catalog_digest,
+        execution_policy_digest=catalog.execution_policy.policy_digest,
+    )
+    service.peer_routes[("room-1", "member-peer")] = current
     old_sha256 = hashlib.sha256(b"signed.room.grant").hexdigest()
-    winner = _route("winner.room.grant")
+    winner = replace(current, grant="winner.room.grant")
+    persistence = {
+        "target_url": "https://peer.example.test",
+        "catalog": catalog,
+    }
 
     with pytest.raises(RuntimeError, match="changed during reconnect"):
         service.register_peer_route(
@@ -98,6 +115,7 @@ def test_peer_registration_compares_and_swaps_the_observed_grant():
             route=winner,
             client=object(),
             expected_grant_sha256="0" * 64,
+            **persistence,
         )
 
     assert service.peer_routes[("room-1", "member-peer")].grant == "signed.room.grant"
@@ -107,6 +125,7 @@ def test_peer_registration_compares_and_swaps_the_observed_grant():
         route=winner,
         client=object(),
         expected_grant_sha256=old_sha256,
+        **persistence,
     )
     service.register_peer_route(
         room_id="room-1",
@@ -114,5 +133,6 @@ def test_peer_registration_compares_and_swaps_the_observed_grant():
         route=winner,
         client=object(),
         expected_grant_sha256=old_sha256,
+        **persistence,
     )
     assert service.peer_routes[("room-1", "member-peer")].grant == "winner.room.grant"

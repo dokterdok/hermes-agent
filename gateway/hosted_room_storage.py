@@ -189,9 +189,19 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             room_id TEXT PRIMARY KEY,
             authority_gateway_id TEXT NOT NULL,
             authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
-            started_at REAL NOT NULL
+            started_at REAL NOT NULL,
+            revocation_complete_at REAL
         )"""
     )
+    disband_fence_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(hosted_room_disband_fences)")
+    }
+    if "revocation_complete_at" not in disband_fence_columns:
+        conn.execute(
+            "ALTER TABLE hosted_room_disband_fences "
+            "ADD COLUMN revocation_complete_at REAL"
+        )
     conn.execute(
         """CREATE TABLE IF NOT EXISTS hosted_room_remote_runs (
             room_id TEXT NOT NULL,
@@ -475,6 +485,15 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
            BEGIN
                SELECT RAISE(ABORT, 'Group Chat route registration is fenced');
            END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_hosted_room_links_reject_unrevoked_delete
+           BEFORE DELETE ON hosted_room_links
+           WHEN NOT EXISTS (
+               SELECT 1 FROM hosted_room_disband_fences
+                WHERE room_id=OLD.room_id AND revocation_complete_at IS NOT NULL
+           )
+           BEGIN
+               SELECT RAISE(ABORT, 'Group Chat routes are not revoked');
+           END""",
     ):
         conn.execute(trigger)
     if not _schema_is_current(conn):
@@ -632,7 +651,8 @@ def begin_room_link_retirement(
         ):
             raise AuthorityConflictError("Group Chat route fence authority changed")
         existing = conn.execute(
-            """SELECT authority_gateway_id, authority_epoch, started_at
+            """SELECT authority_gateway_id, authority_epoch, started_at,
+                      revocation_complete_at
                  FROM hosted_room_disband_fences WHERE room_id=?""",
             (room_id,),
         ).fetchone()
@@ -654,7 +674,57 @@ def begin_room_link_retirement(
             "authority_gateway_id": lineage[0],
             "authority_epoch": lineage[1],
             "started_at": timestamp,
+            "revocation_complete_at": None,
         }
+
+
+def room_link_retirement_started(db_path: Path | str, *, room_id: str) -> bool:
+    """Return whether this room has crossed the no-new-route boundary."""
+
+    with _transaction(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM hosted_room_disband_fences WHERE room_id=?",
+            (room_id,),
+        ).fetchone()
+    return row is not None
+
+
+def complete_room_link_retirement(
+    db_path: Path | str,
+    *,
+    room_id: str,
+    authority_gateway_id: str,
+    authority_epoch: int,
+    now: float | None = None,
+) -> None:
+    """Allow route deletion only after every remote grant was revoked."""
+
+    room_id = _validate_identifier(
+        room_id,
+        label="room_id",
+        max_chars=MAX_ROOM_ID_CHARS,
+    )
+    authority_gateway_id = _validate_identifier(
+        authority_gateway_id,
+        label="authority_gateway_id",
+        max_chars=MAX_ACTOR_ID_CHARS,
+    )
+    if (
+        isinstance(authority_epoch, bool)
+        or not isinstance(authority_epoch, int)
+        or authority_epoch < 1
+    ):
+        raise HostedRoomError("authority_epoch must be a positive integer")
+    timestamp = float(time.time() if now is None else now)
+    with _transaction(db_path, immediate=True) as conn:
+        cursor = conn.execute(
+            """UPDATE hosted_room_disband_fences
+                  SET revocation_complete_at=COALESCE(revocation_complete_at, ?)
+                WHERE room_id=? AND authority_gateway_id=? AND authority_epoch=?""",
+            (timestamp, room_id, authority_gateway_id, authority_epoch),
+        )
+        if cursor.rowcount != 1:
+            raise AuthorityConflictError("Group Chat route fence authority changed")
 
 
 def list_room_link_records(db_path: Path | str) -> list[dict[str, Any]]:
