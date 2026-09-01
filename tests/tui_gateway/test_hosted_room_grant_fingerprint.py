@@ -29,8 +29,10 @@ def _service() -> HostedRoomService:
     service = object.__new__(HostedRoomService)
     service._policy_lock = threading.RLock()
     service._peer_route_status = {("room-1", "member-peer"): "ready"}
+    service._persisted_peer_route_keys = set()
     service.peer_routes = {("room-1", "member-peer"): _route("signed.room.grant")}
     service.peer_clients = {}
+    service._unblock_artifact_retries = lambda _room_id, _member_id: None
     service.runtime = SimpleNamespace(wakeup=lambda: None)
     service.status = lambda _room_id: {
         "working": False,

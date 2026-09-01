@@ -75,6 +75,12 @@ _LINK_SCHEMA_COLUMNS = frozenset({
     "status",
     "updated_at",
 })
+_DISBAND_FENCE_SCHEMA_COLUMNS = frozenset({
+    "room_id",
+    "authority_gateway_id",
+    "authority_epoch",
+    "started_at",
+})
 _REMOTE_RUN_SCHEMA_COLUMNS = frozenset({
     "room_id",
     "home_install_id",
@@ -135,6 +141,8 @@ _ROOM_SAFETY_TRIGGERS = frozenset({
     "trg_hosted_replicas_reserve_insert",
     "trg_hosted_events_reject_quarantined_insert",
     "trg_hosted_events_quarantine_unsafe_lineage",
+    "trg_hosted_room_links_reject_fenced_insert",
+    "trg_hosted_room_links_reject_fenced_update",
 })
 
 _EVENT_KINDS_BY_ACTOR = {

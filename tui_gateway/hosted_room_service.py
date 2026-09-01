@@ -112,6 +112,7 @@ class HostedRoomService:
         self.rpc = HostedRoomServerRPC(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
+        self._persisted_peer_route_keys: set[tuple[str, str]] = set()
         self._artifact_clock = artifact_clock
         self._artifact_retry_min_seconds = max(0.01, float(artifact_retry_min_seconds))
         self._artifact_retry_max_seconds = max(
@@ -154,6 +155,9 @@ class HostedRoomService:
                 )
                 self.peer_routes[(stored.room_id, stored.member_id)] = route
                 self.peer_clients[(stored.room_id, stored.member_id)] = client
+                self._persisted_peer_route_keys.add(
+                    (stored.room_id, stored.member_id)
+                )
                 self._peer_route_status[(stored.room_id, stored.member_id)] = (
                     stored.status
                 )
@@ -343,7 +347,8 @@ class HostedRoomService:
         # never leave a process-local route that disappears after restart. The
         # same lock makes reconnect a compare-and-swap against grant rotation.
         with self._policy_lock:
-            current = self.peer_routes.get((room_id, member_id))
+            key = (room_id, member_id)
+            current = self.peer_routes.get(key)
             current_sha256 = (
                 hashlib.sha256(current.grant.encode("utf-8")).hexdigest()
                 if current is not None
@@ -370,9 +375,11 @@ class HostedRoomService:
                         trace_id=route.trace_id,
                     ),
                 )
-            self.peer_routes[(room_id, member_id)] = route
-            self.peer_clients[(room_id, member_id)] = client
-            self._peer_route_status[(room_id, member_id)] = "ready"
+            self.peer_routes[key] = route
+            self.peer_clients[key] = client
+            self._peer_route_status[key] = "ready"
+            if target_url is not None and catalog is not None:
+                self._persisted_peer_route_keys.add(key)
         self._unblock_artifact_retries(room_id, member_id)
         self.runtime.wakeup()
 
@@ -383,6 +390,30 @@ class HostedRoomService:
         room remains intact and the user may retry rather than receiving a
         false successful disband while a grant is still live.
         """
+        try:
+            room = hosted_rooms.room_state(
+                self.db_path,
+                room_id=room_id,
+                include_disbanded=True,
+            )
+        except hosted_rooms.RoomNotFoundError:
+            authority_gateway_id = hosted_rooms.local_authority_gateway_id()
+            authority_epoch = 1
+        else:
+            authority_gateway_id = str(room["authority_gateway_id"])
+            authority_epoch = int(room["authority_epoch"])
+        hosted_rooms.begin_room_link_retirement(
+            self.db_path,
+            room_id=room_id,
+            authority_gateway_id=authority_gateway_id,
+            authority_epoch=authority_epoch,
+        )
+        links, errors = hosted_room_links.load_room_links_tolerant(self.db_path)
+        if any(error.startswith(f"{room_id}:") for error in errors):
+            raise RuntimeError("persisted peer room routes need repair")
+        for stored in links:
+            if stored.room_id == room_id:
+                self._hydrate_persisted_peer_route(room_id, stored.member_id)
         with self._policy_lock:
             routes = [
                 (key, route)
@@ -427,6 +458,7 @@ class HostedRoomService:
                 self.peer_routes.pop(key, None)
                 self._peer_route_status.pop(key, None)
                 self.peer_clients.pop(key, None)
+                self._persisted_peer_route_keys.discard(key)
         return len(routes)
 
     def retire_room_artifacts(self, room_id: str) -> None:
@@ -465,6 +497,81 @@ class HostedRoomService:
                 )
             return tombstone
 
+    def _hydrate_persisted_peer_route(
+        self,
+        room_id: str,
+        member_id: str,
+    ) -> tuple[PeerMemberRoute, HostedRoomPeerClient] | None:
+        """Hydrate or refresh one exact route persisted by another process."""
+
+        key = (room_id, member_id)
+        with self._policy_lock:
+            route = self.peer_routes.get(key)
+            client = self.peer_clients.get(key)
+            if route is not None and client is not None and not isinstance(
+                client, PeerRunsHTTPClient
+            ):
+                return route, client
+            try:
+                stored = hosted_room_links.load_room_link(
+                    self.db_path,
+                    room_id=room_id,
+                    member_id=member_id,
+                )
+            except Exception as exc:
+                self.peer_routes.pop(key, None)
+                self.peer_clients.pop(key, None)
+                self._peer_route_status[key] = "needs_reauthorization"
+                raise RuntimeError("persisted peer room routes need repair") from exc
+            if stored is None:
+                if key in self._persisted_peer_route_keys:
+                    self.peer_routes.pop(key, None)
+                    self.peer_clients.pop(key, None)
+                    self._peer_route_status.pop(key, None)
+                    self._persisted_peer_route_keys.discard(key)
+                    return None
+                return (
+                    (route, client)
+                    if route is not None and client is not None
+                    else None
+                )
+            if PROTOCOL_VERSION not in stored.catalog.protocol_versions:
+                raise RuntimeError("persisted peer room route needs a protocol update")
+            if (
+                route is not None
+                and isinstance(client, PeerRunsHTTPClient)
+                and route.grant == stored.grant
+                and route.target_install_id == stored.catalog.installation_id
+                and route.target_profile == stored.target_profile
+                and route.capability_digest == stored.catalog.catalog_digest
+                and route.execution_policy_digest
+                == stored.catalog.execution_policy.policy_digest
+                and client.base_url == stored.target_url
+            ):
+                return route, client
+            client = PeerRunsHTTPClient(
+                base_url=stored.target_url,
+                api_key="",
+                receipt_db_path=self.db_path,
+            )
+            route = PeerMemberRoute(
+                home_install_id=hosted_rooms.local_authority_gateway_id(),
+                member_id=stored.member_id,
+                target_install_id=stored.catalog.installation_id,
+                target_profile=stored.target_profile,
+                capability_digest=stored.catalog.catalog_digest,
+                execution_policy_digest=stored.catalog.execution_policy.policy_digest,
+                cancellation_scope_id=stored.cancellation_scope_id,
+                trace_id=stored.trace_id,
+                grant=stored.grant,
+                attachments=stored.catalog.attachments,
+            )
+            self.peer_routes[key] = route
+            self.peer_clients[key] = client
+            self._peer_route_status[key] = stored.status
+            self._persisted_peer_route_keys.add(key)
+            return route, client
+
     def _resolve_member_transport(
         self,
         binding: HostedRoomBinding,
@@ -474,12 +581,15 @@ class HostedRoomService:
         member_id = str(
             payload.get("target_member_id") or payload.get("target_profile") or ""
         )
-        route = self.peer_routes.get((binding.room_id, member_id))
-        if route is None:
-            if self._member_is_peer(binding.room_id, member_id):
-                raise MemberTransportUnavailable("peer room route is unavailable")
+        key = (binding.room_id, member_id)
+        route = self.peer_routes.get(key)
+        if route is None and not self._member_is_peer(binding.room_id, member_id):
             return self.rpc
-        client = self.peer_clients.get((binding.room_id, member_id))
+        hydrated = self._hydrate_persisted_peer_route(binding.room_id, member_id)
+        route = hydrated[0] if hydrated is not None else self.peer_routes.get(key)
+        if route is None:
+            raise MemberTransportUnavailable("peer room route is unavailable")
+        client = hydrated[1] if hydrated is not None else self.peer_clients.get(key)
         if client is None:
             raise MemberTransportUnavailable("peer room client is unavailable")
         identity = task.get("identity")
@@ -751,13 +861,13 @@ class HostedRoomService:
         ):
             raise RuntimeError("peer room capability identity changed")
         key = (room_id, member_id)
-        stored = next(
-            (
-                link
-                for link in hosted_room_links.load_room_links(self.db_path)
-                if (link.room_id, link.member_id) == key
-            ),
-            None,
+        route = self.peer_routes.get(key)
+        if route is None:
+            raise RuntimeError("peer room route is unavailable")
+        stored = hosted_room_links.load_room_link(
+            self.db_path,
+            room_id=room_id,
+            member_id=member_id,
         )
         if stored is None:
             # Explicitly supplied in-process routes are valid for tests and
@@ -2241,7 +2351,16 @@ class _RouteStatusPeerClient:
                                         error_code="room_capability_catalog_changed",
                                         not_admitted=True,
                                     )
-                            self._on_refreshed(replacement, refreshed_catalog)
+                            try:
+                                self._on_refreshed(replacement, refreshed_catalog)
+                            except Exception:
+                                revoke = getattr(self._client, "revoke_grant", None)
+                                if not callable(revoke):
+                                    raise RuntimeError(
+                                        "unpublished refreshed grant cannot be revoked"
+                                    )
+                                revoke(grant=replacement)
+                                raise
                             kwargs = {**kwargs, "grant": replacement}
             try:
                 result = value(*args, **kwargs)
