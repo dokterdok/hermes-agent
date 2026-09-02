@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1600px; min-height: 2000px; }
+  body { overflow: visible; }
+  body {
+    background: #f6f7f8;
+    color: #252a30;
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: 0;
+  }
+  main { width: 100%; min-height: 100%; padding: 66px 72px 84px; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 40px; }
+  h1 { margin: 0; max-width: 960px; font-size: 54px; line-height: 1.08; letter-spacing: 0; }
+  .sub { margin-top: 18px; max-width: 1050px; font-size: 24px; line-height: 1.42; color: #5b6880; }
+  .legend { display: flex; gap: 24px; padding-top: 12px; font-size: 17px; color: #58667e; }
+  .legend-item { display: flex; align-items: center; gap: 9px; max-width: 180px; }
+  .dot { width: 13px; height: 13px; border-radius: 50%; flex: none; }
+  .green { background: #15966d; }
+  .blue { background: #2d76dc; }
+  .stack { margin-top: 40px; display: flex; flex-direction: column; align-items: center; }
+  .connector { width: 2px; height: 22px; background: #c6d2e3; }
+  .card {
+    position: relative;
+    background: #ffffff;
+    border: 1px solid #c8d3e3;
+    border-left: 7px solid var(--accent);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(35, 53, 82, 0.08);
+    padding: 26px 30px 24px;
+  }
+  .card h2 { margin: 0; font-size: 29px; line-height: 1.15; letter-spacing: 0; }
+  .card p { margin: 10px 0 0; font-size: 22px; line-height: 1.38; color: #56657b; }
+  .receipt { margin-top: 12px; font-size: 19px; line-height: 1.25; color: #253651; font-weight: 700; }
+  .badge {
+    position: absolute; top: 22px; right: 24px;
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid #a8d9c6; border-radius: 5px;
+    background: #eefaf5; color: #087552;
+    padding: 7px 12px; font-size: 16px; font-weight: 800;
+  }
+  .badge.blue-badge { border-color: #aecbef; background: #eef5ff; color: #1e63be; }
+  .number {
+    position: absolute; left: 26px; top: 50%; transform: translateY(-50%);
+    width: 55px; height: 55px; display: grid; place-items: center;
+    border-radius: 6px; background: var(--number-bg); color: var(--number-fg);
+    font-size: 26px; font-weight: 850;
+  }
+  .content { padding-left: 78px; padding-right: 145px; }
+  .layer1 { width: 1456px; min-height: 154px; --accent: #2d76dc; --number-bg: #eaf2ff; --number-fg: #1e5eb6; }
+  .layer2 { width: 1320px; min-height: 154px; --accent: #3f83df; --number-bg: #eaf2ff; --number-fg: #1e5eb6; }
+  .layer3 { width: 1170px; min-height: 168px; --accent: #4568d6; --number-bg: #edf0ff; --number-fg: #324fad; }
+  .layer4 { width: 1010px; min-height: 174px; --accent: #7659d5; --number-bg: #f0edff; --number-fg: #6547c2; }
+  .branches { width: 880px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .branch { min-height: 218px; padding-top: 30px; }
+  .branch .content { padding-right: 16px; }
+  .branch .badge { position: static; margin: 16px 0 0 78px; }
+  .layer5 { --accent: #7659d5; --number-bg: #f0edff; --number-fg: #6547c2; }
+  .layer6 { --accent: #0b9a91; --number-bg: #e8f8f6; --number-fg: #08786f; }
+  .integration {
+    width: 760px; min-height: 270px; padding: 30px 34px;
+    border: 0; border-radius: 6px; background: #24292f; color: #ffffff;
+    box-shadow: 0 12px 32px rgba(20, 35, 59, 0.22);
+  }
+  .integration h2 { font-size: 31px; }
+  .integration p { color: #c8d4e5; font-size: 18px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+  .pill { border: 1px solid #6f829f; border-radius: 5px; padding: 8px 11px; font-size: 15px; font-weight: 700; color: #edf3fb; }
+  .pill.good { border-color: #4ea98b; color: #bff3df; }
+  footer { margin-top: 28px; width: 1456px; display: flex; justify-content: space-between; font-size: 16px; color: #66748a; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>One Group Chat experience, six reviewable layers</h1>
+      <div class="sub">Bots keep the same conversation across Desktop, gateways and messaging. Foundations land first; files and messaging remain independent review branches.</div>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><span class="dot green"></span><span>Landed / source in review</span></div>
+      <div class="legend-item"><span class="dot blue"></span><span>Updating / integration draft</span></div>
+    </div>
+  </header>
+
+  <section class="stack">
+    <article class="integration">
+      <h2>#98307 - Integration draft</h2>
+      <p>Current-main candidate: continuity, messaging, files and Bot-to-Bot handoff. Fresh packaged and real-gateway UAT is next.</p>
+      <div class="pills">
+        <span class="pill">Head 601282186d</span>
+        <span class="pill">726 Bot Mode tests</span>
+        <span class="pill">1,164 Python tests</span>
+        <span class="pill good">Local repair reviews cleared</span>
+        <span class="pill good">CI / Docker / Nix green</span>
+        <span class="pill">Fresh field UAT next</span>
+      </div>
+    </article>
+    <div class="connector"></div>
+
+    <div class="branches">
+      <article class="card branch layer5">
+        <div class="number">5</div>
+        <div class="content">
+          <h2>Files and Bot-to-Bot handoff</h2>
+          <p>Users share verified files; Bots pass generated results to named teammates across gateways.</p>
+          <div class="receipt">#98072 + #99159</div>
+        </div>
+        <span class="badge"><span class="dot green"></span>Review-ready</span>
+      </article>
+      <article class="card branch layer6">
+        <div class="number">6</div>
+        <div class="content">
+          <h2>Control from messaging</h2>
+          <p>Check activity, send, Retry, Stop and approve hosted tasks from owner chats.</p>
+          <div class="receipt">#98073 · current-main recut</div>
+        </div>
+        <span class="badge blue-badge"><span class="dot blue"></span>Updating</span>
+      </article>
+    </div>
+    <div class="connector"></div>
+
+    <article class="card layer4">
+      <div class="number">4</div>
+      <div class="content">
+        <h2>Automatic Desktop continuity</h2>
+        <p>Hermes chooses the strongest safe mode, restores history, and falls back cleanly for older gateways.</p>
+        <div class="receipt">#97846 · Desktop-only client</div>
+      </div>
+      <span class="badge"><span class="dot green"></span>Review-ready</span>
+    </article>
+    <div class="connector"></div>
+
+    <article class="card layer3">
+      <div class="number">3</div>
+      <div class="content">
+        <h2>Cross-gateway collaboration</h2>
+        <p>Bots on separate gateways exchange exact work and replies without a proprietary cloud coordinator.</p>
+        <div class="receipt">Landed via #99244 from #97797</div>
+      </div>
+      <span class="badge"><span class="dot green"></span>Landed</span>
+    </article>
+    <div class="connector"></div>
+
+    <article class="card layer2">
+      <div class="number">2</div>
+      <div class="content">
+        <h2>Same-gateway runner</h2>
+        <p>Bots on one gateway keep working after Desktop closes; unavailable members defer safely.</p>
+        <div class="receipt">Landed via #99099 from #97744</div>
+      </div>
+      <span class="badge"><span class="dot green"></span>Landed</span>
+    </article>
+    <div class="connector"></div>
+
+    <article class="card layer1">
+      <div class="number">1</div>
+      <div class="content">
+        <h2>Durable authority and replay</h2>
+        <p>Ordered history on the owning gateway. Passive-replica safety is reviewed separately; automatic takeover stays disabled.</p>
+        <div class="receipt">#99007 landed · #101474 + #99107 in review</div>
+      </div>
+      <span class="badge"><span class="dot green"></span>Landed</span>
+    </article>
+
+    <footer><span>Foundation widens downward; Layers 5 and 6 are parallel review branches.</span><span>Updated 2 Sep 2026</span></footer>
+  </section>
+</main>
+</body>
+</html>
