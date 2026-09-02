@@ -9,11 +9,24 @@ from tui_gateway.hosted_room_service import HostedRoomService
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 
 
+def _create_local_room(service: HostedRoomService) -> None:
+    service.local_profiles = lambda: ("default", "local")
+    service.create_room(
+        room_id="room-1",
+        name="Local approval",
+        members=[
+            {"member_id": "default", "profile": "default", "handle": "default"},
+            {"member_id": "local", "profile": "local", "handle": "local"},
+        ],
+    )
+
+
 def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
+    _create_local_room(service)
     service._set_pending_action(
         "room-1",
         "local",
@@ -54,6 +67,7 @@ def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path)
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
+    _create_local_room(service)
     action = {
         "kind": "approval",
         "task_id": "task-local-1",
