@@ -775,7 +775,10 @@ class HostedRoomService(HostedRoomArtifactMixin):
         stored_action = (
             {**action, "member_id": member_id} if action is not None else None
         )
-        if stored_action is not None and stored_action.get("kind") == "approval":
+        if stored_action is not None and stored_action.get("kind") in {
+            "approval",
+            "approval_clear",
+        }:
             profile = ""
             try:
                 room = hosted_rooms.room_state(self.db_path, room_id=room_id)
@@ -798,31 +801,95 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 or room.get("authority_epoch")
                 or 0
             )
+            reported_observer = str(
+                stored_action.get("observer_generation") or "legacy"
+            )
+            reported_lease_generation = int(
+                stored_action.get("observer_lease_generation") or 0
+            )
+            if reported_observer != "legacy":
+                lease = self.runtime._leases.get(room_id)
+                if (
+                    lease is None
+                    or lease.gateway_id != reported_gateway_id
+                    or lease.authority_epoch != reported_epoch
+                    or lease.process_generation != reported_observer
+                    or lease.lease_generation != reported_lease_generation
+                ):
+                    return
+                try:
+                    driver.require_active_lease(
+                        self.db_path,
+                        lease,
+                        clock=self.runtime.clock,
+                    )
+                except driver.StaleLeaseError:
+                    return
             if (
                 reported_gateway_id != str(room["authority_gateway_id"])
                 or reported_epoch != int(room["authority_epoch"])
             ):
+                is_clear = stored_action.get("kind") == "approval_clear"
                 approvals.clear_pending_approval(
                     self.db_path,
                     room_id=room_id,
                     member_id=member_id,
-                    request_id=stored_action.get("request_id"),
+                    request_id=(
+                        None if is_clear else stored_action.get("request_id")
+                    ),
                     authority_gateway_id=reported_gateway_id,
                     authority_epoch=reported_epoch,
                 )
                 with self._policy_lock:
                     current = self._pending_actions.get(key)
-                    if str((current or {}).get("request_id") or "") == str(
-                        stored_action.get("request_id") or ""
-                    ) and str(
+                    same_authority = str(
                         (current or {}).get("authority_gateway_id") or ""
                     ) == reported_gateway_id and int(
                         (current or {}).get("authority_epoch") or 0
-                    ) == reported_epoch:
+                    ) == reported_epoch
+                    same_request = str((current or {}).get("request_id") or "") == str(
+                        stored_action.get("request_id") or ""
+                    )
+                    if same_authority and (is_clear or same_request):
                         self._pending_actions.pop(key, None)
                 return
             stored_action["authority_gateway_id"] = reported_gateway_id
             stored_action["authority_epoch"] = reported_epoch
+            stored_action["observer_generation"] = reported_observer
+            stored_action["observer_lease_generation"] = reported_lease_generation
+            if stored_action.get("kind") == "approval_clear":
+                with self._policy_lock:
+                    current = self._pending_actions.get(key)
+                if (
+                    not isinstance(current, Mapping)
+                    or str(current.get("authority_gateway_id") or "")
+                    != reported_gateway_id
+                    or int(current.get("authority_epoch") or 0) != reported_epoch
+                    or str(current.get("task_id") or "")
+                    != str(stored_action.get("task_id") or "")
+                    or int(current.get("execution_generation") or 0)
+                    != int(stored_action.get("execution_generation") or 0)
+                    or str(current.get("session_id") or "")
+                    != str(stored_action.get("session_id") or "")
+                ):
+                    return
+                try:
+                    approvals.clear_pending_approval(
+                        self.db_path,
+                        room_id=room_id,
+                        member_id=member_id,
+                        request_id=current.get("request_id"),
+                        authority_gateway_id=reported_gateway_id,
+                        authority_epoch=reported_epoch,
+                        observer_generation=reported_observer,
+                        observer_lease_generation=reported_lease_generation,
+                    )
+                except approvals.MessagingApprovalObservationStale:
+                    return
+                with self._policy_lock:
+                    if self._pending_actions.get(key) == current:
+                        self._pending_actions.pop(key, None)
+                return
             for member in room.get("members") or []:
                 if not isinstance(member, Mapping):
                     continue
@@ -872,13 +939,15 @@ class HostedRoomService(HostedRoomArtifactMixin):
                     member_id=member_id,
                     action=stored_action,
                 )
-            except Exception:
+            except Exception as exc:
                 with self._policy_lock:
                     if self._pending_actions.get(key) == stored_action:
                         if previous_action is None:
                             self._pending_actions.pop(key, None)
                         else:
                             self._pending_actions[key] = dict(previous_action)
+                if isinstance(exc, approvals.MessagingApprovalObservationStale):
+                    return
                 raise
         if stored_action is not None and stored_action.get("kind") == "approval":
             binding = next(
@@ -1750,7 +1819,13 @@ class HostedRoomService(HostedRoomArtifactMixin):
                     key: value
                     for key, value in action.items()
                     if key
-                    not in {"profile", "authority_gateway_id", "authority_epoch"}
+                    not in {
+                        "profile",
+                        "authority_gateway_id",
+                        "authority_epoch",
+                        "observer_generation",
+                        "observer_lease_generation",
+                    }
                 }
                 for (
                     action_room_id,

@@ -38,6 +38,10 @@ class MessagingApprovalTerminalError(RuntimeError):
     """An exact approval can no longer be applied and must not be retried."""
 
 
+class MessagingApprovalObservationStale(RuntimeError):
+    """A worker observation lost its exact room lease before mutation."""
+
+
 def _identifier(value: Any, *, label: str) -> str:
     normalized = str(value or "").strip()
     if _IDENTIFIER_RE.fullmatch(normalized) is None:
@@ -95,12 +99,41 @@ def _initialize(conn: sqlite3.Connection) -> None:
                request_id TEXT NOT NULL,
                profile TEXT NOT NULL,
                session_id TEXT NOT NULL,
+               observer_generation TEXT NOT NULL,
+               observer_lease_generation INTEGER NOT NULL,
                description TEXT NOT NULL,
                command_text TEXT NOT NULL,
                updated_at REAL NOT NULL,
                PRIMARY KEY (room_id, member_id)
            )"""
     )
+    pending_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(hosted_room_pending_approvals)")
+    }
+    if not {"observer_generation", "observer_lease_generation"} <= pending_columns:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            pending_columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info(hosted_room_pending_approvals)"
+                )
+            }
+            if "observer_generation" not in pending_columns:
+                conn.execute(
+                    """ALTER TABLE hosted_room_pending_approvals
+                       ADD COLUMN observer_generation TEXT NOT NULL DEFAULT 'legacy'"""
+                )
+            if "observer_lease_generation" not in pending_columns:
+                conn.execute(
+                    """ALTER TABLE hosted_room_pending_approvals
+                       ADD COLUMN observer_lease_generation INTEGER NOT NULL DEFAULT 0"""
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     conn.execute(
         """CREATE TABLE IF NOT EXISTS hosted_room_messaging_approval_commands (
                command_id TEXT PRIMARY KEY,
@@ -139,6 +172,54 @@ def _prune_locked(conn: sqlite3.Connection, *, now: float) -> None:
             now - COMMAND_RETENTION_SECONDS,
         ),
     )
+
+
+def _require_observer_lease(
+    conn: sqlite3.Connection,
+    observation: Mapping[str, Any],
+    *,
+    now: float,
+) -> None:
+    observer = str(observation.get("observer_generation") or "legacy")
+    if observer == "legacy":
+        return
+    lease_generation = int(observation.get("observer_lease_generation") or 0)
+    if lease_generation < 1:
+        raise MessagingApprovalObservationStale("approval observer lease is unavailable")
+    try:
+        room = conn.execute(
+            """SELECT authority_gateway_id, authority_epoch, disbanded_at
+                 FROM hosted_rooms WHERE room_id=?""",
+            (str(observation.get("room_id") or ""),),
+        ).fetchone()
+        row = conn.execute(
+            """SELECT gateway_id, authority_epoch, process_generation,
+                      lease_generation, expires_at, released_at
+                 FROM hosted_room_driver_leases WHERE room_id=?""",
+            (str(observation.get("room_id") or ""),),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).casefold():
+            raise MessagingApprovalObservationStale(
+                "approval observer lease is unavailable"
+            ) from exc
+        raise
+    if (
+        room is None
+        or room["disbanded_at"] is not None
+        or str(room["authority_gateway_id"])
+        != str(observation.get("authority_gateway_id") or "")
+        or int(room["authority_epoch"])
+        != int(observation.get("authority_epoch") or 0)
+        or row is None
+        or str(row["gateway_id"]) != str(observation.get("authority_gateway_id") or "")
+        or int(row["authority_epoch"]) != int(observation.get("authority_epoch") or 0)
+        or str(row["process_generation"]) != observer
+        or int(row["lease_generation"]) != lease_generation
+        or row["released_at"] is not None
+        or float(row["expires_at"]) <= now
+    ):
+        raise MessagingApprovalObservationStale("approval observer lease changed")
 
 
 def normalize_pending_approval(
@@ -184,6 +265,13 @@ def normalize_pending_approval(
             if action.get("session_id")
             else ""
         ),
+        "observer_generation": _identifier(
+            action.get("observer_generation") or "legacy",
+            label="observer_generation",
+        ),
+        "observer_lease_generation": int(
+            action.get("observer_lease_generation") or 0
+        ),
         "approval": {
             "description": _text(approval.get("description")),
             "command": _text(approval.get("command")),
@@ -201,18 +289,20 @@ def persist_pending_approval(
 ) -> dict[str, Any]:
     pending = normalize_pending_approval(room_id, member_id, action)
     approval = pending["approval"]
-    now = time.time()
     conn = _connect(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        now = time.time()
         _prune_locked(conn, now=now)
+        _require_observer_lease(conn, pending, now=now)
         conn.execute(
             """INSERT INTO hosted_room_pending_approvals(
                    room_id, authority_gateway_id, authority_epoch,
                    member_id, task_id, execution_generation,
                    request_id, profile, session_id, description,
+                   observer_generation, observer_lease_generation,
                    command_text, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(room_id, member_id) DO UPDATE SET
                    authority_gateway_id=excluded.authority_gateway_id,
                    authority_epoch=excluded.authority_epoch,
@@ -221,6 +311,8 @@ def persist_pending_approval(
                    request_id=excluded.request_id,
                    profile=excluded.profile,
                    session_id=excluded.session_id,
+                   observer_generation=excluded.observer_generation,
+                   observer_lease_generation=excluded.observer_lease_generation,
                    description=excluded.description,
                    command_text=excluded.command_text,
                    updated_at=excluded.updated_at""",
@@ -235,6 +327,8 @@ def persist_pending_approval(
                 pending["profile"],
                 pending["session_id"],
                 approval["description"],
+                pending["observer_generation"],
+                pending["observer_lease_generation"],
                 approval["command"],
                 now,
             ),
@@ -256,6 +350,8 @@ def clear_pending_approval(
     request_id: Any | None = None,
     authority_gateway_id: Any | None = None,
     authority_epoch: Any | None = None,
+    observer_generation: Any | None = None,
+    observer_lease_generation: Any | None = None,
 ) -> int:
     room = _identifier(room_id, label="room_id")
     member = _identifier(member_id, label="member_id")
@@ -272,8 +368,23 @@ def clear_pending_approval(
     epoch = int(authority_epoch or 0)
     if authority_epoch is not None and epoch < 1:
         raise MessagingApprovalError("authority_epoch must be positive")
+    observer = str(observer_generation or "")
+    observer_lease = int(observer_lease_generation or 0)
     conn = _connect(db_path)
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        if observer:
+            _require_observer_lease(
+                conn,
+                {
+                    "room_id": room,
+                    "authority_gateway_id": authority_gateway,
+                    "authority_epoch": epoch,
+                    "observer_generation": observer,
+                    "observer_lease_generation": observer_lease,
+                },
+                now=time.time(),
+            )
         changed = conn.execute(
             """DELETE FROM hosted_room_pending_approvals
                 WHERE room_id=? AND member_id=?
@@ -309,6 +420,8 @@ def _pending_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "request_id": str(row["request_id"]),
         "profile": str(row["profile"]),
         "session_id": str(row["session_id"]),
+        "observer_generation": str(row["observer_generation"]),
+        "observer_lease_generation": int(row["observer_lease_generation"]),
         "approval": {
             "description": str(row["description"]),
             "command": str(row["command_text"]),
@@ -807,6 +920,26 @@ def approval_member_label(room: Mapping[str, Any], member_id: str) -> str:
     return _display_text(member_id, limit=48) or "Bot"
 
 
+def _approval_member_picker_label(room: Mapping[str, Any], member_id: str) -> str:
+    label = approval_member_label(room, member_id)
+    for member in room.get("members") or []:
+        if not isinstance(member, Mapping):
+            continue
+        candidate = str(member.get("member_id") or member.get("profile") or "")
+        if candidate != member_id:
+            continue
+        handle = _display_text(
+            str(member.get("handle") or "").lstrip("@"),
+            limit=20,
+        )
+        if handle:
+            suffix = f" · ＠{handle}"
+            return f"{label[: max(1, 40 - len(suffix))]}{suffix}"
+        break
+    suffix = f" · {member_id[:10]}"
+    return f"{label[: max(1, 40 - len(suffix))]}{suffix}"
+
+
 def _approval_display_parts(approval: Mapping[str, Any]) -> tuple[str, str]:
     command = _display_text(
         approval.get("command"),
@@ -875,8 +1008,10 @@ def approval_picker_choices(
         return []
     choices: list[dict[str, Any]] = []
     for index, action in enumerate(pending, start=1):
-        bot = approval_member_label(room, str(action["member_id"]))
-        picker_bot = bot[:32]
+        picker_bot = _approval_member_picker_label(
+            room,
+            str(action["member_id"]),
+        )
         coordinates = "\0".join(
             str(action[field])
             for field in _APPROVAL_SCOPE_FIELDS
@@ -890,14 +1025,14 @@ def approval_picker_choices(
         choices.extend([
             {
                 "value": f"a={index}.o.{once_token}",
-                "label": f"✓ Approve once · {picker_bot}",
+                "label": f"✓ {index}. Approve once · {picker_bot}",
                 "description": "Approve this command one time",
                 "full_width": True,
                 "is_current": False,
             },
             {
                 "value": f"a={index}.d.{deny_token}",
-                "label": f"✕ Deny · {picker_bot}",
+                "label": f"✕ {index}. Deny · {picker_bot}",
                 "description": "Do not run this command",
                 "full_width": True,
                 "is_current": False,

@@ -258,6 +258,246 @@ def test_late_pending_callback_keeps_its_original_authority_epoch(tmp_path):
     assert approvals.list_pending_approvals(db, room_id="room-1") == []
 
 
+def test_old_epoch_empty_callback_cannot_clear_newer_approval(tmp_path):
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    _create_local_room(service)
+    original = service.bindings()[0]
+    task = {
+        "identity": driver.TaskIdentity(
+            "room-1",
+            "task-1",
+            "thread-1",
+            "turn-1",
+        ),
+        "execution_generation": 1,
+        "payload": {"target_member_id": "ops", "target_profile": "ops"},
+    }
+    room = hosted_rooms.room_state(db, room_id="room-1")
+    hosted_rooms.claim_authority(
+        db,
+        room_id="room-1",
+        expected_gateway_id=str(room["authority_gateway_id"]),
+        expected_epoch=int(room["authority_epoch"]),
+        new_gateway_id=str(room["authority_gateway_id"]),
+        event_id="authority-transfer-1",
+    )
+    current = service.bindings()[0]
+    current_lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=current.gateway_id,
+        authority_epoch=current.authority_epoch,
+        process_generation=service.runtime.process_generation,
+        ttl_seconds=30,
+        clock=time.time,
+    )
+    service.runtime._leases["room-1"] = current_lease
+    service.runtime._report_pending_action(
+        current,
+        task,
+        session_id="ops-session",
+        info={
+            "pending_approval": {
+                "request_id": "request-new",
+                "choices": ["once", "deny"],
+            }
+        },
+    )
+
+    service.runtime._report_pending_action(
+        original,
+        task,
+        session_id="ops-session",
+        info={},
+    )
+
+    assert service.status("room-1")["pending_actions"][0]["request_id"] == (
+        "request-new"
+    )
+    assert approvals.list_pending_approvals(db, room_id="room-1")[0][
+        "request_id"
+    ] == "request-new"
+
+
+def test_old_process_empty_callback_cannot_clear_replacement_observation(tmp_path):
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    _create_local_room(service)
+    binding = service.bindings()[0]
+    task = {
+        "identity": driver.TaskIdentity(
+            "room-1",
+            "task-1",
+            "thread-1",
+            "turn-1",
+        ),
+        "execution_generation": 1,
+        "payload": {"target_member_id": "ops", "target_profile": "ops"},
+    }
+    old_lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch,
+        process_generation="worker-old",
+        ttl_seconds=30,
+        clock=time.time,
+    )
+    service.runtime._leases["room-1"] = old_lease
+    service.runtime.process_generation = "worker-old"
+    service.runtime._report_pending_action(
+        binding,
+        task,
+        session_id="ops-session",
+        info={
+            "pending_approval": {
+                "request_id": "request-1",
+                "choices": ["once", "deny"],
+            }
+        },
+    )
+    driver.release_lease(db, old_lease, clock=time.time)
+    new_lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch,
+        process_generation="worker-new",
+        ttl_seconds=30,
+        clock=time.time,
+    )
+    service.runtime._leases["room-1"] = new_lease
+    service.runtime.process_generation = "worker-new"
+    service.runtime._report_pending_action(
+        binding,
+        task,
+        session_id="ops-session",
+        info={
+            "pending_approval": {
+                "request_id": "request-1",
+                "choices": ["once", "deny"],
+            }
+        },
+    )
+
+    service._set_pending_action(
+        "room-1",
+        "ops",
+        {
+            "kind": "approval",
+            "authority_gateway_id": binding.gateway_id,
+            "authority_epoch": binding.authority_epoch,
+            "task_id": "task-1",
+            "execution_generation": 1,
+            "session_id": "ops-session",
+            "observer_generation": "worker-old",
+            "observer_lease_generation": old_lease.lease_generation,
+            "request_id": "request-old-late",
+            "approval": {"choices": ["once", "deny"]},
+        },
+    )
+    with pytest.raises(approvals.MessagingApprovalObservationStale):
+        approvals.persist_pending_approval(
+            db,
+            room_id="room-1",
+            member_id="ops",
+            action={
+                "kind": "approval",
+                "authority_gateway_id": binding.gateway_id,
+                "authority_epoch": binding.authority_epoch,
+                "task_id": "task-1",
+                "execution_generation": 1,
+                "session_id": "ops-session",
+                "observer_generation": "worker-old",
+                "observer_lease_generation": old_lease.lease_generation,
+                "request_id": "request-old-atomic",
+                "approval": {"choices": ["once", "deny"]},
+            },
+        )
+    service._set_pending_action(
+        "room-1",
+        "ops",
+        {
+            "kind": "approval_clear",
+            "authority_gateway_id": binding.gateway_id,
+            "authority_epoch": binding.authority_epoch,
+            "task_id": "task-1",
+            "execution_generation": 1,
+            "session_id": "ops-session",
+            "observer_generation": "worker-old",
+        },
+    )
+
+    assert service._pending_actions[("room-1", "ops")]["observer_generation"] == (
+        "worker-new"
+    )
+    assert approvals.list_pending_approvals(db, room_id="room-1")[0][
+        "observer_generation"
+    ] == "worker-new"
+
+
+def test_new_worker_clear_retires_hydrated_old_observation(tmp_path):
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    _create_local_room(service)
+    binding = service.bindings()[0]
+    task = {
+        "identity": driver.TaskIdentity(
+            "room-1",
+            "task-1",
+            "thread-1",
+            "turn-1",
+        ),
+        "execution_generation": 1,
+        "payload": {"target_member_id": "ops", "target_profile": "ops"},
+    }
+    old_lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch,
+        process_generation="worker-old",
+        ttl_seconds=30,
+        clock=time.time,
+    )
+    service.runtime._leases["room-1"] = old_lease
+    service.runtime.process_generation = "worker-old"
+    service.runtime._report_pending_action(
+        binding,
+        task,
+        session_id="ops-session",
+        info={
+            "pending_approval": {
+                "request_id": "request-1",
+                "choices": ["once", "deny"],
+            }
+        },
+    )
+    driver.release_lease(db, old_lease, clock=time.time)
+    new_lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch,
+        process_generation="worker-new",
+        ttl_seconds=30,
+        clock=time.time,
+    )
+    service.runtime._leases["room-1"] = new_lease
+    service.runtime.process_generation = "worker-new"
+
+    service.runtime._report_pending_action(
+        binding,
+        task,
+        session_id="ops-session",
+        info={},
+    )
+
+    assert service.status("room-1")["pending_actions"] == []
+    assert approvals.list_pending_approvals(db, room_id="room-1") == []
+
+
 def test_transient_durable_clear_failure_is_retried_before_memory_cleanup(
     tmp_path,
     monkeypatch,
@@ -438,6 +678,7 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(tmp_p
     )
     task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
     binding = service.bindings()[0]
+    service.runtime.process_generation = "worker"
     lease = driver.acquire_lease(
         db,
         room_id="room-1",
@@ -447,6 +688,7 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(tmp_p
         ttl_seconds=30,
         clock=time.time,
     )
+    service.runtime._leases["room-1"] = lease
     driver.start_task(
         db,
         task["identity"],

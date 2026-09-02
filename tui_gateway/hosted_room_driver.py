@@ -672,7 +672,25 @@ class HostedRoomRuntime:
             payload.get("target_member_id") or payload.get("target_profile") or ""
         )
         approval = info.get("pending_approval") or info.get("approval")
-        action = None
+        lease = self._leases.get(task["identity"].room_id)
+        observer_lease_generation = (
+            lease.lease_generation
+            if lease is not None
+            and lease.gateway_id == binding.gateway_id
+            and lease.authority_epoch == binding.authority_epoch
+            and lease.process_generation == self.process_generation
+            else 0
+        )
+        action = {
+            "kind": "approval_clear",
+            "authority_gateway_id": binding.gateway_id,
+            "authority_epoch": binding.authority_epoch,
+            "task_id": task["identity"].task_id,
+            "execution_generation": int(task["execution_generation"]),
+            "session_id": session_id,
+            "observer_generation": self.process_generation,
+            "observer_lease_generation": observer_lease_generation,
+        }
         if isinstance(approval, Mapping):
             safe_approval = dict(approval)
             choices = [
@@ -689,6 +707,8 @@ class HostedRoomRuntime:
                 "execution_generation": int(task["execution_generation"]),
                 "run_id": info.get("run_id"),
                 "session_id": session_id,
+                "observer_generation": self.process_generation,
+                "observer_lease_generation": observer_lease_generation,
                 "request_id": safe_approval.get("request_id"),
                 "approval": safe_approval,
             }

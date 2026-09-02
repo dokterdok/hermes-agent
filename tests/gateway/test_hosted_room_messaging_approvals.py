@@ -1,10 +1,15 @@
 """Durable approval decisions from messaging Group Chat controls."""
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sqlite3
+import time
 
 import pytest
 
 from gateway import hosted_room_messaging_approvals as approvals
+from gateway import hosted_room_driver as driver
+from gateway import hosted_rooms
 
 
 def _action(**overrides):
@@ -67,6 +72,168 @@ def test_pending_approval_is_bounded_and_cleared_exactly(tmp_path):
         member_id="member-1",
         request_id="request-1",
     ) == 1
+
+
+def test_existing_approval_table_migrates_observer_generation(tmp_path):
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE hosted_room_pending_approvals (
+               room_id TEXT NOT NULL,
+               authority_gateway_id TEXT NOT NULL,
+               authority_epoch INTEGER NOT NULL,
+               member_id TEXT NOT NULL,
+               task_id TEXT NOT NULL,
+               execution_generation INTEGER NOT NULL,
+               request_id TEXT NOT NULL,
+               profile TEXT NOT NULL,
+               session_id TEXT NOT NULL,
+               description TEXT NOT NULL,
+               command_text TEXT NOT NULL,
+               updated_at REAL NOT NULL,
+               PRIMARY KEY (room_id, member_id)
+           )"""
+    )
+    conn.commit()
+    conn.close()
+
+    pending = _pending(db)
+
+    assert pending["observer_generation"] == "legacy"
+    assert approvals.list_pending_approvals(db, room_id="room-1")[0][
+        "observer_generation"
+    ] == "legacy"
+
+
+def test_existing_approval_table_migrates_concurrently(tmp_path):
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE hosted_room_pending_approvals (
+               room_id TEXT NOT NULL,
+               authority_gateway_id TEXT NOT NULL,
+               authority_epoch INTEGER NOT NULL,
+               member_id TEXT NOT NULL,
+               task_id TEXT NOT NULL,
+               execution_generation INTEGER NOT NULL,
+               request_id TEXT NOT NULL,
+               profile TEXT NOT NULL,
+               session_id TEXT NOT NULL,
+               description TEXT NOT NULL,
+               command_text TEXT NOT NULL,
+               updated_at REAL NOT NULL,
+               PRIMARY KEY (room_id, member_id)
+           )"""
+    )
+    conn.commit()
+    conn.close()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda _index: approvals.list_all_pending_approvals(db),
+                range(16),
+            )
+        )
+
+    assert results == [[]] * 16
+    conn = sqlite3.connect(db)
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(hosted_room_pending_approvals)")
+    }
+    conn.close()
+    assert {"observer_generation", "observer_lease_generation"} <= columns
+
+
+def test_observer_lease_is_checked_after_waiting_for_write_lock(tmp_path):
+    db = tmp_path / "state.db"
+    room = hosted_rooms.create_room(
+        db,
+        room_id="room-1",
+        name="Lock race",
+        members=[
+            {"member_id": "default", "profile": "default"},
+            {"member_id": "member-1", "profile": "member-1"},
+        ],
+        authority_gateway_id="gateway-1",
+    )
+    lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id="gateway-1",
+        authority_epoch=int(room["authority_epoch"]),
+        process_generation="worker-1",
+        ttl_seconds=0.15,
+        clock=time.time,
+    )
+    action = _action(
+        observer_generation="worker-1",
+        observer_lease_generation=lease.lease_generation,
+    )
+    approvals.list_all_pending_approvals(db)
+    blocker = sqlite3.connect(db, timeout=10)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                approvals.persist_pending_approval,
+                db,
+                room_id="room-1",
+                member_id="member-1",
+                action=action,
+            )
+            time.sleep(0.25)
+            blocker.commit()
+            with pytest.raises(approvals.MessagingApprovalObservationStale):
+                future.result(timeout=5)
+    finally:
+        if blocker.in_transaction:
+            blocker.rollback()
+        blocker.close()
+
+
+def test_observer_lease_cannot_outlive_room_authority_epoch(tmp_path):
+    db = tmp_path / "state.db"
+    room = hosted_rooms.create_room(
+        db,
+        room_id="room-1",
+        name="Authority race",
+        members=[
+            {"member_id": "default", "profile": "default"},
+            {"member_id": "member-1", "profile": "member-1"},
+        ],
+        authority_gateway_id="gateway-1",
+    )
+    lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id="gateway-1",
+        authority_epoch=int(room["authority_epoch"]),
+        process_generation="worker-1",
+        ttl_seconds=30,
+        clock=time.time,
+    )
+    action = _action(
+        observer_generation="worker-1",
+        observer_lease_generation=lease.lease_generation,
+    )
+    hosted_rooms.claim_authority(
+        db,
+        room_id="room-1",
+        expected_gateway_id="gateway-1",
+        expected_epoch=int(room["authority_epoch"]),
+        new_gateway_id="gateway-1",
+        event_id="authority-epoch-2",
+    )
+
+    with pytest.raises(approvals.MessagingApprovalObservationStale):
+        approvals.persist_pending_approval(
+            db,
+            room_id="room-1",
+            member_id="member-1",
+            action=action,
+        )
 
 
 def test_command_replay_is_idempotent_and_conflicting_reuse_fails(tmp_path):
@@ -461,7 +628,9 @@ def test_approval_display_neutralizes_markup_shaped_bot_and_command_text(tmp_pat
     assert "**Approve**" not in rendered
     assert "［Admin］(url) ＠all" in rendered
     assert "Command: rm -rf /" in rendered
-    assert choices[0]["label"] == "✓ Approve once · ［Admin］(url) ＠all"
+    assert choices[0]["label"].startswith(
+        "✓ 1. Approve once · ［Admin］(url) ＠all · member-1"
+    )
     title = approvals.format_approval_picker_title(room, [pending])
     assert "＊＊Approve＊＊ ［open］(https://example.test) ＠all" in title
 
@@ -494,3 +663,48 @@ def test_native_picker_title_keeps_the_complete_bounded_action(tmp_path):
         room_reference="1",
     )
     assert "DELETE ALL DATA" in rendered
+
+
+def test_native_buttons_distinguish_duplicate_names_with_index_and_handle(tmp_path):
+    db = tmp_path / "state.db"
+    first = _pending(db)
+    second = approvals.persist_pending_approval(
+        db,
+        room_id="room-1",
+        member_id="member-2",
+        action=_action(task_id="task-2", request_id="request-2"),
+    )
+    room = {
+        "room_id": "room-1",
+        "members": [
+            {"member_id": "member-1", "display_name": "Reviewer", "handle": "alpha"},
+            {"member_id": "member-2", "display_name": "Reviewer", "handle": "beta"},
+        ],
+    }
+
+    labels = [
+        choice["label"]
+        for choice in approvals.approval_picker_choices(room, [first, second])
+    ]
+
+    assert labels == [
+        "✓ 1. Approve once · Reviewer · ＠alpha",
+        "✕ 1. Deny · Reviewer · ＠alpha",
+        "✓ 2. Approve once · Reviewer · ＠beta",
+        "✕ 2. Deny · Reviewer · ＠beta",
+    ]
+
+    long_room = {
+        **room,
+        "members": [
+            {"member_id": "member-1", "display_name": "R" * 80, "handle": "alpha"},
+            {"member_id": "member-2", "display_name": "R" * 80, "handle": "beta"},
+        ],
+    }
+    long_labels = [
+        choice["label"]
+        for choice in approvals.approval_picker_choices(long_room, [first, second])
+    ]
+    assert long_labels[0].endswith("＠alpha")
+    assert long_labels[2].endswith("＠beta")
+    assert long_labels[0] != long_labels[2]
