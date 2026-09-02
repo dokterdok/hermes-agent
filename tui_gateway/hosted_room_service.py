@@ -1205,6 +1205,13 @@ class HostedRoomService(HostedRoomArtifactMixin):
     def prepare_room(self, binding: HostedRoomBinding) -> None:
         with self._policy_lock:
             if self._room_is_disbanding(binding.room_id):
+                from gateway import hosted_room_messaging_approvals as approvals
+
+                approvals.terminalize_room_approval_commands(
+                    self.db_path,
+                    room_id=binding.room_id,
+                    result="Approval expired because the Group Chat is no longer available.",
+                )
                 raise driver.RoomUnavailableError(
                     "hosted room is being disbanded"
                 )

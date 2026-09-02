@@ -244,7 +244,7 @@ def test_disband_fence_terminally_completes_cross_process_decision(tmp_path):
     )
     service.begin_room_disband("room-1")
 
-    service._apply_pending_control_approvals(binding)
+    service.runtime._run_room_once(binding)
 
     receipt = approvals.approval_command(
         db,
