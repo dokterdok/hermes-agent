@@ -18,11 +18,11 @@ import type {
   Attachment,
   GroupChat,
   GroupHold,
-  HostedAttentionMarker,
   GroupMember,
   GroupMessage,
   GroupMessageAuthor,
   GroupPrompt,
+  HostedAttentionMarker,
   RosterRow
 } from './types'
 
