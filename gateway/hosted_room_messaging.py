@@ -765,7 +765,7 @@ def _remote_summary(service: Any, room: Mapping[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def _remote_mutate(
+def remote_mutate(
     service: Any,
     room: Mapping[str, Any],
     *,
@@ -906,6 +906,8 @@ class MessagingRoomBackend:
         self.service = service
 
     def status(self, room_id: str) -> dict[str, Any]:
+        from gateway import hosted_room_messaging_approvals as approvals
+
         if self.service is not None:
             status = self.service.status(room_id)
             peer_needs_attention = any(
@@ -913,7 +915,19 @@ class MessagingRoomBackend:
                 for route in status.get("peer_routes", [])
                 if isinstance(route, Mapping)
             )
-            return {**status, "blocked": bool(status.get("blocked") or peer_needs_attention)}
+            actions = [
+                action
+                for action in status.get("pending_actions", [])
+                if isinstance(action, Mapping) and action.get("kind") != "approval"
+            ]
+            actions.extend(
+                approvals.list_pending_approvals(self.db_path, room_id=room_id)
+            )
+            return {
+                **status,
+                "blocked": bool(status.get("blocked") or peer_needs_attention),
+                "pending_actions": actions,
+            }
         tasks = driver.list_tasks(self.db_path, room_id=room_id)
         counts: dict[str, int] = {}
         for task in tasks:
@@ -934,7 +948,8 @@ class MessagingRoomBackend:
                 {"kind": "retry", "task_id": task["identity"].task_id}
                 for task in tasks
                 if task.get("status") in {"deferred", "indeterminate"}
-            ],
+            ]
+            + approvals.list_pending_approvals(self.db_path, room_id=room_id),
         }
 
     def send(
@@ -1140,8 +1155,15 @@ def parse_room_command(args: str, *, command_root: str = "/group") -> RoomComman
         if remainder:
             raise RoomControlError(f"Use `{command_root} <number> retry`.")
         return RoomCommand("retry", room_query)
+    if action in {"approve", "deny"}:
+        if remainder and re.fullmatch(r"[A-Za-z0-9]{6,16}", remainder) is None:
+            raise RoomControlError(
+                f"Use `{command_root} <number> {action} [approval code]`."
+            )
+        return RoomCommand(action, room_query, remainder)
     raise RoomControlError(
         f"Use `{command_root} <number> send <message>`, "
+        f"`{command_root} <number> approve`, `{command_root} <number> deny`, "
         f"`{command_root} <number> retry`, or `{command_root} <number> stop`."
     )
 
@@ -1477,6 +1499,16 @@ def format_room_detail(
             )
     else:
         lines.extend(["", "No messages yet."])
+    from gateway.hosted_room_messaging_approvals import format_pending_approvals
+
+    approval_section = format_pending_approvals(
+        service,
+        room,
+        room_reference=str(room_reference(room)),
+        room_command=room_command,
+    )
+    if approval_section:
+        lines.extend(["", approval_section])
     failed_commands = int(room.get("desktop_failed_commands") or 0)
     show_retry, show_stop = _room_action_flags(
         service,
@@ -1744,7 +1776,7 @@ def send_to_room(service: Any, room: Mapping[str, Any], event: Any, text: str) -
             event,
             gateway_id=hosted_rooms.local_authority_gateway_id(),
         )
-        _remote_mutate(
+        remote_mutate(
             service,
             room,
             action="send",
@@ -1805,7 +1837,7 @@ def stop_room(service: Any, room: Mapping[str, Any], event: Any) -> str:
             return f"Stop requested for {name}."
         return f"Stop saved for {name}. Open or update Hermes Desktop to apply it."
     if room.get("_room_mode") == "remote":
-        _remote_mutate(
+        remote_mutate(
             service,
             room,
             action="stop",
@@ -1832,7 +1864,7 @@ def retry_room(service: Any, room: Mapping[str, Any], event: Any) -> str:
     )
     receipt_db = Path(service.db_path)
     if room.get("_room_mode") == "remote":
-        result = _remote_mutate(
+        result = remote_mutate(
             service,
             room,
             action="retry",

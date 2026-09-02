@@ -760,6 +760,9 @@ def test_classic_retry_requeues_all_expired_commands_and_replays_receipt(
         ("1 send -- quoted style", ("send", "1", "quoted style")),
         ("1 stop", ("stop", "1", "")),
         ("1 retry", ("retry", "1", "")),
+        ("1 approve", ("approve", "1", "")),
+        ("1 approve A1B2C3D4", ("approve", "1", "A1B2C3D4")),
+        ("1 deny", ("deny", "1", "")),
     ],
 )
 def test_parse_room_command_keeps_names_and_message_content(raw, expected):
@@ -771,6 +774,102 @@ def test_parse_room_command_keeps_names_and_message_content(raw, expected):
 def test_parse_room_command_returns_actionable_usage(raw):
     with pytest.raises(RoomControlError, match="Use `/group"):
         parse_room_command(raw)
+
+
+@pytest.mark.asyncio
+async def test_messaging_approval_command_uses_exact_pending_coordinates(
+    tmp_path, monkeypatch
+):
+    db, _release, _research = _seed_rooms(tmp_path)
+    service = MessagingRoomBackend(db_path=db)
+    captured = {}
+    monkeypatch.setattr(
+        "gateway.hosted_room_messaging.current_room_backend",
+        lambda: service,
+    )
+
+    def submit(_service, room, **kwargs):
+        captured.update({"room": room, **kwargs})
+        return (
+            1,
+            {
+                "member_id": "ops",
+                "task_id": "task-1",
+                "execution_generation": 2,
+                "request_id": "request-1",
+            },
+            {"queued": False, "choice": "once"},
+        )
+
+    monkeypatch.setattr(
+        "gateway.hosted_room_messaging_approvals.submit_room_approval",
+        submit,
+    )
+
+    result = await _runner()._handle_rooms_command(
+        _event("/group 1 approve A1B2C3D4", message_id="approval-message-1")
+    )
+
+    assert result == "Approved once for Operations. Check: `/group 1`."
+    assert captured["room"]["room_id"] == "release-room"
+    assert captured["choice"] == "once"
+    assert captured["selection"] == "A1B2C3D4"
+    assert str(captured["command_id"]).startswith("approval:messaging:")
+
+
+@pytest.mark.asyncio
+async def test_approval_redelivery_returns_original_terminal_receipt_before_room_number(
+    tmp_path,
+    monkeypatch,
+):
+    from gateway import hosted_room_messaging_approvals as approvals
+
+    db, release, _ = _seed_rooms(tmp_path)
+    service = MessagingRoomBackend(db_path=db)
+    pending = approvals.persist_pending_approval(
+        db,
+        room_id="release-room",
+        member_id="ops",
+        action={
+            "kind": "approval",
+            "authority_gateway_id": release["authority_gateway_id"],
+            "authority_epoch": release["authority_epoch"],
+            "task_id": "task-1",
+            "execution_generation": 1,
+            "request_id": "request-1",
+            "approval": {"choices": ["once", "deny"]},
+        },
+    )
+    event = _event(
+        f"/group 1 approve {approvals.approval_reference(pending)}",
+        message_id="terminal-redelivery",
+    )
+    command_id = f"approval:{messaging_event_id(event)}"
+    approvals.begin_approval_command(
+        db,
+        command_id=command_id,
+        pending=pending,
+        choice="once",
+    )
+    approvals.complete_approval_command(
+        db,
+        command_id=command_id,
+        result="Approval expired with the original Group Chat.",
+    )
+    hosted_rooms.disband_room(
+        db,
+        room_id="release-room",
+        expected_gateway_id=str(release["authority_gateway_id"]),
+        expected_epoch=int(release["authority_epoch"]),
+    )
+    monkeypatch.setattr(
+        "gateway.hosted_room_messaging.current_room_backend",
+        lambda: service,
+    )
+
+    result = await _runner()._handle_rooms_command(event)
+
+    assert result == "Approval expired with the original Group Chat."
 
 
 def test_room_resolution_is_exact_then_unique_prefix_then_substring(tmp_path):
@@ -1021,6 +1120,64 @@ async def test_group_bots_drills_into_native_participant_picker(
     detail = await call["on_choice_selected"]("chat-telegram", ops_value)
     assert detail.startswith("🤖 **Operations**")
     assert "`@ops`" in detail
+
+
+@pytest.mark.asyncio
+async def test_group_approvals_use_native_one_tap_choices(tmp_path, monkeypatch):
+    from gateway import hosted_room_messaging_approvals as approvals
+
+    db, release, _ = _seed_rooms(tmp_path)
+    service = MessagingRoomBackend(db_path=db)
+    approvals.persist_pending_approval(
+        db,
+        room_id="release-room",
+        member_id="ops",
+        action={
+            "kind": "approval",
+            "authority_gateway_id": str(release["authority_gateway_id"]),
+            "authority_epoch": int(release["authority_epoch"]),
+            "task_id": "task-approval-1",
+            "execution_generation": 2,
+            "request_id": "request-approval-1",
+            "approval": {
+                "description": "Run focused tests",
+                "command": "pytest -q tests/focused",
+                "choices": ["once", "deny"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.hosted_room_messaging.current_room_backend",
+        lambda: service,
+    )
+    adapter = _PickerAdapter()
+    runner = _runner(platform=Platform.TELEGRAM)
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner._thread_metadata_for_source = lambda source, anchor=None: {}
+    runner._reply_anchor_for_event = lambda event: None
+
+    result = await runner._handle_rooms_command(
+        _event("/group 1 approvals", platform=Platform.TELEGRAM)
+    )
+
+    assert result is None
+    call = adapter.calls[0]
+    assert call["title"].startswith("⚠️ **Approval needed**\n")
+    assert "**Operations**: Run focused tests" in call["title"]
+    assert call["choices"][0]["label"] == "✓ Approve once · Operations"
+    assert call["choices"][1]["label"] == "✕ Deny · Operations"
+    denied = await call["on_choice_selected"](
+        "chat-telegram",
+        call["choices"][1]["value"],
+    )
+    assert denied == "Decision sent for Operations."
+    commands = approvals.list_pending_approval_commands(
+        db,
+        room_id="release-room",
+    )
+    assert [(command["choice"], command["request_id"]) for command in commands] == [
+        ("deny", "request-approval-1")
+    ]
 
 
 @pytest.mark.asyncio
@@ -1590,6 +1747,40 @@ def test_cross_process_send_rejects_new_work_after_disband_fence(
             "events"
         ]
     ] == ["signal-message-1"]
+
+
+def test_group_detail_surfaces_exact_pending_approval_commands(tmp_path):
+    from gateway import hosted_room_messaging_approvals as approvals
+
+    db, release, _ = _seed_rooms(tmp_path)
+    approvals.persist_pending_approval(
+        db,
+        room_id="release-room",
+        member_id="ops",
+        action={
+            "kind": "approval",
+            "authority_gateway_id": str(release["authority_gateway_id"]),
+            "authority_epoch": int(release["authority_epoch"]),
+            "task_id": "task-approval-1",
+            "execution_generation": 2,
+            "request_id": "request-approval-1",
+            "approval": {
+                "description": "Run focused tests",
+                "command": "pytest -q tests/focused",
+                "choices": ["once", "deny"],
+            },
+        },
+    )
+    detail = format_room_detail(
+        MessagingRoomBackend(db_path=db),
+        release,
+    )
+
+    assert "⚠️ **Approval needed**" in detail
+    assert "1. **Operations** · Run focused tests" in detail
+    assert "Actions: `/group 1 approvals`" in detail
+    assert "Approve once: `/group 1 approve <approval code>`" in detail
+    assert "Deny: `/group 1 deny <approval code>`" in detail
 
 
 def test_empty_group_list_points_to_the_only_available_next_step(tmp_path):

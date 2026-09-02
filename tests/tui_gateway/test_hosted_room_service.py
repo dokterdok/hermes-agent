@@ -1038,6 +1038,7 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
     )
     task = driver.get_task(db, task["identity"])
     service.runtime._report_pending_action(
+        binding,
         task,
         session_id="ops-session",
         info={

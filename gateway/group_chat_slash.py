@@ -278,6 +278,7 @@ class GroupChatSlashCommandsMixin:
             is_message_edit,
             is_machine_authored,
             list_messaging_rooms,
+            messaging_event_id,
             relay_provenance_is_unknown,
             resolve_room,
             resolve_room_picker_choice,
@@ -305,7 +306,13 @@ class GroupChatSlashCommandsMixin:
                 words
                 and words[0].isdecimal()
                 and len(words) > 1
-                and words[1].casefold() in {"retry", "send", "stop"}
+                and words[1].casefold() in {
+                    "approve",
+                    "deny",
+                    "retry",
+                    "send",
+                    "stop",
+                }
             ):
                 return await self._handle_room_command(event)
             denial = self._group_chat_rate_limit_denial(event, action="read")
@@ -317,6 +324,109 @@ class GroupChatSlashCommandsMixin:
                 service,
                 profile=profile,
             )
+            if (
+                len(words) == 2
+                and words[0].isdecimal()
+                and words[1].casefold() == "approvals"
+            ):
+                from gateway.hosted_room_messaging_approvals import (
+                    MessagingApprovalError,
+                    approval_member_label,
+                    approval_picker_choices,
+                    format_approval_picker_title,
+                    format_pending_approvals,
+                    pending_approvals_for_room,
+                    resolve_approval_picker_choice,
+                    submit_room_approval,
+                )
+
+                room = resolve_room(rooms, words[0])
+                pending = await asyncio.to_thread(
+                    pending_approvals_for_room,
+                    service,
+                    room,
+                )
+                if not pending:
+                    return "This Group Chat has no pending approvals."
+                choices = approval_picker_choices(room, pending)
+                source = await asyncio.to_thread(
+                    self._normalize_source_for_session_key,
+                    event.source,
+                )
+                session_key = self._session_key_for_source(source)
+
+                async def _on_approval_selected(_chat_id: str, value: str) -> str:
+                    if not self._can_control_group_chats(event):
+                        return self._group_chat_control_denial(event)
+                    current_denial = self._group_chat_rate_limit_denial(
+                        event,
+                        action="approve",
+                    )
+                    if current_denial:
+                        return current_denial
+                    try:
+                        current_rooms = await asyncio.to_thread(
+                            list_messaging_rooms,
+                            service,
+                            profile=profile,
+                        )
+                        current_room = resolve_room(current_rooms, words[0])
+                        current_pending = await asyncio.to_thread(
+                            pending_approvals_for_room,
+                            service,
+                            current_room,
+                        )
+                        index, choice, request_id = resolve_approval_picker_choice(
+                            current_room,
+                            current_pending,
+                            value,
+                        )
+                        _number, selected, applied = await asyncio.to_thread(
+                            submit_room_approval,
+                            service,
+                            current_room,
+                            command_id=(
+                                f"approval:{messaging_event_id(event)}:"
+                                f"{str(value).replace('=', '.')}"
+                            ),
+                            choice=choice,
+                            selection=index,
+                            expected_request_id=request_id,
+                        )
+                        bot = approval_member_label(
+                            current_room,
+                            str(selected["member_id"]),
+                        )
+                        if applied.get("applied") is False:
+                            return str(applied.get("result") or "Approval expired.")
+                        if applied.get("queued"):
+                            return f"Decision sent for {bot}."
+                        return (
+                            f"Approved once for {bot}."
+                            if choice == "once"
+                            else f"Denied for {bot}."
+                        )
+                    except MessagingApprovalError as exc:
+                        return str(exc)
+                    except Exception:
+                        logger.exception("Failed to apply Group Chat approval")
+                        return "Couldn’t apply that approval. Check the Group Chat again."
+
+                picker_sent = bool(choices) and await self._try_send_choice_picker(
+                    event,
+                    session_key,
+                    title=format_approval_picker_title(room, pending),
+                    choices=choices,
+                    on_choice_selected=_on_approval_selected,
+                )
+                if picker_sent:
+                    return None
+                return format_pending_approvals(
+                    service,
+                    room,
+                    room_reference=words[0],
+                    room_command=rooms_command,
+                )
             if (
                 len(words) >= 2
                 and words[0].isdecimal()
@@ -512,6 +622,7 @@ class GroupChatSlashCommandsMixin:
             is_message_edit,
             is_machine_authored,
             list_messaging_rooms,
+            messaging_event_id,
             relay_provenance_is_unknown,
         )
         if is_machine_authored(event):
@@ -548,13 +659,51 @@ class GroupChatSlashCommandsMixin:
                 )
 
             def _mutate() -> str:
-                room = resolve_room(
-                    list_messaging_rooms(
-                        service,
-                        profile=self._group_chat_profile(event),
-                    ),
-                    command.room_query,
+                rooms = list_messaging_rooms(
+                    service,
+                    profile=self._group_chat_profile(event),
                 )
+                approval_command_id = f"approval:{messaging_event_id(event)}"
+                approval_receipt = None
+                if command.action in {"approve", "deny"}:
+                    from gateway.hosted_room_messaging_approvals import (
+                        approval_command,
+                        terminalize_unowned_approval_commands,
+                    )
+
+                    terminalize_unowned_approval_commands(
+                        service.db_path,
+                        local_gateway_id=hosted_rooms.local_authority_gateway_id(),
+                    )
+                    approval_receipt = approval_command(
+                        service.db_path,
+                        command_id=approval_command_id,
+                    )
+                    if approval_receipt is not None and approval_receipt["state"] == "completed":
+                        return str(
+                            approval_receipt.get("result_text")
+                            or "Approval is no longer available."
+                        )
+                if approval_receipt is None:
+                    room = resolve_room(rooms, command.room_query)
+                else:
+                    room = next(
+                        (
+                            candidate
+                            for candidate in rooms
+                            if str(candidate.get("room_id") or "")
+                            == str(approval_receipt["room_id"])
+                            and str(candidate.get("authority_gateway_id") or "")
+                            == str(approval_receipt["authority_gateway_id"])
+                            and int(candidate.get("authority_epoch") or 0)
+                            == int(approval_receipt["authority_epoch"])
+                        ),
+                        None,
+                    )
+                    if room is None:
+                        raise RoomControlError(
+                            "That approval is no longer available. Check Group Chats again."
+                        )
                 if (
                     room.get("_room_mode") == "desktop"
                     and str(room.get("room_id") or "").startswith("name:")
@@ -568,6 +717,39 @@ class GroupChatSlashCommandsMixin:
                     return f"{result} Check: `{rooms_command} {room_reference(room)}`."
                 if command.action == "retry":
                     result = retry_room(service, room, event)
+                    return f"{result} Check: `{rooms_command} {room_reference(room)}`."
+                if command.action in {"approve", "deny"}:
+                    from gateway.hosted_room_messaging_approvals import (
+                        MessagingApprovalError,
+                        approval_member_label,
+                        submit_room_approval,
+                    )
+
+                    try:
+                        _index, pending, applied = submit_room_approval(
+                            service,
+                            room,
+                            command_id=approval_command_id,
+                            choice=("once" if command.action == "approve" else "deny"),
+                            selection=command.message,
+                        )
+                    except MessagingApprovalError as exc:
+                        raise RoomControlError(str(exc)) from exc
+                    bot = approval_member_label(
+                        room,
+                        str(pending["member_id"]),
+                    )
+                    if applied.get("applied") is False:
+                        result = str(applied.get("result") or "Approval expired.")
+                        return (
+                            f"{result} Check: `{rooms_command} {room_reference(room)}`."
+                        )
+                    if applied.get("queued"):
+                        result = f"Decision sent for {bot}."
+                    elif command.action == "approve":
+                        result = f"Approved once for {bot}."
+                    else:
+                        result = f"Denied for {bot}."
                     return f"{result} Check: `{rooms_command} {room_reference(room)}`."
                 result = stop_room(service, room, event)
                 return f"{result} Check: `{rooms_command} {room_reference(room)}`."
