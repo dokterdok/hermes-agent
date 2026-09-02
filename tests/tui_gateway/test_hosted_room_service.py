@@ -1020,6 +1020,7 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
     )
     task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
     binding = service.bindings()[0]
+    service.runtime.process_generation = "worker"
     lease = driver.acquire_lease(
         db,
         room_id="room-1",
@@ -1029,6 +1030,7 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
         ttl_seconds=30,
         clock=time.time,
     )
+    service.runtime._leases["room-1"] = lease
     driver.start_task(
         db,
         task["identity"],
