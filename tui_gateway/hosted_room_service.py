@@ -1418,6 +1418,12 @@ class HostedRoomService(HostedRoomArtifactMixin):
                     command_id=command["command_id"],
                     result=result,
                 )
+            except approvals.MessagingApprovalTerminalError as exc:
+                approvals.complete_approval_command(
+                    self.db_path,
+                    command_id=command["command_id"],
+                    result=str(exc),
+                )
             except Exception as exc:
                 logger.warning(
                     "Hosted room approval command %s remains pending: %s",
@@ -1671,7 +1677,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
 
         try:
             room = self._owned_room(room_id)
-        except hosted_rooms.RoomNotFoundError:
+        except (hosted_rooms.RoomNotFoundError, driver.RoomUnavailableError):
             approvals.clear_pending_approval(
                 self.db_path,
                 room_id=room_id,
