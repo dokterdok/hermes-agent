@@ -485,7 +485,12 @@ describe('hosted receipt display payload validation', () => {
 })
 
 describe('hosted projection sequence isolation', () => {
-  it.each([false, true])('retains actual unsent text and subsequently accepts genuine replay, cold=%s', async cold => {
+  it.each([
+    { cold: false, external: false },
+    { cold: true, external: false },
+    { cold: false, external: true },
+    { cold: true, external: true }
+  ])('retains unsent text before genuine replay, cold=$cold, external=$external', async ({ cold, external }) => {
     const loaded = await runtimeFixture(() => {
       throw new Error('No send expected')
     }, [])
@@ -527,11 +532,12 @@ describe('hosted projection sequence isolation', () => {
       'Actual unsent local command',
       'work',
       undefined,
-      CLIENT_ID
+      { entryId: CLIENT_ID, external }
     )
     const room = loaded.chat.$groupChats.get().Board
 
     expect(room.log.some(entry => entry.id === CLIENT_ID && entry.text === 'Actual unsent local command')).toBe(true)
+    expect(room.log.find(entry => entry.id === CLIENT_ID)?.external).toBe(external || undefined)
     expect(room.log.every(entry => entry.seq === undefined)).toBe(true)
     expect(room.hostedSeq).toBe(5)
     expect(loaded.calls.filter(call => call.method === 'groups.send')).toHaveLength(0)
@@ -550,5 +556,6 @@ describe('hosted projection sequence isolation', () => {
     expect(replayed.log.find(entry => entry.id === EVENT_ID && entry.from.kind === 'user')?.seq).toBeUndefined()
     expect(replayed.log.find(entry => entry.id === 'actual-other-user-event')?.seq).toBe(7)
     expect(replayed.log.some(entry => entry.id === CLIENT_ID)).toBe(true)
+    expect(replayed.log.find(entry => entry.id === CLIENT_ID)?.external).toBe(external || undefined)
   })
 })
