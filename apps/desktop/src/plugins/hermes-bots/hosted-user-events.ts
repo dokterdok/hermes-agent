@@ -3,8 +3,19 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 
 import { groupChatSyncSequence } from './group-message-author'
 import { createHostedRoomReplayState, reduceHostedRoomEvents } from './hosted-room-client'
-import type { HostedRoomCommand } from './hosted-room-client'
-import type { GroupMessage } from './types'
+import type { HostedRoomCommand, HostedRoomOutbox } from './hosted-room-client'
+import type { GroupChat, GroupMessage } from './types'
+
+// Local spreads preserve proof, but JSON cannot manufacture it. Every storage
+// and projection boundary also explicitly removes it, including in-memory copies.
+const outgoingProof = Symbol('hosted-user-outgoing-proof')
+interface OutgoingProof {
+  roomId: string
+  key: string
+  eventId?: string
+  seq?: number
+}
+type ProvenUserMessage = GroupMessage & { [outgoingProof]?: OutgoingProof }
 
 function clientKey(value: unknown): string | null {
   if (typeof value !== 'string') {
@@ -27,6 +38,133 @@ function stableId(entry: GroupMessage): string | null {
   }
 
   return clientKey(entry.eventId || entry.id)
+}
+
+export function outgoingHostedUserEvent(entry: GroupMessage, roomId: string, commandId: string): GroupMessage {
+  const key = clientKey(commandId)
+
+  if (
+    !key ||
+    entry.from?.kind !== 'user' ||
+    entry.eventId ||
+    groupChatSyncSequence(entry) !== null ||
+    stableId(entry) !== key ||
+    (entry.roomId && entry.roomId !== roomId)
+  ) {
+    return entry
+  }
+
+  return { ...entry, roomId, [outgoingProof]: { roomId, key } } as ProvenUserMessage
+}
+
+function provenClientKey(entry: GroupMessage, roomId: string): string | null {
+  const proof = (entry as ProvenUserMessage)[outgoingProof]
+
+  if (!proof || proof.roomId !== roomId || entry.roomId !== roomId) {
+    return null
+  }
+
+  const seq = groupChatSyncSequence(entry)
+  const id = stableId(entry)
+
+  return proof.seq !== undefined
+    ? seq === proof.seq && id === proof.eventId
+      ? proof.key
+      : null
+    : seq === null && !entry.eventId && id === proof.key
+      ? proof.key
+      : null
+}
+
+export function storedHostedUserEvent(entry: GroupMessage): GroupMessage {
+  if (!(entry as ProvenUserMessage)[outgoingProof] && !('clientEventId' in entry)) {
+    return entry
+  }
+
+  const { [outgoingProof]: _proof, clientEventId: _legacyClaim, ...display } = entry as ProvenUserMessage
+
+  return display
+}
+
+function userPayload(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const payload = value as Record<string, unknown>
+
+  if (payload.text !== undefined && typeof payload.text !== 'string') {
+    return null
+  }
+
+  for (const field of ['thread_id', 'thread']) {
+    if (payload[field] !== undefined && typeof payload[field] !== 'string') {
+      return null
+    }
+  }
+
+  if (payload.thread_id && payload.thread && String(payload.thread_id).trim() !== String(payload.thread).trim()) {
+    return null
+  }
+
+  const attachments = payload.attachments === undefined ? [] : payload.attachments
+
+  if (
+    !Array.isArray(attachments) ||
+    attachments.length > 8 ||
+    attachments.some(
+      item =>
+        !item ||
+        typeof item !== 'object' ||
+        Array.isArray(item) ||
+        typeof item.size !== 'number' ||
+        !['attachment_id', 'kind', 'name', 'mime'].every(field => typeof item[field] === 'string')
+    )
+  ) {
+    return null
+  }
+
+  return payload
+}
+
+/** Re-establish intent only from the independently persisted command outbox,
+ * never from a message's clientEventId claim after a cold restore. */
+export function restoreHostedUserOutboxIntents(room: GroupChat, outbox: HostedRoomOutbox): GroupMessage[] {
+  return room.log.map(entry => {
+    const command = outbox.commands.find(
+      candidate =>
+        candidate.kind === 'send' &&
+        candidate.status !== 'failed' &&
+        candidate.roomId === room.roomId &&
+        (candidate.authorityId
+          ? candidate.authorityId === room.hosted
+          : candidate.connectionId === room.hostedConnectionId) &&
+        clientKey(candidate.commandId) === stableId(entry)
+    )
+
+    const payload = command && userPayload(command.payload)
+
+    if (
+      !room.roomId ||
+      !command ||
+      !payload ||
+      entry.text !== (payload.text || '') ||
+      (entry.thread || 'legacy') !== (String(payload.thread_id || payload.thread || '').trim() || 'legacy')
+    ) {
+      return entry
+    }
+
+    const attachments = (payload.attachments || []) as Record<string, unknown>[]
+
+    if (
+      (entry.images?.length || 0) !== attachments.length ||
+      attachments.some((item, index) => entry.images?.[index]?.attachmentId !== item.attachment_id)
+    ) {
+      return entry
+    }
+
+    return outgoingHostedUserEvent(entry, room.roomId, command.commandId)
+  })
 }
 
 /** Reconcile only within an identified hosted room. Mirrors never supply payload
@@ -54,7 +192,7 @@ export function reconcileHostedUserEvents(roomId: string, ...logs: GroupMessage[
       const events = canonical.get(id) || new Set<string>()
       events.add(`${id}:${seq}`)
       canonical.set(id, events)
-      const key = clientKey(entry.clientEventId)
+      const key = provenClientKey(entry, roomId)
 
       if (key && id === userEventId(key)) {
         receiptedKeys.add(key)
@@ -83,7 +221,7 @@ export function reconcileHostedUserEvents(roomId: string, ...logs: GroupMessage[
       return true
     }
 
-    const explicitClient = receiptedKeys.has(id) || (entry.roomId === roomId && clientKey(entry.clientEventId) === id)
+    const explicitClient = receiptedKeys.has(id) || provenClientKey(entry, roomId) === id
 
     if (/^user:[0-9a-f]{64}$/.test(id) && !explicitClient) {
       return true
@@ -95,7 +233,9 @@ export function reconcileHostedUserEvents(roomId: string, ...logs: GroupMessage[
 
 /** Mirrors carry canonical markers for old raw-ID backends, never replay order. */
 export function projectedUserEvent(entry: GroupMessage): GroupMessage {
-  return entry.from?.kind === 'user' && entry.seq !== undefined ? { ...entry, seq: undefined } : entry
+  const display = storedHostedUserEvent(entry)
+
+  return display.from?.kind === 'user' && display.seq !== undefined ? { ...display, seq: undefined } : display
 }
 
 /** Validate the response against the exact command before using the normal replay
@@ -125,11 +265,34 @@ export function hostedUserEventReceipt(command: HostedRoomCommand, value: unknow
     return null
   }
 
+  const payload = userPayload(event.payload)
+
+  if (!payload) {
+    return null
+  }
+
   const state = reduceHostedRoomEvents(createHostedRoomReplayState({ roomId: command.roomId, cursor: event.seq - 1 }), [
     event
   ])
 
   const message = state.messages[0]
+  const attachments = (payload.attachments || []) as unknown[]
 
-  return message ? { ...message, id: message.eventId, roomId: command.roomId, clientEventId: key } : null
+  // The legacy decoder drops malformed attachments. A receipt must be complete,
+  // not a lossy display projection that could suppress valid pending content.
+  if (
+    !message ||
+    attachments.length !== (message.images?.length || 0) ||
+    (!message.text.trim() && !message.images?.length)
+  ) {
+    return null
+  }
+
+  return {
+    ...message,
+    id: message.eventId,
+    roomId: command.roomId,
+    clientEventId: key,
+    [outgoingProof]: { roomId: command.roomId, key, eventId: message.eventId, seq: message.seq }
+  } as ProvenUserMessage
 }

@@ -72,7 +72,7 @@ import {
   withHostedRoomCommandOrder,
   withHostedRoomOutboxDispatch
 } from './hosted-room-outbox'
-import { hostedUserEventReceipt } from './hosted-user-events'
+import { hostedUserEventReceipt, outgoingHostedUserEvent, restoreHostedUserOutboxIntents } from './hosted-user-events'
 import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupChat, GroupMember, GroupMessage, GroupPrompt, ProfileRoute } from './types'
@@ -887,7 +887,11 @@ export async function refreshHostedRooms() {
               members: memberDescriptors,
               hostedMembersVerified: true,
               hostedMembersNeedRefresh: false,
-              log: mergeGroupChatRoomEntries(current, current.log || [], replayMessages(replay.state.messages)),
+              log: mergeGroupChatRoomEntries(
+                current,
+                restoreHostedUserOutboxIntents(current, $hostedRoomOutbox.get()),
+                replayMessages(replay.state.messages)
+              ),
               hostedConnectionId: connectionId,
               hostedSeq: replay.state.cursor,
               hostedStatus: commandFailure
@@ -1661,7 +1665,7 @@ async function hostedGroupChatSendCommand(group: string, message: GroupMessage, 
     updateGroupChat(group, current => ({
       ...current,
       log: (current.log || []).map(entry =>
-        entry === message ? { ...entry, roomId: room.roomId!, clientEventId: commandId } : entry
+        entry === message ? outgoingHostedUserEvent(entry, room.roomId!, commandId) : entry
       )
     }))
   }

@@ -3,12 +3,20 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { GroupChat, GroupMessage } from './types'
-import { canonicalUser, CLIENT_ID, EVENT_ID, optimisticUser, USER_TEXT, userRoom } from './user-event-test-fixtures'
+import {
+  canonicalUser,
+  CLIENT_ID,
+  EVENT_ID,
+  optimisticUser,
+  USER_TEXT,
+  userEvent,
+  userRoom
+} from './user-event-test-fixtures'
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock } = await import('./group-test-utils')
 
-  return pluginSdkMock({})
+  return pluginSdkMock({ state: {} })
 })
 
 function hashed(value: string) {
@@ -248,5 +256,238 @@ describe('hosted client-key/canonical user event identity', () => {
 
     expect(restored.log).toHaveLength(2)
     expect(restored.log.find(entry => entry.id === CLIENT_ID)?.eventId).toBe(CLIENT_ID)
+  })
+})
+
+describe('hosted outgoing proof boundaries', () => {
+  it.each(['projection', 'snapshot-union', 'cold-json'])('does not acquire client intent through %s', async via => {
+    const chat = await import('./group-chat')
+    const unknown = optimisticUser({ id: EVENT_ID, roomId: 'room-1' })
+    const forged = { ...unknown, clientEventId: EVENT_ID }
+    let room = userRoom([unknown])
+
+    let projection = {
+      version: 3,
+      rooms: { 'id:room-1': { roomId: 'room-1', hosted: 'install:home', name: 'Board', log: [forged] } }
+    }
+
+    if (via === 'snapshot-union') {
+      projection = chat.mergeGroupChatSyncSnapshots(
+        projection,
+        chat.groupChatSyncSnapshot({ Board: room })
+      ) as typeof projection
+    }
+
+    if (via === 'cold-json') {
+      room = userRoom(JSON.parse(JSON.stringify([forged])))
+    } else {
+      room = chat.mergeRemoteGroupChatSnapshotIntoRooms(projection, { Board: room }).Board
+    }
+
+    const cold = JSON.parse(JSON.stringify(chat.durableGroupChatRooms({ Board: room }))).Board
+    const result = chat.mergeGroupChatRoomEntries(cold, cold.log, [canonicalUser(hashed(EVENT_ID), 6)])
+
+    expect(result.map(entry => entry.id).sort()).toEqual([EVENT_ID, hashed(EVENT_ID)].sort())
+  })
+
+  it.each(['projection', 'snapshot-union', 'cold-json'])(
+    'does not turn a real receipt into reusable outgoing proof through %s',
+    async via => {
+      const chat = await import('./group-chat')
+      const { hostedUserEventReceipt } = await import('./hosted-user-events')
+
+      const receipt = hostedUserEventReceipt(
+        {
+          commandId: EVENT_ID,
+          roomId: 'room-1',
+          kind: 'send',
+          authorityId: 'install:home',
+          connectionId: 'gateway-a',
+          attempts: 1,
+          status: 'in-flight',
+          failureCode: null,
+          payload: {}
+        },
+        { client_event_id: EVENT_ID, event: userEvent(hashed(EVENT_ID)) }
+      )!
+
+      const unknown = optimisticUser({ id: EVENT_ID, roomId: 'room-1' })
+      let room = userRoom([unknown])
+
+      let projection = {
+        version: 3,
+        rooms: { 'id:room-1': { roomId: 'room-1', hosted: 'install:home', name: 'Board', log: [receipt] } }
+      }
+
+      if (via === 'snapshot-union') {
+        projection = chat.mergeGroupChatSyncSnapshots(
+          projection,
+          chat.groupChatSyncSnapshot({ Board: room })
+        ) as typeof projection
+      }
+
+      if (via === 'cold-json') {
+        room = userRoom([unknown, JSON.parse(JSON.stringify(receipt))])
+      } else {
+        room = chat.mergeRemoteGroupChatSnapshotIntoRooms(projection, { Board: room }).Board
+      }
+
+      const result = chat.mergeGroupChatRoomEntries(room, room.log, [canonicalUser(hashed(EVENT_ID))])
+      expect(result.map(entry => entry.id).sort()).toEqual([EVENT_ID, hashed(EVENT_ID)].sort())
+    }
+  )
+
+  it('keeps genuine live append intent through a local same-ID merge but not through JSON', async () => {
+    const chat = await import('./group-chat')
+    vi.useFakeTimers()
+
+    try {
+      chat.$groupChats.set({ Board: userRoom([]) })
+      chat.appendGroupChatEntry('Board', { kind: 'user', name: 'You' }, USER_TEXT, 'work', undefined, EVENT_ID)
+      const room = chat.$groupChats.get().Board
+      const mirror = chat.groupChatSyncSnapshot({ Board: room })
+      const live = chat.mergeRemoteGroupChatSnapshotIntoRooms(mirror, { Board: room }).Board
+      const cold = JSON.parse(JSON.stringify(chat.durableGroupChatRooms({ Board: live }))).Board
+
+      expect(chat.mergeGroupChatRoomEntries(live, live.log, [canonicalUser(hashed(EVENT_ID))])).toHaveLength(1)
+      expect(chat.mergeGroupChatRoomEntries(cold, cold.log, [canonicalUser(hashed(EVENT_ID))])).toHaveLength(2)
+      expect(mirror.rooms['id:room-1'].log[0]).not.toHaveProperty('clientEventId')
+    } finally {
+      chat.stopGroupChatServerSync()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['body', 'thread', 'attachment', 'authority', 'room', 'failed', 'canonical-marker'])(
+    'does not restore outgoing proof from an outbox %s mismatch',
+    async mismatch => {
+      const { restoreHostedUserOutboxIntents } = await import('./hosted-user-events')
+      const { createHostedRoomOutbox } = await import('./hosted-room-client')
+      const chat = await import('./group-chat')
+      const pending = optimisticUser({ id: EVENT_ID, roomId: 'room-1' })
+
+      const command = {
+        commandId: EVENT_ID,
+        kind: 'send',
+        roomId: 'room-1',
+        authorityId: 'install:home',
+        connectionId: 'gateway-a',
+        status: 'pending',
+        payload: { text: pending.text, thread_id: pending.thread }
+      }
+
+      if (mismatch === 'body') {
+        command.payload.text = 'another body'
+      }
+
+      if (mismatch === 'thread') {
+        command.payload.thread_id = 'another-thread'
+      }
+
+      if (mismatch === 'attachment') {
+        pending.images = [{ kind: 'file', name: 'unrelated', attachmentId: 'unrelated' }]
+      }
+
+      if (mismatch === 'authority') {
+        command.authorityId = 'install:other'
+      }
+
+      if (mismatch === 'room') {
+        command.roomId = 'room-2'
+      }
+
+      if (mismatch === 'failed') {
+        command.status = 'failed'
+      }
+
+      if (mismatch === 'canonical-marker') {
+        pending.eventId = pending.id
+      }
+
+      const room = userRoom([pending])
+      const restored = restoreHostedUserOutboxIntents(room, createHostedRoomOutbox({ commands: [command] }))
+
+      expect(chat.mergeGroupChatRoomEntries(room, restored, [canonicalUser(hashed(EVENT_ID))])).toHaveLength(2)
+    }
+  )
+})
+
+describe('hosted room-container namespaces', () => {
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true]
+  ])('preserves local canonical scope with local/foreign entry scopes %s/%s', async (localScoped, foreignScoped) => {
+    const chat = await import('./group-chat')
+    const canonical = canonicalUser(EVENT_ID, 6, { roomId: localScoped ? 'room-1' : undefined })
+    const foreign = { ...canonical, roomId: foreignScoped ? 'foreign-room' : undefined, seq: undefined }
+
+    const projection = {
+      version: 3,
+      rooms: {
+        'id:foreign-room': {
+          name: 'Board',
+          roomId: 'foreign-room',
+          hosted: 'install:other',
+          revision: 100,
+          log: [foreign]
+        }
+      }
+    }
+
+    const room = chat.mergeRemoteGroupChatSnapshotIntoRooms(projection, { Board: userRoom([canonical]) }).Board
+
+    expect(room.roomId).toBe('room-1')
+    expect(room.log.filter(entry => entry.seq === 6)).toHaveLength(1)
+    expect(room.log.find(entry => entry.seq === 6)?.roomId).toBe('room-1')
+    expect(room.log.find(entry => !entry.seq)?.roomId).toBe('foreign-room')
+    expect(
+      chat.mergeGroupChatRoomEntries(room, room.log, [optimisticUser()]).some(entry => entry.id === CLIENT_ID)
+    ).toBe(false)
+  })
+
+  it('cannot hide the known foreign container by supplying a local-looking per-entry scope', async () => {
+    const chat = await import('./group-chat')
+    const canonical = canonicalUser()
+    const foreign = { ...canonical, seq: undefined, roomId: 'room-1' }
+
+    const projection = {
+      version: 3,
+      rooms: {
+        'id:foreign-room': {
+          name: 'Board',
+          roomId: 'foreign-room',
+          hosted: 'install:other',
+          log: [foreign]
+        }
+      }
+    }
+
+    const room = chat.mergeRemoteGroupChatSnapshotIntoRooms(projection, { Board: userRoom([canonical]) }).Board
+
+    expect(room.log).toHaveLength(2)
+    expect(room.log.find(entry => entry.seq === 6)?.roomId).toBe('room-1')
+    expect(room.log.find(entry => !entry.seq)?.roomId).toBe('foreign-room')
+  })
+
+  it('preserves same-room legacy recovery, a real rename, and unrelated room discovery', async () => {
+    const chat = await import('./group-chat')
+    const canonical = canonicalUser(EVENT_ID, 6, { roomId: undefined })
+    const current = userRoom([canonical])
+
+    const projection = chat.groupChatSyncSnapshot({
+      Renamed: { ...userRoom([optimisticUser()]), syncRevision: 10 },
+      New: { ...userRoom([optimisticUser({ id: 'other-client' })]), roomId: 'room-new' }
+    })
+
+    const result = chat.mergeRemoteGroupChatSnapshotIntoRooms(projection, { Board: current })
+
+    expect(result.Board).toBeUndefined()
+    expect(result.Renamed.roomId).toBe('room-1')
+    expect(result.Renamed.log).toHaveLength(1)
+    expect(result.Renamed.log[0]).toMatchObject({ id: EVENT_ID, seq: 6, roomId: 'room-1' })
+    expect(result.New.roomId).toBe('room-new')
+    expect(result.New.log[0].id).toBe('other-client')
   })
 })
