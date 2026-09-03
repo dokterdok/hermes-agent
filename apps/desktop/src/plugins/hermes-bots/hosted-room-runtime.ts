@@ -62,6 +62,7 @@ import {
   safetyCommandsBlockedByFailure,
   surfaceHostedRoomCommandFailure
 } from './hosted-room-command-failures'
+import { hostedMemberDescriptors } from './hosted-room-members'
 import {
   mutateHostedRoomOutbox,
   recoverHostedRoomOutbox,
@@ -209,14 +210,6 @@ interface AutonomousHostedRoomCreateInput {
   roomId: string
 }
 
-interface HostedRoomServerMember {
-  display_name?: unknown
-  handle?: unknown
-  member_id?: unknown
-  profile?: unknown
-  target?: unknown
-}
-
 interface HostedRoomServerState {
   authority_epoch?: unknown
   authority_gateway_id?: unknown
@@ -321,67 +314,6 @@ function sourceLabel(connectionId: string) {
   const source = ($lastRoster.get() || []).find(row => String(row?.connectionId || '') === connectionId)
 
   return String(source?.connectionLabel || botsText().group.thisHost)
-}
-
-function hostedMemberDescriptors(
-  room: HostedRoomServerState,
-  homeConnectionId: string,
-  existingMembers: GroupMember[],
-  capabilities: Record<string, HostedRoomCapability>
-): GroupMember[] {
-  return (Array.isArray(room?.members) ? room.members : []).map(raw => {
-    const member = (record(raw) || {}) as HostedRoomServerMember
-    const profile = String(member.profile || member.member_id || 'default')
-    const handle = String(member.handle || member.profile || 'hermes')
-    const target = record(member.target)
-
-    const targetAuthority = target?.kind === 'peer' ? String(target.installation_id || target.peer_id || '') : ''
-
-    const prior = (existingMembers || []).find(
-      candidate =>
-        String(candidate?.handle || candidate?.name || '') === handle &&
-        String(candidate?.targetProfile || candidate?.name || '') === profile
-    )
-
-    const peerConnectionId = targetAuthority
-      ? Object.entries(capabilities).find(([, capability]) => capability.authorityId === targetAuthority)?.[0] || ''
-      : ''
-
-    const connectionId = targetAuthority ? peerConnectionId || String(prior?.connectionId || '') : homeConnectionId
-
-    const connectionLabel = connectionId ? sourceLabel(connectionId) : String(prior?.connectionLabel || '')
-
-    const sourceReachable = connectionId
-      ? capabilities[connectionId]
-        ? isHostedRoomContinuityEligible(capabilities[connectionId])
-        : prior?.sourceReachable !== false
-      : false
-
-    return {
-      name: profile,
-      handle,
-      title: String(member.display_name || ''),
-      ...(connectionId
-        ? {
-            connectionId,
-            connectionLabel,
-            route: {
-              connectionId,
-              mode: 'remote',
-              profile,
-              targetProfile: profile
-            }
-          }
-        : {
-            sourceMissing: true,
-            sourceReachable: false
-          }),
-      remoteSource: true,
-      sourceScoped: true,
-      sourceReachable,
-      targetProfile: profile
-    }
-  })
 }
 
 function hostedRoomContinuityMode(room: HostedRoomServerState) {
@@ -519,12 +451,14 @@ function hostedRoomCapabilityFingerprint(capability: HostedRoomCapability | unde
   ])
 }
 
-function invalidateHostedRoomsForConnection(connectionId: string) {
+function invalidateHostedRoomsForConnection(connectionId: string, installationId = '') {
   for (const room of Object.values($groupChats.get())) {
     if (
       room.hostedConnectionId === connectionId ||
       (room.members || []).some(
-        member => String(member.route?.connectionId || member.connectionId || '') === connectionId
+        member =>
+          String(member.route?.connectionId || member.connectionId || '') === connectionId ||
+          (installationId && member.hostedIdentity?.installationId === installationId)
       )
     ) {
       hostedRoomPollCache.delete(String(room.roomId || ''))
@@ -572,9 +506,15 @@ export async function refreshHostedRooms() {
   try {
     const routes = await hostedDefaultRoutes()
 
-    const capabilities = {
-      ...$hostedRoomCapabilities.get()
+    for (const id of Object.keys($hostedRoomCapabilities.get())) {
+      if (!routesByConnection[id]) {
+        invalidateHostedRoomsForConnection(id)
+      }
     }
+
+    const capabilities = Object.fromEntries(
+      Object.entries($hostedRoomCapabilities.get()).filter(([id]) => routesByConnection[id])
+    )
 
     for (const route of routes) {
       if (syncStale()) {
@@ -617,7 +557,7 @@ export async function refreshHostedRooms() {
       }
 
       if (hostedRoomCapabilityFingerprint(cached) !== hostedRoomCapabilityFingerprint(capability)) {
-        invalidateHostedRoomsForConnection(connectionId)
+        invalidateHostedRoomsForConnection(connectionId, capability.authorityId || '')
       }
 
       capabilities[connectionId] = capability
@@ -910,7 +850,8 @@ export async function refreshHostedRooms() {
           serverRoom,
           connectionId,
           existing?.members || [],
-          capabilities
+          capabilities,
+          sourceLabel
         )
 
         updateGroupChat(
