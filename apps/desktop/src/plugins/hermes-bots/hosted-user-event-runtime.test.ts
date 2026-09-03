@@ -347,3 +347,139 @@ describe('real hosted send response and replay identity', () => {
     }
   )
 })
+
+describe('hosted receipt display payload validation', () => {
+  const file = {
+    attachment_id: 'att_' + 'a'.repeat(32),
+    kind: 'file',
+    name: 'accepted.txt',
+    mime: 'text/plain',
+    size: 4
+  }
+
+  it.each([
+    null,
+    [],
+    {},
+    { text: 42 },
+    { text: null },
+    { text: ['not text'] },
+    { text: { value: 'not text' } },
+    { text: '' },
+    { text: '   ' },
+    { text: 'valid', thread_id: 42 },
+    { text: 'valid', thread: [] },
+    { text: 'valid', thread_id: 'first', thread: 'second' },
+    { text: 'valid', attachments: null },
+    { text: 'valid', attachments: {} },
+    { attachments: [null] },
+    { attachments: [file, {}] },
+    { text: 'valid', attachments: [{ ...file, size: '4' }] },
+    { text: 'valid', attachments: [{ ...file, size: null }] },
+    { text: 'valid', attachments: [{ ...file, attachment_id: 'not-an-attachment' }] },
+    { text: 'valid', attachments: Array.from({ length: 9 }, () => file) }
+  ])('rejects malformed payload %j before persistence or subsequent valid replay', async payload => {
+    const loaded = await runtimeFixture(() => ({ client_event_id: CLIENT_ID, event: { ...userEvent(), payload } }))
+    const pending = loaded.chat.$groupChats.get().Board.log[0]
+    await loaded.runtime.sendHostedGroupChat('Board', pending, 'work')
+    const cold = JSON.parse(JSON.stringify(loaded.storage.get('group-chats')))
+
+    expect(cold.Board.log.map((entry: GroupMessage) => [entry.id, entry.seq, entry.text])).toEqual([
+      [CLIENT_ID, undefined, pending.text]
+    ])
+    expect(cold.Board.hostedSeq).toBe(5)
+    loaded.runtime.stopHostedRoomRuntime()
+    loaded.chat.$groupChats.set(cold)
+    loaded.setEvents([userEvent()])
+    await loaded.runtime.startHostedRoomRuntime(loaded.ctx.storage)
+    expect(loaded.chat.$groupChats.get().Board.log.map(entry => [entry.id, entry.seq, entry.text])).toEqual([
+      [EVENT_ID, 6, pending.text]
+    ])
+  })
+
+  it.each([
+    { text: 'Previously accepted body' },
+    { text: 'Previously accepted body', thread: 'old-thread' },
+    { text: 'Previously accepted body', thread_id: 'old-thread', thread: 'old-thread', attachments: [] },
+    { attachments: [file] },
+    { text: '', thread_id: 'old-thread', attachments: [file] }
+  ])('accepts valid older-body or attachment-only payload %j without comparing it to the retry body', async payload => {
+    const loaded = await runtimeFixture(() => ({ client_event_id: CLIENT_ID, event: { ...userEvent(), payload } }))
+    await loaded.runtime.sendHostedGroupChat('Board', loaded.chat.$groupChats.get().Board.log[0], 'work')
+    const room = loaded.chat.$groupChats.get().Board
+
+    expect(room.log).toHaveLength(1)
+    expect(room.log[0]).toMatchObject({ id: EVENT_ID, seq: 6, text: 'text' in payload ? payload.text : '' })
+    expect(room.hostedSeq).toBe(5)
+
+    if ('attachments' in payload && payload.attachments?.length) {
+      expect(room.log[0].images?.[0].name).toBe('accepted.txt')
+    }
+  })
+
+  it.each(['pending', 'canonical'])(
+    'ignores legacy JSON intent claims on a cold %s record without any outgoing command',
+    async kind => {
+      const nestedId = `user:${createHash('sha256').update(EVENT_ID).digest('hex')}`
+      const unknown = optimisticUser({ id: EVENT_ID, roomId: 'room-1' })
+      const nested = canonicalUser(nestedId, 6)
+
+      if (kind === 'pending') {
+        unknown.clientEventId = EVENT_ID
+      } else {
+        nested.clientEventId = EVENT_ID
+      }
+
+      const loaded = await runtimeFixture(
+        () => {
+          throw new Error('No send expected')
+        },
+        JSON.parse(JSON.stringify([unknown, nested]))
+      )
+
+      expect(
+        loaded.chat.$groupChats
+          .get()
+          .Board.log.map(entry => entry.id)
+          .sort()
+      ).toEqual([EVENT_ID, nestedId].sort())
+      expect(loaded.calls.filter(call => call.method === 'groups.send')).toHaveLength(0)
+    }
+  )
+
+  it('never serializes live outgoing or validated receipt proof through either storage writer or a projection', async () => {
+    let lost = true
+
+    const loaded = await runtimeFixture(() => {
+      if (lost) {
+        throw new Error('response lost')
+      }
+
+      return { client_event_id: CLIENT_ID, event: userEvent() }
+    })
+
+    await loaded.runtime.sendHostedGroupChat('Board', loaded.chat.$groupChats.get().Board.log[0], 'work')
+
+    for (const accepted of [false, true]) {
+      if (accepted) {
+        lost = false
+        await loaded.runtime.dispatchHostedRoomOutbox()
+      }
+
+      const room = loaded.chat.$groupChats.get().Board
+
+      const values = [
+        (loaded.storage.get('group-chats') as Record<string, { log: GroupMessage[] }>).Board.log[0],
+        loaded.chat.durableGroupChatRooms().Board.log[0],
+        loaded.chat.groupChatSyncSnapshot().rooms['id:room-1'].log[0]
+      ]
+
+      expect(room.log[0].seq !== undefined).toBe(accepted)
+
+      for (const value of values) {
+        expect(value).not.toHaveProperty('clientEventId')
+        expect(Object.getOwnPropertySymbols(value)).toHaveLength(0)
+      }
+    }
+  })
+})
