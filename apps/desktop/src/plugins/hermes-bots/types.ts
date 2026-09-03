@@ -170,6 +170,9 @@ export interface GroupMessage {
   eventId?: string
   /** True for an idempotent message accepted through a messaging bridge. */
   external?: boolean
+  /** Hosted user-event scope and known outgoing retry key; display reconciliation only. */
+  roomId?: string
+  clientEventId?: string
   from: GroupMessageAuthor
   id?: string
   images?: Attachment[]

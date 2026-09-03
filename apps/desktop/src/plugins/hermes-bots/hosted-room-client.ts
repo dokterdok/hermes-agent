@@ -102,6 +102,7 @@ export interface HostedRoomEvent {
 export interface HostedReplayMessage {
   at: number
   eventId: string
+  roomId?: string
   from: GroupMessageAuthor
   images?: Attachment[]
   seq: number
@@ -793,6 +794,7 @@ function messageFromEvent(event: HostedRoomEvent, roomId: null | string): Hosted
   return {
     seq: event.seq,
     eventId: event.eventId,
+    ...(user && (event.roomId || roomId) ? { roomId: (event.roomId || roomId)! } : {}),
     from: {
       kind: user ? 'user' : 'member',
       name: user ? 'You' : memberLabel(event),

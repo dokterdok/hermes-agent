@@ -21,6 +21,7 @@ import {
   groupMessageAnchors,
   mergeGroupMessageCopies
 } from './group-message-author'
+import { projectedUserEvent, reconcileHostedUserEvents } from './hosted-user-events'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { getPluginCtx } from './shared'
 import type {
@@ -325,11 +326,21 @@ export function groupChatSyncSnapshot(
   }
 
   for (const [name, room] of ranked) {
-    const log: GroupMessage[] = room.log.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => ({
+    const entries =
+      room.roomId && groupChatHostedGateway(room) ? reconcileHostedUserEvents(room.roomId, room.log) : room.log
+
+    const log: GroupMessage[] = entries.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => ({
       ...(entry?.id
         ? {
             id: String(entry.id).slice(0, 160)
           }
+        : {}),
+      ...(entry.from?.kind === 'user' && (entry.eventId || (groupChatSyncSequence(entry) !== null && entry.id))
+        ? { eventId: String(entry.eventId || entry.id).slice(0, 160) }
+        : {}),
+      ...(entry.from?.kind === 'user' && entry.roomId ? { roomId: String(entry.roomId).slice(0, 128) } : {}),
+      ...(entry.from?.kind === 'user' && entry.clientEventId
+        ? { clientEventId: String(entry.clientEventId).slice(0, 128) }
         : {}),
       from: compactGroupMessageAuthor(entry?.from),
       text: String(entry?.text || '').slice(0, GROUP_CHAT_SYNC_TEXT_CHARS),
@@ -515,6 +526,12 @@ export function mergeGroupChatSyncEntries(...logs: GroupMessage[][]) {
   return entries.sort(compareGroupChatSyncEntries)
 }
 
+export function mergeGroupChatRoomEntries(room: Pick<GroupChat, 'roomId' | 'hosted'>, ...logs: GroupMessage[][]) {
+  return mergeGroupChatSyncEntries(
+    ...(room.roomId && groupChatHostedGateway(room) ? [reconcileHostedUserEvents(room.roomId, ...logs)] : logs)
+  )
+}
+
 /** Merge two bounded projections without treating an absent room/message as
  *  deletion. Rooms are identified by durable room keys (id:<roomId> when the
  *  room carries one), so a rename is a same-key field update — never a
@@ -600,7 +617,10 @@ export function mergeGroupChatSyncSnapshots(
       ? Math.max(0, Number(writeRevision || 0))
       : Math.max(0, Number(localRoom?.revision || 0))
 
-    const entries = mergeGroupChatSyncEntries(remoteRoom?.log || [], localRoom?.log || [])
+    const entries = mergeGroupChatSyncEntries(
+      (remoteRoom?.log || []).map(projectedUserEvent),
+      (localRoom?.log || []).map(projectedUserEvent)
+    )
 
     // Identity fields (display name, membership, picture) follow the higher
     // revision; a tie unions members and prefers the local writer's fields.
@@ -825,7 +845,11 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
 
     // Projection copies are compact and therefore go first: the local rich
     // twin overlays them while retaining the authoritative hosted sequence.
-    const log = assignLegacyThreads(mergeGroupChatSyncEntries(projected.log, existing.log || []))
+    const logRoom = projectedRoomId && existing.roomId === projectedRoomId ? existing : {}
+
+    const log = assignLegacyThreads(
+      mergeGroupChatRoomEntries(logRoom, projected.log.map(projectedUserEvent), existing.log || [])
+    )
 
     const bounded = trimGroupChatLog(log, existing.watermarks || {})
     const projectedHosted = groupChatHostedGateway(projected)
@@ -1687,6 +1711,14 @@ export function appendGroupChatEntry(
   }
 
   updateGroupChat(group, (room: GroupChatRoom) => {
+    if (from.kind === 'user' && room.roomId && groupChatHostedGateway(room)) {
+      entry.roomId = room.roomId
+      entry.clientEventId = entry.id
+      room.log = reconcileHostedUserEvents(room.roomId, room.log, [entry])
+
+      return room
+    }
+
     room.log.push(entry)
 
     return room
