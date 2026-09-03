@@ -168,6 +168,9 @@ export interface GroupMessage {
   at: number
   /** Stable gateway event identity after a hosted-room replay. */
   eventId?: string
+  /** Hosted user-event scope and known outgoing retry key; display reconciliation only. */
+  roomId?: string
+  clientEventId?: string
   from: GroupMessageAuthor
   id?: string
   images?: Attachment[]
