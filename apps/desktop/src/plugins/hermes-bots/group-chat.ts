@@ -363,6 +363,17 @@ export function groupChatSyncSnapshot(
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
+        ...(member?.hostedIdentity
+          ? {
+              hostedIdentity: { ...member.hostedIdentity },
+              title: String(member.title || '').slice(0, 256),
+              display_name: String(member.display_name || '').slice(0, 256),
+              targetProfile: member.hostedIdentity.profile,
+              remoteSource: true,
+              sourceMissing: member.sourceMissing,
+              sourceReachable: member.sourceReachable
+            }
+          : {}),
         ...(member?.handle
           ? {
               handle: String(member.handle).slice(0, 128)
