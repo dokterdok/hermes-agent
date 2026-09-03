@@ -1,5 +1,5 @@
 import { isHostedRoomContinuityEligible, isHostedRoomReadEligible } from './hosted-room-client'
-import type { HostedRoomCapability } from './hosted-room-client'
+import type { FriendlyHostedRoomStatus, HostedRoomCapability } from './hosted-room-client'
 import { botsText } from './i18n'
 import type { GroupChat } from './types'
 
@@ -130,24 +130,66 @@ export function readHostedInventoryState(response: unknown, roomId: string): Roo
   return room
 }
 
-export function classicRoomInventoryReady(room: GroupChat, inventories: ReadonlyMap<string, ReadonlySet<string>>) {
-  if (!room.roomId) {
-    return true
+export function hostedRoomDriverDisplayStatus(
+  replay: FriendlyHostedRoomStatus,
+  driverValue: unknown,
+  { stopping = false }: { stopping?: boolean } = {}
+): FriendlyHostedRoomStatus {
+  if (stopping) {
+    return { ...replay, kind: 'stopping', canStop: false }
   }
 
-  const members = Array.isArray(room.members) ? room.members : []
-
-  if (!members.length || members.some(member => member.remoteSource !== true)) {
-    return true
+  if (['failed', 'member-unavailable', 'needs-attention', 'needs-you', 'waiting'].includes(replay.kind)) {
+    return replay
   }
 
-  const connections = [...new Set(members.map(member => String(member.connectionId || '')).filter(Boolean))]
+  const driver = record(driverValue)
+  const counts = record(driver?.counts)
 
-  return connections.every(connectionId => {
-    const inventory = inventories.get(connectionId)
+  if (Number(counts?.queued || driver?.queued || 0) > 0) {
+    return { ...replay, kind: 'queued', canStop: true }
+  }
 
-    return inventory !== undefined && !inventory.has(room.roomId!)
-  })
+  if (driver?.working === true || replay.kind === 'working') {
+    return { ...replay, kind: 'working', canStop: true }
+  }
+
+  return replay
+}
+
+export function hostedStatus(status: FriendlyHostedRoomStatus, connectionName: string) {
+  const b = botsText()
+  const member = status.member || b.group.aBot
+
+  const labels: Record<string, string> = {
+    deleted: b.group.hostedDeleted,
+    offline: b.group.hostedUnavailable(connectionName),
+    queued: b.group.hostedQueued(connectionName),
+    ready: b.roster.ready,
+    stopping: b.group.hostedStopping,
+    working: b.group.memberThinking(member),
+    'member-unavailable': b.group.memberUnavailable(member),
+    'needs-attention': b.group.memberNeedsAttention(member),
+    failed: b.group.memberCouldNotRespond(member),
+    waiting: b.group.memberRetryWhenOnline(member),
+    stopped: b.group.hostedStopped,
+    'needs-you': b.group.waitingForAnswer
+  }
+
+  return {
+    state: status.kind,
+    label: labels[status.kind] || b.roster.statusUnknown,
+    ...(status.canRetry === undefined
+      ? {}
+      : {
+          canRetry: status.canRetry
+        }),
+    ...(status.canStop === undefined
+      ? {}
+      : {
+          canStop: status.canStop
+        })
+  }
 }
 
 export function hostedReadOnlyState(): Pick<GroupChat, 'hostedStatus' | 'continuityIssue' | 'running'> {
@@ -171,4 +213,24 @@ export function unavailableHostedReadOnlyState(room: GroupChat, capability: Host
       (!isHostedRoomContinuityEligible(capability) || capability.authorityId !== room.hosted))
     ? hostedReadOnlyState()
     : {}
+}
+
+export function hostedUnavailableState(
+  room: GroupChat,
+  capability: HostedRoomCapability | undefined,
+  connectionName: string,
+  unsupported = false
+): GroupChat {
+  return {
+    ...room,
+    running: false,
+    hostedStatus: {
+      state: unsupported ? 'unsupported' : 'offline',
+      label: unsupported
+        ? botsText().group.hostUpdateNeeded(connectionName)
+        : botsText().group.hostedUnavailable(connectionName)
+    },
+    continuityIssue: unsupported ? null : botsText().group.hostReconnectToContinue(connectionName),
+    ...unavailableHostedReadOnlyState(room, capability)
+  }
 }
