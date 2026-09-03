@@ -161,6 +161,46 @@ describe('display projection ingress never establishes replay authority', () => 
     expect(room.log.find(entry => entry.roomId === 'room-2')?.seq).toBeUndefined()
   })
 
+  for (const kind of ['user', 'member'] as const) {
+    for (const sameId of [false, true]) {
+      it(`preserves ${kind} room scope through snapshot export and reimport, sameId=${sameId}`, async () => {
+        const chat = await import('./group-chat')
+
+        const local = canonicalUser(EVENT_ID, 6, {
+          roomId: undefined,
+          from: { kind, name: 'Legacy author' },
+          text: 'Shared display text'
+        })
+
+        const foreign = {
+          ...local,
+          id: sameId ? EVENT_ID : 'foreign-event',
+          eventId: sameId ? EVENT_ID : 'foreign-event',
+          seq: 99
+        }
+
+        const rooms = chat.mergeRemoteGroupChatSnapshotIntoRooms(projection([foreign], 'room-2'), {
+          Board: userRoom([local])
+        })
+
+        expect(rooms.Board.log).toHaveLength(2)
+        expect(rooms.Board.log.find(entry => entry.seq === 6)?.roomId).toBe('room-1')
+
+        const exported = JSON.parse(JSON.stringify(chat.groupChatSyncSnapshot(rooms)))
+        const exportedLog = exported.rooms['id:room-1'].log as GroupMessage[]
+
+        expect(exportedLog.map(entry => entry.roomId).sort()).toEqual(['room-1', 'room-2'])
+        expect(exportedLog.every(entry => entry.seq === undefined && entry.clientEventId === undefined)).toBe(true)
+
+        const restored = chat.mergeRemoteGroupChatSnapshotIntoRooms(exported, {}).Board
+
+        expect(restored.log).toHaveLength(2)
+        expect(restored.log.map(entry => entry.roomId).sort()).toEqual(['room-1', 'room-2'])
+        expect(restored.log.every(entry => entry.from.kind === kind && entry.seq === undefined)).toBe(true)
+      })
+    }
+  }
+
   it('preserves valid same-kind legacy merging, room discovery and a genuine same-room rename', async () => {
     const chat = await import('./group-chat')
     const plain = optimisticUser()

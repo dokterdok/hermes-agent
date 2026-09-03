@@ -343,7 +343,7 @@ export function groupChatSyncSnapshot(
       ...(entry.from?.kind === 'user' && (entry.eventId || (groupChatSyncSequence(entry) !== null && entry.id))
         ? { eventId: String(entry.eventId || entry.id).slice(0, 160) }
         : {}),
-      ...(entry.from?.kind === 'user' && entry.roomId ? { roomId: String(entry.roomId).slice(0, 128) } : {}),
+      ...(entry.roomId ? { roomId: String(entry.roomId).slice(0, 128) } : {}),
       from: compactGroupMessageAuthor(entry?.from),
       text: String(entry?.text || '').slice(0, GROUP_CHAT_SYNC_TEXT_CHARS),
       at: Number(entry?.at || 0),
