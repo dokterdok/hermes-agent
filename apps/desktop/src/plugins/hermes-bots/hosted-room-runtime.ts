@@ -282,7 +282,7 @@ async function verifiedHostedAuthorityRoute(routes: ProfileRoute[], authorityId:
 
   for (const route of ordered) {
     const connectionId = String(route.connectionId || '')
-    const observation = hostedRoomObservations.capture(connectionId)
+    const observation = hostedRoomObservations.captureCapability(connectionId)
 
     try {
       const capability = classifyHostedRoomCapability(
@@ -478,7 +478,7 @@ export async function refreshHostedRooms() {
       }
 
       const connectionId = String(route.connectionId)
-      const observation = hostedRoomObservations.capture(connectionId)
+      let observation = hostedRoomObservations.capture(connectionId)
       let capability: HostedRoomCapability
 
       const cached = capabilities[connectionId]
@@ -486,6 +486,8 @@ export async function refreshHostedRooms() {
       if (cached?.kind === 'unsupported' && Number(hostedUnsupportedUntil.get(connectionId) || 0) > Date.now()) {
         capability = cached
       } else {
+        observation = hostedRoomObservations.captureCapability(connectionId)
+
         try {
           capability = classifyHostedRoomCapability(await requestHostedConnection(route, 'groups.capabilities'), {
             connectionId
@@ -1363,7 +1365,6 @@ export async function probeHostedRoomMembers(members: GroupMember[]): Promise<Ho
 
   await Promise.all(
     connectionIds.map(async connectionId => {
-      const observation = hostedRoomObservations.capture(connectionId)
       const cached = $hostedRoomCapabilities.get()[connectionId]
 
       if (cached?.kind === 'unsupported' && Number(hostedUnsupportedUntil.get(connectionId) || 0) > now) {
@@ -1372,6 +1373,7 @@ export async function probeHostedRoomMembers(members: GroupMember[]): Promise<Ho
         return
       }
 
+      const observation = hostedRoomObservations.captureCapability(connectionId)
       const route = routes[connectionId]
       let capability: HostedRoomCapability
 

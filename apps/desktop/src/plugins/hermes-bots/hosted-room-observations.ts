@@ -2,8 +2,8 @@ import type { GroupChat } from './types'
 
 const MAX_KNOWN_IDS = 2000
 
-type Observation = { connectionId: string; token: symbol }
-type Inventory = { token: symbol; known: Set<string>; complete: boolean; saturated: boolean }
+type Observation = { connectionId: string; token: symbol; capabilityToken?: symbol }
+type Inventory = { token: symbol; capabilityToken?: symbol; known: Set<string>; complete: boolean; saturated: boolean }
 
 function roomConnections(room: GroupChat) {
   return new Set(
@@ -29,7 +29,21 @@ export class HostedRoomObservations {
   }
 
   current(observation: Observation) {
-    return this.inventories.get(observation.connectionId)?.token === observation.token
+    const inventory = this.inventories.get(observation.connectionId)
+
+    return (
+      inventory?.token === observation.token &&
+      (!observation.capabilityToken || inventory.capabilityToken === observation.capabilityToken)
+    )
+  }
+
+  /** Order actual probes without invalidating warm inventory or history reads. */
+  captureCapability(connectionId: string): Observation {
+    const observation = this.capture(connectionId)
+    const capabilityToken = Symbol()
+    this.inventories.get(connectionId)!.capabilityToken = capabilityToken
+
+    return { ...observation, capabilityToken }
   }
 
   invalidate(connectionId: string) {
