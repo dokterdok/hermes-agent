@@ -1168,12 +1168,23 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 raise RuntimeError("hosted room replay cursor did not advance")
             cursor = next_cursor
 
-    def _append_plan(self, room_id: str, plan: discussion.PublicationPlan) -> None:
+    def _append_plan(
+        self,
+        room_id: str,
+        plan: discussion.PublicationPlan,
+        *,
+        expected_latest_seq: int | None = None,
+    ) -> None:
         for event in plan.events:
-            hosted_rooms.append_event(
+            kwargs = event.append_kwargs(room_id)
+            if expected_latest_seq is not None:
+                kwargs["expected_latest_seq"] = expected_latest_seq
+            appended = hosted_rooms.append_event(
                 self.db_path,
-                **event.append_kwargs(room_id),
+                **kwargs,
             )
+            if expected_latest_seq is not None:
+                expected_latest_seq = max(expected_latest_seq, int(appended["seq"]))
 
     def _policy_snapshot(self, room: Mapping[str, Any]) -> PolicySnapshot:
         return self.policy_checkpoint.snapshot(

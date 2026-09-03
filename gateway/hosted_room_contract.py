@@ -219,6 +219,10 @@ class EventConflictError(HostedRoomError):
     """Raised when an event id is reused with different immutable content."""
 
 
+class EventCursorConflictError(HostedRoomError):
+    """Raised when new room events invalidate an uncommitted publication plan."""
+
+
 class AuthorityConflictError(HostedRoomError):
     """Raised when a stale room authority attempts to mutate hosted state."""
 

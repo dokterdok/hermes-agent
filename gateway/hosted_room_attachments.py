@@ -361,6 +361,10 @@ class HostedRoomAttachmentStore:
             """CREATE INDEX IF NOT EXISTS idx_hosted_room_attachments_expiry
                ON hosted_room_attachments(expires_at)"""
         )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_hosted_room_attachments_event
+               ON hosted_room_attachments(room_id, event_id)"""
+        )
 
     def _connect(self) -> sqlite3.Connection:
         from hermes_state import apply_wal_with_fallback
@@ -762,6 +766,30 @@ class HostedRoomAttachmentStore:
             )
             return int(changed.rowcount)
 
+    def abort_unpublished_event(self, *, room_id: Any, event_id: Any) -> bool:
+        """Revoke unpublished commitments; never roll back a durable owner event."""
+
+        room_id = _identifier(room_id, label="room_id")
+        event_id = _identifier(event_id, label="event_id")
+        now = float(self.clock())
+        with self._transaction(immediate=True) as conn:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM hosted_room_events WHERE room_id=? AND event_id=?",
+                    (room_id, event_id),
+                ).fetchone()
+                is not None
+            ):
+                return False
+            conn.execute(
+                """UPDATE hosted_room_attachments
+                   SET event_id=NULL, recipient_member_ids_json='[]', viewer_access=0,
+                       state='uploaded', updated_at=?, expires_at=?
+                   WHERE room_id=? AND event_id=? AND state='committed'""",
+                (now, now + UNCOMMITTED_TTL_SECONDS, room_id, event_id),
+            )
+        return True
+
     def retain_event(self, *, room_id: Any, event_id: Any) -> int:
         """Retain committed blobs after their immutable room event is durable."""
 
@@ -815,6 +843,37 @@ class HostedRoomAttachmentStore:
                 raise AttachmentNotFoundError("attachment has expired")
             if normalized_event is not None and str(row["event_id"] or "") != normalized_event:
                 raise AttachmentNotFoundError("attachment is not owned by this room event")
+            if int(row["viewer_access"] or 0):
+                # Room-visible files need a published owner even for member reads.
+                # A pre-event commitment is staging, not authority to expose bytes.
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_events'"
+                    ).fetchone()
+                    is None
+                ):
+                    raise AttachmentNotFoundError(
+                        "attachment is not published in this room"
+                    )
+                owner = conn.execute(
+                    """SELECT payload_json FROM hosted_room_events
+                       WHERE room_id=? AND event_id=? AND kind IN ('message.user', 'message.member')""",
+                    (room_id, str(row["event_id"] or "")),
+                ).fetchone()
+                manifest = {
+                    key: row[key]
+                    for key in ("attachment_id", "kind", "name", "size", "mime")
+                }
+                payload = (
+                    json.loads(owner["payload_json"]) if owner is not None else None
+                )
+                published = (
+                    payload.get("attachments") if isinstance(payload, Mapping) else None
+                )
+                if not isinstance(published, list) or manifest not in published:
+                    raise AttachmentNotFoundError(
+                        "attachment is not published in this room"
+                    )
             recipients = json.loads(str(row["recipient_member_ids_json"]))
             if viewer:
                 if int(row["viewer_access"] or 0) != 1:

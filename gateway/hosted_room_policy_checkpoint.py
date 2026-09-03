@@ -467,7 +467,14 @@ class HostedRoomPolicyCheckpoint:
                     (room_id, _TRANSCRIPT_SCHEMA_VERSION),
                 )
         if cursor > latest_seq:
-            raise RuntimeError("room policy cursor is ahead of the durable log")
+            with self._connect() as conn:
+                room = conn.execute(
+                    "SELECT next_seq FROM hosted_rooms WHERE room_id=?", (room_id,)
+                ).fetchone()
+                if room is None:
+                    raise hosted_rooms.RoomNotFoundError("hosted room not found")
+                if cursor >= int(room["next_seq"]):
+                    raise RuntimeError("room policy cursor is ahead of the durable log")
 
         while cursor < latest_seq:
             page = hosted_rooms.read_events(
@@ -492,6 +499,17 @@ class HostedRoomPolicyCheckpoint:
                     is None
                 ):
                     raise hosted_rooms.RoomNotFoundError("hosted room not found")
+                current = conn.execute(
+                    "SELECT through_seq FROM hosted_room_policy_cursors WHERE room_id=?",
+                    (room_id,),
+                ).fetchone()
+                if current is None:
+                    raise RuntimeError("room policy cursor disappeared during replay")
+                if int(current["through_seq"]) != cursor:
+                    # A different worker applied this page (or a newer one).
+                    # Reload before any thread/activity effects, not just the cursor write.
+                    cursor = int(current["through_seq"])
+                    continue
                 for event in rows:
                     self._apply_event(conn, event)
                 updated = conn.execute(
@@ -511,13 +529,17 @@ class HostedRoomPolicyCheckpoint:
     def snapshot(self, *, room_id: str, latest_seq: int) -> PolicySnapshot:
         """Return only the oldest active discussion and its watermark set."""
 
-        through_seq = self.sync(room_id=room_id, latest_seq=latest_seq)
+        self.sync(room_id=room_id, latest_seq=latest_seq)
         with self._connect() as conn:
+            conn.execute("BEGIN")
             cursor = conn.execute(
-                """SELECT stopped_through_seq FROM hosted_room_policy_cursors
+                """SELECT through_seq, stopped_through_seq FROM hosted_room_policy_cursors
                    WHERE room_id=?""",
                 (room_id,),
             ).fetchone()
+            if cursor is None:
+                raise hosted_rooms.RoomNotFoundError("hosted room checkpoint not found")
+            through_seq = int(cursor["through_seq"])
             stopped_through_seq = int(cursor["stopped_through_seq"])
             thread = conn.execute(
                 """SELECT thread_id, discussion_event_id
@@ -605,6 +627,26 @@ class HostedRoomPolicyCheckpoint:
                 ).fetchone()
         return row is not None
 
+    def _published_task_events(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        room_id: str,
+        task_id: str | None,
+    ) -> list[dict[str, Any]]:
+        if not task_id:
+            return []
+        digest = task_id.removeprefix("dtask:")
+        rows = conn.execute(
+            """SELECT * FROM hosted_room_events
+               WHERE room_id=? AND event_id IN (?, ?) ORDER BY seq""",
+            (room_id, f"dmessage:{digest}", f"dterminal:{digest}"),
+        ).fetchall()
+        events = [self._event_from_room_row(row) for row in rows]
+        if any(event["payload"].get("task_id") != task_id for event in events):
+            raise RuntimeError("published task receipt identity changed")
+        return events
+
     def events_for_task(
         self,
         *,
@@ -616,6 +658,10 @@ class HostedRoomPolicyCheckpoint:
         """Load one bounded discussion projection for terminal reconstruction."""
 
         with self._connect() as conn:
+            conn.execute("BEGIN")
+            published = self._published_task_events(
+                conn, room_id=room_id, task_id=task_id
+            )
             if input_context is not None:
                 context = validate_task_input(input_context)
                 seqs = sorted({source_event_seq, *context["event_seqs"]})
@@ -645,20 +691,8 @@ class HostedRoomPolicyCheckpoint:
                 ).fetchone()
                 if latest is not None:
                     events[int(latest["seq"])] = self._event_from_room_row(latest)
-                if task_id:
-                    digest = task_id.removeprefix("dtask:")
-                    published = conn.execute(
-                        """SELECT * FROM hosted_room_events
-                           WHERE room_id=? AND event_id IN (?, ?)""",
-                        (room_id, f"dmessage:{digest}", f"dterminal:{digest}"),
-                    ).fetchall()
-                    for row in published:
-                        event = self._event_from_room_row(row)
-                        if event["payload"].get("task_id") != task_id:
-                            raise RuntimeError(
-                                "published task receipt identity changed"
-                            )
-                        events[int(event["seq"])] = event
+                for event in published:
+                    events[int(event["seq"])] = event
                 return [events[seq] for seq in sorted(events)]
             source = conn.execute(
                 """SELECT discussion_event_id, thread_id
@@ -686,7 +720,7 @@ class HostedRoomPolicyCheckpoint:
                     ),
                 ).fetchall()
             if source is None:
-                return []
+                return published
             transcript_events = self._transcript_events(
                 conn,
                 room_id=room_id,
@@ -697,6 +731,7 @@ class HostedRoomPolicyCheckpoint:
         events_by_seq = {
             int(event["seq"]): event
             for event in (
+                *published,
                 *transcript_events,
                 *(json.loads(row["event_json"]) for row in active_rows),
             )
