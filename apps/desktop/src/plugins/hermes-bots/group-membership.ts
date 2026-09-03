@@ -5,7 +5,7 @@
  */
 
 import { $botMeta, botFriendlyNames, botMetaKey, botRosterKey } from './data'
-import { $groupChats, groupChatRoomKey } from './group-chat'
+import { $groupChats, groupChatHostedGateway, groupChatRoomKey } from './group-chat'
 import { botConnectionRoute, botRosterMeta, resolveBotConnectionRoute } from './routing'
 import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
 
@@ -13,12 +13,14 @@ export function groupWorkspaceOwnerKey(group: string) {
   return `group:${groupChatRoomKey(group, $groupChats.get()[group])}`
 }
 
-/** Stable per-member identity inside a group room. Local members keep their
+/** Stable per-member identity inside a group room. Hosted members use the
+ *  server's installation/profile, independent of Desktop connection aliases.
+ *  Local members keep their
  *  bare name (compat with rooms persisted before cross-connection groups);
  *  remote members get the source-qualified key so `dixie` on the Mini and a
  *  local `dixie` never share watermarks or sessions. */
 export function groupMemberKey(member: GroupMember): string {
-  return member?.sourceScoped || member?.remoteSource ? botRosterKey(member) : member?.name
+  return member?.hostedIdentity || member?.sourceScoped || member?.remoteSource ? botRosterKey(member) : member?.name
 }
 
 /** Serializable immutable owner captured beside every group plumbing session. */
@@ -202,7 +204,8 @@ export function groupLastActivity(room?: GroupChat | null) {
   return log.length ? log[log.length - 1].at || 0 : 0
 }
 
-/** Seat a group's member roster: local bots whose meta names the group, plus
+/** Hosted membership comes only from the server's descriptors. Classic rooms
+ *  seat local bots whose meta names the group, plus
  *  the room record's stored descriptors (remote members can't ride bot-meta).
  *  Prefers the LIVE roster row for a stored descriptor when present. */
 export function groupChatMemberBots(
@@ -210,6 +213,12 @@ export function groupChatMemberBots(
   roster: RosterRow[],
   metaByName: Record<string, BotMeta>
 ): RosterRow[] {
+  const room = $groupChats.get()[group]
+
+  if (groupChatHostedGateway(room)) {
+    return groupChatBotsFromDescriptors(room.members || [], roster)
+  }
+
   const local = (roster || []).filter(bot => botGroups(botRosterMeta(bot, metaByName)).includes(group))
   const stored = ($groupChats.get()[group] || {}).members || []
   const seated = new Set(local.map(botRosterKey))
@@ -250,6 +259,10 @@ export function groupChatMemberBots(
  *  never be used as a `profile:` target. */
 export function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[]): RosterRow {
   const rows = roster || []
+
+  if (descriptor.hostedIdentity || (!descriptor.connectionId && (descriptor.sourceScoped || descriptor.remoteSource))) {
+    return descriptor
+  }
 
   if (rows.some(bot => botRosterKey(bot) === botRosterKey(descriptor))) {
     return descriptor
@@ -309,7 +322,27 @@ export function groupChatBotsFromDescriptors(descriptors: GroupMember[], roster:
     }
 
     seen.add(key)
-    members.push((roster || []).find(bot => !bot?.ghost && botRosterKey(bot) === key) || resolved)
+
+    const live = (roster || []).find(bot => {
+      if (bot?.ghost) {
+        return false
+      }
+
+      if (!resolved.hostedIdentity) {
+        return botRosterKey(bot) === key
+      }
+
+      const route = resolveBotConnectionRoute(bot).route
+
+      return Boolean(
+        resolved.route &&
+        route &&
+        route.connectionId === resolved.route.connectionId &&
+        route.targetProfile === resolved.hostedIdentity.profile
+      )
+    })
+
+    members.push(resolved.hostedIdentity ? { ...live, ...resolved } : live || resolved)
   }
 
   return members
@@ -336,6 +369,9 @@ export function durableGroupChatMembers(bots: RosterRow[]): GroupMember[] {
     return {
       name: bot.name,
       handle: bot.handle || bot.name,
+      ...(bot.hostedIdentity
+        ? { hostedIdentity: { ...bot.hostedIdentity }, targetProfile: bot.hostedIdentity.profile }
+        : {}),
       ...(title
         ? {
             title
