@@ -195,9 +195,17 @@ def load_room_links_tolerant(
     return tuple(links), tuple(errors)
 
 
-def save_room_link(db_path: Path | str, link: StoredRoomLink) -> None:
+def save_room_link(
+    db_path: Path | str,
+    link: StoredRoomLink,
+    *,
+    expected_grant_sha256: str | None = None,
+) -> None:
     hosted_rooms.upsert_room_link_record(
-        db_path, record=link.as_record(), max_links=MAX_LINKS
+        db_path,
+        record=link.as_record(),
+        max_links=MAX_LINKS,
+        expected_grant_sha256=expected_grant_sha256,
     )
     if os.name == "posix":
         try:
@@ -212,6 +220,7 @@ def mark_room_link_status(
     room_id: str,
     member_id: str,
     status: str,
+    expected_grant_sha256: str | None = None,
 ) -> bool:
     if status not in _STATUSES:
         raise HostedRoomPeerError("stored room link status is invalid")
@@ -220,6 +229,7 @@ def mark_room_link_status(
         room_id=_short_string(room_id, "room_id"),
         member_id=_short_string(member_id, "member_id"),
         status=status,
+        expected_grant_sha256=expected_grant_sha256,
     )
 
 

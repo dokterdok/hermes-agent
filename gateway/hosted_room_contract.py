@@ -108,6 +108,7 @@ _REMOTE_RUN_IDENTITY_COLUMNS = (
     "task_id",
     "execution_generation",
 )
+_REVOKED_GRANT_ID_SCHEMA_COLUMNS = frozenset({"scope_key", "grant_id", "expires_at"})
 _REVOKED_GRANT_SCHEMA_COLUMNS = frozenset({
     "scope_key",
     "expires_at",

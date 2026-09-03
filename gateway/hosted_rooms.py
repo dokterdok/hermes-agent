@@ -88,6 +88,7 @@ from gateway.hosted_room_storage import (
     reserve_peer_room,
     restore_peer_room_reservations,
     revoke_room_grant_scope,
+    revoke_room_grant_id,
     room_grant_is_revoked,
     update_room_link_status,
     upsert_remote_run_receipt,
