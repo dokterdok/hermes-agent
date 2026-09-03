@@ -816,6 +816,15 @@ def _room_grant_scope_key(claims: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def _room_grant_id(claims: Mapping[str, Any]) -> str:
+    from gateway.hosted_room_peer import _identifier as grant_identifier
+
+    try:
+        return grant_identifier(claims.get("grant_id"), field="grant_id")
+    except ValueError as exc:
+        raise HostedRoomError(str(exc)) from exc
+
+
 def revoke_room_grant_id(
     db_path: Path | str,
     *,
@@ -829,9 +838,7 @@ def revoke_room_grant_id(
     expiry = float(expires_at)
     if expiry <= timestamp:
         return
-    grant_id = _validate_identifier(
-        claims.get("grant_id"), label="grant_id", max_chars=256
-    )
+    grant_id = _room_grant_id(claims)
     scope_key = _room_grant_scope_key(claims)
     with _transaction(db_path, immediate=True) as conn:
         conn.execute(
@@ -1173,9 +1180,7 @@ def room_grant_is_revoked(
     timestamp = float(now if now is not None else time.time())
     scope_key = _room_grant_scope_key(claims)
     issued_at = float(claims.get("issued_at") or 0)
-    grant_id = _validate_identifier(
-        claims.get("grant_id"), label="grant_id", max_chars=256
-    )
+    grant_id = _room_grant_id(claims)
     scope_key = _room_grant_scope_key(claims)
     with _transaction(db_path) as conn:
         exact = conn.execute(

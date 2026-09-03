@@ -87,3 +87,34 @@ async def test_exact_revoke_rejects_wrong_profile_or_bearer(exact_revoke):
     for db in stores:
         assert not hosted_rooms.room_grant_is_revoked(db, claims=claims)
     cleanup.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grant_id", ["grant/user", "grant@home", "g" * 256])
+async def test_exact_revoke_accepts_the_signed_grant_identifier(exact_revoke, grant_id):
+    secret, stores, token, revoke, _profile, cleanup = exact_revoke
+    value = token(grant_id)
+    claims = decode_room_grant(secret, value, permission="status")
+    sibling = decode_room_grant(secret, token("other@grant"), permission="status")
+    for _ in range(2):
+        assert (await revoke(value)).status == 200
+    for db in stores:
+        assert hosted_rooms.room_grant_is_revoked(db, claims=claims)
+        assert not hosted_rooms.room_grant_is_revoked(db, claims=sibling)
+    cleanup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "invalid", [None, True, "", "   ", "bad\nidentifier", "g" * 257]
+)
+def test_exact_storage_keeps_rejecting_invalid_grant_identifiers(exact_revoke, invalid):
+    secret, stores, token, _revoke, _profile, _cleanup = exact_revoke
+    claims = decode_room_grant(secret, token("valid-grant"), permission="status")
+    claims["grant_id"] = invalid
+    for db in stores:
+        with pytest.raises(hosted_rooms.HostedRoomError):
+            hosted_rooms.revoke_room_grant_id(
+                db, claims=claims, expires_at=claims["expires_at"]
+            )
+        with pytest.raises(hosted_rooms.HostedRoomError):
+            hosted_rooms.room_grant_is_revoked(db, claims=claims)
