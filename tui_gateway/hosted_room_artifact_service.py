@@ -119,6 +119,11 @@ class HostedRoomArtifactMixin:
                     and not has_artifact_ack
                 ):
                     continue
+                publication_cursor = int(
+                    hosted_rooms.room_state(self.db_path, room_id=str(room["room_id"]))[
+                        "latest_seq"
+                    ]
+                )
                 task_events = self.policy_checkpoint.events_for_task(
                     room_id=str(room["room_id"]),
                     source_event_seq=int(task["payload"]["source_event_seq"]),
@@ -204,7 +209,14 @@ class HostedRoomArtifactMixin:
                             and not self._retire_unpublished_artifacts(room, task, plan)
                         ):
                             continue
-                        self._append_plan(str(room["room_id"]), publication)
+                        try:
+                            self._append_plan(
+                                str(room["room_id"]),
+                                publication,
+                                expected_latest_seq=publication_cursor,
+                            )
+                        except hosted_rooms.EventCursorConflictError:
+                            continue
                         self._clear_artifact_retry(task)
                         changed = True
                         continue
@@ -300,13 +312,14 @@ class HostedRoomArtifactMixin:
                         expected_latest_seq=publication_cursor,
                     )
                 except hosted_rooms.EventCursorConflictError as exc:
-                    # No model rerun: retry from fresh authority state. Roll back
-                    # staging only if another publisher did not already commit it.
-                    self.attachments.abort_unpublished_event(
-                        room_id=str(room["room_id"]),
-                        event_id=f"dmessage:{identity.task_id.removeprefix('dtask:')}",
-                    )
-                    self._defer_artifact_retry(task, exc)
+                    if has_artifact_ack:
+                        # Preserve the private-file retry and publication fence.
+                        self.attachments.abort_unpublished_event(
+                            room_id=str(room["room_id"]),
+                            event_id=f"dmessage:{identity.task_id.removeprefix('dtask:')}",
+                        )
+                        self._defer_artifact_retry(task, exc)
+                    # Text-only results retry on the next ordinary prepare.
                     continue
                 if (
                     publication.terminal_kind == "turn.settled"
@@ -675,6 +688,9 @@ class HostedRoomArtifactMixin:
                         str(room["room_id"]),
                         plan.member.member_id,
                         "needs_reauthorization",
+                        expected_grant_sha256=hashlib.sha256(
+                            peer_route.grant.encode()
+                        ).hexdigest(),
                     )
                     raise _ArtifactRetirementBlocked(
                         "peer room output artifact retirement needs a repaired route"
@@ -866,6 +882,9 @@ class HostedRoomArtifactMixin:
                 str(room["room_id"]),
                 plan.member.member_id,
                 "needs_reauthorization",
+                expected_grant_sha256=hashlib.sha256(
+                    route.grant.encode()
+                ).hexdigest(),
             )
             raise _ArtifactRetirementBlocked(
                 "peer room output artifact retirement needs a repaired route"

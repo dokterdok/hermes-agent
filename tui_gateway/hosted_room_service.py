@@ -244,12 +244,15 @@ class HostedRoomService(HostedRoomArtifactMixin):
         return room
 
     def _room_is_disbanding(self, room_id: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM hosted_room_disband_fences WHERE room_id=?",
-                (room_id,),
-            ).fetchone()
-        return row is not None
+        if not hosted_rooms.room_link_retirement_started(self.db_path, room_id=room_id):
+            return False
+        try:
+            room = hosted_rooms.room_state(
+                self.db_path, room_id=room_id, include_disbanded=True
+            )
+        except hosted_rooms.RoomNotFoundError:
+            return False
+        return room.get("disbanded_at") is None
 
     def begin_room_disband(self, room_id: str) -> dict[str, Any]:
         """Persist the no-new-work fence before Stop and grant revocation."""
@@ -262,32 +265,12 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 raise hosted_rooms.AuthorityConflictError(
                     "This Group Chat is managed by another gateway."
                 )
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                existing = conn.execute(
-                    """SELECT authority_gateway_id, authority_epoch
-                         FROM hosted_room_disband_fences WHERE room_id=?""",
-                    (room_id,),
-                ).fetchone()
-                if existing is not None and (str(existing[0]), int(existing[1])) != (
-                    str(room["authority_gateway_id"]),
-                    int(room["authority_epoch"]),
-                ):
-                    raise hosted_rooms.AuthorityConflictError(
-                        "Group Chat disband fence has stale authority lineage."
-                    )
-                conn.execute(
-                    """INSERT OR IGNORE INTO hosted_room_disband_fences(
-                           room_id, authority_gateway_id, authority_epoch, started_at
-                       ) VALUES (?, ?, ?, ?)""",
-                    (
-                        room_id,
-                        str(room["authority_gateway_id"]),
-                        int(room["authority_epoch"]),
-                        time.time(),
-                    ),
-                )
-                conn.commit()
+            hosted_rooms.begin_room_link_retirement(
+                self.db_path,
+                room_id=room_id,
+                authority_gateway_id=str(room["authority_gateway_id"]),
+                authority_epoch=int(room["authority_epoch"]),
+            )
             return room
 
     @contextlib.contextmanager
@@ -536,18 +519,12 @@ class HostedRoomService(HostedRoomArtifactMixin):
 
         with self._policy_lock:
             self.retire_room_artifacts(room_id)
-            tombstone = hosted_rooms.disband_room(
+            return hosted_rooms.disband_room(
                 self.db_path,
                 room_id=room_id,
                 expected_gateway_id=expected_gateway_id,
                 expected_epoch=expected_epoch,
             )
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
-                    "DELETE FROM hosted_room_disband_fences WHERE room_id=?",
-                    (room_id,),
-                )
-            return tombstone
 
     def _resolve_member_transport(
         self,
@@ -1052,48 +1029,45 @@ class HostedRoomService(HostedRoomArtifactMixin):
         ):
             raise RuntimeError("peer room capability identity changed")
         key = (room_id, member_id)
-        stored = next(
-            (
-                link
-                for link in hosted_room_links.load_room_links(self.db_path)
-                if (link.room_id, link.member_id) == key
-            ),
-            None,
-        )
-        if stored is None:
-            # Explicitly supplied in-process routes are valid for tests and
-            # ephemeral callers, but cannot publish a refreshed catalog.
-            return replace(
+        with self._policy_lock:
+            stored = hosted_room_links.load_room_link(
+                self.db_path, room_id=room_id, member_id=member_id
+            )
+            if stored is None:
+                # Ephemeral routes cannot publish a refreshed catalog.
+                return replace(
+                    route,
+                    capability_digest=catalog.catalog_digest,
+                    attachments=catalog.attachments,
+                )
+            expected_grant_sha256 = hashlib.sha256(route.grant.encode()).hexdigest()
+            if stored.grant != route.grant:
+                raise hosted_rooms.HostedRoomError(
+                    "Group Chat room link grant changed during reconnect"
+                )
+            refreshed = replace(
                 route,
                 capability_digest=catalog.catalog_digest,
                 attachments=catalog.attachments,
             )
-        refreshed = replace(
-            route,
-            capability_digest=catalog.catalog_digest,
-            attachments=catalog.attachments,
-        )
-        if (
-            stored.catalog.catalog_digest != catalog.catalog_digest
-            or stored.catalog.attachments != catalog.attachments
-        ):
-            hosted_room_links.save_room_link(
-                self.db_path,
-                hosted_room_links.make_stored_link(
-                    room_id=room_id,
-                    member_id=member_id,
-                    target_url=stored.target_url,
-                    target_profile=stored.target_profile,
-                    grant=route.grant,
-                    catalog=catalog,
-                    cancellation_scope_id=stored.cancellation_scope_id,
-                    trace_id=stored.trace_id,
-                ),
-                expected_grant_sha256=hashlib.sha256(
-                    route.grant.encode("utf-8")
-                ).hexdigest(),
-            )
-            with self._policy_lock:
+            if (
+                stored.catalog.catalog_digest != catalog.catalog_digest
+                or stored.catalog.attachments != catalog.attachments
+            ):
+                hosted_room_links.save_room_link(
+                    self.db_path,
+                    hosted_room_links.make_stored_link(
+                        room_id=room_id,
+                        member_id=member_id,
+                        target_url=stored.target_url,
+                        target_profile=stored.target_profile,
+                        grant=route.grant,
+                        catalog=catalog,
+                        cancellation_scope_id=stored.cancellation_scope_id,
+                        trace_id=stored.trace_id,
+                    ),
+                    expected_grant_sha256=expected_grant_sha256,
+                )
                 self.peer_routes[key] = refreshed
                 self._peer_route_status[key] = "ready"
         return refreshed
