@@ -282,3 +282,327 @@ describe('hosted member identity through normalization and consumers', () => {
     expect(loaded.membership.groupChatBotsFromDescriptors([legacyForeign], [LOCAL_DEFAULT])).toEqual([legacyForeign])
   })
 })
+
+function legacyProjection(rooms: Record<string, GroupChat>) {
+  const snapshot = loaded.chat.groupChatSyncSnapshot(rooms)
+
+  for (const room of Object.values(snapshot.rooms)) {
+    for (const bot of room.members || []) {
+      delete bot.hostedIdentity
+      delete bot.title
+      delete bot.display_name
+      delete bot.targetProfile
+      delete bot.remoteSource
+      delete bot.sourceMissing
+      delete bot.sourceReachable
+    }
+  }
+
+  return snapshot
+}
+
+const stateReads = () => loaded.calls.filter(call => call.method === 'groups.state').length
+const peer = () => loaded.chat.$groupChats.get()[GROUP].members!.find(bot => bot.handle === 'ux')!
+
+describe('review repairs across authority and display projection', () => {
+  it('retains classic projection handle updates at equal revision', async () => {
+    loaded = await load()
+
+    const current: Record<string, GroupChat> = {
+      Classic: {
+        roomId: 'classic-id',
+        watermarks: {},
+        log: [],
+        members: [{ name: 'research', handle: 'old' }, { name: 'builder' }]
+      }
+    }
+
+    const snapshot = loaded.chat.groupChatSyncSnapshot(current)
+    Object.values(snapshot.rooms)[0].members![0].handle = 'new'
+    const restored = loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(snapshot, current)
+    expect(restored.Classic.members?.[0].handle).toBe('new')
+    expect(restored.Classic.members).toHaveLength(2)
+  })
+  it('keeps verified membership when a display mirror carries a malformed member collection', async () => {
+    loaded = await load()
+    await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+    const current = loaded.chat.$groupChats.get()
+    const snapshot = loaded.chat.groupChatSyncSnapshot(current)
+    Object.assign(Object.values(snapshot.rooms)[0], { members: { invalid: true } })
+    const restored = loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(snapshot, current)
+    expect(restored[GROUP].members).toEqual(current[GROUP].members)
+  })
+  it.each([false, true])(
+    'preserves verified seats against a legacy projection and refreshes authority (newer=%s)',
+    async newer => {
+      loaded = await load([
+        member('pm', 't2oracle', 'Project Manager'),
+        member('builder', 'oxcoder', 'Builder'),
+        ...FOREIGN
+      ])
+      await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+      const current = loaded.chat.$groupChats.get()
+      const members = current[GROUP].members
+      const legacy = legacyProjection(current)
+
+      if (newer) {
+        Object.values(legacy.rooms).forEach(room => {
+          room.revision = 100
+        })
+      }
+
+      loaded.chat.$groupChats.set(loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(legacy, current))
+      expect(loaded.chat.$groupChats.get()[GROUP].members).toBe(members)
+      expect(loaded.membership.groupChatMemberBots(GROUP, [], {}).map(bot => bot.handle)).toEqual([
+        'pm',
+        'builder',
+        'ux',
+        'reviewer'
+      ])
+      const before = stateReads()
+      await loaded.runtime.refreshHostedRooms()
+      expect(stateReads()).toBe(before + 1)
+      expect(loaded.chat.$groupChats.get()[GROUP].members?.map(bot => bot.handle)).toEqual([
+        'pm',
+        'builder',
+        'ux',
+        'reviewer'
+      ])
+      await loaded.runtime.refreshHostedRooms()
+      expect(stateReads()).toBe(before + 1)
+    }
+  )
+
+  it.each([false, true])(
+    'keeps a coherent hosted roster when merging two display mirrors (reverse=%s)',
+    async reverse => {
+      loaded = await load()
+      loaded.connections['peer-a'] = 'installation-A'
+      await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+      const current = loaded.chat.groupChatSyncSnapshot(loaded.chat.$groupChats.get())
+      const legacy = legacyProjection(loaded.chat.$groupChats.get())
+
+      const merged = reverse
+        ? loaded.chat.mergeGroupChatSyncSnapshots(current, legacy)
+        : loaded.chat.mergeGroupChatSyncSnapshots(legacy, current)
+
+      const restored = loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(merged, {})
+      expect(restored[GROUP].members?.map(bot => bot.handle)).toEqual(['local', 'ux', 'reviewer'])
+      expect(restored[GROUP].members?.every(bot => bot.hostedIdentity)).toBe(true)
+      expect(restored[GROUP].hostedMembersVerified).not.toBe(true)
+    }
+  )
+
+  it('never accepts a projected verification flag, and preserves verification through local storage', async () => {
+    loaded = await load()
+    await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+    const current = loaded.chat.$groupChats.get()
+    const snapshot = loaded.chat.groupChatSyncSnapshot(current)
+    const projected = Object.values(snapshot.rooms)[0]
+    expect(Object.hasOwn(projected, 'hostedMembersVerified')).toBe(false)
+    Object.assign(projected, { hostedMembersVerified: true })
+    const restored = loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(snapshot, {})
+    expect(restored[GROUP].hostedMembersVerified).not.toBe(true)
+    const saved = JSON.parse(JSON.stringify(loaded.storage.get('group-chats'))) as Record<string, GroupChat>
+    expect(saved[GROUP].hostedMembersVerified).toBe(true)
+  })
+
+  it('repairs an older contaminated cache even with a previously current idle fingerprint', async () => {
+    loaded = await load()
+    await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+    const current = loaded.chat.$groupChats.get()
+    const oldMembers = Object.values(legacyProjection(current).rooms)[0].members!
+    loaded.chat.$groupChats.set({
+      [GROUP]: {
+        ...current[GROUP],
+        hostedMembersVerified: undefined,
+        members: [...current[GROUP].members!, ...oldMembers]
+      }
+    })
+    const before = stateReads()
+    await loaded.runtime.refreshHostedRooms()
+    expect(stateReads()).toBe(before + 1)
+    expect(loaded.chat.$groupChats.get()[GROUP].members?.map(bot => bot.handle)).toEqual(['local', 'ux', 'reviewer'])
+  })
+
+  it('recovers projected classic friendly names only within their metadata-confirmed local room', async () => {
+    loaded = await load()
+
+    const roster: RosterRow[] = [
+      { name: 'research', connectionId: 'local', display_name: 'Researcher', remoteSource: false },
+      { name: 'builder', connectionId: 'local', display_name: 'Builder', remoteSource: false }
+    ]
+
+    const initial: Record<string, GroupChat> = {
+      Classic: { roomId: 'classic-id', log: [], watermarks: {}, members: [{ name: 'Researcher' }, { name: 'Builder' }] }
+    }
+
+    const snapshot = loaded.chat.groupChatSyncSnapshot(initial)
+    loaded.chat.$groupChats.set(loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(snapshot, {}))
+    const meta = { research: { groups: ['Classic'] }, builder: { groups: ['Classic'] } }
+    const seated = loaded.membership.groupChatMemberBots('Classic', roster, meta)
+    expect(seated.map(bot => bot.name)).toEqual(['research', 'builder'])
+    expect(loaded.membership.durableGroupChatMembers(seated).map(bot => bot.name)).toEqual(['research', 'builder'])
+  })
+
+  it('does not borrow an unrelated local friendly-name match for projected classic members', async () => {
+    loaded = await load()
+
+    const initial: Record<string, GroupChat> = {
+      Classic: { roomId: 'classic-id', log: [], watermarks: {}, members: [{ name: 'Researcher' }, { name: 'Builder' }] }
+    }
+
+    loaded.chat.$groupChats.set(
+      loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(loaded.chat.groupChatSyncSnapshot(initial), {})
+    )
+
+    const seated = loaded.membership.groupChatMemberBots(
+      'Classic',
+      [{ name: 'research', display_name: 'Researcher' }],
+      {}
+    )
+
+    expect(seated.map(bot => bot.name)).toEqual(['Researcher', 'Builder'])
+  })
+
+  it.each([
+    ['existing', false],
+    ['existing', true],
+    ['empty', false],
+    ['empty', true]
+  ] as const)(
+    'uses live health and canonical metadata after projection into %s (error=%s)',
+    async (destination, error) => {
+      loaded = await load()
+      loaded.connections['peer-a'] = 'installation-A'
+      await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+      const current = loaded.chat.$groupChats.get()
+      const snapshot = loaded.chat.groupChatSyncSnapshot(current)
+      expect(Object.values(snapshot.rooms)[0].members?.find(bot => bot.handle === 'ux')?.route).toBeUndefined()
+      loaded.chat.$groupChats.set(
+        loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(snapshot, destination === 'empty' ? {} : current)
+      )
+
+      const live: RosterRow = {
+        name: 'logical-alias',
+        connectionId: 'peer-a',
+        remoteSource: true,
+        route: { connectionId: 'peer-a', mode: 'remote', profile: 'logical-alias', targetProfile: 'default' },
+        sourceReachable: false,
+        ...(error ? { sourceError: 'connection-refused' } : {}),
+        canonical_session: { id: 'canonical-live' },
+        has_avatar: true,
+        display_name: 'Wrong local name'
+      }
+
+      const seated = loaded.membership.groupChatMemberBots(GROUP, [live], {}).find(bot => bot.handle === 'ux')!
+      expect(loaded.data.botSourceStatus(seated)).toMatchObject({ key: 'unavailable', available: false })
+      expect(seated.sourceReachable).toBe(false)
+      expect(seated.canonical_session).toEqual(live.canonical_session)
+      expect(seated.has_avatar).toBe(true)
+      expect(seated.hostedIdentity?.installationId).toBe('installation-A')
+      expect(loaded.labels.displayName(seated)).toBe('Remote UX')
+    }
+  )
+
+  it('does not enrich a compact projected route after that connection is proven to be another installation', async () => {
+    loaded = await load()
+    loaded.connections['peer-a'] = 'installation-A'
+    await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+    const snapshot = loaded.chat.groupChatSyncSnapshot(loaded.chat.$groupChats.get())
+    loaded.connections['peer-a'] = 'unrelated-installation'
+    await loaded.runtime.refreshHostedRooms()
+    loaded.chat.$groupChats.set(loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(snapshot, {}))
+
+    const seated = loaded.membership
+      .groupChatMemberBots(
+        GROUP,
+        [
+          {
+            name: 'default',
+            connectionId: 'peer-a',
+            remoteSource: true,
+            sourceReachable: true,
+            canonical_session: { id: 'wrong-installation-chat' }
+          }
+        ],
+        {}
+      )
+      .find(bot => bot.handle === 'ux')!
+
+    expect(seated.hostedIdentity?.installationId).toBe('installation-A')
+    expect(seated.canonical_session).toBeUndefined()
+    expect(seated.route).toBeUndefined()
+    expect(loaded.data.botSourceStatus(seated).available).toBe(false)
+  })
+
+  it.each([
+    ['removed', false],
+    ['rebound', false],
+    ['removed', true],
+    ['rebound', true]
+  ] as const)('revokes %s peer ownership before a failed authority read (reload=%s)', async (change, reload) => {
+    loaded = await load()
+    loaded.connections['peer-a'] = 'installation-A'
+    await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+    const original = peer()
+
+    if (reload) {
+      loaded.runtime.stopHostedRoomRuntime()
+      const saved = JSON.parse(JSON.stringify(loaded.storage.get('group-chats'))) as Record<string, GroupChat>
+      loaded.chat.$groupChats.set(saved)
+      loaded.runtime.$hostedRoomCapabilities.set({})
+    }
+
+    if (change === 'removed') {
+      delete loaded.connections['peer-a']
+    } else {
+      loaded.connections['peer-a'] = 'unrelated-installation'
+    }
+
+    const request = host.requestProfile as (route: ProfileRoute, method: string, params?: unknown) => Promise<unknown>
+    let routeAtFailedRead: unknown = 'not-read'
+
+    host.requestProfile = async (route: ProfileRoute, method: string, params?: unknown) => {
+      if (route.connectionId === HOME && method === 'groups.state') {
+        routeAtFailedRead = peer().route
+        throw new Error('authority offline')
+      }
+
+      return request(route, method, params)
+    }
+
+    if (reload) {
+      await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+    } else {
+      await loaded.runtime.refreshHostedRooms()
+    }
+
+    expect(routeAtFailedRead).toBeUndefined()
+    expect(peer().route).toBeUndefined()
+    expect(peer().connectionId).toBeUndefined()
+    expect(peer()).toMatchObject({
+      hostedIdentity: original.hostedIdentity,
+      title: original.title,
+      sourceMissing: true,
+      sourceReachable: false
+    })
+    const saved = loaded.storage.get('group-chats') as Record<string, GroupChat>
+    expect(saved[GROUP].members?.find(bot => bot.handle === 'ux')?.route).toBeUndefined()
+    expect(loaded.chat.$groupChats.get()[GROUP].members?.find(bot => bot.handle === 'local')?.connectionId).toBe(HOME)
+  })
+
+  it('does not interpret a failed inventory request as proof that every route was removed', async () => {
+    loaded = await load()
+    loaded.connections['peer-a'] = 'installation-A'
+    await loaded.runtime.startHostedRoomRuntime(loaded.context.storage)
+    const original = peer()
+
+    host.profileRoutes = async () => {
+      throw new Error('inventory unavailable')
+    }
+
+    await expect(loaded.runtime.refreshHostedRooms()).rejects.toThrow('inventory unavailable')
+    expect(peer()).toBe(original)
+  })
+})
