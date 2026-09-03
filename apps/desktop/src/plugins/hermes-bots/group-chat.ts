@@ -13,6 +13,7 @@ import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster } from './data'
 import { mergeMemberProjectionIntoRoom, mergeProjectedMemberLists } from './group-member-projection'
+import { compactGroupMessageAuthor, mergeGroupMessageAuthor } from './group-message-author'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { getPluginCtx } from './shared'
 import type {
@@ -324,15 +325,7 @@ export function groupChatSyncSnapshot(
             id: String(entry.id).slice(0, 160)
           }
         : {}),
-      from: {
-        kind: entry?.from?.kind === 'member' ? 'member' : 'user',
-        name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
-        ...(entry?.from?.source
-          ? {
-              source: String(entry.from.source).slice(0, 128)
-            }
-          : {})
-      },
+      from: compactGroupMessageAuthor(entry?.from),
       text: String(entry?.text || '').slice(0, GROUP_CHAT_SYNC_TEXT_CHARS),
       at: Number(entry?.at || 0),
       ...(entry?.thread
@@ -507,7 +500,9 @@ export function mergeGroupChatSyncEntries(...logs: GroupMessage[][]) {
       bySeq.set(seq, index)
     }
 
-    byFallback.set(groupChatSyncFallbackKey(entry), index)
+    if (!entry.from?.hostedIdentity) {
+      byFallback.set(groupChatSyncFallbackKey(entry), index)
+    }
   }
 
   for (const entry of logs.flat()) {
@@ -520,8 +515,12 @@ export function mergeGroupChatSyncEntries(...logs: GroupMessage[][]) {
       index = bySeq.get(seq)
     }
 
-    if (index === undefined) {
+    if (index === undefined && !entry.from?.hostedIdentity) {
       index = byFallback.get(groupChatSyncFallbackKey(entry))
+
+      if (index !== undefined && entries[index].from?.hostedIdentity) {
+        index = undefined
+      }
     }
 
     if (index === undefined) {
@@ -538,6 +537,7 @@ export function mergeGroupChatSyncEntries(...logs: GroupMessage[][]) {
     const merged: GroupMessage = {
       ...prior,
       ...entry,
+      from: mergeGroupMessageAuthor(prior, entry),
       ...(prior?.images && !entry?.images
         ? {
             images: prior.images
