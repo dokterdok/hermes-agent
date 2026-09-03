@@ -8,6 +8,30 @@ function room(roomId = 'classic', remoteSource = true): GroupChat {
 }
 
 describe('hosted observation lifetimes', () => {
+  it('orders capability probes without invalidating warm history and inventory reads', async () => {
+    const observations = new HostedRoomObservations()
+    const warm = observations.capture('local')
+    observations.publish(warm, new Set(['hosted']), true)
+    const oldProbe = observations.captureCapability('local')
+    const latestProbe = observations.captureCapability('local')
+    observations.captureCapability('other')
+
+    expect(observations.current(oldProbe)).toBe(false)
+    expect(observations.current(latestProbe)).toBe(true)
+    expect(observations.current(warm)).toBe(true)
+    expect(observations.classicReady(room())).toBe(true)
+    expect(observations.classicReady(room('hosted', false))).toBe(false)
+    await expect(observations.read(warm, async () => 'history')).resolves.toBe('history')
+    const staleRequest = vi.fn(async () => 'stale')
+    await expect(observations.read(oldProbe, staleRequest)).rejects.toThrow('Stale')
+    expect(staleRequest).not.toHaveBeenCalled()
+
+    observations.invalidateAll()
+    expect(observations.current(latestProbe)).toBe(false)
+    expect(observations.current(warm)).toBe(false)
+    expect(observations.classicReady(room('hosted', false))).toBe(false)
+  })
+
   it('preserves warm absence while positive IDs override all member provenance', () => {
     const observations = new HostedRoomObservations()
     const ticket = observations.capture('local')

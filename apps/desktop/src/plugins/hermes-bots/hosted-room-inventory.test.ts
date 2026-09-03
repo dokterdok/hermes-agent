@@ -144,6 +144,81 @@ function heldResponse() {
   }
 }
 
+describe('capability reply freshness', () => {
+  for (const reader of ['refresh', 'member-probe']) {
+    for (const baseline of [false, true]) {
+      for (const olderFailure of [false, true]) {
+        it(`keeps a newer confirmation over ${reader}, persistent=${baseline}, oldFailure=${olderFailure}`, async () => {
+          const held = heldResponse()
+          let hold = false
+          let persistent = baseline
+
+          const loaded = await load(method => {
+            if (method === 'groups.capabilities') {
+              const captured = { ...nonpersistent, persistent_process: persistent }
+
+              if (hold) {
+                hold = false
+
+                return held.wait().then(() => {
+                  if (olderFailure) {
+                    throw new Error('Old capability request failed')
+                  }
+
+                  return captured
+                })
+              }
+
+              return captured
+            }
+
+            if (method === 'groups.list') {
+              return { rooms: [stored], next_offset: null }
+            }
+
+            if (method === 'groups.state') {
+              return { room: stored }
+            }
+
+            if (method === 'groups.log') {
+              return { events: [event()], latest_seq: 1, has_more: false }
+            }
+
+            throw new Error(`Unexpected ${method}`)
+          })
+
+          try {
+            await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+            persistent = !baseline
+            hold = true
+
+            const older =
+              reader === 'refresh'
+                ? loaded.runtime.refreshHostedRooms()
+                : loaded.runtime.probeHostedRoomMembers(members)
+
+            await held.started
+            persistent = baseline
+            await loaded.runtime.probeHostedRoomMembers(members)
+            const confirmed = loaded.runtime.$hostedRoomCapabilities.get().local
+            expect(confirmed.persistentProcess).toBe(baseline)
+            held.release({})
+            await older
+            expect(loaded.runtime.$hostedRoomCapabilities.get().local).toEqual(confirmed)
+
+            if (!baseline) {
+              expect(loaded.chat.$groupChats.get().Classic.hostedStatus?.state).toBe('read-only')
+            }
+          } finally {
+            held.release({})
+            loaded.runtime.stopHostedRoomRuntime()
+          }
+        })
+      }
+    }
+  }
+})
+
 describe('inventory observation invalidation', () => {
   it('an authority-route probe failure invalidates a held list before recovery', async () => {
     const held = heldResponse()
