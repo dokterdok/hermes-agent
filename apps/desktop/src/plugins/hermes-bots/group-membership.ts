@@ -6,6 +6,8 @@
 
 import { $botMeta, botFriendlyNames, botMetaKey, botRosterKey } from './data'
 import { $groupChats, groupChatHostedGateway, groupChatRoomKey } from './group-chat'
+import { $hostedRoomCapabilities } from './hosted-room-capability-state'
+import { resolveHostedMemberDescriptor } from './hosted-room-members'
 import { botConnectionRoute, botRosterMeta, resolveBotConnectionRoute } from './routing'
 import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
 
@@ -204,8 +206,9 @@ export function groupLastActivity(room?: GroupChat | null) {
   return log.length ? log[log.length - 1].at || 0 : 0
 }
 
-/** Hosted membership comes only from the server's descriptors. Classic rooms
- *  seat local bots whose meta names the group, plus
+/** Hosted rooms seat server descriptors (or their degraded display cache),
+ *  never local metadata. The projection merger protects verified membership.
+ *  Classic rooms seat local bots whose meta names the group, plus
  *  the room record's stored descriptors (remote members can't ride bot-meta).
  *  Prefers the LIVE roster row for a stored descriptor when present. */
 export function groupChatMemberBots(
@@ -234,7 +237,10 @@ export function groupChatMemberBots(
     // include the descriptor's name IS this member. The next persistence
     // pass (durableGroupChatMembers writes from the seated roster) rewrites
     // the stored descriptor to the slug, so the repair is self-healing.
-    const resolved = resolveLegacyMemberDescriptor(descriptor, roster)
+    // Projection hydration stamps remoteSource even on old local descriptors.
+    // Only this classic room's metadata-confirmed local seats may recover them.
+    const unscopedProjection = descriptor.remoteSource && !descriptor.connectionId && !descriptor.sourceScoped
+    const resolved = resolveLegacyMemberDescriptor(descriptor, unscopedProjection ? local : roster, true)
     const key = botRosterKey(resolved)
 
     if (seated.has(key)) {
@@ -257,10 +263,17 @@ export function groupChatMemberBots(
  *  by friendly name against rows on the same connection. Unresolvable
  *  descriptors return as-is — they stay visible-but-degraded ghosts and must
  *  never be used as a `profile:` target. */
-export function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[]): RosterRow {
+export function resolveLegacyMemberDescriptor(
+  descriptor: RosterRow,
+  roster: RosterRow[],
+  allowClassicProjection = false
+): RosterRow {
   const rows = roster || []
 
-  if (descriptor.hostedIdentity || (!descriptor.connectionId && (descriptor.sourceScoped || descriptor.remoteSource))) {
+  if (
+    descriptor.hostedIdentity ||
+    (!descriptor.connectionId && (descriptor.sourceScoped || (descriptor.remoteSource && !allowClassicProjection)))
+  ) {
     return descriptor
   }
 
@@ -314,7 +327,10 @@ export function groupChatBotsFromDescriptors(descriptors: GroupMember[], roster:
   const seen = new Set<string>()
 
   for (const descriptor of Array.isArray(descriptors) ? descriptors : []) {
-    const resolved = resolveLegacyMemberDescriptor(descriptor, roster)
+    const resolved = descriptor.hostedIdentity
+      ? resolveHostedMemberDescriptor(descriptor, $hostedRoomCapabilities.get())
+      : resolveLegacyMemberDescriptor(descriptor, roster)
+
     const key = botRosterKey(resolved)
 
     if (!key || seen.has(key)) {
@@ -342,7 +358,21 @@ export function groupChatBotsFromDescriptors(descriptors: GroupMember[], roster:
       )
     })
 
-    members.push(resolved.hostedIdentity ? { ...live, ...resolved } : live || resolved)
+    members.push(
+      resolved.hostedIdentity
+        ? {
+            ...live,
+            ...resolved,
+            ...(live && resolved.sourceReachable
+              ? {
+                  sourceError: live.sourceError,
+                  sourceReachable: live.sourceReachable !== undefined ? live.sourceReachable : resolved.sourceReachable,
+                  sourceMissing: live.sourceMissing ?? resolved.sourceMissing
+                }
+              : {})
+          }
+        : live || resolved
+    )
   }
 
   return members

@@ -26,6 +26,7 @@ import {
   syncHostedRoomApprovals
 } from './hosted-room-approval-state'
 import { readHostedMessageAttachment, stageHostedMessageAttachments } from './hosted-room-attachments-client'
+import { $hostedRoomCapabilities } from './hosted-room-capability-state'
 import {
   addHostedRoomCleanup,
   armHostedRoomCleanup,
@@ -63,6 +64,7 @@ import {
   surfaceHostedRoomCommandFailure
 } from './hosted-room-command-failures'
 import { createHostedRoomControlEnrollment, type HostedRoomServerState } from './hosted-room-control-enrollment'
+import { revokeInvalidHostedMemberRoutes } from './hosted-room-member-inventory'
 import { hostedMemberDescriptors } from './hosted-room-members'
 import {
   mutateHostedRoomOutbox,
@@ -75,6 +77,7 @@ import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupChat, GroupMember, GroupMessage, GroupPrompt, ProfileRoute } from './types'
 
+export { $hostedRoomCapabilities } from './hosted-room-capability-state'
 export { $hostedRoomCleanup } from './hosted-room-cleanup'
 export { describeAutonomousRoomPlan, describeHostedRoomCreationError } from './hosted-room-client'
 
@@ -83,7 +86,6 @@ const HOSTED_ROOM_LIST_MAX_PAGES = 4
 const HOSTED_ROOM_SYNC_INTERVAL_MS = 5000
 const HOSTED_ROOM_UNSUPPORTED_REPROBE_MS = 30_000
 
-export const $hostedRoomCapabilities = atom<Record<string, HostedRoomCapability>>({})
 export const $hostedRoomOutbox = atom<HostedRoomOutbox>(createHostedRoomOutbox())
 
 const hostedRoomPollCache = new Map<string, string>()
@@ -480,7 +482,12 @@ export function shouldRefreshHostedRoom(room: GroupChat | undefined, listed: unk
 
   const fingerprint = hostedRoomPollFingerprint(listed)
 
-  return active || hostedRoomPollCache.get(String(room.roomId || '')) !== fingerprint
+  return (
+    active ||
+    room.hostedMembersNeedRefresh ||
+    (Boolean(groupChatHostedGateway(room)) && !room.hostedMembersVerified) ||
+    hostedRoomPollCache.get(String(room.roomId || '')) !== fingerprint
+  )
 }
 
 /** Replay every hosted room only after plugin storage/ui_meta hydration has
@@ -498,6 +505,11 @@ export async function refreshHostedRooms() {
 
   try {
     const routes = await hostedDefaultRoutes()
+
+    if (syncStale()) {
+      return
+    }
+
     const routesByConnection = Object.fromEntries(routes.map(route => [String(route.connectionId || ''), route]))
 
     for (const id of Object.keys($hostedRoomCapabilities.get())) {
@@ -509,6 +521,10 @@ export async function refreshHostedRooms() {
     const capabilities = Object.fromEntries(
       Object.entries($hostedRoomCapabilities.get()).filter(([id]) => routesByConnection[id])
     )
+
+    if (typeof host.profileRoutes === 'function') {
+      revokeInvalidHostedMemberRoutes(routesByConnection, capabilities, invalidateHostedRoomPoll)
+    }
 
     for (const route of routes) {
       if (syncStale()) {
@@ -555,11 +571,14 @@ export async function refreshHostedRooms() {
       }
 
       capabilities[connectionId] = capability
+      revokeInvalidHostedMemberRoutes(routesByConnection, capabilities, invalidateHostedRoomPoll)
     }
 
     if (syncStale()) {
       return
     }
+
+    $hostedRoomCapabilities.set(capabilities)
 
     for (const route of routes) {
       const connectionId = String(route.connectionId)
@@ -859,6 +878,8 @@ export async function refreshHostedRooms() {
               ...authoritative,
               roomId,
               members: memberDescriptors,
+              hostedMembersVerified: true,
+              hostedMembersNeedRefresh: false,
               log: mergeGroupChatSyncEntries(current.log || [], replayMessages(replay.state.messages)),
               hostedConnectionId: connectionId,
               hostedSeq: replay.state.cursor,
@@ -1002,10 +1023,6 @@ export async function refreshHostedRooms() {
           clearHostedRoomApprovalState(name)
         }
       }
-    }
-
-    if (!syncStale()) {
-      $hostedRoomCapabilities.set(capabilities)
     }
   } finally {
     hostedRoomSyncRunning = false

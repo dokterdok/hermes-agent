@@ -2,6 +2,7 @@
 
 import type { HostedRoomCapability } from './hosted-room-client'
 import { isHostedRoomContinuityEligible } from './hosted-room-client'
+import { resolveBotConnectionRoute } from './routing'
 import type { GroupMember } from './types'
 
 interface HostedRoomMembership {
@@ -12,6 +13,40 @@ interface HostedRoomMembership {
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+}
+
+export function withoutHostedMemberRoute(member: GroupMember): GroupMember {
+  const { connectionId: _connectionId, route: _route, ...identity } = member
+
+  return { ...identity, sourceMissing: true, sourceReachable: false, sourceScoped: true }
+}
+
+/** Full and compact descriptors share the routing resolver. A projected
+ * connection ID alone cannot prove that today's connection is this Bot. */
+export function resolveHostedMemberDescriptor(
+  member: GroupMember,
+  capabilities: Record<string, HostedRoomCapability>
+): GroupMember {
+  const identity = member.hostedIdentity
+  const route = resolveBotConnectionRoute(member).route
+  const capability = route && capabilities[route.connectionId]
+
+  if (
+    !identity?.installationId ||
+    !route ||
+    route.targetProfile !== identity.profile ||
+    capability?.authorityId !== identity.installationId
+  ) {
+    return withoutHostedMemberRoute(member)
+  }
+
+  return {
+    ...member,
+    route,
+    connectionId: route.connectionId,
+    sourceMissing: false,
+    sourceReachable: isHostedRoomContinuityEligible(capability)
+  }
 }
 
 export function hostedMemberDescriptors(
