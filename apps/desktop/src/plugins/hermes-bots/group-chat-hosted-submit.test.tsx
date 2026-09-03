@@ -25,7 +25,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: ({ name }: { name: string }) => <span aria-hidden data-icon={name} />,
     ConfirmDialog: () => null,
     CopyButton: () => null,
-    Dialog: () => null,
+    Dialog: ({ children, open }: { children: React.ReactNode; open: boolean }) =>
+      open ? <div role="dialog">{children}</div> : null,
     DialogContent: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
     DialogDescription: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
     DialogFooter: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
@@ -73,6 +74,33 @@ afterEach(() => {
 })
 
 describe('hosted Group Chat composer durability', () => {
+  it.each([
+    ['desktop', undefined, 'Keep Desktop open'],
+    ['gateway', 'ready', 'Works without Desktop'],
+    ['gateway', 'read-only', 'Read-only history']
+  ] as const)('shows accurate continuity for %s/%s', async (continuityMode, state, title) => {
+    const [{ GroupChatWorkspace }, chat] = await Promise.all([import('./group-chat-view'), import('./group-chat')])
+    chat.$groupChats.set({
+      Core: {
+        continuityMode,
+        hosted: continuityMode === 'gateway' ? 'install:home' : null,
+        hostedStatus: state ? { state, label: title } : null,
+        roomId: 'room-1',
+        members: MEMBERS,
+        log: [],
+        watermarks: {}
+      }
+    })
+    render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Group settings for Core' }))
+    expect(screen.getByRole('dialog').textContent).toContain(title)
+
+    if (state === 'read-only') {
+      expect(screen.getByRole('dialog').textContent).not.toContain('Bots can continue while Desktop is closed.')
+      expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
+    }
+  })
+
   it('restores text, attachments, and retry upload identity after terminal rejection', async () => {
     const [{ GroupChatWorkspace }, chat, panes] = await Promise.all([
       import('./group-chat-view'),
