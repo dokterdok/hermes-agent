@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import * as chat from './group-chat'
+import { GROUP_CHAT_SYNC_TEXT_CHARS } from './group-message-author'
 import { speakerEvent, speakerMember, speakerReplay, speakerRoom } from './group-speaker-test-fixtures'
 import type { GroupChat, GroupMessage } from './types'
 
@@ -114,6 +115,33 @@ describe('speaker reconciliation across real room mirrors', () => {
   })
 
   for (const reverse of [false, true]) {
+    it.each([-1, 0, 1])(
+      'does not extend a complete replay from a mirror at the text boundary, offset=%s, reverse=' + reverse,
+      offset => {
+        const [canonical] = speakerReplay()
+        canonical.text = 'A'.repeat(GROUP_CHAT_SYNC_TEXT_CHARS + offset)
+        const room = speakerRoom([canonical])
+        const snapshot = chat.groupChatSyncSnapshot({ Board: room })
+        const mirror = snapshot.rooms['id:room-1'].log[0]
+        delete mirror.from.hostedIdentity
+        mirror.from.name = 'Other author'
+        mirror.text += ' NOT_FROM_THE_EVENT'
+
+        const pair = reverse ? [[mirror], [canonical]] : [[canonical], [mirror]]
+        const merged = chat.mergeGroupChatSyncEntries(...pair)
+        const hydrated = chat.mergeRemoteGroupChatSnapshotIntoRooms(snapshot, { Board: room }).Board
+        const saved = JSON.parse(JSON.stringify(chat.durableGroupChatRooms({ Board: hydrated }))).Board
+        const replayed = chat.mergeGroupChatSyncEntries(saved.log, [canonical])
+
+        for (const log of [merged, hydrated.log, replayed]) {
+          const bound = log.filter((entry: GroupMessage) => entry.from.hostedIdentity?.memberId === 'pm')
+          expect(bound).toHaveLength(1)
+          expect(bound[0].text).toBe(canonical.text)
+          expect(bound[0].seq).toBe(canonical.seq)
+        }
+      }
+    )
+
     it.each(['event-id', 'sequence', 'internal-id', 'text', 'thread', 'attachments'])(
       'does not mix %s evidence or payload with a canonical actor, reverse=' + reverse,
       mismatch => {

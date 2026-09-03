@@ -55,8 +55,18 @@ export function compatibleGroupMessageCopies(left: GroupMessage, right: GroupMes
   const rightText = String(right.text || '')
   const shorter = leftText.length < rightText.length ? leftText : rightText
   const longer = leftText.length < rightText.length ? rightText : leftText
+  const shorterEntry = leftText.length < rightText.length ? left : right
+  const longerEntry = leftText.length < rightText.length ? right : left
 
-  if (shorter !== longer && !(shorter.length === GROUP_CHAT_SYNC_TEXT_CHARS && longer.startsWith(shorter))) {
+  // Compact projections omit sequence. A replay at the character limit is
+  // still complete and cannot borrow extra text from an unsequenced mirror.
+  const compactPrefix =
+    groupChatSyncSequence(shorterEntry) === null &&
+    groupChatSyncSequence(longerEntry) !== null &&
+    shorter.length === GROUP_CHAT_SYNC_TEXT_CHARS &&
+    longer.startsWith(shorter)
+
+  if (shorter !== longer && !compactPrefix) {
     return false
   }
 
