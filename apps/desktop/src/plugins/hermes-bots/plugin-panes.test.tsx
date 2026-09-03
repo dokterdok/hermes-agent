@@ -55,6 +55,10 @@ vi.mock('./hosted-room-runtime', () => ({
   startHostedRoomRuntime: mocks.startHostedRoomRuntime,
   stopHostedRoomRuntime: mocks.stopHostedRoomRuntime
 }))
+vi.mock('./desktop-room-command-runtime', () => ({
+  startDesktopRoomCommandRuntime: vi.fn(),
+  stopDesktopRoomCommandRuntime: vi.fn()
+}))
 vi.mock('./session-sweep', () => ({ startHideSweepScheduler: vi.fn() }))
 vi.mock('./canonical-chat', () => ({ openBotCanonicalChat: vi.fn() }))
 vi.mock('./chat-empty', () => ({ BotChatEmpty: () => null }))
@@ -76,7 +80,7 @@ vi.mock('./group-chat', async () => {
     $groupChatWorkspace: nanoAtom(null),
     assignLegacyThreads: (log: unknown[]) => log,
     handleSessionsGatewayTransition: vi.fn(),
-    pullGroupChatServerState: async () => false,
+    pullGroupChatServerState: vi.fn(async () => false),
     scheduleGroupChatServerSync: vi.fn(),
     setGroupChatSyncDisposed: vi.fn(),
     stopGroupChatServerSync: vi.fn(),
@@ -188,6 +192,47 @@ describe('the Bots pane dock', () => {
 })
 
 describe('hosted Group Chat startup', () => {
+  it.each([true, false, undefined, 'true'])(
+    'restores local membership verification before projection pull: %s',
+    async value => {
+      paneStores()
+      const chat = await import('./group-chat')
+      chat.$groupChats.set({})
+      const beforePull: boolean[] = []
+      vi.mocked(chat.pullGroupChatServerState).mockImplementationOnce(async () => {
+        beforePull.push(chat.$groupChats.get().Saved?.hostedMembersVerified === true)
+
+        return false
+      })
+
+      const harness = recordingContext(async key =>
+        key === 'group-chats'
+          ? {
+              Saved: {
+                roomId: 'saved-room',
+                hosted: 'saved-authority',
+                hostedMembersVerified: value,
+                members: [{ name: 'default' }],
+                log: [],
+                watermarks: {}
+              }
+            }
+          : undefined
+      )
+
+      try {
+        plugin.register(harness.ctx)
+        await settle()
+        expect(beforePull).toEqual([value === true])
+        expect(chat.$groupChats.get().Saved?.hostedMembersVerified === true).toBe(value === true)
+        expect(mocks.startHostedRoomRuntime).toHaveBeenCalledTimes(1)
+      } finally {
+        harness.dispose()
+        chat.$groupChats.set({})
+      }
+    }
+  )
+
   it('does not probe or replay hosted rooms before local Group Chat hydration settles', async () => {
     paneStores()
     let releaseRooms: (value: unknown) => void = () => undefined
