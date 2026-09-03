@@ -6,11 +6,11 @@ nothing about transports or model runtimes.  Callers persist the returned task
 with :mod:`gateway.hosted_room_driver` and append publication plans with
 :mod:`gateway.hosted_rooms`.
 
-The unpublished driver payload intentionally remains unchanged.  Discussion
-coordinates live in deterministic ``TaskIdentity`` values and typed terminal
-events; a restart can therefore reconstruct a task without widening the driver
-schema.  Callers must reconcile terminal driver rows into publication plans
-before asking for the next task.
+Discussion coordinates live in deterministic ``TaskIdentity`` values and typed
+terminal events. Compacting callers additionally freeze input references in
+the existing admission payload; older payloads remain reconstructable from
+terminal evidence. Callers must reconcile terminal driver rows into publication
+plans before asking for the next task.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from gateway.hosted_room_attachments import (
     MAX_TASK_ATTACHMENTS,
 )
 from gateway.hosted_room_mention_text import _has_mention_boundary, visible_mention_text
+from gateway.hosted_room_task_input import validate_task_input
 
 
 MAX_DISCUSSION_MEMBERS = 6
@@ -1204,6 +1205,7 @@ def _task_id(
     round_index: int,
     seen_through_seq: int,
     prompt: str,
+    input_context: Mapping[str, Any] | None = None,
 ) -> str:
     seed = json.dumps(
         {
@@ -1216,6 +1218,7 @@ def _task_id(
             "seen_through_seq": seen_through_seq,
             "source_event_seq": discussion_event.seq,
             "thread_id": discussion_event.payload["thread_id"],
+            **({"input_context": input_context} if input_context is not None else {}),
         },
         ensure_ascii=True,
         sort_keys=True,
@@ -1234,6 +1237,7 @@ def _make_task_plan(
     seen_through_seq: int,
     prompt: str,
     attachments: Sequence[Mapping[str, Any]] = (),
+    input_context: Mapping[str, Any] | None = None,
 ) -> DiscussionTaskPlan:
     turn_id = _turn_id(
         source_event_seq=discussion_event.seq,
@@ -1250,6 +1254,7 @@ def _make_task_plan(
         round_index=round_index,
         seen_through_seq=seen_through_seq,
         prompt=prompt,
+        input_context=input_context,
     )
     identity = driver.TaskIdentity(
         room_id=room.room_id,
@@ -1266,6 +1271,8 @@ def _make_task_plan(
     }
     if attachments:
         payload["attachments"] = [dict(attachment) for attachment in attachments]
+    if input_context is not None:
+        payload["input_context"] = dict(input_context)
     return DiscussionTaskPlan(
         identity=identity,
         payload=payload,
@@ -1324,8 +1331,9 @@ def plan_next_task(
     *,
     local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None,
+    freeze_input_context: bool = False,
 ) -> DiscussionDecision:
-    """Replay the complete room log and return at most one next member task."""
+    """Plan one task; compacting callers freeze the exact bounded input window."""
 
     room = validate_room(room_value, local_profiles=local_profiles)
     validated = _validated_events(events, room=room)
@@ -1472,6 +1480,14 @@ def plan_next_task(
                 seen_through_seq=seen_through_seq,
                 prompt=prompt,
                 attachments=attachments,
+                input_context=(
+                    validate_task_input({
+                        "watermark": watermark,
+                        "event_seqs": [event.seq for event in delta],
+                    })
+                    if freeze_input_context
+                    else None
+                ),
             )
             return DiscussionDecision(
                 status="task",
@@ -1533,7 +1549,7 @@ def reconstruct_task_plan(
     if not required_payload <= frozenset(payload) or (
         frozenset(payload)
         - required_payload
-        - {"attachments", "recipient_member_ids", "target_member_id"}
+        - {"attachments", "recipient_member_ids", "target_member_id", "input_context"}
     ):
         raise DiscussionReconstructionError("driver task payload shape changed")
     match = _TURN_ID_RE.fullmatch(identity.turn_id)
@@ -1611,13 +1627,28 @@ def reconstruct_task_plan(
         if terminal is None
         else tuple(event for event in validated if event.seq < terminal.seq)
     )
-    watermarks = _derive_member_watermarks(watermark_events)
-    watermark = watermarks.get((identity.thread_id, member.member_id), 0)
+    input_context = None
+    if "input_context" in payload:
+        try:
+            input_context = validate_task_input(payload["input_context"])
+        except ValueError as exc:
+            raise DiscussionReconstructionError(str(exc)) from exc
+        if input_context["event_seqs"][-1] != seen_through_seq:
+            raise DiscussionReconstructionError("task input does not match turn_id")
+        watermark = input_context["watermark"]
+    else:
+        watermarks = _derive_member_watermarks(watermark_events)
+        watermark = watermarks.get((identity.thread_id, member.member_id), 0)
     task_messages = _message_events(
         validated,
         thread_id=identity.thread_id,
         maximum_seq=seen_through_seq,
     )
+    if input_context is not None:
+        by_seq = {event.seq: event for event in task_messages}
+        if any(seq not in by_seq for seq in input_context["event_seqs"]):
+            raise DiscussionReconstructionError("task input message is missing")
+        task_messages = tuple(by_seq[seq] for seq in input_context["event_seqs"])
     attachments = [
         dict(attachment)
         for event in task_messages
@@ -1633,6 +1664,7 @@ def reconstruct_task_plan(
         seen_through_seq=seen_through_seq,
         prompt=prompt,
         attachments=attachments,
+        input_context=input_context,
     )
     reconstructed_payload = dict(reconstructed.payload)
     if frozen_recipient_ids is None:

@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
+from gateway.hosted_room_contract import EventAttachmentConflictError
+
 
 MAX_ATTACHMENTS_PER_MESSAGE = 8
 MAX_ATTACHMENT_BYTES = 15_000_000
@@ -278,6 +280,71 @@ def validate_task_manifest(value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def retain_message_attachments(
+    conn: sqlite3.Connection,
+    *,
+    room_id: str,
+    event_id: str,
+    manifest: Any,
+    now: float,
+) -> None:
+    """Validate and retain exact commitments inside the canonical append transaction."""
+
+    normalized = validate_manifest(manifest)
+    if not normalized:
+        return
+    if normalized != manifest:
+        raise AttachmentError("published attachment metadata must be canonical")
+    if (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_attachments'"
+        ).fetchone()
+        is None
+    ):
+        raise EventAttachmentConflictError("message attachments are not committed")
+    for entry in normalized:
+        row = conn.execute(
+            "SELECT * FROM hosted_room_attachments WHERE attachment_id=?",
+            (entry["attachment_id"],),
+        ).fetchone()
+        if (
+            row is None
+            or row["room_id"] != room_id
+            or row["event_id"] != event_id
+            or row["state"] != "committed"
+            or row["viewer_access"] != 1
+            or (row["expires_at"] is not None and float(row["expires_at"]) <= now)
+            or any(row[key] != value for key, value in entry.items())
+        ):
+            raise EventAttachmentConflictError(
+                "attachment commitment changed before event publication"
+            )
+    # Rollback and expiry use the same SQL write lock. No byte or peer I/O is
+    # needed here; import verified the bytes before staging these commitments.
+    conn.executemany(
+        """UPDATE hosted_room_attachments SET expires_at=NULL, updated_at=?
+           WHERE attachment_id=?""",
+        ((now, entry["attachment_id"]) for entry in normalized),
+    )
+
+
+def _owner_event(
+    conn: sqlite3.Connection, room_id: str, event_id: str
+) -> sqlite3.Row | None:
+    # The standalone private-transport store need not have a canonical room log.
+    if (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_events'"
+        ).fetchone()
+        is None
+    ):
+        return None
+    return conn.execute(
+        "SELECT payload_json FROM hosted_room_events WHERE room_id=? AND event_id=?",
+        (room_id, event_id),
+    ).fetchone()
+
+
 class HostedRoomAttachmentStore:
     """SQLite-owned metadata and private, content-deduplicated blob bytes."""
 
@@ -360,6 +427,10 @@ class HostedRoomAttachmentStore:
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_hosted_room_attachments_expiry
                ON hosted_room_attachments(expires_at)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_hosted_room_attachments_event
+               ON hosted_room_attachments(room_id, event_id)"""
         )
 
     def _connect(self) -> sqlite3.Connection:
@@ -743,9 +814,21 @@ class HostedRoomAttachmentStore:
         attachment_ids = [_attachment_id(value) for value in attachment_ids]
         if not attachment_ids:
             return 0
-        placeholders = ",".join("?" for _ in attachment_ids)
         now = float(self.clock())
         with self._transaction(immediate=True) as conn:
+            owner = _owner_event(conn, room_id, event_id)
+            if owner is not None:
+                published_ids = {
+                    item.get("attachment_id")
+                    for item in json.loads(owner["payload_json"]).get("attachments", [])
+                    if isinstance(item, Mapping)
+                }
+                attachment_ids = [
+                    value for value in attachment_ids if value not in published_ids
+                ]
+            if not attachment_ids:
+                return 0
+            placeholders = ",".join("?" for _ in attachment_ids)
             changed = conn.execute(
                 f"""UPDATE hosted_room_attachments
                         SET event_id=NULL, recipient_member_ids_json='[]', viewer_access=0,
@@ -761,6 +844,24 @@ class HostedRoomAttachmentStore:
                 ),
             )
             return int(changed.rowcount)
+
+    def abort_unpublished_event(self, *, room_id: Any, event_id: Any) -> bool:
+        """Revoke unpublished commitments; never roll back a durable owner event."""
+
+        room_id = _identifier(room_id, label="room_id")
+        event_id = _identifier(event_id, label="event_id")
+        now = float(self.clock())
+        with self._transaction(immediate=True) as conn:
+            if _owner_event(conn, room_id, event_id) is not None:
+                return False
+            conn.execute(
+                """UPDATE hosted_room_attachments
+                   SET event_id=NULL, recipient_member_ids_json='[]', viewer_access=0,
+                       state='uploaded', updated_at=?, expires_at=?
+                   WHERE room_id=? AND event_id=? AND state='committed'""",
+                (now, now + UNCOMMITTED_TTL_SECONDS, room_id, event_id),
+            )
+        return True
 
     def retain_event(self, *, room_id: Any, event_id: Any) -> int:
         """Retain committed blobs after their immutable room event is durable."""
@@ -815,6 +916,37 @@ class HostedRoomAttachmentStore:
                 raise AttachmentNotFoundError("attachment has expired")
             if normalized_event is not None and str(row["event_id"] or "") != normalized_event:
                 raise AttachmentNotFoundError("attachment is not owned by this room event")
+            if int(row["viewer_access"] or 0):
+                # Room-visible files need a published owner even for member reads.
+                # A pre-event commitment is staging, not authority to expose bytes.
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_events'"
+                    ).fetchone()
+                    is None
+                ):
+                    raise AttachmentNotFoundError(
+                        "attachment is not published in this room"
+                    )
+                owner = conn.execute(
+                    """SELECT payload_json FROM hosted_room_events
+                       WHERE room_id=? AND event_id=? AND kind IN ('message.user', 'message.member')""",
+                    (room_id, str(row["event_id"] or "")),
+                ).fetchone()
+                manifest = {
+                    key: row[key]
+                    for key in ("attachment_id", "kind", "name", "size", "mime")
+                }
+                payload = (
+                    json.loads(owner["payload_json"]) if owner is not None else None
+                )
+                published = (
+                    payload.get("attachments") if isinstance(payload, Mapping) else None
+                )
+                if not isinstance(published, list) or manifest not in published:
+                    raise AttachmentNotFoundError(
+                        "attachment is not published in this room"
+                    )
             recipients = json.loads(str(row["recipient_member_ids_json"]))
             if viewer:
                 if int(row["viewer_access"] or 0) != 1:

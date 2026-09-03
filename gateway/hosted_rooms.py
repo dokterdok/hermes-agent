@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from gateway.hosted_room_attachments import retain_message_attachments
 from gateway.hosted_room_contract import (
     AuthorityConflictError,
     AuthoritySupersededError,
@@ -21,7 +22,9 @@ from gateway.hosted_room_contract import (
     CONTROL_EVENT_COUNT_RESERVE,
     DISBANDED_REPLICA_RETENTION_SECONDS,
     DISBANDED_ROOM_RETENTION_SECONDS,
+    EventAttachmentConflictError,
     EventConflictError,
+    EventCursorConflictError,
     HostedRoomError,
     MAX_ACTOR_ID_CHARS,
     MAX_ACTOR_LABEL_CHARS,
@@ -436,12 +439,18 @@ def append_event(
     authority_gateway_id: Any = None,
     authority_epoch: Any = None,
     now: float | None = None,
+    expected_latest_seq: int | None = None,
 ) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically.
 
     Repeating the same ``event_id`` and immutable content returns the original
     event. Reusing the id for different content fails closed.
+    An optional cursor precondition fences new appends, not immutable replay.
     """
+    if expected_latest_seq is not None and (
+        type(expected_latest_seq) is not int or expected_latest_seq < 0
+    ):
+        raise HostedRoomError("expected_latest_seq must be a nonnegative integer")
     room_id = _validate_identifier(
         room_id,
         label="room_id",
@@ -525,6 +534,16 @@ def append_event(
         ):
             raise AuthorityConflictError("stale hosted room authority")
         seq = int(room["next_seq"])
+        if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
+            raise EventCursorConflictError("room changed before event publication")
+        if kind in {"message.user", "message.member"}:
+            retain_message_attachments(
+                conn,
+                room_id=room_id,
+                event_id=event_id,
+                manifest=json.loads(payload_json).get("attachments", []),
+                now=now,
+            )
         event_bytes = _event_storage_bytes(
             event_id=event_id,
             kind=kind,

@@ -122,6 +122,8 @@ class HostedRoomArtifactMixin:
                 task_events = self.policy_checkpoint.events_for_task(
                     room_id=str(room["room_id"]),
                     source_event_seq=int(task["payload"]["source_event_seq"]),
+                    input_context=task["payload"].get("input_context"),
+                    task_id=identity.task_id,
                 )
                 if status == "cancelled":
                     self._discard_cancelled_task_artifacts(
@@ -144,6 +146,69 @@ class HostedRoomArtifactMixin:
                         task,
                         local_profiles=local_profiles,
                     )
+
+                def publication_for(value, outcome, events):
+                    message_id = f"dmessage:{identity.task_id.removeprefix('dtask:')}"
+                    if any(
+                        event.get("event_id") == message_id
+                        and event.get("kind") == "message.member"
+                        for event in events
+                    ):
+                        # Finish an already committed member message after a crash;
+                        # later requests cannot retract that publication or its files.
+                        events = [
+                            event
+                            for event in events
+                            if event.get("kind") != "message.user"
+                            or int(event["seq"])
+                            <= int(task["payload"]["source_event_seq"])
+                        ]
+                    return discussion.plan_publication(
+                        room,
+                        events,
+                        plan,
+                        status=outcome,
+                        result=value,
+                        execution_generation=int(task["execution_generation"])
+                        if status == "deferred"
+                        else None,
+                        local_profiles=local_profiles,
+                    )
+
+                if publication_exists:
+                    has_message = any(
+                        event.get("kind") == "message.member"
+                        and event.get("payload", {}).get("task_id") == identity.task_id
+                        for event in task_events
+                    )
+                    without_message = any(
+                        event.get("kind") in {"turn.cancelled", "turn.failed"}
+                        or (
+                            event.get("kind") == "turn.settled"
+                            and event.get("payload", {}).get("passed") is True
+                        )
+                        for event in task_events
+                        if event.get("payload", {}).get("task_id") == identity.task_id
+                    )
+                    if without_message and not has_message:
+                        if self._retire_unpublished_artifacts(room, task, plan):
+                            self._clear_artifact_retry(task)
+                        continue
+                    if status == "deferred" and not has_message:
+                        continue
+                else:
+                    publication = publication_for(result, status, task_events)
+                    if publication.terminal_kind != "turn.settled":
+                        if (
+                            publication.terminal_kind != "turn.deferred"
+                            and not self._retire_unpublished_artifacts(room, task, plan)
+                        ):
+                            continue
+                        self._append_plan(str(room["room_id"]), publication)
+                        self._clear_artifact_retry(task)
+                        changed = True
+                        continue
+                source_retired = False
                 try:
                     result, acknowledge_artifacts = self._import_terminal_artifacts(
                         room=room,
@@ -179,6 +244,7 @@ class HostedRoomArtifactMixin:
                             ),
                         )
                         continue
+                    source_retired = True
                     result = {
                         "error": "A Group Chat file could not be verified.",
                         "reason_code": "artifact_verification_failed",
@@ -208,26 +274,46 @@ class HostedRoomArtifactMixin:
                             continue
                     self._clear_artifact_retry(task)
                     continue
-                publication = discussion.plan_publication(
-                    room,
-                    task_events,
-                    plan,
-                    status=publication_status,
-                    result=result,
-                    execution_generation=(
-                        int(task["execution_generation"])
-                        if status == "deferred"
-                        else None
-                    ),
-                    local_profiles=local_profiles,
-                )
-                self._append_plan(str(room["room_id"]), publication)
-                if isinstance(result, Mapping) and result.get("attachments"):
-                    digest = plan.identity.task_id.removeprefix("dtask:")
-                    self.attachments.retain_event(
+                publication_cursor = int(
+                    hosted_rooms.room_state(
+                        self.db_path,
                         room_id=str(room["room_id"]),
-                        event_id=f"dmessage:{digest}",
+                    )["latest_seq"]
+                )
+                task_events = self.policy_checkpoint.events_for_task(
+                    room_id=str(room["room_id"]),
+                    source_event_seq=int(task["payload"]["source_event_seq"]),
+                    input_context=task["payload"].get("input_context"),
+                    task_id=identity.task_id,
+                )
+                publication = publication_for(result, publication_status, task_events)
+                if publication.terminal_kind != "turn.settled":
+                    if not self._retire_unpublished_artifacts(
+                        room, task, plan, source_retired=source_retired
+                    ):
+                        continue
+                    result = task.get("result")
+                try:
+                    self._append_plan(
+                        str(room["room_id"]),
+                        publication,
+                        expected_latest_seq=publication_cursor,
                     )
+                except hosted_rooms.EventCursorConflictError as exc:
+                    # No model rerun: retry from fresh authority state. Roll back
+                    # staging only if another publisher did not already commit it.
+                    self.attachments.abort_unpublished_event(
+                        room_id=str(room["room_id"]),
+                        event_id=f"dmessage:{identity.task_id.removeprefix('dtask:')}",
+                    )
+                    self._defer_artifact_retry(task, exc)
+                    continue
+                if (
+                    publication.terminal_kind == "turn.settled"
+                    and isinstance(result, Mapping)
+                    and result.get("attachments")
+                ):
+                    # Canonical append retained the exact manifest atomically.
                     try:
                         acknowledge_artifacts()
                     except Exception as exc:
@@ -241,6 +327,39 @@ class HostedRoomArtifactMixin:
                 self._clear_artifact_retry(task)
                 changed = True
         return changed
+
+    def _retire_unpublished_artifacts(
+        self,
+        room: Mapping[str, Any],
+        task: Mapping[str, Any],
+        plan: discussion.DiscussionTaskPlan,
+        *,
+        source_retired: bool = False,
+    ) -> bool:
+        """Keep cancellation/failure private, including an interrupted old import."""
+
+        try:
+            message_id = f"dmessage:{plan.identity.task_id.removeprefix('dtask:')}"
+            if not self.attachments.abort_unpublished_event(
+                room_id=str(room["room_id"]), event_id=message_id
+            ):
+                self._defer_artifact_retry(
+                    task, RuntimeError("member publication won retirement race")
+                )
+                return False
+            if not source_retired:
+                self._retire_failed_terminal_artifacts(room=room, task=task, plan=plan)
+        except Exception as exc:
+            self._defer_artifact_retry(
+                task,
+                exc,
+                permanent=not (
+                    bool(getattr(exc, "retryable", False))
+                    or isinstance(exc, (ConnectionError, OSError, TimeoutError))
+                ),
+            )
+            return False
+        return True
 
     @staticmethod
     def _published_artifact_plan(
@@ -581,6 +700,8 @@ class HostedRoomArtifactMixin:
             normalized = dict(result)
             normalized["attachments"] = existing_attachments
             if outbox is not None:
+                if outbox.retirement_complete(scope):
+                    return normalized, lambda: None
                 return normalized, lambda: outbox.acknowledge(
                     scope,
                     artifact_ids,

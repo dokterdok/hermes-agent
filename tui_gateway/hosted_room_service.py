@@ -1168,12 +1168,23 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 raise RuntimeError("hosted room replay cursor did not advance")
             cursor = next_cursor
 
-    def _append_plan(self, room_id: str, plan: discussion.PublicationPlan) -> None:
+    def _append_plan(
+        self,
+        room_id: str,
+        plan: discussion.PublicationPlan,
+        *,
+        expected_latest_seq: int | None = None,
+    ) -> None:
         for event in plan.events:
-            hosted_rooms.append_event(
+            kwargs = event.append_kwargs(room_id)
+            if expected_latest_seq is not None:
+                kwargs["expected_latest_seq"] = expected_latest_seq
+            appended = hosted_rooms.append_event(
                 self.db_path,
-                **event.append_kwargs(room_id),
+                **kwargs,
             )
+            if expected_latest_seq is not None:
+                expected_latest_seq = max(expected_latest_seq, int(appended["seq"]))
 
     def _policy_snapshot(self, room: Mapping[str, Any]) -> PolicySnapshot:
         return self.policy_checkpoint.snapshot(
@@ -1245,14 +1256,31 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 events,
                 local_profiles=self.local_profiles(),
                 initial_watermarks=snapshot.watermarks,
+                freeze_input_context=True,
             )
             if decision.status == "task" and decision.task is not None:
-                driver.admit_task(
-                    self.db_path,
-                    decision.task.identity,
-                    payload=decision.task.payload,
-                    clock=time.time,
+                existing = driver.get_task_for_turn(
+                    self.db_path, decision.task.identity
                 )
+                legacy_payload = dict(decision.task.payload)
+                legacy_payload.pop("input_context", None)
+                if existing is not None and existing["payload"] == legacy_payload:
+                    # Preserve a pre-receipt admission during terminal file retry;
+                    # the same turn cannot acquire a new identity after upgrade.
+                    discussion.reconstruct_task_plan(
+                        room,
+                        events,
+                        existing,
+                        local_profiles=self.local_profiles(),
+                    )
+                    admitted = existing
+                else:
+                    admitted = driver.admit_task(
+                        self.db_path,
+                        decision.task.identity,
+                        payload=decision.task.payload,
+                        clock=time.time,
+                    )
                 # A stop can race the policy read from another process. Re-read
                 # after admission and cancel before the runtime can execute a
                 # task whose source event is now behind the room stop fence.
@@ -1268,7 +1296,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                     and decision.source_event_seq < stopped_through_seq
                 ):
                     self.runtime.cancel(
-                        decision.task.identity,
+                        admitted["identity"],
                         cancel_id=f"stop-fence:{stopped_through_seq}",
                     )
             elif decision.status in {"settled", "bounded"}:
