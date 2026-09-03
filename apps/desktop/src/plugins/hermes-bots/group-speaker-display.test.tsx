@@ -1,5 +1,5 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as avatarModule from './avatar'
@@ -171,5 +171,75 @@ describe('room speaker click and sidebar preview', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Research' }))
     expect(screen.getByRole('button', { name: 'Research-Lab (@research-lab)' })).toBeTruthy()
     expect(screen.getByText('@research-lab: Classic reply')).toBeTruthy()
+  })
+})
+
+describe('reconciled room speaker display', () => {
+  it('renders every stable old mirror event with its own recovered speaker', async () => {
+    const chat = await import('./group-chat')
+    const members = [speakerMember('ux', 'default', 'Team'), speakerMember('reviewer', 'default', 'Team')]
+
+    const log = speakerReplay([
+      speakerEvent(1, 'ux', 'default', 'Team'),
+      speakerEvent(2, 'reviewer', 'default', 'Team'),
+      speakerEvent(3, 'reviewer', 'default', 'Team')
+    ])
+
+    const current = { Board: speakerRoom(log, members) }
+    const mirror = chat.groupChatSyncSnapshot(current)
+
+    for (const entry of mirror.rooms['id:room-1'].log) {
+      delete entry.from.hostedIdentity
+    }
+
+    await show(chat.mergeRemoteGroupChatSnapshotIntoRooms(mirror, current).Board)
+
+    expect(screen.getAllByRole('button', { name: 'Team' })).toHaveLength(3)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Team' })[0])
+    expect(screen.getByRole('button', { name: 'Team (@ux)' })).toBeTruthy()
+    expect(screen.getByText('@reviewer: Decision ready.')).toBeTruthy()
+  })
+
+  it.each([false, true])('keeps repeated persisted conflicts unbound, sequenced=%s', async sequenced => {
+    const chat = await import('./group-chat')
+    const members = [speakerMember('ux', 'default', 'Team'), speakerMember('reviewer', 'default', 'Team')]
+    const a = speakerReplay([speakerEvent(1, 'ux', 'default', 'Team')])
+    const b = speakerReplay([speakerEvent(1, 'reviewer', 'default', 'Team')])
+
+    if (!sequenced) {
+      delete a[0].seq
+      delete b[0].seq
+    }
+
+    const conflicted = speakerRoom(chat.mergeGroupChatSyncEntries(a, b), members)
+    const durable = JSON.parse(JSON.stringify(chat.durableGroupChatRooms({ Board: conflicted })))
+    const cold = chat.mergeRemoteGroupChatSnapshotIntoRooms(chat.groupChatSyncSnapshot(durable), {}).Board
+    cold.log = chat.mergeGroupChatSyncEntries(cold.log, a, b)
+    await show(cold)
+
+    expect(screen.queryByTitle('Show full handle')).toBeNull()
+    expect(screen.getByText('Team: Decision ready.')).toBeTruthy()
+    expect(sendToGroupChatDurably).not.toHaveBeenCalled()
+    expect(host.requestProfile).not.toHaveBeenCalled()
+  })
+
+  it('never puts Product handle on a mismatched body after room hydration', async () => {
+    const chat = await import('./group-chat')
+    const room = speakerRoom()
+    const mirror = chat.groupChatSyncSnapshot({ Board: room })
+    const unrelated = mirror.rooms['id:room-1'].log[0]
+    unrelated.text = 'Unrelated body'
+    unrelated.at = room.log[0].at + 1000
+    unrelated.from = { kind: 'member', name: 'Other author' }
+    const hydrated = chat.mergeRemoteGroupChatSnapshotIntoRooms(mirror, { Board: room }).Board
+    await show(hydrated)
+
+    const message = screen.getByText('Unrelated body').closest('.group') as HTMLElement
+    expect(within(message).queryByTitle('Show full handle')).toBeNull()
+    expect(screen.getByText('Other author: Unrelated body')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Product' }))
+    expect(screen.getByRole('button', { name: 'Product (@pm)' })).toBeTruthy()
+    expect(sendToGroupChatDurably).not.toHaveBeenCalled()
+    expect(host.requestAgent).not.toHaveBeenCalled()
   })
 })
