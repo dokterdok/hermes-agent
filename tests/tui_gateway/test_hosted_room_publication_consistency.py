@@ -1,7 +1,9 @@
 """Publication eligibility precedes file access; committed files survive replay."""
 
 import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 
 import pytest
@@ -10,6 +12,7 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway.hosted_room_artifacts import (
+    RoomArtifactError,
     RoomArtifactOutbox,
     RoomArtifactScope,
     terminal_artifact_manifest,
@@ -90,6 +93,176 @@ def _settle(service, task, attempt):
 
 def _tick(service):
     service.prepare_room(service.bindings()[0])
+
+
+def test_user_send_rollback_cannot_revoke_another_senders_durable_files(
+    tmp_path, monkeypatch
+):
+    first, _, _ = _task(tmp_path, monkeypatch)
+    second = _service(first.db_path)
+    uploaded = first.put_attachment(
+        room_id="publication",
+        upload_id="raced-user",
+        kind="file",
+        name="input.txt",
+        mime="text/plain",
+        data=b"shared input",
+    )
+    manifest = [
+        {
+            key: uploaded[key]
+            for key in ("attachment_id", "kind", "name", "size", "mime")
+        }
+    ]
+    payload = {"text": "input", "thread_id": "other", "attachments": manifest}
+    original = hosted_rooms.append_event
+
+    def other_sender_wins(*args, **kwargs):
+        with monkeypatch.context() as inner:
+            inner.setattr(hosted_rooms, "append_event", original)
+            inner.setattr(second, "prepare_room", lambda binding: None)
+            second.send(room_id="publication", event_id="raced-user", payload=payload)
+        raise OSError("first sender lost its response")
+
+    with monkeypatch.context() as pause:
+        pause.setattr(hosted_rooms, "append_event", other_sender_wins)
+        with pytest.raises(OSError, match="lost its response"):
+            first.send(room_id="publication", event_id="raced-user", payload=payload)
+    assert (
+        second.read_attachment(
+            room_id="publication",
+            event_id="raced-user",
+            recipient_member_id="owner",
+            attachment_id=manifest[0]["attachment_id"],
+        ).data
+        == b"shared input"
+    )
+    before = second._events("publication")
+    assert second.send(room_id="publication", event_id="raced-user", payload=payload)[
+        "idempotent"
+    ]
+    assert second._events("publication") == before
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_permanent_import_failure_fences_another_publishers_staged_manifest(
+    tmp_path, monkeypatch, legacy
+):
+    first, task, attempt = _task(tmp_path, monkeypatch, legacy=legacy)
+    outbox, scope, result = _settle(first, task, attempt)
+    second = _service(first.db_path)
+    append_first, append_second = first._append_plan, second._append_plan
+    fenced = []
+    ready, release = threading.Event(), threading.Event()
+    pending = []
+
+    def suspend_first(*args, **kwargs):
+        pending.extend((args, kwargs))
+        ready.set()
+        assert release.wait(10)
+        try:
+            return append_first(*args, **kwargs)
+        except hosted_rooms.EventCursorConflictError:
+            fenced.append(True)
+            raise
+
+    def fail_read(*args, **kwargs):
+        raise RoomArtifactError("permanent verification failure")
+
+    def after_rollback(room_id, publication, **kwargs):
+        assert publication.terminal_kind == "turn.failed"
+        assert not outbox.list(scope)
+        release.set()
+        running.result(timeout=10)
+        return append_second(room_id, publication, **kwargs)
+
+    with ThreadPoolExecutor(max_workers=1) as pool, monkeypatch.context() as pause:
+        pause.setattr(first, "_append_plan", suspend_first)
+        running = pool.submit(_tick, first)
+        try:
+            assert ready.wait(10)
+            pause.setattr(RoomArtifactOutbox, "read", fail_read)
+            pause.setattr(second, "_append_plan", after_rollback)
+            _tick(second)
+        finally:
+            release.set()
+            running.result(timeout=10)
+    assert fenced == [True]
+    assert driver.get_task(first.db_path, task["identity"])["result"] == result
+    own = [
+        event
+        for event in first._events("publication")
+        if event["payload"].get("task_id") == task["identity"].task_id
+    ]
+    assert [event["kind"] for event in own] == ["turn.failed"]
+    manifest = pending[0][1].events[0].payload["attachments"]
+    message_id = pending[0][1].events[0].event_id
+    _assert_no_access(first, manifest, message_id)
+    cold = _service(first.db_path)
+    _tick(cold)
+    _assert_no_access(cold, manifest, message_id)
+    assert not cold._artifact_retry_keys("publication")
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_stale_cursor_rollback_fences_fresh_publisher_then_recovers(
+    tmp_path, monkeypatch, legacy
+):
+    first, task, attempt = _task(tmp_path, monkeypatch, legacy=legacy)
+    outbox, scope, result = _settle(first, task, attempt)
+    second = _service(first.db_path)
+    append_first, append_second = first._append_plan, second._append_plan
+    pending = []
+
+    def interleave(*args, **kwargs):
+        with monkeypatch.context() as pause:
+            pause.setattr(second, "prepare_room", lambda binding: None)
+            _send(second, "unrelated", thread="other")
+        with monkeypatch.context() as pause:
+            # Interrupt before the retain/ACK path, as a real paused publisher.
+            def suspended(*a, **k):
+                pending.extend((a, k))
+                raise OSError("publisher suspended")
+
+            pause.setattr(second, "_append_plan", suspended)
+            with pytest.raises(OSError, match="publisher suspended"):
+                _tick(second)
+        return append_first(*args, **kwargs)
+
+    with monkeypatch.context() as pause:
+        pause.setattr(first, "_append_plan", interleave)
+        _tick(first)
+    assert first._artifact_retry_keys("publication")
+    with pytest.raises(hosted_rooms.EventCursorConflictError):
+        append_second(*pending[0], **pending[1])
+    assert len(outbox.list(scope)) == 3
+    assert not any(
+        event["kind"] == "message.member" for event in first._events("publication")
+    )
+    cold = _service(first.db_path)
+    cold._artifact_clock = lambda: time.time() + 1000
+    _tick(cold)
+    message = next(
+        event
+        for event in cold._events("publication")
+        if event["kind"] == "message.member"
+    )
+    for index, item in enumerate(message["payload"]["attachments"]):
+        assert (
+            cold.attachments.read(
+                room_id="publication",
+                event_id=message["event_id"],
+                attachment_id=item["attachment_id"],
+                recipient_member_id="owner",
+            ).data
+            == f"result-{index}".encode()
+        )
+    assert not outbox.list(scope)
+    assert not cold._artifact_retry_keys("publication")
+    assert driver.get_task(first.db_path, task["identity"])["result"] == result
+    before = cold._events("publication")
+    _tick(cold)
+    assert cold._events("publication") == before
 
 
 @pytest.mark.parametrize("legacy", [False, True])

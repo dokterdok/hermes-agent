@@ -223,6 +223,10 @@ class EventCursorConflictError(HostedRoomError):
     """Raised when new room events invalidate an uncommitted publication plan."""
 
 
+class EventAttachmentConflictError(EventCursorConflictError):
+    """A publication lost its file commitments; use the same fresh-plan retry."""
+
+
 class AuthorityConflictError(HostedRoomError):
     """Raised when a stale room authority attempts to mutate hosted state."""
 

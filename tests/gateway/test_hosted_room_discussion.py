@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
+from gateway.hosted_room_attachments import HostedRoomAttachmentStore
 
 
 ROOM_ID = "room-1"
@@ -93,6 +95,39 @@ def _events(db: Path) -> list[dict]:
     )["events"]
 
 
+def _stage_attachments(db: Path, event_id: str, manifest: list[dict]) -> None:
+    if not manifest:
+        return
+    store = HostedRoomAttachmentStore(db)
+    for entry in manifest:
+        header = {"image": b"\x89PNG\r\n\x1a\n", "pdf": b"%PDF-"}.get(
+            entry["kind"], b""
+        )
+        data = header + b"x" * (entry["size"] - len(header))
+        # Keep the planner fixtures' stable ids while using real verified storage.
+        with patch(
+            "gateway.hosted_room_attachments.secrets.token_hex",
+            return_value=entry["attachment_id"].removeprefix("att_"),
+        ):
+            uploaded = store.put(
+                room_id=ROOM_ID,
+                upload_id=entry["attachment_id"],
+                kind=entry["kind"],
+                name=entry["name"],
+                mime=entry["mime"],
+                data=data,
+            )
+        assert {key: uploaded[key] for key in entry} == entry
+    store.commit_message(
+        room_id=ROOM_ID,
+        event_id=event_id,
+        manifest=manifest,
+        recipient_member_ids=MEMBER_IDS,
+        viewer_access=True,
+        hold_until_event=True,
+    )
+
+
 def _append_user(
     db: Path,
     *,
@@ -101,6 +136,7 @@ def _append_user(
     thread_id: str = "thread-1",
     attachments: list[dict] | None = None,
 ) -> dict:
+    _stage_attachments(db, event_id, attachments or [])
     return hosted_rooms.append_event(
         db,
         room_id=ROOM_ID,
@@ -122,6 +158,8 @@ def _append_publication(
     db: Path,
     plan: discussion.PublicationPlan,
 ) -> list[dict]:
+    for event in plan.events:
+        _stage_attachments(db, event.event_id, event.payload.get("attachments", []))
     return [
         hosted_rooms.append_event(
             db,

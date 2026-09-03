@@ -479,6 +479,7 @@ def test_restart_reconciles_event_commit_and_expires_abandoned_commit(tmp_path):
         event_id="event-retained",
         manifest=_manifest(retained),
         recipient_member_ids=("research",),
+        viewer_access=True,
         hold_until_event=True,
     )
     store.commit_message(

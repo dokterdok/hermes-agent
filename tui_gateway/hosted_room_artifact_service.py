@@ -313,11 +313,7 @@ class HostedRoomArtifactMixin:
                     and isinstance(result, Mapping)
                     and result.get("attachments")
                 ):
-                    digest = plan.identity.task_id.removeprefix("dtask:")
-                    self.attachments.retain_event(
-                        room_id=str(room["room_id"]),
-                        event_id=f"dmessage:{digest}",
-                    )
+                    # Canonical append retained the exact manifest atomically.
                     try:
                         acknowledge_artifacts()
                     except Exception as exc:

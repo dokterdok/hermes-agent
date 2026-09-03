@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from gateway.hosted_room_attachments import retain_message_attachments
 from gateway.hosted_room_contract import (
     AuthorityConflictError,
     AuthoritySupersededError,
@@ -21,6 +22,7 @@ from gateway.hosted_room_contract import (
     CONTROL_EVENT_COUNT_RESERVE,
     DISBANDED_REPLICA_RETENTION_SECONDS,
     DISBANDED_ROOM_RETENTION_SECONDS,
+    EventAttachmentConflictError,
     EventConflictError,
     EventCursorConflictError,
     HostedRoomError,
@@ -534,6 +536,14 @@ def append_event(
         seq = int(room["next_seq"])
         if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
             raise EventCursorConflictError("room changed before event publication")
+        if kind in {"message.user", "message.member"}:
+            retain_message_attachments(
+                conn,
+                room_id=room_id,
+                event_id=event_id,
+                manifest=json.loads(payload_json).get("attachments", []),
+                now=now,
+            )
         event_bytes = _event_storage_bytes(
             event_id=event_id,
             kind=kind,
