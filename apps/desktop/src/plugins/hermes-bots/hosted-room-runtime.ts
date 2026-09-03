@@ -72,7 +72,8 @@ import {
   hostedStatus,
   hostedUnavailableState,
   readHostedInventoryState,
-  readHostedRoomInventory
+  readHostedRoomInventory,
+  hostedReplayMessages as replayMessages
 } from './hosted-room-inventory'
 import { revokeInvalidHostedMemberRoutes } from './hosted-room-member-inventory'
 import { hostedMemberDescriptors } from './hosted-room-members'
@@ -348,20 +349,6 @@ function markHostedConnectionUnavailable(connectionId: string, unsupported = fal
   }
 }
 
-function replayMessages(messages: ReturnType<typeof createHostedRoomReplayState>['messages']): GroupMessage[] {
-  return messages.map(message => ({
-    at: message.at,
-    from: message.from,
-    id: message.eventId,
-    eventId: message.eventId,
-    ...(message.roomId ? { roomId: message.roomId } : {}),
-    seq: message.seq,
-    text: message.text,
-    thread: message.thread,
-    ...(message.images?.length ? { images: message.images } : {})
-  }))
-}
-
 function isDisbanded(room: HostedRoomServerState) {
   return room.disbanded_at !== null && room.disbanded_at !== undefined
 }
@@ -550,6 +537,11 @@ export async function refreshHostedRooms() {
 
       const connectionId = String(route.connectionId)
       const capability = $hostedRoomCapabilities.get()[connectionId]
+
+      if (!capability) {
+        continue
+      }
+
       const observation = hostedRoomObservations.capture(connectionId)
       const stale = () => syncStale() || !hostedRoomObservations.current(observation)
 
@@ -557,7 +549,6 @@ export async function refreshHostedRooms() {
         hostedRoomObservations.read(observation, () => requestHostedConnection<T>(route, method, params))
 
       if (!isHostedRoomReadEligible(capability)) {
-        hostedRoomObservations.invalidate(connectionId)
         markHostedConnectionUnavailable(connectionId, capability.kind === 'unsupported')
 
         if (capability.reason === 'old-gateway') {
