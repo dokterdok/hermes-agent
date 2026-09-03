@@ -135,16 +135,16 @@ export function hostedRoomDriverDisplayStatus(
   driverValue: unknown,
   { stopping = false }: { stopping?: boolean } = {}
 ): FriendlyHostedRoomStatus {
-  if (stopping) {
+  const driver = record(driverValue)
+  const counts = record(driver?.counts)
+
+  if (stopping || Number(counts?.stopping || 0) > 0) {
     return { ...replay, kind: 'stopping', canStop: false }
   }
 
   if (['failed', 'member-unavailable', 'needs-attention', 'needs-you', 'waiting'].includes(replay.kind)) {
     return replay
   }
-
-  const driver = record(driverValue)
-  const counts = record(driver?.counts)
 
   if (Number(counts?.queued || driver?.queued || 0) > 0) {
     return { ...replay, kind: 'queued', canStop: true }
