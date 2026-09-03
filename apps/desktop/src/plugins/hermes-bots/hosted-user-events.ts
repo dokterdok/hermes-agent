@@ -170,15 +170,9 @@ export function restoreHostedUserOutboxIntents(room: GroupChat, outbox: HostedRo
 /** Reconcile only within an identified hosted room. Mirrors never supply payload
  * fields to accepted user events, and every sequenced record stays intact. */
 export function reconcileHostedUserEvents(roomId: string, ...logs: GroupMessage[][]): GroupMessage[] {
-  // Older durable replays have sequence/ID but no per-entry room metadata.
-  // Bind those records to their known container before any shared matching.
-  const entries = logs
-    .flat()
-    .map(entry =>
-      entry.from?.kind === 'user' && !entry.roomId && groupChatSyncSequence(entry) !== null
-        ? { ...entry, roomId }
-        : entry
-    )
+  // Bind every legacy actor to its known container before shared matching.
+  // A genuine member sequence must never be lent to an unscoped user hint.
+  const entries = logs.flat().map(entry => (!entry.roomId ? { ...entry, roomId } : entry))
 
   const canonical = new Map<string, Set<string>>()
   const receiptedKeys = new Set<string>()
@@ -231,11 +225,13 @@ export function reconcileHostedUserEvents(roomId: string, ...logs: GroupMessage[
   })
 }
 
-/** Mirrors carry canonical markers for old raw-ID backends, never replay order. */
-export function projectedUserEvent(entry: GroupMessage): GroupMessage {
+/** Display projections carry no authoritative sequence, regardless of actor.
+ * Keep supplied canonical markers, but never promote an imported sequence. */
+export function projectedGroupMessage(entry: GroupMessage, roomId?: null | string): GroupMessage {
   const display = storedHostedUserEvent(entry)
+  const projected = display.seq !== undefined ? { ...display, seq: undefined } : display
 
-  return display.from?.kind === 'user' && display.seq !== undefined ? { ...display, seq: undefined } : display
+  return roomId && !projected.roomId ? { ...projected, roomId } : projected
 }
 
 /** Validate the response against the exact command before using the normal replay
