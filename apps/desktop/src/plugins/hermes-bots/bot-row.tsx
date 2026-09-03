@@ -486,7 +486,12 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
   const availabilityLabel = `${availableMembers} of ${members.length} available`
   const hosted = Boolean(groupChatHostedGateway(room))
-  const hostWarning = hosted && room.hostedStatus?.state === 'unavailable' ? room.hostedStatus.label : null
+
+  const hostWarning =
+    hosted && (room.hostedStatus?.state === 'offline' || room.hostedStatus?.state === 'unsupported')
+      ? room.hostedStatus.label
+      : null
+
   const allUnavailable = hosted ? Boolean(hostWarning) : availableMembers === 0
   const someUnavailable = !hosted && members.length > 0 && availableMembers < members.length
   const warningLabel = hostWarning || (someUnavailable ? availabilityLabel : null)

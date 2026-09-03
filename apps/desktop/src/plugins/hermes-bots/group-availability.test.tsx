@@ -1,10 +1,12 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
+import { host } from '@hermes/plugin-sdk'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { GroupRow } from './bot-row'
 import { $groupChats } from './group-chat'
 import { GroupChatWorkspace } from './group-chat-view'
+import { scriptedStorage } from './group-test-utils'
 import { translateBots } from './i18n-test-helper'
 import type { GroupChat, GroupMember } from './types'
 
@@ -42,6 +44,34 @@ function setRoom(hosted: boolean, extra: Partial<GroupChat> = {}) {
 
 function row(selected = members) {
   return <GroupRow active={false} group={GROUP} members={selected} needsYou={false} onDisband={noop} onOpen={noop} />
+}
+
+async function withHostFailure(state: 'offline' | 'unsupported', check: (room: GroupChat) => void) {
+  const runtime = await import('./hosted-room-runtime')
+
+  const routes = vi
+    .spyOn(host, 'profileRoutes')
+    .mockResolvedValue([{ connectionId: 'host-route', mode: 'remote', profile: 'default', targetProfile: 'default' }])
+
+  const request = vi.spyOn(host, 'requestProfile').mockImplementation(async (_route, method) => {
+    if (method !== 'groups.capabilities') {throw new Error(`Unexpected RPC: ${method}`)}
+
+    if (state === 'offline') {throw new Error('Connection failed')}
+
+    return { authority_gateway_id: 'authority', driver: false, persistent_process: true }
+  })
+
+  try {
+    await act(async () => runtime.startHostedRoomRuntime(scriptedStorage(new Map()).storage))
+    const room = $groupChats.get()[GROUP]
+    expect(room.hostedStatus?.state).toBe(state)
+    check(room)
+  } finally {
+    runtime.stopHostedRoomRuntime()
+    runtime.$hostedRoomCapabilities.set({})
+    routes.mockRestore()
+    request.mockRestore()
+  }
 }
 
 beforeEach(() => {
@@ -94,12 +124,14 @@ describe('group availability follows its execution mode', () => {
     expect(screen.queryByLabelText('2 of 4 available')).toBeNull()
   })
 
-  it('shows hosted membership without replacing the actual host error', () => {
-    setRoom(true, { hostedStatus: { state: 'unavailable', label: 'Group host is offline' } })
+  it.each(['offline', 'unsupported'] as const)('shows membership without replacing runtime %s errors', async state => {
+    setRoom(true, { hostedConnectionId: 'host-route' })
     render(<GroupChatWorkspace group={GROUP} members={members} />)
-    expect(screen.queryByLabelText('2 of 4 available')).toBeNull()
-    expect(screen.getByLabelText('4 bots', { exact: false })).toBeTruthy()
-    expect(screen.getAllByText('Group host is offline').length).toBeGreaterThan(0)
+    await withHostFailure(state, room => {
+      expect(screen.queryByLabelText('2 of 4 available')).toBeNull()
+      expect(screen.getByLabelText('4 bots', { exact: true })).toBeTruthy()
+      expect(screen.getAllByText(room.hostedStatus!.label).length).toBeGreaterThan(0)
+    })
   })
 
   it('retains classic availability in the chat header', () => {
@@ -108,14 +140,23 @@ describe('group availability follows its execution mode', () => {
     expect(screen.getByLabelText('2 of 4 available', { exact: true })).toBeTruthy()
   })
 
-  it('keeps an actual unavailable host visible on the group row', () => {
-    setRoom(true, { hostedStatus: { state: 'unavailable', label: 'Group host is offline' } })
-    const { container } = render(row())
-    expect(screen.getByRole('button', { name: 'Project group, 4 bots, Group host is offline' })).toBeTruthy()
-    expect(screen.getByLabelText('Group host is offline', { exact: true })).toBeTruthy()
-    expect(container.querySelector('.opacity-60')).toBeTruthy()
-    expect(screen.queryByLabelText('2 of 4 available')).toBeNull()
-  })
+  for (const state of ['offline', 'unsupported'] as const) {
+    it.each([null, 'data:image/png;base64,iVBORw0KGgo='])(
+      'keeps runtime ' + state + ' visible with image=%s',
+      async image => {
+        setRoom(true, { hostedConnectionId: 'host-route', image })
+        const { container } = render(row())
+        await withHostFailure(state, room => {
+          expect(
+            screen.getByRole('button', { name: `Project group, 4 bots, ${room.hostedStatus!.label}` })
+          ).toBeTruthy()
+          expect(screen.getByLabelText(room.hostedStatus!.label, { exact: true })).toBeTruthy()
+          expect(container.querySelector(image ? 'img.grayscale.opacity-60' : '.opacity-60')).toBeTruthy()
+          expect(screen.queryByLabelText('2 of 4 available')).toBeNull()
+        })
+      }
+    )
+  }
 
   it('keeps all-unavailable classic groups visibly degraded', () => {
     const missing = members.map(member => ({ ...member, sourceMissing: true }))
