@@ -145,6 +145,132 @@ function heldResponse() {
 }
 
 describe('capability reply freshness', () => {
+  it('waits for the first accepted capability without throwing or granting classic absence', async () => {
+    const older = heldResponse()
+    const newer = heldResponse()
+    let phase = 'older'
+
+    const loaded = await load(method => {
+      if (method === 'groups.capabilities') {
+        if (phase === 'older') {
+          return older.wait()
+        }
+
+        if (phase === 'newer') {
+          return newer.wait()
+        }
+
+        return nonpersistent
+      }
+
+      if (method === 'groups.list') {
+        return { rooms: [], next_offset: null }
+      }
+
+      throw new Error(`Unexpected ${method}`)
+    })
+
+    const routes = host.profileRoutes
+    host.profileRoutes = async () => []
+    await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+    host.profileRoutes = routes
+
+    try {
+      const refresh = loaded.runtime.refreshHostedRooms()
+
+      const result = refresh.then(
+        () => null,
+        error => String(error)
+      )
+
+      await older.started
+      phase = 'newer'
+      const probe = loaded.runtime.probeHostedRoomMembers(members)
+      await newer.started
+      older.release(nonpersistent)
+      expect(await result).toBeNull()
+      expect(loaded.runtime.$hostedRoomCapabilities.get().local).toBeUndefined()
+      expect(loaded.runtime.groupChatContinuityReady(projected({ roomId: 'unrelated' }))).toBe(false)
+      phase = 'complete'
+      newer.release(nonpersistent)
+      await probe
+      expect(loaded.runtime.$hostedRoomCapabilities.get().local.kind).toBe('driver-capable')
+      await loaded.runtime.refreshHostedRooms()
+      expect(loaded.runtime.groupChatContinuityReady(projected({ roomId: 'unrelated' }))).toBe(true)
+    } finally {
+      older.release(nonpersistent)
+      newer.release(nonpersistent)
+      loaded.runtime.stopHostedRoomRuntime()
+    }
+  })
+
+  it.each(['none', 'member-probe', 'refresh'])(
+    'does not cancel a real recovery probe after an unsupported-cache %s shortcut',
+    async shortcut => {
+      const held = heldResponse()
+      let recovering = false
+
+      const loaded = await load(method => {
+        if (method === 'groups.capabilities') {
+          if (!recovering) {
+            throw Object.assign(new Error('Method not found'), { code: -32601 })
+          }
+
+          return held.wait()
+        }
+
+        if (method === 'groups.list') {
+          return { rooms: [], next_offset: null }
+        }
+
+        if (method === 'groups.disband') {
+          return {}
+        }
+
+        throw new Error(`Unexpected ${method}`)
+      })
+
+      try {
+        await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+        loaded.chat.$groupChats.set({
+          ...loaded.chat.$groupChats.get(),
+          Hosted: projected({
+            roomId: 'hosted-copy',
+            hosted: 'install:home',
+            hostedEpoch: 1,
+            hostedConnectionId: 'local'
+          })
+        })
+        recovering = true
+
+        const recovery = loaded.runtime.disbandHostedGroupChat('Hosted').then(
+          value => ({ value, error: null }),
+          error => ({ value: false, error: String(error) })
+        )
+
+        await held.started
+        const requests = loaded.calls.filter(call => call.method === 'groups.capabilities').length
+
+        if (shortcut === 'member-probe') {
+          await loaded.runtime.probeHostedRoomMembers(members)
+        }
+
+        if (shortcut === 'refresh') {
+          await loaded.runtime.refreshHostedRooms()
+        }
+
+        expect(loaded.calls.filter(call => call.method === 'groups.capabilities')).toHaveLength(requests)
+        held.release({ ...nonpersistent, persistent_process: true })
+        expect(await recovery).toEqual({ value: true, error: null })
+        expect(loaded.calls.filter(call => call.method === 'groups.disband')).toHaveLength(1)
+        expect(loaded.runtime.$hostedRoomCapabilities.get().local.persistentProcess).toBe(true)
+      } finally {
+        held.release({ ...nonpersistent, persistent_process: true })
+        loaded.runtime.stopHostedRoomRuntime()
+      }
+    }
+  )
+
   for (const reader of ['refresh', 'member-probe']) {
     for (const baseline of [false, true]) {
       for (const olderFailure of [false, true]) {

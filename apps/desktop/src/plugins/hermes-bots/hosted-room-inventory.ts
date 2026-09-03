@@ -1,7 +1,7 @@
 import { isHostedRoomContinuityEligible, isHostedRoomReadEligible } from './hosted-room-client'
-import type { FriendlyHostedRoomStatus, HostedRoomCapability } from './hosted-room-client'
+import type { createHostedRoomReplayState, FriendlyHostedRoomStatus, HostedRoomCapability } from './hosted-room-client'
 import { botsText } from './i18n'
-import type { GroupChat } from './types'
+import type { GroupChat, GroupMessage } from './types'
 
 const LIST_LIMIT = 500
 const MAX_LIST_PAGES = 4
@@ -105,6 +105,22 @@ export function hostedRoomContinuityMode(room: { members?: unknown }) {
   return (Array.isArray(room?.members) ? room.members : []).some(raw => record(record(raw)?.target)?.kind === 'peer')
     ? ('distributed' as const)
     : ('gateway' as const)
+}
+
+export function hostedReplayMessages(
+  messages: ReturnType<typeof createHostedRoomReplayState>['messages']
+): GroupMessage[] {
+  return messages.map(message => ({
+    at: message.at,
+    from: message.from,
+    id: message.eventId,
+    eventId: message.eventId,
+    ...(message.roomId ? { roomId: message.roomId } : {}),
+    seq: message.seq,
+    text: message.text,
+    thread: message.thread,
+    ...(message.images?.length ? { images: message.images } : {})
+  }))
 }
 
 /** Do not replace a failed/malformed state read with the list projection. */
