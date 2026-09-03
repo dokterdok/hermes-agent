@@ -25,7 +25,7 @@ import { IntroRevealGate } from '@/components/intro-reveal'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { OnboardingChatGate } from '@/components/onboarding-chat/gate'
-import { $newSessionTabAction, registerPaneCloser, revealTreePane } from '@/components/pane-shell/tree/store'
+import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
   $workspaceNewSessionTarget,
@@ -37,7 +37,6 @@ import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
 import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
-import { getSession } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
@@ -88,13 +87,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
-import { $unreadSessionTargets } from '@/store/session-dot-state'
-import {
-  $openNextUnreadRequest,
-  openNextValidUnread,
-  ownerRouteForUnreadTarget,
-  preflightCandidatesForUnreadTarget
-} from '@/store/session-unread-navigation'
+
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -172,6 +165,7 @@ import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
+import { useUnreadNavigation } from './hooks/use-unread-navigation'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useOnboardingHandoff } from './onboarding-handoff'
 import { useOnboardingKickoff } from './onboarding-kickoff'
@@ -204,83 +198,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const location = useLocation()
   const navigate = useNavigate()
 
-  const openNextUnreadPendingRef = useRef(false)
-  const openNextUnreadActiveRef = useRef(true)
-  const openNextUnreadRequest = useStore($openNextUnreadRequest)
-  // Start at the current counter so a genuine wiring remount cannot replay an
-  // intent that the previous mount already consumed.
-  const openNextUnreadSeenRef = useRef($openNextUnreadRequest.get())
-
-  // eslint-disable-next-line no-restricted-syntax -- mounted-lifetime sentinel for async completion, not an atom mirror
-  useEffect(() => {
-    openNextUnreadActiveRef.current = true
-
-    return () => {
-      openNextUnreadActiveRef.current = false
-      openNextUnreadPendingRef.current = false
-    }
-  }, [])
-
-  const openNextUnread = useCallback(() => {
-    // The count is first a reveal control: even if every target is stale or
-    // offline, leave the user looking at the Sessions list rather than a no-op.
-    revealTreePane('sessions')
-
-    if (openNextUnreadPendingRef.current) {
-      return
-    }
-
-    openNextUnreadPendingRef.current = true
-    const activeConnectionId = $activeConnectionId.get()
-    void openNextValidUnread(
-      $unreadSessionTargets.get(),
-      async target => {
-        const baseOwner = ownerRouteForUnreadTarget(target, activeConnectionId)
-
-        const registeredRoutes = baseOwner
-          ? await window.hermesDesktop.getProfileRoutes([baseOwner.profile]).catch(() => [])
-          : []
-
-        let lastError: unknown
-
-        for (const candidate of preflightCandidatesForUnreadTarget(target, activeConnectionId, registeredRoutes)) {
-          try {
-            await getSession(target.id, candidate.scope)
-
-            return candidate.ownerRoute
-          } catch (error) {
-            lastError = error
-          }
-        }
-
-        throw lastError
-      },
-      (target, ownerRoute) => {
-        if (!openNextUnreadActiveRef.current) {
-          return
-        }
-
-        if (ownerRoute) {
-          // Stamp the exact connection before navigation can trigger resume.
-          requestSessionResume(target.id, ownerRoute)
-        }
-
-        openSession(target.id, navigate)
-      }
-    ).finally(() => {
-      openNextUnreadPendingRef.current = false
-    })
-  }, [navigate])
-
-  // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
-  useEffect(() => {
-    if (openNextUnreadRequest === openNextUnreadSeenRef.current) {
-      return
-    }
-
-    openNextUnreadSeenRef.current = openNextUnreadRequest
-    openNextUnread()
-  }, [openNextUnread, openNextUnreadRequest])
+  useUnreadNavigation(navigate, `${location.key}:${location.pathname}:${location.search}:${location.hash}`)
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
