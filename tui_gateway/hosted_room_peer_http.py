@@ -384,6 +384,10 @@ class PeerRunsHTTPClient:
             self._status_cache.clear()
             self._recovery_backoff.clear()
 
+    def _request_url(self, path: str) -> str:
+        """Keep JSON and binary operations on this client's profile route."""
+        return f"{self.base_url}{self._profile_prefix}{path}"
+
     def _request(
         self,
         path: str,
@@ -406,7 +410,7 @@ class PeerRunsHTTPClient:
         if headers:
             request_headers.update(headers)
         request = urllib.request.Request(
-            f"{self.base_url}{self._profile_prefix}{path}",
+            self._request_url(path),
             data=(
                 json.dumps(body, separators=(",", ":")).encode("utf-8")
                 if body is not None
@@ -665,7 +669,7 @@ class PeerRunsHTTPClient:
                 yield view[offset : offset + 64 * 1024].tobytes()
 
         request = urllib.request.Request(
-            f"{self.base_url}{path}",
+            self._request_url(path),
             data=chunks() if streamed else data,
             method="PUT",
             headers={
@@ -1120,9 +1124,12 @@ class PeerRunsHTTPClient:
         artifact_id: str,
         grant: str,
     ) -> bytes:
+        path = (
+            f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/"
+            f"artifacts/{urllib.parse.quote(artifact_id, safe='')}"
+        )
         request = urllib.request.Request(
-            f"{self.base_url}/v1/runs/{urllib.parse.quote(run_id, safe='')}/"
-            f"artifacts/{urllib.parse.quote(artifact_id, safe='')}",
+            self._request_url(path),
             method="GET",
             headers={
                 "Authorization": f"HermesRoom {self._require_room_grant(grant)}",
