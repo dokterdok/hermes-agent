@@ -121,6 +121,383 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+function heldResponse() {
+  let entered!: () => void
+  let release!: (value: unknown) => void
+
+  const started = new Promise<void>(resolve => {
+    entered = resolve
+  })
+
+  const response = new Promise<unknown>(resolve => {
+    release = resolve
+  })
+
+  return {
+    started,
+    release,
+    wait: () => {
+      entered()
+
+      return response
+    }
+  }
+}
+
+describe('inventory observation invalidation', () => {
+  it('an authority-route probe failure invalidates a held list before recovery', async () => {
+    const held = heldResponse()
+    let hold = false
+    let offline = false
+
+    const loaded = await load(method => {
+      if (method === 'groups.capabilities') {
+        if (offline) {
+          throw new Error('offline')
+        }
+
+        return nonpersistent
+      }
+
+      if (method === 'groups.list') {
+        return hold ? held.wait() : { rooms: [], next_offset: null }
+      }
+
+      throw new Error(`Unexpected ${method}`)
+    })
+
+    try {
+      await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+      loaded.chat.$groupChats.set({
+        ...loaded.chat.$groupChats.get(),
+        Hosted: projected({
+          roomId: 'hosted-copy',
+          hosted: 'install:home',
+          hostedConnectionId: 'local',
+          hostedEpoch: 1
+        })
+      })
+      hold = true
+      const refresh = loaded.runtime.refreshHostedRooms()
+      await held.started
+      offline = true
+      await expect(loaded.runtime.disbandHostedGroupChat('Hosted')).rejects.toThrow()
+      const afterFailure = loaded.runtime.groupChatContinuityReady(loaded.chat.$groupChats.get().Classic)
+      offline = false
+      await loaded.runtime.probeHostedRoomMembers(members)
+      held.release({ rooms: [], next_offset: null })
+      await refresh
+      expect(afterFailure).toBe(false)
+      expect(loaded.runtime.groupChatContinuityReady(loaded.chat.$groupChats.get().Classic)).toBe(false)
+      expect(loaded.calls.some(call => call.method === 'groups.disband')).toBe(false)
+    } finally {
+      held.release({ rooms: [], next_offset: null })
+      loaded.runtime.stopHostedRoomRuntime()
+    }
+  })
+
+  it('does not publish an expired-history error from a revoked authority read', async () => {
+    const held = heldResponse()
+    let missing = false
+    let persistent = true
+
+    const loaded = await load(async method => {
+      if (method === 'groups.capabilities') {
+        return { ...nonpersistent, persistent_process: persistent }
+      }
+
+      if (method === 'groups.list') {
+        return { rooms: missing ? [] : [stored], next_offset: null }
+      }
+
+      if (method === 'groups.state') {
+        if (missing) {
+          await held.wait()
+          throw new Error('history expired')
+        }
+
+        return { room: stored }
+      }
+
+      if (method === 'groups.log') {
+        return { events: [event()], latest_seq: 1, has_more: false }
+      }
+
+      throw new Error(`Unexpected ${method}`)
+    })
+
+    try {
+      await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+      missing = true
+      const refresh = loaded.runtime.refreshHostedRooms()
+      await held.started
+      persistent = false
+      await loaded.runtime.probeHostedRoomMembers(members)
+      held.release({})
+      await refresh
+      expect(loaded.chat.$groupChats.get().Classic.hostedStatus?.state).toBe('read-only')
+      expect(loaded.chat.$groupChats.get().Classic.log.map(entry => entry.text)).toContain('Stored reply')
+      missing = false
+      await loaded.runtime.refreshHostedRooms()
+      expect(loaded.chat.$groupChats.get().Classic.hostedStatus?.state).toBe('read-only')
+    } finally {
+      held.release({})
+      loaded.runtime.stopHostedRoomRuntime()
+    }
+  })
+
+  for (const retired of [false, true]) {
+    for (const provenance of ['legacy', 'mixed']) {
+      it.each(['list-error', 'offline', 'authority', 'old-gateway'])(
+        `retains known IDs after %s, retired=${retired}, members=${provenance}`,
+        async failure => {
+          let phase = 'initial'
+
+          const legacy = members.map((member, index) => ({
+            ...member,
+            remoteSource: provenance === 'mixed' && index === 0 ? true : undefined
+          }))
+
+          const loaded = await load(method => {
+            if (method === 'groups.capabilities') {
+              if (phase === 'invalid' && failure === 'offline') {
+                throw new Error('offline')
+              }
+
+              if (phase === 'invalid' && failure === 'old-gateway') {
+                throw Object.assign(new Error('method not found'), { code: -32601 })
+              }
+
+              return {
+                ...nonpersistent,
+                authority_gateway_id: phase === 'invalid' && failure === 'authority' ? 'other' : 'install:home'
+              }
+            }
+
+            if (method === 'groups.list') {
+              if (phase === 'invalid') {
+                throw new Error('list failed')
+              }
+
+              return {
+                rooms: phase === 'initial' ? [{ ...stored, disbanded_at: retired ? 1 : null }] : [],
+                next_offset: null
+              }
+            }
+
+            throw new Error('state unavailable')
+          })
+
+          try {
+            loaded.chat.$groupChats.set(retired ? {} : { Classic: projected({ members: legacy }) })
+            await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+            loaded.chat.$groupChats.set({ Classic: projected({ members: legacy }) })
+            expect(loaded.runtime.groupChatContinuityReady(loaded.chat.$groupChats.get().Classic)).toBe(false)
+            phase = 'invalid'
+            await loaded.runtime.refreshHostedRooms()
+            expect(loaded.rounds.sendToGroupChat('Classic', legacy, 'Must not run')).toBeNull()
+            phase = 'recovered'
+            loaded.runtime.stopHostedRoomRuntime()
+            await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+            expect(loaded.rounds.sendToGroupChat('Classic', legacy, 'Still owned')).toBeNull()
+            expect(loaded.chat.$groupChats.get().Classic.log).toEqual([])
+            expect(loaded.calls.some(call => call.method === 'prompt.submit')).toBe(false)
+          } finally {
+            loaded.runtime.stopHostedRoomRuntime()
+          }
+        }
+      )
+    }
+  }
+
+  it.each(['authority-aba', 'offline-recovery'])(
+    'rejects old pages after %s and requires a fresh complete list',
+    async change => {
+      const held = heldResponse()
+      let phase = 'initial'
+      let capability: unknown = nonpersistent
+
+      const loaded = await load((method, params) => {
+        if (method === 'groups.capabilities') {
+          if (capability instanceof Error) {
+            throw capability
+          }
+
+          return capability
+        }
+
+        if (method === 'groups.list') {
+          if (phase !== 'held') {
+            return { rooms: [], next_offset: null }
+          }
+
+          if (params.offset === 0) {
+            return { rooms: [{ ...stored, room_id: 'other' }], next_offset: 1 }
+          }
+
+          return held.wait()
+        }
+
+        throw new Error('Unexpected read')
+      })
+
+      try {
+        await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+        phase = 'held'
+        const refresh = loaded.runtime.refreshHostedRooms()
+        await held.started
+        capability =
+          change === 'authority-aba' ? { ...nonpersistent, authority_gateway_id: 'replacement' } : new Error('offline')
+        await loaded.runtime.probeHostedRoomMembers(members)
+        capability = nonpersistent
+        await loaded.runtime.probeHostedRoomMembers(members)
+        expect(loaded.runtime.groupChatContinuityReady(loaded.chat.$groupChats.get().Classic)).toBe(false)
+        held.release({ rooms: [{ ...stored, room_id: 'stale-page-only' }], next_offset: null })
+        await refresh
+        expect(loaded.rounds.sendToGroupChat('Classic', members, 'Not yet')).toBeNull()
+        phase = 'fresh'
+        await loaded.runtime.refreshHostedRooms()
+        expect(loaded.runtime.groupChatContinuityReady(loaded.chat.$groupChats.get().Classic)).toBe(true)
+        expect(loaded.runtime.groupChatContinuityReady(projected({ roomId: 'stale-page-only' }))).toBe(true)
+        expect(loaded.runtime.groupChatContinuityReady(projected({ roomId: 'other' }))).toBe(false)
+      } finally {
+        held.release({ rooms: [], next_offset: null })
+        loaded.runtime.stopHostedRoomRuntime()
+      }
+    }
+  )
+
+  it.each(['groups.state', 'groups.log'])(
+    'rejects stale %s UI, approvals and cache then recovers with fresh reads',
+    async window => {
+      const held = heldResponse()
+      let persistent = false
+      let hold = false
+
+      const pending = {
+        kind: 'approval',
+        member_id: 'writer',
+        task_id: 'task',
+        request_id: 'request',
+        execution_generation: 1
+      }
+
+      const response = { room: stored, driver_status: { pending_actions: [pending] } }
+      const log = { events: [event()], latest_seq: 1, has_more: false }
+
+      const loaded = await load(method => {
+        if (method === 'groups.capabilities') {
+          return { ...nonpersistent, persistent_process: persistent }
+        }
+
+        if (method === 'groups.list') {
+          return { rooms: [stored], next_offset: null }
+        }
+
+        if (hold && method === window) {
+          return held.wait()
+        }
+
+        if (method === 'groups.state') {
+          return response
+        }
+
+        if (method === 'groups.log') {
+          return log
+        }
+
+        throw new Error(`Unexpected ${method}`)
+      })
+
+      try {
+        await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+        expect(loaded.chat.$groupChats.get().Classic.hostedStatus?.state).toBe('read-only')
+        hold = true
+        persistent = true
+        const refresh = loaded.runtime.refreshHostedRooms()
+        await held.started
+        persistent = false
+        await loaded.runtime.probeHostedRoomMembers(members)
+        held.release(window === 'groups.state' ? response : log)
+        await refresh
+        expect(loaded.chat.$groupChats.get().Classic.hostedStatus?.state).toBe('read-only')
+        expect(loaded.chat.$groupClarify.get()).toEqual({})
+        expect(loaded.runtime.shouldRefreshHostedRoom(loaded.chat.$groupChats.get().Classic, stored)).toBe(true)
+        const reads = loaded.calls.filter(call => call.method === 'groups.state').length
+        hold = false
+        await loaded.runtime.refreshHostedRooms()
+        expect(loaded.calls.filter(call => call.method === 'groups.state')).toHaveLength(reads + 1)
+        expect(loaded.chat.$groupChats.get().Classic.hostedStatus?.state).toBe('read-only')
+        persistent = true
+        await loaded.runtime.refreshHostedRooms()
+        expect(loaded.runtime.groupChatContinuityReady(loaded.chat.$groupChats.get().Classic)).toBe(true)
+        expect(Object.values(loaded.chat.$groupClarify.get())).toHaveLength(1)
+        persistent = false
+        await loaded.runtime.probeHostedRoomMembers(members)
+        expect(loaded.chat.$groupChats.get().Classic.hostedStatus?.state).toBe('read-only')
+        expect(loaded.chat.$groupClarify.get()).toEqual({})
+      } finally {
+        held.release({})
+        loaded.runtime.stopHostedRoomRuntime()
+      }
+    }
+  )
+
+  it.each(['refresh', 'member-probe'])(
+    'does not let an old %s capability response undo a newer downgrade',
+    async reader => {
+      const held = heldResponse()
+      let hold = false
+      let persistent = true
+
+      const loaded = await load(method => {
+        if (method === 'groups.capabilities') {
+          if (hold) {
+            hold = false
+
+            return held.wait()
+          }
+
+          return { ...nonpersistent, persistent_process: persistent }
+        }
+
+        if (method === 'groups.list') {
+          return { rooms: [stored], next_offset: null }
+        }
+
+        if (method === 'groups.state') {
+          return { room: stored }
+        }
+
+        if (method === 'groups.log') {
+          return { events: [event()], latest_seq: 1, has_more: false }
+        }
+
+        throw new Error(`Unexpected ${method}`)
+      })
+
+      try {
+        await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+        hold = true
+
+        const old =
+          reader === 'refresh' ? loaded.runtime.refreshHostedRooms() : loaded.runtime.probeHostedRoomMembers(members)
+
+        await held.started
+        persistent = false
+        await loaded.runtime.probeHostedRoomMembers(members)
+        held.release({ ...nonpersistent, persistent_process: true })
+        await old
+        expect(loaded.runtime.$hostedRoomCapabilities.get().local.persistentProcess).toBe(false)
+        expect(loaded.chat.$groupChats.get().Classic.hostedStatus?.state).toBe('read-only')
+      } finally {
+        held.release({})
+        loaded.runtime.stopHostedRoomRuntime()
+      }
+    }
+  )
+})
+
 describe('classic inventory on readable gateways', () => {
   it('fences newly listed X during a slow later page without withdrawing prior evidence for Y', async () => {
     let paging = false
