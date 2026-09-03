@@ -23,7 +23,7 @@ import {
 } from './group-message-author'
 import {
   outgoingHostedUserEvent,
-  projectedUserEvent,
+  projectedGroupMessage,
   reconcileHostedUserEvents,
   storedHostedUserEvent
 } from './hosted-user-events'
@@ -528,10 +528,25 @@ export function mergeGroupChatSyncEntries(...logs: GroupMessage[][]) {
   return entries.sort(compareGroupChatSyncEntries)
 }
 
+/** Legacy display rows may lack room/actor metadata. Keep their kinds separate
+ * through import and later room merges, even before room identity is available. */
 export function mergeGroupChatRoomEntries(room: Pick<GroupChat, 'roomId' | 'hosted'>, ...logs: GroupMessage[][]) {
-  return mergeGroupChatSyncEntries(
-    ...(room.roomId && groupChatHostedGateway(room) ? [reconcileHostedUserEvents(room.roomId, ...logs)] : logs)
-  )
+  const byKind = new Map<GroupMessageAuthor['kind'] | undefined, GroupMessage[]>()
+
+  for (const entry of logs.flat()) {
+    const kind = entry.from?.kind
+    const entries = byKind.get(kind) || []
+    entries.push(entry)
+    byKind.set(kind, entries)
+  }
+
+  return [...byKind.values()]
+    .flatMap(entries =>
+      mergeGroupChatSyncEntries(
+        room.roomId && groupChatHostedGateway(room) ? reconcileHostedUserEvents(room.roomId, entries) : entries
+      )
+    )
+    .sort(compareGroupChatSyncEntries)
 }
 
 /** Merge two bounded projections without treating an absent room/message as
@@ -619,9 +634,16 @@ export function mergeGroupChatSyncSnapshots(
       ? Math.max(0, Number(writeRevision || 0))
       : Math.max(0, Number(localRoom?.revision || 0))
 
-    const entries = mergeGroupChatSyncEntries(
-      (remoteRoom?.log || []).map(projectedUserEvent),
-      (localRoom?.log || []).map(projectedUserEvent)
+    const keyRoomId = key.startsWith('id:') ? key.slice(3) : undefined
+
+    const entries = mergeGroupChatRoomEntries(
+      {},
+      (remoteRoom?.log || []).map(entry =>
+        projectedGroupMessage(entry, groupChatHostedGateway(remoteRoom) ? remoteRoom?.roomId || keyRoomId : undefined)
+      ),
+      (localRoom?.log || []).map(entry =>
+        projectedGroupMessage(entry, groupChatHostedGateway(localRoom) ? localRoom?.roomId || keyRoomId : undefined)
+      )
     )
 
     // Identity fields (display name, membership, picture) follow the higher
@@ -849,18 +871,21 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     // twin overlays them while retaining the authoritative hosted sequence.
     const logRoom = projectedRoomId && existing.roomId === projectedRoomId ? existing : {}
     const differentRooms = projectedRoomId && existing.roomId && projectedRoomId !== existing.roomId
+    const hostedScope = groupChatHostedGateway(existing) || groupChatHostedGateway(projected)
 
-    // A name fallback cannot make (room, event) IDs global. Scope imported user
-    // hints to their container, and fill missing local scope without replacing
+    // A name fallback cannot make (room, event) IDs global. Scope imported
+    // actors to their container, and fill missing local scope without replacing
     // explicit canonical evidence already retained in the local cache.
     const projectedLog = projected.log.map(entry => {
-      const display = projectedUserEvent(entry)
+      const display = projectedGroupMessage(entry, hostedScope ? projectedRoomId : undefined)
 
-      return differentRooms && display.from?.kind === 'user' ? { ...display, roomId: projectedRoomId! } : display
+      return differentRooms ? { ...display, roomId: projectedRoomId! } : display
     })
 
     const localLog = (existing.log || []).map(entry =>
-      differentRooms && entry.from?.kind === 'user' && !entry.roomId ? { ...entry, roomId: existing.roomId! } : entry
+      existing.roomId && (differentRooms || hostedScope) && !entry.roomId
+        ? { ...entry, roomId: existing.roomId }
+        : entry
     )
 
     const log = assignLegacyThreads(mergeGroupChatRoomEntries(logRoom, projectedLog, localLog))

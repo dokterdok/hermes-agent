@@ -483,3 +483,72 @@ describe('hosted receipt display payload validation', () => {
     }
   })
 })
+
+describe('hosted projection sequence isolation', () => {
+  it.each([false, true])('retains actual unsent text and subsequently accepts genuine replay, cold=%s', async cold => {
+    const loaded = await runtimeFixture(() => {
+      throw new Error('No send expected')
+    }, [])
+
+    const importedMember = canonicalUser(EVENT_ID, 6, {
+      roomId: undefined,
+      from: { kind: 'member', name: 'Legacy bot' },
+      text: 'Imported text'
+    })
+
+    const hint = optimisticUser({ id: EVENT_ID, eventId: EVENT_ID, text: 'Imported text' })
+
+    const projection = {
+      version: 3,
+      rooms: {
+        'id:room-1': {
+          name: 'Board',
+          roomId: 'room-1',
+          hosted: 'install:home',
+          log: [importedMember, hint]
+        }
+      }
+    }
+
+    loaded.chat.$groupChats.set(
+      loaded.chat.mergeRemoteGroupChatSnapshotIntoRooms(projection, loaded.chat.$groupChats.get())
+    )
+
+    if (cold) {
+      const rooms = JSON.parse(JSON.stringify(loaded.chat.durableGroupChatRooms()))
+      loaded.runtime.stopHostedRoomRuntime()
+      loaded.chat.$groupChats.set(rooms)
+      await loaded.runtime.startHostedRoomRuntime(loaded.ctx.storage)
+    }
+
+    loaded.chat.appendGroupChatEntry(
+      'Board',
+      { kind: 'user', name: 'You' },
+      'Actual unsent local command',
+      'work',
+      undefined,
+      CLIENT_ID
+    )
+    const room = loaded.chat.$groupChats.get().Board
+
+    expect(room.log.some(entry => entry.id === CLIENT_ID && entry.text === 'Actual unsent local command')).toBe(true)
+    expect(room.log.every(entry => entry.seq === undefined)).toBe(true)
+    expect(room.hostedSeq).toBe(5)
+    expect(loaded.calls.filter(call => call.method === 'groups.send')).toHaveLength(0)
+
+    const memberReplay = {
+      ...userEvent(EVENT_ID, 6, { text: 'Imported text', thread_id: 'work' }),
+      kind: 'message.member',
+      actor: { kind: 'member', id: 'research', profile: 'research' }
+    }
+
+    loaded.setEvents([memberReplay, userEvent('actual-other-user-event', 7)])
+    await loaded.runtime.refreshHostedRooms()
+    const replayed = loaded.chat.$groupChats.get().Board
+    expect(replayed.hostedSeq).toBe(7)
+    expect(replayed.log.find(entry => entry.id === EVENT_ID && entry.from.kind === 'member')?.seq).toBe(6)
+    expect(replayed.log.find(entry => entry.id === EVENT_ID && entry.from.kind === 'user')?.seq).toBeUndefined()
+    expect(replayed.log.find(entry => entry.id === 'actual-other-user-event')?.seq).toBe(7)
+    expect(replayed.log.some(entry => entry.id === CLIENT_ID)).toBe(true)
+  })
+})
