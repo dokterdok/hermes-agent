@@ -343,7 +343,9 @@ describe('hosted outgoing proof boundaries', () => {
 
     try {
       chat.$groupChats.set({ Board: userRoom([]) })
-      chat.appendGroupChatEntry('Board', { kind: 'user', name: 'You' }, USER_TEXT, 'work', undefined, EVENT_ID)
+      chat.appendGroupChatEntry('Board', { kind: 'user', name: 'You' }, USER_TEXT, 'work', undefined, {
+        entryId: EVENT_ID
+      })
       const room = chat.$groupChats.get().Board
       const mirror = chat.groupChatSyncSnapshot({ Board: room })
       const live = chat.mergeRemoteGroupChatSnapshotIntoRooms(mirror, { Board: room }).Board
@@ -352,6 +354,27 @@ describe('hosted outgoing proof boundaries', () => {
       expect(chat.mergeGroupChatRoomEntries(live, live.log, [canonicalUser(hashed(EVENT_ID))])).toHaveLength(1)
       expect(chat.mergeGroupChatRoomEntries(cold, cold.log, [canonicalUser(hashed(EVENT_ID))])).toHaveLength(2)
       expect(mirror.rooms['id:room-1'].log[0]).not.toHaveProperty('clientEventId')
+    } finally {
+      chat.stopGroupChatServerSync()
+      vi.useRealTimers()
+    }
+  })
+
+  it('preserves the messaging marker and stable key through classic room persistence', async () => {
+    const chat = await import('./group-chat')
+    vi.useFakeTimers()
+
+    try {
+      chat.$groupChats.set({ Board: { ...userRoom([]), hosted: null } })
+      chat.appendGroupChatEntry('Board', { kind: 'user', name: 'You' }, USER_TEXT, 'work', undefined, {
+        entryId: CLIENT_ID,
+        external: true
+      })
+      const stored = JSON.parse(JSON.stringify(chat.durableGroupChatRooms())).Board.log
+
+      expect(stored).toHaveLength(1)
+      expect(stored[0]).toMatchObject({ id: CLIENT_ID, external: true, text: USER_TEXT, thread: 'work' })
+      expect(stored[0]).not.toHaveProperty('clientEventId')
     } finally {
       chat.stopGroupChatServerSync()
       vi.useRealTimers()
