@@ -66,6 +66,7 @@ _TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({
     "attachments",
     "recipient_member_ids",
     "target_member_id",
+    "input_context",
 })
 
 
@@ -197,6 +198,13 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         "prompt": prompt,
         "source_event_seq": source_event_seq,
     }
+    if "input_context" in value:
+        from gateway.hosted_room_task_input import validate_task_input
+
+        try:
+            normalized["input_context"] = validate_task_input(value["input_context"])
+        except ValueError as exc:
+            raise DriverValidationError(str(exc)) from exc
     if "target_member_id" in value:
         normalized["target_member_id"] = _identifier(
             value["target_member_id"], label="target_member_id"
@@ -1703,6 +1711,23 @@ def recover_room(
                 _task_identity_from_row(row) for row in indeterminate_rows
             ],
         }
+
+
+def get_task_for_turn(
+    db_path: Path | str,
+    identity: TaskIdentity,
+) -> dict[str, Any] | None:
+    """Read the immutable admission for a turn, including older payload versions."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            """SELECT * FROM hosted_room_driver_tasks
+               WHERE room_id=? AND thread_id=? AND turn_id=?""",
+            (identity.room_id, identity.thread_id, identity.turn_id),
+        ).fetchone()
+        return _task_from_row(row) if row is not None else None
+    finally:
+        conn.close()
 
 
 def get_task(

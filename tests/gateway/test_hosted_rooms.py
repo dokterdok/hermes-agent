@@ -1169,7 +1169,8 @@ def test_terminal_retry_reconstructs_from_compacted_thread_transcript(tmp_path):
         ).fetchone()[0] == 0
     events = checkpoint.events_for_task(room_id="room-1", source_event_seq=1)
     assert [(event["seq"], event["kind"]) for event in events] == [
-        (1, "message.user")
+        (1, "message.user"),
+        (2, "turn.deferred"),
     ]
 
 

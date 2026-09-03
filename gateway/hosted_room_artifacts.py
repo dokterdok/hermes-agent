@@ -1061,6 +1061,27 @@ class RoomArtifactOutbox:
             raise RoomArtifactError("room artifact failed SHA-256 validation")
         return self._manifest(row), data
 
+    def retirement_complete(self, scope: RoomArtifactScope) -> bool:
+        """Prove exact generation retirement after short-lived ACK rows expire."""
+
+        with self._lock, self._connect() as conn:
+            fence = conn.execute(
+                """SELECT retired_generation FROM hosted_room_output_generation_fences
+                   WHERE lineage_identity=?""",
+                (scope.lineage_json,),
+            ).fetchone()
+            if (
+                fence is None
+                or int(fence["retired_generation"]) < scope.execution_generation
+            ):
+                return False
+            pending = conn.execute(
+                """SELECT 1 FROM hosted_room_output_artifacts WHERE scope_key=?
+                   AND (acknowledged_at IS NULL OR blob_reclaimed_at IS NULL) LIMIT 1""",
+                (scope.key,),
+            ).fetchone()
+        return pending is None
+
     def acknowledge(
         self,
         scope: RoomArtifactScope,

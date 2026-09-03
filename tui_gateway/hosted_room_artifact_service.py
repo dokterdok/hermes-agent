@@ -122,6 +122,8 @@ class HostedRoomArtifactMixin:
                 task_events = self.policy_checkpoint.events_for_task(
                     room_id=str(room["room_id"]),
                     source_event_seq=int(task["payload"]["source_event_seq"]),
+                    input_context=task["payload"].get("input_context"),
+                    task_id=identity.task_id,
                 )
                 if status == "cancelled":
                     self._discard_cancelled_task_artifacts(
@@ -581,6 +583,8 @@ class HostedRoomArtifactMixin:
             normalized = dict(result)
             normalized["attachments"] = existing_attachments
             if outbox is not None:
+                if outbox.retirement_complete(scope):
+                    return normalized, lambda: None
                 return normalized, lambda: outbox.acknowledge(
                     scope,
                     artifact_ids,
