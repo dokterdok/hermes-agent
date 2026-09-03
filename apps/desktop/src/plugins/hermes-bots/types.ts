@@ -195,6 +195,10 @@ export interface GroupChat {
   hostedEpoch?: null | number
   /** Last contiguous hosted-room event sequence applied locally. */
   hostedSeq?: number
+  /** Local groups.state verification; never accepted from or sent to ui_meta. */
+  hostedMembersVerified?: boolean
+  /** A conflicting display mirror requires a fresh authoritative membership read. */
+  hostedMembersNeedRefresh?: boolean
   hostedStatus?: null | {
     canReconnect?: boolean
     canRetry?: boolean
