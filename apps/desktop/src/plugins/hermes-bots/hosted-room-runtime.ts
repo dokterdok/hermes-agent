@@ -43,6 +43,7 @@ import {
   createHostedRoomReplayState,
   deriveFriendlyHostedRoomStatus,
   isHostedRoomContinuityEligible,
+  isHostedRoomReadEligible,
   profileScopedRoomLinkEndpoint,
   replayHostedRoomPages,
   resolveAutonomousRoomPlan
@@ -64,6 +65,17 @@ import {
   surfaceHostedRoomCommandFailure
 } from './hosted-room-command-failures'
 import { createHostedRoomControlEnrollment, type HostedRoomServerState } from './hosted-room-control-enrollment'
+import {
+  classicRoomInventoryReady,
+  hostedReadOnlyState,
+  hostedRoomCapabilityFingerprint,
+  hostedRoomContinuityMode,
+  hostedRoomPollFingerprint,
+  isHostedRoomDisbanded as isDisbanded,
+  readHostedInventoryState,
+  readHostedRoomInventory,
+  unavailableHostedReadOnlyState
+} from './hosted-room-inventory'
 import { revokeInvalidHostedMemberRoutes } from './hosted-room-member-inventory'
 import { hostedMemberDescriptors } from './hosted-room-members'
 import {
@@ -81,9 +93,8 @@ import type { Attachment, GroupChat, GroupMember, GroupMessage, GroupPrompt, Pro
 export { $hostedRoomCapabilities } from './hosted-room-capability-state'
 export { $hostedRoomCleanup } from './hosted-room-cleanup'
 export { describeAutonomousRoomPlan, describeHostedRoomCreationError } from './hosted-room-client'
+export { hostedRoomPollFingerprint } from './hosted-room-inventory'
 
-const HOSTED_ROOM_LIST_PAGE_SIZE = 500
-const HOSTED_ROOM_LIST_MAX_PAGES = 4
 const HOSTED_ROOM_SYNC_INTERVAL_MS = 5000
 const HOSTED_ROOM_UNSUPPORTED_REPROBE_MS = 30_000
 
@@ -93,7 +104,7 @@ const hostedRoomPollCache = new Map<string, string>()
 const hostedRoomPollGenerations = new Map<string, number>()
 const hostedRoomMutationGenerations = new Map<string, number>()
 const hostedRoomLocallyDeleted = new Set<string>()
-const hostedRoomInventoriedConnections = new Set<string>()
+const hostedRoomInventoriedConnections = new Map<string, ReadonlySet<string>>()
 const hostedRoomControlEnrollment = createHostedRoomControlEnrollment(requestHostedConnection)
 let hostedRoomSyncTimer: ReturnType<typeof setTimeout> | null = null
 let hostedRoomSyncRunning = false
@@ -157,22 +168,10 @@ export function groupChatContinuityReady(room: GroupChat | null | undefined) {
   }
 
   if (groupChatHostedGateway(room)) {
-    return !['deleted', 'failed', 'unsupported'].includes(String(room.hostedStatus?.state || ''))
+    return !['deleted', 'failed', 'read-only', 'unsupported'].includes(String(room.hostedStatus?.state || ''))
   }
 
-  if (!room.roomId) {
-    return true
-  }
-
-  const members = Array.isArray(room.members) ? room.members : []
-
-  if (!members.length || members.some(member => member.remoteSource !== true)) {
-    return true
-  }
-
-  const connections = [...new Set(members.map(member => String(member.connectionId || '')).filter(Boolean))]
-
-  return !connections.length || connections.every(connectionId => hostedRoomInventoriedConnections.has(connectionId))
+  return classicRoomInventoryReady(room, hostedRoomInventoriedConnections)
 }
 
 export interface HostedRoomRuntimeHooks {
@@ -289,10 +288,7 @@ async function verifiedHostedAuthorityRoute(routes: ProfileRoute[], authorityId:
         { connectionId }
       )
 
-      $hostedRoomCapabilities.set({
-        ...$hostedRoomCapabilities.get(),
-        [connectionId]: capability
-      })
+      storeHostedCapabilities({ [connectionId]: capability })
 
       if (capability.authorityId === authorityId && isHostedRoomContinuityEligible(capability)) {
         return route
@@ -309,12 +305,6 @@ function sourceLabel(connectionId: string) {
   const source = ($lastRoster.get() || []).find(row => String(row?.connectionId || '') === connectionId)
 
   return String(source?.connectionLabel || botsText().group.thisHost)
-}
-
-function hostedRoomContinuityMode(room: HostedRoomServerState) {
-  return (Array.isArray(room?.members) ? room.members : []).some(raw => record(record(raw)?.target)?.kind === 'peer')
-    ? ('distributed' as const)
-    : ('gateway' as const)
 }
 
 function markHostedConnectionUnavailable(connectionId: string, unsupported = false) {
@@ -336,7 +326,8 @@ function markHostedConnectionUnavailable(connectionId: string, unsupported = fal
             ? botsText().group.hostUpdateNeeded(connectionName)
             : botsText().group.hostedUnavailable(connectionName)
         },
-        continuityIssue: unsupported ? null : botsText().group.hostReconnectToContinue(connectionName)
+        continuityIssue: unsupported ? null : botsText().group.hostReconnectToContinue(connectionName),
+        ...unavailableHostedReadOnlyState(current, $hostedRoomCapabilities.get()[connectionId])
       }),
       {
         sync: false
@@ -421,34 +412,21 @@ function replayMessages(messages: ReturnType<typeof createHostedRoomReplayState>
   }))
 }
 
-function isDisbanded(room: HostedRoomServerState) {
-  return room.disbanded_at !== null && room.disbanded_at !== undefined
-}
+function storeHostedCapabilities(next: Record<string, HostedRoomCapability>, replace = false) {
+  const current = $hostedRoomCapabilities.get()
 
-export function hostedRoomPollFingerprint(value: unknown) {
-  const room = record(value)
-  const revision = Math.max(0, Number(room?.revision || 0))
-  const latestSeq = Math.max(0, Number(room?.latest_seq || 0))
-
-  return `${revision}:${latestSeq}`
-}
-
-function hostedRoomCapabilityFingerprint(capability: HostedRoomCapability | undefined) {
-  if (!capability) {
-    return ''
+  for (const [connectionId, capability] of Object.entries(next)) {
+    if (hostedRoomCapabilityFingerprint(current[connectionId]) !== hostedRoomCapabilityFingerprint(capability)) {
+      invalidateHostedRoomsForConnection(connectionId, capability.authorityId || '')
+    }
   }
 
-  return JSON.stringify([
-    capability.kind,
-    capability.authorityId,
-    capability.persistentProcess,
-    capability.exactPeerGrantRevoke,
-    capability.routeGrantFingerprint,
-    capability.reciprocalControl
-  ])
+  $hostedRoomCapabilities.set(replace ? next : { ...current, ...next })
 }
 
 function invalidateHostedRoomsForConnection(connectionId: string, installationId = '') {
+  hostedRoomInventoriedConnections.delete(connectionId)
+
   for (const room of Object.values($groupChats.get())) {
     if (
       room.hostedConnectionId === connectionId ||
@@ -580,53 +558,42 @@ export async function refreshHostedRooms() {
       return
     }
 
-    $hostedRoomCapabilities.set(capabilities)
+    storeHostedCapabilities(capabilities, true)
 
     for (const route of routes) {
       const connectionId = String(route.connectionId)
       const capability = capabilities[connectionId]
 
-      if (!isHostedRoomContinuityEligible(capability) || !capability.authorityId) {
-        if (capability.kind === 'unsupported') {
-          hostedRoomInventoriedConnections.add(connectionId)
-        }
-
+      if (!isHostedRoomReadEligible(capability)) {
+        hostedRoomInventoriedConnections.delete(connectionId)
         markHostedConnectionUnavailable(connectionId, capability.kind === 'unsupported')
+
+        if (capability.reason === 'old-gateway') {
+          hostedRoomInventoriedConnections.set(connectionId, new Set())
+        }
 
         continue
       }
 
-      const listedRooms: unknown[] = []
-      let listOffset = 0
-      let listComplete = false
+      let inventory: Awaited<ReturnType<typeof readHostedRoomInventory>>
 
       try {
-        for (let page = 0; page < HOSTED_ROOM_LIST_MAX_PAGES; page += 1) {
-          const listed = await requestHostedConnection<Record<string, unknown>>(route, 'groups.list', {
-            include_disbanded: true,
-            limit: HOSTED_ROOM_LIST_PAGE_SIZE,
-            offset: listOffset
-          })
+        inventory = await readHostedRoomInventory(
+          params => requestHostedConnection(route, 'groups.list', params),
+          ids => {
+            const previous = hostedRoomInventoriedConnections.get(connectionId)
 
-          const rows = Array.isArray(listed?.rooms) ? listed.rooms : []
-
-          listedRooms.push(...rows)
-
-          const nextOffset = Number(listed?.next_offset)
-
-          if (!Number.isSafeInteger(nextOffset) || nextOffset <= listOffset) {
-            listComplete = true
-
-            break
+            if (previous && !syncStale()) {
+              hostedRoomInventoriedConnections.set(connectionId, new Set([...previous, ...ids]))
+            }
           }
-
-          listOffset = nextOffset
-        }
+        )
       } catch {
         if (syncStale()) {
           return
         }
 
+        hostedRoomInventoriedConnections.delete(connectionId)
         markHostedConnectionUnavailable(connectionId)
 
         continue
@@ -634,6 +601,24 @@ export async function refreshHostedRooms() {
 
       if (syncStale()) {
         return
+      }
+
+      if (
+        hostedRoomCapabilityFingerprint(capability) !==
+        hostedRoomCapabilityFingerprint($hostedRoomCapabilities.get()[connectionId])
+      ) {
+        hostedRoomInventoriedConnections.delete(connectionId)
+
+        continue
+      }
+
+      const listedRooms = inventory.rooms
+
+      // IDs establish absence independently of each known room's display replay.
+      if (inventory.complete) {
+        hostedRoomInventoriedConnections.set(connectionId, inventory.ids)
+      } else {
+        hostedRoomInventoriedConnections.delete(connectionId)
       }
 
       const disbandedIds = new Set(
@@ -685,12 +670,14 @@ export async function refreshHostedRooms() {
         const pollGeneration = Number(hostedRoomPollGenerations.get(roomId) || 0)
 
         let stateResponse: Record<string, unknown>
+        let serverRoom: Record<string, unknown>
 
         try {
           stateResponse = await requestHostedConnection(route, 'groups.state', {
             room_id: roomId,
             ...(includeDisbanded ? { include_disbanded: true } : {})
           })
+          serverRoom = readHostedInventoryState(stateResponse, roomId)
         } catch {
           if (syncStale()) {
             return
@@ -709,7 +696,20 @@ export async function refreshHostedRooms() {
           continue
         }
 
-        const serverRoom = (record(stateResponse.room) || listedRoom) as unknown as HostedRoomServerState
+        const ownership = applyHostedRoomAuthority(
+          existingEntry?.[1] || { roomId, log: [], watermarks: {} },
+          serverRoom
+        )
+
+        if (
+          ownership.hosted !== serverRoom.authority_gateway_id ||
+          ownership.hostedEpoch !== serverRoom.authority_epoch
+        ) {
+          continue
+        }
+
+        const writable =
+          isHostedRoomContinuityEligible(capability) && capability.authorityId === serverRoom.authority_gateway_id
 
         let existingName = existingEntry?.[0]
         let existing = existingEntry?.[1]
@@ -926,14 +926,20 @@ export async function refreshHostedRooms() {
                   : replay.complete
                     ? null
                     : botsText().group.hostedSyncing,
-              running
+              running,
+              ...(!writable ? hostedReadOnlyState() : {})
             }
           },
           {
             sync: false
           }
         )
-        syncHostedRoomApprovals(localName, serverRoom, memberDescriptors, pendingActions)
+
+        if (writable) {
+          syncHostedRoomApprovals(localName, serverRoom, memberDescriptors, pendingActions)
+        } else {
+          clearHostedRoomApprovalState(localName)
+        }
 
         if (
           replay.complete &&
@@ -982,8 +988,7 @@ export async function refreshHostedRooms() {
         }
       }
 
-      if (listComplete) {
-        hostedRoomInventoriedConnections.add(connectionId)
+      if (inventory.complete) {
         const listedIds = new Set(listedRooms.map(raw => String(record(raw)?.room_id || '')).filter(Boolean))
 
         for (const [name, room] of Object.entries($groupChats.get())) {
@@ -1402,7 +1407,7 @@ export async function probeHostedRoomMembers(members: GroupMember[]): Promise<Ho
     })
   )
 
-  $hostedRoomCapabilities.set({ ...$hostedRoomCapabilities.get(), ...capabilities })
+  storeHostedCapabilities(capabilities)
 
   const route = resolveAutonomousRoomPlan(members, {
     activeConnectionId: activeConnectionId(),
