@@ -288,13 +288,9 @@ class HomeChannel:
 
 def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
     """Persist a logical home without falsely enabling a Relay-fronted adapter."""
-    from hermes_cli.config import load_config, save_config
-    config = load_config()
-    platform_config = _dict_slot(_dict_slot(config, "platforms"), home.platform.value)
-    if enabled_if_new:
-        platform_config.setdefault("enabled", True)
-    platform_config["home_channel"] = home.to_dict()
-    save_config(config)
+    from gateway.config_io import persist_home
+
+    persist_home(home, enabled_if_new=enabled_if_new)
 
 
 @dataclass
