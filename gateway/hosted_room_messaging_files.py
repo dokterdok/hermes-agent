@@ -277,11 +277,28 @@ class FilesMenu:
         ])
         return self.page(message, actions)
 
-    async def room_page(self, detail=None, *, view="room"):
-        from gateway.hosted_room_messaging import format_room_detail
+    async def room_page(self, detail=None, *, view="room", bot_query=None):
+        from gateway.hosted_room_messaging import (
+            format_room_bot_detail,
+            format_room_bot_list,
+            format_room_detail,
+            room_bot_picker_choices,
+        )
 
         current = await self.fresh_room()
-        if detail is None:
+        bot_choices = None
+        if view in {"bots", "bot"}:
+            bot_choices = await asyncio.to_thread(
+                room_bot_picker_choices, self.backend, current,
+            )
+            detail = await asyncio.to_thread(
+                format_room_bot_detail if view == "bot" else format_room_bot_list,
+                self.backend,
+                current,
+                *([bot_query] if view == "bot" else []),
+                room_command=self.command,
+            )
+        elif detail is None:
             detail = await asyncio.to_thread(
                 format_room_detail,
                 self.backend,
@@ -290,13 +307,25 @@ class FilesMenu:
                 show_approvals=self.runner._can_approve_group_chats(self.event),
             )
         actions = await self.room_content_actions(current)
+        if view == "bots":
+            actions[:0] = [
+                (choice["label"], ("bot", choice["value"])) for choice in bot_choices
+            ]
         if view != "room":
             actions.append((text("activity"), ("room", None)))
         if view != "bots" and current.get("members"):
             actions.append((text("bots"), ("bots", None)))
         actions.append((text("back_groups"), ("groups", None)))
-        await self.fresh_room()
-        return self.page(detail, actions)
+        current = await self.fresh_room()
+        if bot_choices is not None:
+            # Room identity alone cannot detect a roster change during disclosure.
+            fresh_choices = await asyncio.to_thread(
+                room_bot_picker_choices, self.backend, current,
+            )
+            verified = await self.fresh_room()
+            if fresh_choices != bot_choices or verified.get("members") != current.get("members"):
+                raise PermissionError("denied")
+        return self.page(detail, actions, full_width=view == "bots")
 
     async def room_content_actions(self, current):
         """Only offer content known to exist; navigation never waits on delivery."""
@@ -752,17 +781,8 @@ class FilesMenu:
                     [(text("show_latest"), ("files", None)),
                      (text("back"), ("files", None))],
                 )
-            if kind == "bots":
-                from gateway.hosted_room_messaging import format_room_bot_list
-
-                current = await self.fresh_room()
-                detail = await asyncio.to_thread(
-                    format_room_bot_list,
-                    self.backend,
-                    current,
-                    room_command=self.command,
-                )
-                return await self.room_page(detail, view="bots")
+            if kind in {"bots", "bot"}:
+                return await self.room_page(view=kind, bot_query=data)
             if kind == "groups":
                 from gateway.hosted_room_messaging import format_room_list, room_picker_choices
 
@@ -794,6 +814,8 @@ class FilesMenu:
         except TimeoutError:
             return text("expired")
         except Exception as exc:
+            if action[0] in {"bots", "bot"}:
+                return _error(exc)
             return self.failure(exc, action)
 
     async def reply_action(self):
