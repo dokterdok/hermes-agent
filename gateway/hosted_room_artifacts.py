@@ -287,7 +287,9 @@ def _lineage_identity_sql(scope_json: str) -> str:
     arguments = ", ".join(
         f"'{key}', json_extract({scope_json}, '$.{key}')" for key in keys
     )
-    return f"json_object({arguments})"
+    return (f"CASE WHEN json_extract({scope_json}, '$.kind')='classic' THEN "
+            f"json_object('export_id',json_extract({scope_json}, '$.export_id'),'kind','classic') "
+            f"ELSE json_object({arguments}) END")
 
 
 def bind_room_artifact_scope(scope: RoomArtifactScope) -> Token:
@@ -448,6 +450,7 @@ class RoomArtifactOutbox:
                 """SELECT artifact_id, blob_name, scope_json
                      FROM hosted_room_output_artifacts
                     WHERE acknowledged_at IS NULL AND created_at<=?
+                      AND json_extract(scope_json, '$.kind') IS NULL
                     ORDER BY created_at, artifact_id
                     LIMIT ?""",
                 (cutoff, ACKNOWLEDGED_ARTIFACT_PRUNE_BATCH),
@@ -619,6 +622,12 @@ class RoomArtifactOutbox:
                 tuple(sorted(trigger_names)),
             )
         }
+        # Existing triggers must learn the non-hosted lineage discriminator once.
+        trigger_sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='hosted_room_output_generation_track_insert'").fetchone()
+        if trigger_sql and "$.kind" not in trigger_sql[0]:
+            for name in trigger_names:
+                conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+            installed_triggers = set()
         if installed_triggers != trigger_names:
             aggregates: dict[str, tuple[RoomArtifactScope, int, int]] = {}
             rows = conn.execute(
@@ -783,6 +792,10 @@ class RoomArtifactOutbox:
         scope: RoomArtifactScope,
     ) -> None:
         """Advance one logical task generation or reject a stale producer."""
+
+        if scope.as_mapping().get("kind") == "classic":
+            from gateway.classic_output_exports import validate_write
+            validate_write(conn, scope)
 
         row = conn.execute(
             """SELECT max_generation, retired_generation
@@ -951,6 +964,10 @@ class RoomArtifactOutbox:
             ).fetchone()
             if existing is not None:
                 return self._manifest(existing)
+            if scope.as_mapping().get("kind") == "classic":
+                from gateway.classic_output_exports import MAX_FILES
+                if conn.execute("SELECT COUNT(*) FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL").fetchone()[0] >= MAX_FILES:
+                    raise RoomArtifactError("Gateway file count quota exceeded; retire existing files first")
             totals = conn.execute(
                 """SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
                    FROM hosted_room_output_artifacts
@@ -1180,7 +1197,12 @@ class RoomArtifactOutbox:
         removed = 0
         for row in rows:
             try:
-                scope = RoomArtifactScope.from_mapping(json.loads(row["scope_json"]))
+                mapping = json.loads(row["scope_json"])
+                if mapping.get("kind") == "classic":
+                    from gateway.classic_output_exports import ClassicExportScope
+                    scope = ClassicExportScope(mapping["export_id"], mapping["execution_generation"])
+                else:
+                    scope = RoomArtifactScope.from_mapping(mapping)
                 removed += self.discard(scope)
             except Exception:
                 continue
@@ -1257,6 +1279,9 @@ class RoomArtifactOutbox:
 
     def discard_superseded(self, scope: RoomArtifactScope) -> int:
         """Purge older execution generations for the same logical task."""
+
+        if scope.as_mapping().get("kind") == "classic":
+            return 0  # Published classic versions belong to the owner until retirement.
 
         scopes_to_discard: dict[str, RoomArtifactScope] = {}
         with self._lock, self._connect() as conn:
