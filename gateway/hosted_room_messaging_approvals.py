@@ -1149,7 +1149,8 @@ def format_approval_picker_title(
         bot = approval_member_label(room, str(action["member_id"]))
         approval = action["approval"]
         description, command = _approval_display_parts(approval)
-        lines.append(f"{index}. **{bot}**: {description or command or 'Command'}")
+        prefix = f"{index}. " if len(pending) > 1 else ""
+        lines.append(f"{prefix}**{bot}**: {description or command or 'Command'}")
         if command and command != description:
             lines.append(f"   Command: {command}")
     lines.extend(["", "Allow only if you recognize this command. **Deny** keeps it from running."])
@@ -1159,11 +1160,19 @@ def format_approval_picker_title(
 def approval_picker_choices(
     room: Mapping[str, Any],
     pending: list[dict[str, Any]],
+    *,
+    selection: int | None = None,
 ) -> list[dict[str, Any]]:
-    if not 1 <= len(pending) <= 4:
+    if not 1 <= len(pending) <= MAX_PENDING_APPROVALS:
+        return []
+    if selection is None and len(pending) > 4:
+        return []
+    if selection is not None and not 1 <= selection <= len(pending):
         return []
     choices: list[dict[str, Any]] = []
     for index, action in enumerate(pending, start=1):
+        if selection is not None and selection != index:
+            continue
         picker_bot = _approval_member_picker_label(
             room,
             str(action["member_id"]),
@@ -1175,8 +1184,9 @@ def approval_picker_choices(
         deny_token = hashlib.sha256(
             f"{index}\0deny\0{coordinates}".encode()
         ).hexdigest()[:20]
-        allow_label = "Allow once" if len(pending) == 1 else f"{index}. Allow once · {picker_bot}"
-        deny_label = "Deny" if len(pending) == 1 else f"{index}. Deny · {picker_bot}"
+        single = len(pending) == 1 or selection is not None
+        allow_label = "Allow once" if single else f"{index}. Allow once · {picker_bot}"
+        deny_label = "Deny" if single else f"{index}. Deny · {picker_bot}"
         choices.extend([
             {
                 "value": f"a={index}.o.{once_token}",
@@ -1201,7 +1211,8 @@ def resolve_approval_picker_choice(
     pending: list[dict[str, Any]],
     value: str,
 ) -> tuple[int, str, str]:
-    choices = approval_picker_choices(room, pending)
+    encoded = re.fullmatch(r"a=([1-9][0-9]?)\.[od]\.[0-9a-f]{20}", str(value or ""))
+    choices = approval_picker_choices(room, pending, selection=int(encoded[1])) if encoded else []
     matched = next(
         (choice for choice in choices if choice["value"] == str(value or "")),
         None,

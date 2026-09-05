@@ -335,10 +335,10 @@ class FilesMenu:
                 raise PermissionError("denied")
         return self.page(detail, actions, full_width=view == "bots")
 
-    async def approval_page(self):
+    async def approval_page(self, position=0):
         from gateway.group_home_consent import _disclosure_stamp
         from gateway.hosted_room_messaging_approvals import (
-            approval_picker_choices, format_approval_picker_title, format_pending_approvals,
+            approval_picker_choices, format_approval_picker_title,
             pending_approvals_for_room,
         )
 
@@ -348,22 +348,27 @@ class FilesMenu:
         stamp = _disclosure_stamp(self.runner, self.event)
         pending = await asyncio.to_thread(pending_approvals_for_room, self.backend, current)
         await self.fresh_room()
-        choices = approval_picker_choices(current, pending)
+        position = min(max(0, position), max(0, len(pending) - 1))
+        choices = approval_picker_choices(current, pending, selection=position + 1)
         self.approval_callback = self.runner._group_chat_approval_callback(
             self.event, self.backend, self.reference, disclosure_stamp=stamp,
         )
         if choices:
-            title = format_approval_picker_title(current, pending)
+            title = format_approval_picker_title(current, [pending[position]])
+            if len(pending) > 1:
+                title = text("approval_position", current=position + 1, total=len(pending)) + "\n" + title
         else:
-            title = await asyncio.to_thread(
-                format_pending_approvals, self.backend, current,
-                room_reference=self.reference, room_command=self.command,
-            ) or text("no_approvals")
-            await self.fresh_room()
-        return self.page(title, [
-            *[(choice["label"], ("approval_decision", choice["value"])) for choice in choices],
-            (text("group_chat"), ("room", None)),
-        ], full_width=True)
+            title = text("no_approvals")
+        actions = [(choice["label"], ("approval_decision", choice["value"])) for choice in choices]
+        if position:
+            actions.append((text("approval_previous"), ("approvals", position - 1)))
+        if position + 1 < len(pending):
+            actions.append((text("approval_next"), ("approvals", position + 1)))
+        actions.append((text("group_chat"), ("room", None)))
+        # Never use the general page helper's clipping for an actionable command.
+        if len(title) > 2048:
+            raise ValueError("Approval details exceed the page limit")
+        return self.page(title, actions, full_width=True)
 
     async def room_content_actions(self, current):
         """Only offer content known to exist; navigation never waits on delivery."""
@@ -790,7 +795,7 @@ class FilesMenu:
                 return text("rate")
             kind, data = action
             if kind == "approvals":
-                return await self.approval_page()
+                return await self.approval_page(data or 0)
             if kind == "approval_decision":
                 await self.fresh_room()
                 if self.approval_callback is None:
