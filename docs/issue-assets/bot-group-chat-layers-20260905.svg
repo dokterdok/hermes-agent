@@ -13,7 +13,8 @@
 <text x="385" y="472" font-size="31" fill="#7167a0" font-weight="700">5</text><text x="433" y="472" font-size="34" fill="#202a30" font-weight="700">Files and Bot-to-Bot</text>
 <text x="433" y="515" font-size="34" fill="#202a30" font-weight="700">handoff</text>
 <text x="385" y="567" font-size="29" fill="#53616a" font-weight="400">Share, find and retrieve real files.</text>
-<text x="385" y="631" font-size="27" fill="#52668e" font-weight="400">#98072 · #99159 · In review</text>
+<text x="385" y="609" font-size="27" fill="#52668e" font-weight="400">#98072 · #99159 · In review</text>
+<text x="385" y="646" font-size="24" fill="#52668e" font-weight="400">Files UI + classic: fork drafts #1 / #2</text>
 <rect x="915" y="418" width="535" height="254" rx="8" fill="#fff" stroke="#d9e2e7" stroke-width="2"/><rect x="915" y="418" width="8" height="254" rx="3" fill="#267b8b"/>
 <text x="950" y="472" font-size="31" fill="#267b8b" font-weight="700">6</text><text x="998" y="472" font-size="34" fill="#202a30" font-weight="700">Messaging control</text>
 <text x="950" y="530" font-size="29" fill="#53616a" font-weight="400">Check in, send, approve, get files,</text>
@@ -26,6 +27,6 @@
 <text x="100" y="1640" font-size="30" fill="#202a30" font-weight="700">Next milestone: survive loss of the coordinating host</text>
 <text x="100" y="1687" font-size="28" fill="#53616a" font-weight="400">Planned, not enabled here. Today, that host must stay available for work to continue.</text>
 <text x="100" y="1765" font-size="28" fill="#53616a" font-weight="400">#97681 has the current source drafts, test evidence and remaining acceptance gates.</text>
-<text x="100" y="1810" font-size="27" fill="#53616a" font-weight="400">The Files browser and classic file-export additions are separate drafts in the contributor fork.</text>
+<text x="100" y="1810" font-size="27" fill="#53616a" font-weight="400">Contributor fork: #1 Desktop Files; #2 classic Bot file sharing. Both are linked in #97681.</text>
 </g>
 </svg>
