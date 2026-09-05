@@ -35,7 +35,9 @@ def retire_hosted_session(server, sid: str, session: dict, *, turn_finished: boo
 
 
 def _retire_locked(server, sid: str, session: dict, *, turn_finished: bool) -> bool:
-    with server._sessions_lock, session.setdefault("agent_build_lock", threading.Lock()), session["history_lock"]:
+    # Activation takes history before the registry; never hold the global
+    # registry while waiting for this session's locks in the opposite order.
+    with session.setdefault("agent_build_lock", threading.Lock()), session["history_lock"], server._sessions_lock:
         if server._sessions.get(sid) is not session or session.get("_closing"):
             return False
         if session.get("source") != "bot_room" or session.get("running"):
@@ -61,6 +63,9 @@ def _retire_locked(server, sid: str, session: dict, *, turn_finished: bool) -> b
         transport = session.get("transport")
         if transport is not server._stdio_transport and not server._transport_is_dead(transport):
             return False  # An attached viewer keeps its live runtime and ownership.
+        if any(viewer is not server._stdio_transport and not server._transport_is_dead(viewer)
+               for viewer in (session.get("viewers") or {})):
+            return False
         from tools.approval import get_pending_gateway_approval
         if get_pending_gateway_approval(str(session.get("session_key") or "")):
             return False
@@ -104,7 +109,7 @@ def _retire_locked(server, sid: str, session: dict, *, turn_finished: bool) -> b
             worker.close()
         from tools.approval import unregister_gateway_notify
         unregister_gateway_notify(session["session_key"])
-        with server._sessions_lock, session["history_lock"]:
+        with session["history_lock"], server._sessions_lock:
             if not server._release_active_session_slot(session):
                 raise RuntimeError("hosted session lease could not be released")
             session["_finalized"] = True
@@ -146,7 +151,15 @@ def resume_hosted_session(server, rid, params: dict) -> dict:
             if session.get("_closing"):
                 return server._err(rid, 4090, "Hosted session retirement is still pending")
             if session.get("active_session_lease") is not None:
-                return server._resume_reuse_live(ctx, sid, session)
+                # Internal task preparation must not rebind an attached frontend
+                # to stdio. The driver only needs the already-owned live identity.
+                with server._session_resume_lock, session["history_lock"]:
+                    if server._sessions.get(sid) is not session or session.get("_closing"):
+                        return server._err(rid, 4090, "Hosted session retirement is still pending")
+                    if session.get("_client_gone_interrupt_requested"):
+                        return server._err(rid, 4009, "Hosted session disconnect is still settling")
+                    server._cancel_ws_orphan_reap(sid)
+                    return server._ok(rid, {"session_id": sid, "stored_session_id": session["session_key"]})
             if not retire_hosted_session(server, sid, session):
                 return server._err(rid, 4090, "Hosted session is not ready for ownership handoff")
         ctx.profile_resume_cwd = str(ctx.found.get("cwd") or "") or server._profile_configured_cwd(ctx.profile_home)
@@ -182,4 +195,4 @@ def resume_hosted_session(server, rid, params: dict) -> dict:
         if lease is not None:
             lease.release()
         if ctx.owns_db and ctx.db is not None:
-            ctx.db.close()
+            server._release_db(ctx.db)
