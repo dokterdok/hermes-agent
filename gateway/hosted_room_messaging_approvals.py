@@ -1143,7 +1143,8 @@ def format_approval_picker_title(
     room: Mapping[str, Any],
     pending: list[dict[str, Any]],
 ) -> str:
-    lines = ["⚠️ **Approval needed**"]
+    name = _display_text(room.get("name"), limit=72)
+    lines = [f"⚠️ **Approval needed{f' · {name}' if name else ''}**", ""]
     for index, action in enumerate(pending, start=1):
         bot = approval_member_label(room, str(action["member_id"]))
         approval = action["approval"]
@@ -1151,7 +1152,7 @@ def format_approval_picker_title(
         lines.append(f"{index}. **{bot}**: {description or command or 'Command'}")
         if command and command != description:
             lines.append(f"   Command: {command}")
-    lines.append("Choose **Approve once** or **Deny** below.")
+    lines.extend(["", "Allow only if you recognize this command. **Deny** keeps it from running."])
     return "\n".join(lines)
 
 
@@ -1177,8 +1178,8 @@ def approval_picker_choices(
         choices.extend([
             {
                 "value": f"a={index}.o.{once_token}",
-                "label": f"✓ {index}. Approve once · {picker_bot}",
-                "description": "Approve this command one time",
+                "label": f"✓ {index}. Allow once · {picker_bot}",
+                "description": "Allow this command one time",
                 "full_width": True,
                 "is_current": False,
             },

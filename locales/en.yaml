@@ -61,6 +61,8 @@ gateway:
     full_reply: "Get full reply"
     activity: "View recent activity"
     bots: "View Bots"
+    approvals: "Review approvals"
+    no_approvals: "No decisions are waiting for you."
     back_groups: "Back to Group Chats"
     newer: "Newer"
     older: "Older"

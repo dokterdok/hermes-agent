@@ -203,6 +203,7 @@ class FilesMenu:
         self.actions = {}
         self.revision = 0
         self.long_codes = False
+        self.approval_callback = None
         self.handle = secrets.token_hex(8)
 
     def check(self):
@@ -238,7 +239,7 @@ class FilesMenu:
         choices = []
         for caption, action in actions:
             if self.event.source.platform.value == "telegram":
-                icon = {"files": "📎", "bots": "🤖"}.get(action[0])
+                icon = {"files": "📎", "bots": "🤖", "approvals": "⚠️"}.get(action[0])
                 if action[0] == "room":
                     icon = "🕘" if caption == text("activity") else "‹"
                 if action[0] == "groups":
@@ -307,6 +308,13 @@ class FilesMenu:
                 show_approvals=self.runner._can_approve_group_chats(self.event),
             )
         actions = await self.room_content_actions(current)
+        if self.runner._can_approve_group_chats(self.event):
+            from gateway.hosted_room_messaging_approvals import pending_approvals_for_room
+
+            pending = await asyncio.to_thread(pending_approvals_for_room, self.backend, current)
+            await self.fresh_room()
+            if pending:
+                actions.insert(0, (text("approvals"), ("approvals", None)))
         if view == "bots":
             actions[:0] = [
                 (choice["label"], ("bot", choice["value"])) for choice in bot_choices
@@ -326,6 +334,36 @@ class FilesMenu:
             if fresh_choices != bot_choices or verified.get("members") != current.get("members"):
                 raise PermissionError("denied")
         return self.page(detail, actions, full_width=view == "bots")
+
+    async def approval_page(self):
+        from gateway.group_home_consent import _disclosure_stamp
+        from gateway.hosted_room_messaging_approvals import (
+            approval_picker_choices, format_approval_picker_title, format_pending_approvals,
+            pending_approvals_for_room,
+        )
+
+        current = await self.fresh_room()
+        if not self.runner._can_approve_group_chats(self.event):
+            return self.runner._group_chat_approval_denial()
+        stamp = _disclosure_stamp(self.runner, self.event)
+        pending = await asyncio.to_thread(pending_approvals_for_room, self.backend, current)
+        await self.fresh_room()
+        choices = approval_picker_choices(current, pending)
+        self.approval_callback = self.runner._group_chat_approval_callback(
+            self.event, self.backend, self.reference, disclosure_stamp=stamp,
+        )
+        if choices:
+            title = format_approval_picker_title(current, pending)
+        else:
+            title = await asyncio.to_thread(
+                format_pending_approvals, self.backend, current,
+                room_reference=self.reference, room_command=self.command,
+            ) or text("no_approvals")
+            await self.fresh_room()
+        return self.page(title, [
+            *[(choice["label"], ("approval_decision", choice["value"])) for choice in choices],
+            (text("group_chat"), ("room", None)),
+        ], full_width=True)
 
     async def room_content_actions(self, current):
         """Only offer content known to exist; navigation never waits on delivery."""
@@ -751,6 +789,15 @@ class FilesMenu:
             if not _rate(self.runner, self.source_key, "read"):
                 return text("rate")
             kind, data = action
+            if kind == "approvals":
+                return await self.approval_page()
+            if kind == "approval_decision":
+                await self.fresh_room()
+                if self.approval_callback is None:
+                    return text("expired")
+                result = await self.approval_callback(chat_id, data)
+                await self.fresh_room()
+                return self.page(result, [(text("group_chat"), ("room", None))])
             if kind == "file":
                 return await self.prepare_file(*data)
             if kind == "reply":
