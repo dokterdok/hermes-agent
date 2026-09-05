@@ -168,7 +168,33 @@ type BotsMessages = {
     composerPlaceholder: string
     attachHint: string
     downloadAttachment: string
+    attachedFile: string
+    downloadFile: (name: string) => string
     attachmentDownloadFailed: string
+    sharedFiles: string
+    sharedFilesDescription: (group: string) => string
+    searchSharedFiles: string
+    sharedFilesLoading: string
+    sharedFilesError: string
+    sharedFilesExpired: string
+    sharedFilesOffline: string
+    sharedFilesUnavailable: string
+    sharedFilesEmpty: string
+    sharedFilesPageEmpty: string
+    sharedFilesNoResults: string
+    sharedFilesRetry: string
+    olderFiles: string
+    newerFiles: string
+    returnToLatest: string
+    showLatest: string
+    filesClassicDescription: string
+    filesReconnected: string
+    filesClearSearch: string
+    filesRefresh: string
+    fileGone: string
+    fileVerificationFailed: string
+    fileTimeout: string
+    filesAccessUnavailable: string
     newThread: string
     reply: string
     replyInThread: string
@@ -189,6 +215,7 @@ type BotsMessages = {
     pictureGenerationFailed: string
     createAction: (count: number) => string
     created: (name: string, count: number) => string
+    detailsSyncPending: string
     createFailed: string
     creating: string
     pickAtLeastTwo: string
@@ -440,7 +467,7 @@ const en: BotsMessages = {
     manageDesc: 'A Bot can join more than one Group Chat.',
     manageTitle: 'Manage groups',
     settingsTitle: 'Group settings',
-    settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
+    settingsDesc: 'Change the group name or picture. Members and history stay the same.',
     nameLabel: 'Group name',
     searchToAdd: 'Search bots to add',
     searchToAddPlaceholder: 'Search bots to add…',
@@ -448,10 +475,36 @@ const en: BotsMessages = {
     disbandTitle: 'Disband group chat?',
     deleteTitle: 'Delete group chat?',
     deleteAction: 'Delete',
-    composerPlaceholder: 'Say something — every bot in this group hears the room.',
-    attachHint: 'Attach files — every responding bot sees them',
+    composerPlaceholder: 'Message the group…',
+    attachHint: 'Share files with this Group Chat',
     downloadAttachment: 'Download attachment',
+    attachedFile: 'attached file',
+    downloadFile: name => `Download ${name}`,
     attachmentDownloadFailed: 'This attachment could not be downloaded.',
+    sharedFiles: 'Files',
+    sharedFilesDescription: group => `Files shared in ${group}.`,
+    searchSharedFiles: 'Search files',
+    sharedFilesLoading: 'Loading files',
+    sharedFilesError: 'Files could not be loaded.',
+    sharedFilesExpired: 'Refresh the file list to continue.',
+    sharedFilesOffline: 'Files are temporarily unavailable.',
+    sharedFilesUnavailable: "File browsing isn't available for this Group Chat yet.",
+    sharedFilesEmpty: 'No files shared yet.',
+    sharedFilesPageEmpty: 'No files on this page',
+    sharedFilesNoResults: 'No matching files.',
+    sharedFilesRetry: 'Retry',
+    olderFiles: 'Older',
+    newerFiles: 'Newer',
+    returnToLatest: 'Show latest',
+    showLatest: 'Show latest',
+    filesClassicDescription: 'Files available on this Desktop.',
+    filesReconnected: 'Reconnected',
+    filesClearSearch: 'Clear search',
+    filesRefresh: 'Refresh list',
+    fileGone: 'This file is no longer available.',
+    fileVerificationFailed: "This file couldn't be verified. Nothing was downloaded.",
+    fileTimeout: 'The download timed out.',
+    filesAccessUnavailable: 'Files are unavailable for this Group Chat.',
     newThread: 'New Thread',
     reply: 'Reply',
     replyInThread: 'Reply in thread',
@@ -461,10 +514,10 @@ const en: BotsMessages = {
     collapseThreadLabel: 'Collapse this thread',
     activity: 'Activity',
     noActivityYet: 'No activity in this turn yet.',
-    showActivity: 'Show room activity',
-    hideActivity: 'Hide room activity',
+    showActivity: 'Show group activity',
+    hideActivity: 'Hide group activity',
     stop: 'Stop',
-    stopHint: 'Stop this run — interrupts the member on turn and holds the rest',
+    stopHint: 'Stop the current Bot and pause the remaining turns',
     allHeldStatus: count => `All ${count} bots are paused`,
     heldMembersStatus: members => `Paused: ${members}`,
     holdReleaseHint: 'Mention a paused bot or send @all resume to release them.',
@@ -472,13 +525,14 @@ const en: BotsMessages = {
     pictureGenerationFailed: 'Group picture generation failed',
     createAction: count => `Create Group${count ? ` (${count})` : ''}`,
     created: (name, count) => `“${name}” created with ${count} bots`,
+    detailsSyncPending: 'Some Bot details haven’t synced to your other devices.',
     createFailed: 'Could not create the Group Chat. Try again.',
     creating: 'Creating…',
     pickAtLeastTwo: 'Pick at least 2 bots',
     thisHost: 'this device',
     hostedFallbackToDesktop: host => `${host} can't keep this Group Chat running yet. Keep Desktop open.`,
     hostedAttachmentMemberUnavailable: members =>
-      `Files cannot reach ${members || 'every Bot'} right now. Check the affected gateway connection and try again.`,
+      `Files cannot reach ${members || 'every Bot'} right now. Check that their devices are connected, then try again.`,
     hostedSending: 'Sending…',
     hostedWorking: 'Working',
     hostedQueued: host => `Waiting for ${host}`,
@@ -487,12 +541,12 @@ const en: BotsMessages = {
     hostedSendFailed: host => `Not sent. Reconnect ${host} and retry.`,
     hostedStopping: 'Stopping…',
     hostedStopped: 'Stopped',
-    hostedStopQueued: host => `Stop requested. It will stop when ${host} is online.`,
-    hostedStopQueuedHint: host => `It will stop when ${host} is online.`,
+    hostedStopQueued: host => `Stop request saved. Waiting for ${host} to reconnect.`,
+    hostedStopQueuedHint: host => `Waiting for ${host} to receive the stop request.`,
     hostedUnavailable: host => `${host} is offline`,
     hostedReconnectToStop: host => `Reconnect ${host} to stop this Group Chat.`,
     hostedDeleted: 'This Group Chat was deleted.',
-    hostedDeleteLocally: 'Delete it here to remove its local membership and history.',
+    hostedDeleteLocally: 'Delete this Desktop’s copy of the group and its history.',
     hostedMembersFixed: 'Members cannot change while this Group Chat keeps running without Desktop.',
     hostedRenameQueued: host => `Rename saved. It will sync when ${host} is online.`,
     hostedRenameFailed: host => `Could not rename. Reconnect ${host} and retry.`,
@@ -502,17 +556,17 @@ const en: BotsMessages = {
     hostedReconnectToDelete: host => `Reconnect ${host} to delete this Group Chat.`,
     hostedSyncing: 'Syncing recent activity…',
     continuityOnTitle: 'Works without Desktop',
-    continuityOnDesc: 'Bots can continue while Desktop is closed.',
+    continuityOnDesc: 'Bots can work after Desktop closes. The device running the group must stay online.',
     continuityDesktopTitle: 'Keep Desktop open',
-    continuityDesktopDesc: 'Bots pause when Desktop closes.',
+    continuityDesktopDesc: 'Keep this Desktop open for the group to continue.',
     continuityReadOnlyTitle: 'Read-only history',
-    continuityReadOnlyDesc: 'This gateway can show this Group Chat, but cannot keep it running.',
+    continuityReadOnlyDesc: 'You can read this group’s history here, but cannot send messages from this connection.',
     retryTitle: 'Retry uncertain work?',
     retryDesc: 'The earlier attempt may have finished. Retrying could repeat actions.',
     retryAction: 'Retry',
     reconnectAction: 'Reconnect',
     reconnectingAction: 'Connecting…',
-    reconnectFailed: 'Could not reconnect this Bot. Check its gateway and try again.',
+    reconnectFailed: 'Could not reconnect this Bot. Check that its device is online, then try again.',
     botsNeedOneHost: 'The selected Bots cannot continue when Desktop is closed.',
     aBot: 'A bot',
     memberUnavailable: member => `${member} is unavailable.`,
@@ -524,7 +578,7 @@ const en: BotsMessages = {
     hostedQueueRepaired: count =>
       `${count} damaged pending Group Chat ${count === 1 ? 'change was' : 'changes were'} removed; the rest were kept.`,
     hostedApprovalFailed: 'This approval is no longer available. Refresh the Group Chat and try again.',
-    hostedApprovalRetry: 'Could not send this approval. Check the gateway connection and try again.',
+    hostedApprovalRetry: 'Could not send this approval. Check the connection and try again.',
     hostRejectedCommand: 'The connected device rejected this action.',
     nameTaken: name => `A group named “${name}” already exists.`,
     memberCount: count => `${count} bots`,
@@ -729,7 +783,33 @@ const ja: BotsMessages = {
     composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
     attachHint: 'ファイルを添付 — 応答するすべてのボットが見ます',
     downloadAttachment: '添付ファイルをダウンロード',
+    attachedFile: '添付ファイル',
+    downloadFile: name => `${name}をダウンロード`,
     attachmentDownloadFailed: 'この添付ファイルをダウンロードできませんでした。',
+    sharedFiles: 'ファイル',
+    sharedFilesDescription: group => `${group}で共有されたファイルです。`,
+    searchSharedFiles: 'ファイルを検索',
+    sharedFilesLoading: 'ファイルを読み込み中',
+    sharedFilesError: 'ファイルを読み込めませんでした。',
+    sharedFilesExpired: 'このファイル一覧の有効期限が切れました。',
+    sharedFilesOffline: 'ファイルを一時的に利用できません。',
+    sharedFilesUnavailable: 'このグループチャットではまだファイルを一覧表示できません。',
+    sharedFilesEmpty: '共有されたファイルはまだありません。',
+    sharedFilesPageEmpty: 'このページにファイルはありません',
+    sharedFilesNoResults: '一致するファイルはありません',
+    sharedFilesRetry: '再試行',
+    olderFiles: '古いファイル',
+    newerFiles: '新しいファイル',
+    returnToLatest: '最新に戻る',
+    showLatest: '最新を表示',
+    filesClassicDescription: 'このDesktopで受け取ったファイルです。',
+    filesReconnected: '再接続しました',
+    filesClearSearch: '検索をクリア',
+    filesRefresh: '一覧を更新',
+    fileGone: 'このファイルは利用できなくなりました。',
+    fileVerificationFailed: 'このファイルを検証できませんでした。何もダウンロードされていません。',
+    fileTimeout: 'ダウンロードがタイムアウトしました。',
+    filesAccessUnavailable: 'このグループチャットのファイルを利用できません。',
     newThread: '新しいスレッド',
     reply: '返信',
     replyInThread: 'スレッドで返信',
@@ -750,6 +830,7 @@ const ja: BotsMessages = {
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     createAction: count => `グループを作成${count ? ` (${count})` : ''}`,
     created: (name, count) => `「${name}」を${count}体のボットで作成しました`,
+    detailsSyncPending: '一部のボット情報が他のデバイスにまだ同期されていません。',
     createFailed: 'グループチャットを作成できませんでした。もう一度お試しください。',
     creating: '作成中…',
     pickAtLeastTwo: '2体以上のボットを選択してください',
@@ -1003,7 +1084,33 @@ const zh: BotsMessages = {
     composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
     downloadAttachment: '下载附件',
+    attachedFile: '附件',
+    downloadFile: name => `下载 ${name}`,
     attachmentDownloadFailed: '无法下载此附件。',
+    sharedFiles: '文件',
+    sharedFilesDescription: group => `${group} 中共享的文件。`,
+    searchSharedFiles: '搜索文件',
+    sharedFilesLoading: '正在加载文件',
+    sharedFilesError: '无法加载文件。',
+    sharedFilesExpired: '此文件列表已过期。',
+    sharedFilesOffline: '文件暂时不可用。',
+    sharedFilesUnavailable: '此群聊尚不支持文件浏览。',
+    sharedFilesEmpty: '尚未共享任何文件。',
+    sharedFilesPageEmpty: '此页没有文件',
+    sharedFilesNoResults: '没有匹配的文件',
+    sharedFilesRetry: '重试',
+    olderFiles: '较早的文件',
+    newerFiles: '较新的文件',
+    returnToLatest: '返回最新内容',
+    showLatest: '显示最新内容',
+    filesClassicDescription: '此 Desktop 已接收的文件。',
+    filesReconnected: '已重新连接',
+    filesClearSearch: '清除搜索',
+    filesRefresh: '刷新列表',
+    fileGone: '此文件已不可用。',
+    fileVerificationFailed: '无法验证此文件。未下载任何内容。',
+    fileTimeout: '下载超时。',
+    filesAccessUnavailable: '此群聊的文件不可用。',
     newThread: '新帖子',
     reply: '回复',
     replyInThread: '在帖子中回复',
@@ -1024,6 +1131,7 @@ const zh: BotsMessages = {
     pictureGenerationFailed: '群组图片生成失败',
     createAction: count => `创建群聊${count ? ` (${count})` : ''}`,
     created: (name, count) => `已创建“${name}”，包含 ${count} 个机器人`,
+    detailsSyncPending: '部分机器人详情尚未同步到您的其他设备。',
     createFailed: '无法创建群聊。请重试。',
     creating: '正在创建…',
     pickAtLeastTwo: '请至少选择 2 个机器人',
@@ -1276,7 +1384,33 @@ const zhHant: BotsMessages = {
     composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
     downloadAttachment: '下載附件',
+    attachedFile: '附件',
+    downloadFile: name => `下載 ${name}`,
     attachmentDownloadFailed: '無法下載此附件。',
+    sharedFiles: '檔案',
+    sharedFilesDescription: group => `${group} 中共享的檔案。`,
+    searchSharedFiles: '搜尋檔案',
+    sharedFilesLoading: '正在載入檔案',
+    sharedFilesError: '無法載入檔案。',
+    sharedFilesExpired: '此檔案清單已過期。',
+    sharedFilesOffline: '檔案暫時無法使用。',
+    sharedFilesUnavailable: '此群組聊天尚未支援檔案瀏覽。',
+    sharedFilesEmpty: '尚未共享任何檔案。',
+    sharedFilesPageEmpty: '此頁沒有檔案',
+    sharedFilesNoResults: '找不到相符的檔案',
+    sharedFilesRetry: '重試',
+    olderFiles: '較舊的檔案',
+    newerFiles: '較新的檔案',
+    returnToLatest: '返回最新內容',
+    showLatest: '顯示最新內容',
+    filesClassicDescription: '此 Desktop 已接收的檔案。',
+    filesReconnected: '已重新連線',
+    filesClearSearch: '清除搜尋',
+    filesRefresh: '重新整理清單',
+    fileGone: '此檔案已無法使用。',
+    fileVerificationFailed: '無法驗證此檔案。未下載任何內容。',
+    fileTimeout: '下載逾時。',
+    filesAccessUnavailable: '此群組聊天的檔案無法使用。',
     newThread: '新討論串',
     reply: '回覆',
     replyInThread: '在討論串中回覆',
@@ -1297,6 +1431,7 @@ const zhHant: BotsMessages = {
     pictureGenerationFailed: '群組圖片產生失敗',
     createAction: count => `建立群組聊天${count ? ` (${count})` : ''}`,
     created: (name, count) => `已建立「${name}」，包含 ${count} 個機器人`,
+    detailsSyncPending: '部分機器人詳細資料尚未同步到您的其他裝置。',
     createFailed: '無法建立群組聊天。請再試一次。',
     creating: '正在建立…',
     pickAtLeastTwo: '請至少選擇 2 個機器人',
@@ -1429,7 +1564,74 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = {
+  en,
+  ja,
+  zh,
+  'zh-hant': zhHant,
+  ar: {
+    group: {
+      attachedFile: 'ملف مرفق',
+      downloadFile: (name: string) => `تنزيل ${name}`,
+      attachmentDownloadFailed: 'تعذر تنزيل هذا المرفق.',
+      sharedFiles: 'الملفات',
+      sharedFilesDescription: (group: string) => `الملفات المشتركة في ${group}.`,
+      searchSharedFiles: 'البحث في الملفات',
+      sharedFilesLoading: 'جارٍ تحميل الملفات',
+      sharedFilesError: 'تعذر تحميل الملفات.',
+      sharedFilesExpired: 'انتهت صلاحية قائمة الملفات هذه.',
+      sharedFilesOffline: 'الملفات غير متاحة مؤقتاً.',
+      sharedFilesUnavailable: 'تصفح الملفات غير متاح لهذه المحادثة الجماعية بعد.',
+      sharedFilesEmpty: 'لم تتم مشاركة أي ملفات بعد.',
+      sharedFilesPageEmpty: 'لا توجد ملفات في هذه الصفحة',
+      sharedFilesNoResults: 'لا توجد ملفات مطابقة',
+      sharedFilesRetry: 'إعادة المحاولة',
+      olderFiles: 'ملفات أقدم',
+      newerFiles: 'ملفات أحدث',
+      returnToLatest: 'العودة إلى الأحدث',
+      showLatest: 'عرض الأحدث',
+      filesClassicDescription: 'الملفات التي تلقاها هذا Desktop.',
+      filesReconnected: 'تمت إعادة الاتصال',
+      filesClearSearch: 'مسح البحث',
+      filesRefresh: 'تحديث القائمة',
+      fileGone: 'لم يعد هذا الملف متاحاً.',
+      fileVerificationFailed: 'تعذر التحقق من هذا الملف. لم يتم تنزيل أي شيء.',
+      fileTimeout: 'انتهت مهلة التنزيل.',
+      filesAccessUnavailable: 'الملفات غير متاحة لهذه المحادثة الجماعية.'
+    }
+  },
+  ru: {
+    group: {
+      attachedFile: 'вложенный файл',
+      downloadFile: (name: string) => `Скачать ${name}`,
+      attachmentDownloadFailed: 'Не удалось скачать это вложение.',
+      sharedFiles: 'Файлы',
+      sharedFilesDescription: (group: string) => `Файлы, опубликованные в ${group}.`,
+      searchSharedFiles: 'Поиск файлов',
+      sharedFilesLoading: 'Загрузка файлов',
+      sharedFilesError: 'Не удалось загрузить файлы.',
+      sharedFilesExpired: 'Срок действия этого списка файлов истёк.',
+      sharedFilesOffline: 'Файлы временно недоступны.',
+      sharedFilesUnavailable: 'Просмотр файлов пока недоступен для этого группового чата.',
+      sharedFilesEmpty: 'Файлами ещё не делились.',
+      sharedFilesPageEmpty: 'На этой странице нет файлов',
+      sharedFilesNoResults: 'Подходящие файлы не найдены',
+      sharedFilesRetry: 'Повторить',
+      olderFiles: 'Более старые файлы',
+      newerFiles: 'Более новые файлы',
+      returnToLatest: 'Вернуться к последним',
+      showLatest: 'Показать последние',
+      filesClassicDescription: 'Файлы, полученные этим Desktop.',
+      filesReconnected: 'Соединение восстановлено',
+      filesClearSearch: 'Очистить поиск',
+      filesRefresh: 'Обновить список',
+      fileGone: 'Этот файл больше недоступен.',
+      fileVerificationFailed: 'Не удалось проверить этот файл. Ничего не скачано.',
+      fileTimeout: 'Время ожидания скачивания истекло.',
+      filesAccessUnavailable: 'Файлы недоступны для этого группового чата.'
+    }
+  }
+}
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …).

@@ -17,6 +17,76 @@ const image = (data: string, name = 'proof.png'): Attachment => ({
 })
 
 describe('hosted Group Chat attachment client', () => {
+  it.each([6_000_000, 9_000_000, 15_000_000])(
+    'accepts a valid %i-byte receipt without regex stack growth',
+    async size => {
+      const attachment = {
+        attachmentId: 'att_0123456789abcdef0123456789abcdef',
+        kind: 'file' as const,
+        mime: 'text/plain',
+        name: 'large.txt',
+        size
+      }
+
+      const content = 'YWFh'.repeat(size / 3)
+
+      const request = vi.fn(async () => ({
+        attachment: {
+          attachment_id: attachment.attachmentId,
+          kind: attachment.kind,
+          mime: attachment.mime,
+          name: attachment.name,
+          size
+        },
+        content_base64: content
+      }))
+
+      const result = await readHostedMessageAttachment(request as never, ROUTE, 'room-1', 'event-1', attachment)
+      expect(result.data?.length).toBe('data:text/plain;base64,'.length + content.length)
+    }
+  )
+
+  it('accepts a verified zero-byte file without inventing content', async () => {
+    const attachment = {
+      attachmentId: 'att_0123456789abcdef0123456789abcdef',
+      kind: 'file' as const,
+      mime: 'text/plain',
+      name: 'empty.txt',
+      size: 0
+    }
+
+    const request = vi.fn(async () => ({
+      attachment: { attachment_id: attachment.attachmentId, mime: attachment.mime, name: attachment.name, size: 0 },
+      content_base64: ''
+    }))
+
+    await expect(
+      readHostedMessageAttachment(request as never, ROUTE, 'room-1', 'event-1', attachment)
+    ).resolves.toMatchObject({ data: 'data:text/plain;base64,', name: 'empty.txt' })
+  })
+
+  it.each(['YQ=', 'YQ===', '=YQ=', 'YQ==YQ=='])('rejects malformed base64 %s', async content => {
+    const request = vi.fn(async () => ({
+      attachment: {
+        attachment_id: 'att_0123456789abcdef0123456789abcdef',
+        mime: 'text/plain',
+        name: 'file.txt',
+        size: 1
+      },
+      content_base64: content
+    }))
+
+    await expect(
+      readHostedMessageAttachment(request as never, ROUTE, 'room-1', 'event-1', {
+        attachmentId: 'att_0123456789abcdef0123456789abcdef',
+        kind: 'file',
+        mime: 'text/plain',
+        name: 'file.txt',
+        size: 1
+      })
+    ).rejects.toThrow('invalid attachment')
+  })
+
   it('rejects count and aggregate limits before the first upload', async () => {
     const request = vi.fn()
 
