@@ -1175,17 +1175,19 @@ def approval_picker_choices(
         deny_token = hashlib.sha256(
             f"{index}\0deny\0{coordinates}".encode()
         ).hexdigest()[:20]
+        allow_label = "Allow once" if len(pending) == 1 else f"{index}. Allow once · {picker_bot}"
+        deny_label = "Deny" if len(pending) == 1 else f"{index}. Deny · {picker_bot}"
         choices.extend([
             {
                 "value": f"a={index}.o.{once_token}",
-                "label": f"✓ {index}. Allow once · {picker_bot}",
+                "label": f"✓ {allow_label}",
                 "description": "Allow this command one time",
                 "full_width": True,
                 "is_current": False,
             },
             {
                 "value": f"a={index}.d.{deny_token}",
-                "label": f"✕ {index}. Deny · {picker_bot}",
+                "label": f"✕ {deny_label}",
                 "description": "Do not run this command",
                 "full_width": True,
                 "is_current": False,

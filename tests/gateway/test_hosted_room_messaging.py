@@ -1271,8 +1271,8 @@ async def test_group_approvals_use_native_one_tap_choices(tmp_path, monkeypatch)
     call = adapter.calls[0]
     assert call["title"].startswith("⚠️ **Approval needed · Release room**\n")
     assert "**Operations**: Run focused tests" in call["title"]
-    assert call["choices"][0]["label"] == "✓ 1. Allow once · Operations · ＠ops"
-    assert call["choices"][1]["label"] == "✕ 1. Deny · Operations · ＠ops"
+    assert call["choices"][0]["label"] == "✓ Allow once"
+    assert call["choices"][1]["label"] == "✕ Deny"
     denied = await call["on_choice_selected"](
         "chat-telegram",
         call["choices"][1]["value"],
