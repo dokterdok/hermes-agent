@@ -91,9 +91,11 @@ def _release_active_session_slot(session: dict | None) -> bool:
 
 def _own_live_lease_ids(*, exclude=None) -> set[str]:
     """Snapshot leases still backed by this process's live session records."""
+    from tui_gateway.hosted_room_sessions import reserved_lease_ids
     with _sessions_lock:
-        return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+        owned = {str(lease.lease_id) for session in _sessions.values()
+                 if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+        return owned | (reserved_lease_ids() - {str(getattr(exclude, "lease_id", ""))})
 
 
 @contextlib.contextmanager

@@ -849,7 +849,7 @@ def _run_prompt_submit(
         if terminal_callback is not None and st.receipt_committed:
             from tui_gateway import server
             from tui_gateway.hosted_room_sessions import retire_hosted_session
-            session["_hosted_turn_finalized"] = True
+            session["_hosted_retirement_pending"] = True
             retire_hosted_session(server, sid, session, turn_finished=True)
     run_thread = threading.Thread(target=run, daemon=True)
     with _sessions_lock:

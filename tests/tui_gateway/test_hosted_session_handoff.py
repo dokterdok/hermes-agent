@@ -151,6 +151,16 @@ def _runtime(pipe, home):
         original_finish(*args)
 
     patch.setattr(server, "_finish_turn", finish_turn)
+    original_restore = server._Resume.restore
+
+    def restore(ctx):
+        # A slow cold read must not look orphaned before its record is registered.
+        owners = active_session_registry_snapshot(registry_home=ctx.profile_home)
+        local = {entry["lease_id"] for entry in owners if entry["pid"] == os.getpid()}
+        assert local <= server._own_live_lease_ids()
+        return original_restore(ctx)
+
+    patch.setattr(server._Resume, "restore", restore)
     rpc = HostedRoomServerRPC(server)
 
     def receive(receipt):
@@ -217,6 +227,15 @@ def _runtime(pipe, home):
                     result = {"present": data["sid"] in server._sessions}
                 elif command == "retire-idle":
                     rpc.retire_idle(session_id=data["sid"])
+                    result = {"present": data["sid"] in server._sessions}
+                elif command == "building-reservation":
+                    record = records[data["sid"]]
+                    record["agent_build_started"] = True
+                    rpc.retire_idle(session_id=data["sid"])
+                    assert data["sid"] in server._sessions
+                    assert record["active_session_lease"] is not None
+                    record["agent_ready"].set()
+                    server._reap_idle_sessions()
                     result = {"present": data["sid"] in server._sessions}
                 elif command == "persistence-fault":
                     records[data["sid"]]["_test_retirement_fault"] = True
@@ -323,7 +342,7 @@ def test_completed_hidden_writer_hands_off_only_after_finalization(runtimes, out
     owners = b.call("snapshot")["leases"]
     assert len(owners) == 1 and owners[0]["metadata"]["live_session_id"] == second["session_id"]
     if outcome == "complete":
-        assert b.call("retire-idle", sid=second["session_id"]) == {"present": False}
+        assert b.call("building-reservation", sid=second["session_id"]) == {"present": False}
         assert b.call("snapshot")["leases"] == []
         second = b.call("resume", key=key)
     b.call("submit", sid=second["session_id"], text="second")

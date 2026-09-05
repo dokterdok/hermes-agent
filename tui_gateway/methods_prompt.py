@@ -552,7 +552,7 @@ def _lock_in_submit_turn(
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         if hosted_task is not None:
-            session.pop("_hosted_turn_finalized", None)
+            session.pop("_hosted_retirement_pending", None)
             session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text)
     return None, fields

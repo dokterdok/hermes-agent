@@ -10,6 +10,14 @@ import logging
 import threading
 
 logger = logging.getLogger(__name__)
+_reservation_lock = threading.Lock()
+_reservation_ids: set[str] = set()
+
+
+def reserved_lease_ids() -> set[str]:
+    """Hydration owns real leases even before its live record is published."""
+    with _reservation_lock:
+        return set(_reservation_ids)
 
 
 def retire_hosted_session(server, sid: str, session: dict, *, turn_finished: bool = False) -> bool:
@@ -21,7 +29,7 @@ def retire_hosted_session(server, sid: str, session: dict, *, turn_finished: boo
     """
     # Reattachment must see either the intact viewer or a cold-resumable durable
     # row, never a record halfway through releasing its agent. No thread joins or
-    # hard task-resource cleanup run while this short ownership boundary is held.
+    # hard task-resource cleanup run while this ownership boundary is held.
     with server._session_resume_lock:
         return _retire_locked(server, sid, session, turn_finished=turn_finished)
 
@@ -33,7 +41,7 @@ def _retire_locked(server, sid: str, session: dict, *, turn_finished: bool) -> b
         if session.get("source") != "bot_room" or session.get("running"):
             return False
         worker = session.get("_run_thread")
-        if worker is not None and not (turn_finished or session.get("_hosted_turn_finalized")):
+        if worker is not None and not (turn_finished or session.get("_hosted_retirement_pending")):
             return False
         if worker is not None and worker.is_alive() and not (
                 turn_finished and worker is threading.current_thread()):
@@ -122,6 +130,7 @@ def resume_hosted_session(server, rid, params: dict) -> dict:
     ctx = server._Resume(rid, params, params["session_id"])
     ctx.db, ctx.owns_db = server._profile_session_db(ctx.profile_home)
     lease = None
+    reservation_id = None
     try:
         if ctx.db is None:
             return server._db_unavailable_error(rid, code=5000)
@@ -146,6 +155,9 @@ def resume_hosted_session(server, rid, params: dict) -> dict:
             ctx.target, live_session_id=sid, surface=source, profile_home=ctx.profile_home)
         if refusal is not None or lease is None:
             return server._err(rid, 4090, str(refusal or "Hosted session ownership unavailable"))
+        reservation_id = str(lease.lease_id)
+        with _reservation_lock:
+            _reservation_ids.add(reservation_id)
         # Compression may have transferred the former owner's lease between metadata
         # lookup and acquisition. Do not read/write an already superseded parent.
         if ctx.db.resolve_resume_session_id(ctx.target) != ctx.target:
@@ -164,6 +176,9 @@ def resume_hosted_session(server, rid, params: dict) -> dict:
             ctx, sid, record, info=ctx.info(cwd, overrides), display=display,
             count_source=raw, status="idle")
     finally:
+        if reservation_id is not None:
+            with _reservation_lock:
+                _reservation_ids.discard(reservation_id)
         if lease is not None:
             lease.release()
         if ctx.owns_db and ctx.db is not None:

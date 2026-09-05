@@ -94,6 +94,9 @@ class HostedRoomServerRPC:
             # A completed turn retires itself only after its full finalization.
             # This path is for reservations which never started a turn.
             if record.get("_run_thread") is None:
+                # An attachment may have started a deferred build. The existing
+                # reaper finishes retirement after that build becomes quiescent.
+                record["_hosted_retirement_pending"] = True
                 retire_hosted_session(self.server, session_id, record)
 
     def submit(

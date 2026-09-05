@@ -168,8 +168,8 @@ def _reap_idle_sessions() -> None:
     from tui_gateway import server
     from tui_gateway.hosted_room_sessions import retire_hosted_session
     with _sessions_lock:
-        finalized_hosted = [(sid, s) for sid, s in _sessions.items() if s.get("_hosted_turn_finalized")]
-    for sid, session in finalized_hosted:
+        retired_hosted = [(sid, s) for sid, s in _sessions.items() if s.get("_hosted_retirement_pending")]
+    for sid, session in retired_hosted:
         retire_hosted_session(server, sid, session)
     try:  # piggyback the incremental flush on the reaper tick — no new timer subsystem
         _flush_dirty_sessions()
