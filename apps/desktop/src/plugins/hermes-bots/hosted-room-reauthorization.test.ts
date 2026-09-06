@@ -58,6 +58,7 @@ beforeEach(() => {
   mocks.capabilities.value = {
     home: {
       authorityId: 'install:home',
+      peerGrantRenewal: true,
       routeGrantFingerprint: true
     }
   }
@@ -70,7 +71,7 @@ beforeEach(() => {
 })
 
 describe('hosted Group Chat peer reauthorization', () => {
-  it('issues a fresh peer grant through the source-qualified gateway', async () => {
+  it.each(['renewable', 'legacy-peer', 'legacy-home'])('checks reconnect renewal: %s', async mode => {
     const { $groupChats } = await import('./group-chat')
     const { reconnectHostedGroupChatPeer } = await import('./hosted-room-reauthorization')
 
@@ -186,6 +187,7 @@ describe('hosted Group Chat peer reauthorization', () => {
       throw new Error(`unexpected hosted method: ${method}`)
     })
     mocks.requestForBot.mockResolvedValue({
+      ...(mode !== 'legacy-peer' ? { expires_at: 3601, status_expires_at: 2592001 } : {}),
       catalog: {
         attachments: true,
         catalog_digest: 'digest:peer',
@@ -199,13 +201,46 @@ describe('hosted Group Chat peer reauthorization', () => {
       target_profile: 'builder'
     })
 
-    await reconnectHostedGroupChatPeer('Release', 'member-builder')
+    if (mode === 'legacy-home') {
+      mocks.capabilities.value.home = { authorityId: 'install:home', routeGrantFingerprint: true }
+    }
+
+    const reconnect = reconnectHostedGroupChatPeer('Release', 'member-builder')
+
+    if (mode === 'legacy-home') {
+      await expect(reconnect).rejects.toThrow('Update the gateway')
+      expect(mocks.requestForBot).not.toHaveBeenCalled()
+      expect(mocks.addCleanup).not.toHaveBeenCalled()
+
+      return
+    }
+
+    if (mode === 'legacy-peer') {
+      await expect(reconnect).rejects.toThrow('Update builder')
+      expect(mocks.addCleanup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'peer-revoke-exact',
+          grant: 'private-grant',
+          connectionId: 'peer'
+        })
+      )
+      expect(mocks.armCleanup).toHaveBeenCalledOnce()
+      expect(mocks.dispatchCleanup).toHaveBeenCalledOnce()
+      expect(mocks.requestHosted.mock.calls.some(call => call[1] === 'groups.peer.register')).toBe(false)
+      expect(mocks.refresh).not.toHaveBeenCalled()
+
+      return
+    }
+
+    await reconnect
 
     expect(mocks.requestForBot).toHaveBeenCalledWith(
       expect.objectContaining({ connectionId: 'peer', targetProfile: 'builder' }),
       'groups.peer.invite',
       expect.objectContaining({
         authority_epoch: 1,
+        ttl_seconds: 3600,
+        status_ttl_seconds: 2592000,
         authority_gateway_id: 'install:home',
         member_id: 'member-builder',
         room_id: 'room-1'
@@ -474,6 +509,8 @@ describe('hosted Group Chat peer reauthorization', () => {
       throw new Error(`unexpected hosted method: ${method}`)
     })
     mocks.requestForBot.mockResolvedValue({
+      expires_at: 3601,
+      status_expires_at: 2592001,
       catalog: {
         catalog_digest: 'digest:peer',
         installation_id: 'install:peer'
@@ -565,6 +602,8 @@ describe('hosted Group Chat peer reauthorization', () => {
       throw new Error(`unexpected hosted method: ${method}`)
     })
     mocks.requestForBot.mockResolvedValue({
+      expires_at: 3601,
+      status_expires_at: 2592001,
       catalog: {
         installation_id: 'install:peer'
       },
@@ -684,6 +723,8 @@ describe('hosted Group Chat peer reauthorization', () => {
       throw new Error(`unexpected hosted method: ${method}`)
     })
     mocks.requestForBot.mockResolvedValue({
+      expires_at: 3601,
+      status_expires_at: 2592001,
       catalog: {
         catalog_digest: 'digest:peer',
         installation_id: 'install:peer'
@@ -785,6 +826,8 @@ describe('hosted Group Chat peer reauthorization', () => {
         new Promise(resolve => {
           releaseInvites.push(grant =>
             resolve({
+              expires_at: 3601,
+              status_expires_at: 2592001,
               catalog: {
                 catalog_digest: 'digest:peer',
                 installation_id: 'install:peer'
