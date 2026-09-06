@@ -404,7 +404,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 task_id=identity.task_id,
                 execution_generation=execution_generation,
             )
-        tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route)
+        tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route, binding=binding)
         if task.get("payload", {}).get("attachments"):
             route = self._refresh_peer_attachment_catalog(
                 binding.room_id,
@@ -416,7 +416,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 raise MemberTransportUnavailable(
                     "The target gateway needs an update before it can receive files in this Group Chat."
                 )
-            tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route)
+            tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route, binding=binding)
         self._recover_peer_admission(binding, task, route, tracked_client)
         return PeerHostedRoomTransport(
             binding=binding,
@@ -1526,11 +1526,13 @@ class HostedRoomService(HostedRoomArtifactMixin):
         *,
         route: PeerMemberRoute | None = None,
         renewal_lease: driver.DriverLease | None = None,
+        binding: HostedRoomBinding | None = None,
     ) -> "_RouteStatusPeerClient":
         route = route or self.peer_routes.get((room_id, member_id))
         if route is None:
             raise RuntimeError("peer room route is unavailable")
         target_url = getattr(client, "base_url", None)
+        frozen_members = self._room(room_id)["members"] if binding is not None else None
 
         def require_current(grant):
             if renewal_lease is not None:
@@ -1557,12 +1559,34 @@ class HostedRoomService(HostedRoomArtifactMixin):
             ):
                 raise RuntimeError("peer room route changed before admission")
 
+        def resolve_observer_grant(grant):
+            # Read a CAS-published bearer, never rebind the observer's client/run identity.
+            with self._policy_lock:
+                room = self._room(room_id)
+                current_route = self.peer_routes.get((room_id, member_id))
+                if (
+                    binding.room_id != room_id or route.member_id != member_id
+                    or room["authority_gateway_id"] != binding.gateway_id
+                    or room["authority_epoch"] != binding.authority_epoch
+                    or room["members"] != frozen_members
+                    or (current_route is not None and replace(
+                        current_route, grant=route.grant, attachments=route.attachments) != route)
+                ):
+                    raise RuntimeError("peer room observer authority or membership changed")
+                stored = hosted_room_links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)
+                replacement = stored.grant if stored is not None else grant
+                require_current(replacement)
+                if stored is not None and stored.status == "needs_reauthorization" and replacement != grant:
+                    raise RuntimeError("peer room observer replacement needs reauthorization")
+                return replacement
+
         return _RouteStatusPeerClient(
             client,
             grant=route.grant,
             capability_digest=route.capability_digest,
             execution_policy_digest=route.execution_policy_digest,
             before_admission=require_current,
+            resolve_observer_grant=resolve_observer_grant if binding is not None else None,
             on_ready=lambda **observation: self._set_route_status(
                 room_id, member_id, "ready", **observation
             ),
