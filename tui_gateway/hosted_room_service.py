@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -20,7 +21,7 @@ from gateway import hosted_room_links, hosted_room_link_records
 from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
-    GatewayRoomCatalog, PROTOCOL_VERSION)
+    GatewayRoomCatalog, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
 from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
@@ -28,6 +29,8 @@ from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError)
 from tui_gateway.hosted_room_peer_transport import (
     HostedRoomPeerClient, PeerHostedRoomTransport, PeerMemberRoute, build_member_dispatch)
+
+logger = logging.getLogger(__name__)
 
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
 _HOSTED_ROOM_ACTIVE_POLL_SECONDS = 0.25
@@ -78,6 +81,7 @@ class HostedRoomService:
         self.rpc = HostedRoomServerRPC(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
+        self._peer_renewals: dict[tuple[str, str], tuple[str, float, float]] = {}
         self._persisted_peer_route_keys: set[tuple[str, str]] = set()
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
         self.peer_clients: dict[tuple[str, str], Any] = {}
@@ -94,7 +98,8 @@ class HostedRoomService:
         self.runtime = HostedRoomRuntime(
             db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
-            prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
+            prepare_room=self.prepare_room, prepare_leased_room=self._renew_idle_peer_grants,
+            publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
@@ -312,6 +317,7 @@ class HostedRoomService:
                 self.peer_routes.pop(key, None)
                 self._peer_route_status.pop(key, None)
                 self.peer_clients.pop(key, None)
+                self._peer_renewals.pop(key, None)
                 self._persisted_peer_route_keys.discard(key)
         return len(routes)
 
@@ -706,6 +712,41 @@ class HostedRoomService:
             "counts": dict(counts), "pending_actions": pending_actions,
             "peer_routes": self._route_statuses(room_id)}
 
+    def _renew_idle_peer_grants(self, binding: HostedRoomBinding, lease: driver.DriverLease) -> None:
+        """Use the leased room cycle, never another timer or an unverified expiry as authority."""
+        now = self.runtime.clock()
+        stored_links, _errors = hosted_room_links.load_room_links_tolerant(self.db_path)
+        links = [link for link in stored_links if link.room_id == binding.room_id]
+        current_keys = {(link.room_id, link.member_id) for link in links}
+        for key in list(self._peer_renewals):
+            if key[0] == binding.room_id and key not in current_keys:
+                self._peer_renewals.pop(key, None)
+        for link in links:
+            key = (link.room_id, link.member_id)
+            if link.status == "needs_reauthorization":
+                continue
+            fingerprint = hashlib.sha256(link.grant.encode()).hexdigest()
+            observed, next_at, delay = self._peer_renewals.get(key, (fingerprint, 0.0, 30.0))
+            if observed != fingerprint:
+                next_at, delay = 0.0, 30.0
+            if now < next_at:
+                continue
+            self._peer_renewals[key] = (fingerprint, now + 60, 30.0)
+            if not room_grant_needs_dispatch_refresh(link.grant, now=now):
+                continue
+            try:
+                driver.require_active_lease(self.db_path, lease, clock=self.runtime.clock)
+                hydrated = self._hydrate_persisted_peer_route(*key)
+                if hydrated is None or hydrated[0].grant != link.grant:
+                    continue
+                route, client = hydrated
+                self._tracked_peer_client(*key, client, route=route, renewal_lease=lease).probe(grant=route.grant)
+            except (driver.StaleLeaseError, driver.RoomUnavailableError):
+                raise
+            except Exception:
+                self._peer_renewals[key] = (fingerprint, now + delay, min(120.0, delay * 2))
+                logger.warning("Peer grant renewal pending: room=%s member=%s", *key)
+
     def _hydrate_persisted_peer_route(
         self,
         room_id: str,
@@ -791,6 +832,7 @@ class HostedRoomService:
         client: HostedRoomPeerClient,
         *,
         route: PeerMemberRoute | None = None,
+        renewal_lease: driver.DriverLease | None = None,
     ) -> "_RouteStatusPeerClient":
         route = route or self.peer_routes.get((room_id, member_id))
         if route is None:
@@ -798,6 +840,8 @@ class HostedRoomService:
         target_url = getattr(client, "base_url", None)
 
         def require_current(grant):
+            if renewal_lease is not None:
+                driver.require_active_lease(self.db_path, renewal_lease, clock=self.runtime.clock)
             if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
                 raise RuntimeError("peer room route is no longer current")
             stored = hosted_room_links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)
@@ -823,6 +867,8 @@ class HostedRoomService:
         return _RouteStatusPeerClient(
             client,
             grant=route.grant,
+            capability_digest=route.capability_digest,
+            execution_policy_digest=route.execution_policy_digest,
             before_admission=require_current,
             on_ready=lambda **observation: self._set_route_status(
                 room_id, member_id, "ready", **observation
