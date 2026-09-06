@@ -639,9 +639,8 @@ def issue_home_control_token(
                 raise HostedRoomControlConflictError(
                     "an active control credential already exists for this scope"
                 )
-        if (reuse_existing is True and existing is not None
-                and str(existing["request_id"]) == normalized_request_id):
-            raise HostedRoomControlConflictError("renewed control access requires a fresh request")
+        if reuse_existing is True and existing is not None:
+            raise HostedRoomControlConflictError("control access was invalidated; explicit authorization is required")
         conn.execute(
             """INSERT INTO hosted_room_control_tokens(
                    room_id, member_id, authority_gateway_id, authority_epoch,

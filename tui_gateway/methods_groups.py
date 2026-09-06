@@ -256,7 +256,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
         "features": [
             "attachment_ids", "attachment_metadata_catalog", "attachment_same_gateway_delivery",
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
-            "desktop_compatibility_mailbox", "reciprocal_room_control",
+            "desktop_compatibility_mailbox", "reciprocal_room_control", "reciprocal_room_control_setup",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity", "peer_route_grant_fingerprint",
             "peer_grant_renewal",
             ],
@@ -819,11 +819,14 @@ def _(rid, params: dict) -> dict:
             ):
                 raise ValueError("room control authority returned mismatched scope")
         except Exception:
-            hosted_room_controls.delete_peer_control_links(
-                default_db_path(),
-                room_id=saved.link.room_id,
-                member_id=saved.link.member_id,
-            )
+            if not saved.idempotent:
+                retired = hosted_room_controls.revoke_peer_control_link_value(
+                    default_db_path(), expected=saved.link,
+                )
+                if retired is not None:
+                    hosted_room_controls.delete_peer_control_link_value(
+                        default_db_path(), expected=retired, required_status="revoked",
+                    )
             raise
         return _ok(
             rid,

@@ -45,12 +45,14 @@ def test_default_invitation_conflict_contract_is_unchanged(control_home):
 @pytest.mark.parametrize("reason", ["revoked", "expired"])
 def test_reuse_never_resurrects_an_old_credential(control_home, reason):
     original = issue(control_home)
+    assert issue(control_home, "consumed-reuse", reuse_existing=True, now=25).control_token == original.control_token
     now = 700 if reason == "expired" else 30
     if reason == "revoked":
         controls.revoke_home_control_tokens(control_home, room_id="room-1", now=now)
-    with pytest.raises(controls.HostedRoomControlConflictError, match="fresh request"):
-        issue(control_home, reuse_existing=True, now=now, expires_at=now+600)
-    fresh = issue(control_home, "explicit-reconnect", reuse_existing=True, now=now, expires_at=now+600)
+    for request in ("first", "consumed-reuse", "different"):
+        with pytest.raises(controls.HostedRoomControlConflictError, match="explicit authorization"):
+            issue(control_home, request, reuse_existing=True, now=now, expires_at=now+600)
+    fresh = issue(control_home, "explicit-reconnect", reuse_existing=False, now=now, expires_at=now+600)
     assert fresh.control_token != original.control_token
 
 
