@@ -88,7 +88,8 @@ def test_active_peer_settles_once_across_exact_grant_retirement(renewal, monkeyp
 
 @pytest.mark.parametrize("change", ["same_scope", "url", "profile", "installation", "policy", "catalog", "cancel", "trace",
                                      "home", "membership", "epoch", "authority", "retired", "removed", "reauthorization"])
-def test_observer_adopts_only_same_scope_and_preserves_exact_cleanup(renewal, monkeypatch, change):
+@pytest.mark.parametrize("retiring", [False, True])
+def test_observer_adopts_only_same_scope_and_preserves_exact_cleanup(renewal, monkeypatch, change, retiring):
     r = renewal
     key = ("renewal-room", "ops")
     binding = r.service.bindings()[0]
@@ -130,9 +131,14 @@ def test_observer_adopts_only_same_scope_and_preserves_exact_cleanup(renewal, mo
                 conn.execute("UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id=?", (key[0],))
             else:
                 conn.execute("UPDATE hosted_rooms SET authority_gateway_id='another-home' WHERE room_id=?", (key[0],))
+    if retiring and change not in {"retired", "removed"}:
+        current_room = r.service._room(key[0])
+        hosted_room_link_records.begin_room_link_retirement(
+            r.service.db_path, room_id=key[0], authority_gateway_id=current_room["authority_gateway_id"],
+            authority_epoch=current_room["authority_epoch"])
     sent = []
     monkeypatch.setattr(r.peer, "history", lambda **kw: sent.append(kw))
-    if change == "same_scope":
+    if change in {"same_scope", "retired"}:
         tracked.history(room_id=key[0], profile="ops", session_id="accepted-run", grant=r.old)
         assert sent[0]["grant"] == stored.grant
         sent.clear()
@@ -144,3 +150,91 @@ def test_observer_adopts_only_same_scope_and_preserves_exact_cleanup(renewal, mo
     monkeypatch.setattr(r.peer, "revoke_grant_exact", lambda **kw: sent.append(kw["grant"]))
     tracked.revoke_grant_exact(grant=r.old)
     assert sent == [r.old]  # Exact cleanup never substitutes the current bearer.
+    if retiring or change in {"retired", "removed"}:
+        with pytest.raises(RuntimeError, match="no longer current"):
+            tracked.probe(grant=stored.grant)
+
+
+@pytest.mark.parametrize("rotated", [False, True])
+def test_disband_fence_allows_accepted_peer_reads_and_stop_without_new_work(renewal, monkeypatch, rotated):
+    r = renewal
+    binding = r.service.bindings()[0]
+    r.peer.clock = lambda: r.clock[0]
+    r.service.runtime.maintain_leased_room = None
+    original_request = r.peer._request
+    target = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
+    target._room_grant_secret = lambda: r.secret
+    admissions, stops, errors, transports = [], [], [], []
+    original_resolver = r.service.runtime.transport_resolver
+
+    def resolve(*args):
+        transport = original_resolver(*args)
+        transports.append(transport)
+        return transport
+
+    def request(path, *, method="GET", body=None, room_grant=None, **kwargs):
+        if path.startswith("/v1/runs"):
+            permission = "stop" if path.endswith("/stop") else "dispatch" if method == "POST" else "status"
+            error = target._check_run_auth(SimpleNamespace(
+                headers={"Authorization": f"HermesRoom {room_grant}"}, path=path, method=method,
+            ), permission=permission)
+            assert error is None
+            if permission == "dispatch":
+                admissions.append(body["hosted_room_dispatch"])
+            if permission == "stop":
+                stops.append(room_grant)
+            return {"run_id": "disband-peer-run", "status": "cancelled" if stops else "running"}
+        return original_request(path, method=method, body=body, room_grant=room_grant, **kwargs)
+
+    monkeypatch.setattr(r.peer, "_request", request)
+    r.service.runtime.transport_resolver = resolve
+    r.service.send(room_id=binding.room_id, event_id="disband-peer", payload={
+        "text": "@ops Work until stopped", "thread_id": "disband-peer-thread",
+    })
+    (task,) = driver.list_tasks(r.service.db_path, room_id=binding.room_id, status="queued")
+
+    def begin_disband(_timeout=None):
+        assert len(admissions) == 1
+        if rotated:
+            refreshed = r.peer.refresh_grant(grant=r.old)
+            r.service._rotate_route_grant(binding.room_id, "ops", refreshed["grant"],
+                                          expected_grant_sha256=hashlib.sha256(r.old.encode()).hexdigest())
+        hosted_room_link_records.begin_room_link_retirement(
+            r.service.db_path, room_id=binding.room_id, authority_gateway_id=binding.gateway_id,
+            authority_epoch=binding.authority_epoch)
+        try:
+            transports[0].history(profile="ops", session_id=transports[0]._session_id, source="bot_room")
+        except RuntimeError as exc:
+            errors.append(str(exc))
+        try:
+            r.service.stop_room(binding.room_id, cancel_id="disband-stop", require_acknowledged=True)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+        if errors:
+            r.service.runtime._stop.set()
+        return False
+
+    monkeypatch.setattr(r.service.runtime._wake, "wait", begin_disband)
+    r.service.runtime._run_cycle()
+    assert errors == []
+    assert driver.get_task(r.service.db_path, task["identity"])["status"] == "cancelled"
+    assert len(admissions) == len(stops) == 1
+    current = hosted_room_links.load_room_link(r.service.db_path, room_id=binding.room_id, member_id="ops")
+    assert stops == [current.grant]
+    assert (current.grant != r.old) is rotated
+    if rotated:
+        assert hosted_rooms.room_grant_is_revoked(r.service.db_path, claims=r.claims)
+    refresh_count = len(r.peer.refreshes)
+    for operation, kwargs in (("dispatch", {"dispatch": admissions[0]}),
+                              ("recover_dispatch", {"dispatch": admissions[0]}), ("probe", {})):
+        with pytest.raises(RuntimeError, match="no longer current"):
+            getattr(transports[0].client, operation)(grant=r.old, **kwargs)
+    with pytest.raises(hosted_rooms.HostedRoomError, match="registration is fenced"):
+        r.service.register_peer_route(room_id=binding.room_id, member_id="ops",
+                                      route=r.service.peer_routes[(binding.room_id, "ops")], client=r.peer,
+                                      target_url=current.target_url, catalog=current.catalog)
+    monkeypatch.setattr(r.peer, "_receipt", lambda *_args: None)
+    with pytest.raises(PeerRunsHTTPError, match="accepted peer run receipt is unavailable"):
+        transports[0].client.recover_dispatch(dispatch=admissions[0], grant=r.old, receipt_only=True)
+    assert len(r.peer.refreshes) == refresh_count
+    assert len(admissions) == 1

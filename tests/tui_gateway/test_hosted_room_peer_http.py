@@ -1075,6 +1075,16 @@ def test_renewal_budget_covers_new_clients_without_changing_foreground(monkeypat
     assert client.timeout_seconds == cleanup.timeout_seconds == ordinary_timeout
 
 
+def test_receipt_only_recovery_never_replays_an_unknown_admission(monkeypatch):
+    client = PeerRunsHTTPClient(base_url="https://peer.example", api_key="")
+    requests = []
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: requests.append(args))
+    with pytest.raises(PeerRunsHTTPError, match="accepted peer run receipt is unavailable") as failure:
+        client.recover_dispatch(dispatch=_dispatch(), grant="synthetic.room.grant", receipt_only=True)
+    assert failure.value.ambiguous and failure.value.retryable
+    assert requests == []
+
+
 def test_renewal_requests_and_response_reads_share_one_deadline(monkeypatch):
     from contextlib import contextmanager
     from tui_gateway import hosted_room_peer_http as http

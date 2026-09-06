@@ -381,6 +381,7 @@ class HostedRoomService:
             or not isinstance(payload, Mapping) or execution_generation < 1
             or task.get("status") not in {"indeterminate", "stopping"}):
             return
+        receipt_only = hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=binding.room_id)
         prompt = payload.get("prompt")
         source_event_seq = int(payload.get("source_event_seq") or 0)
         if not isinstance(prompt, str) or source_event_seq < 1 or not route.trace_id:
@@ -389,7 +390,7 @@ class HostedRoomService:
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
             source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id)
-        recover(dispatch=dispatch.as_mapping(), grant=route.grant)
+        recover(dispatch=dispatch.as_mapping(), grant=route.grant, **({"receipt_only": True} if receipt_only else {}))
 
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:
         for m in self._room(room_id).get("members") or []:
@@ -871,6 +872,10 @@ class HostedRoomService:
                 driver.require_active_lease(self.db_path, renewal_lease, clock=self.runtime.clock)
             if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
                 raise RuntimeError("peer room route is no longer current")
+            require_route(grant)
+
+        def require_route(grant):
+            # Retirement forbids new work, not reading/stopping an accepted run.
             stored = hosted_room_links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)
             if stored is None:
                 if (
@@ -907,7 +912,7 @@ class HostedRoomService:
                     raise RuntimeError("peer room observer authority or membership changed")
                 stored = hosted_room_links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)
                 replacement = stored.grant if stored is not None else grant
-                require_current(replacement)
+                require_route(replacement)
                 if stored is not None and stored.status == "needs_reauthorization" and replacement != grant:
                     raise RuntimeError("peer room observer replacement needs reauthorization")
                 return replacement

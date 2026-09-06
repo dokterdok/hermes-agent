@@ -90,11 +90,12 @@ class _RouteStatusPeerClient:
 
         def tracked(*args, **kwargs):
             with _admission_preflight(name):
+                receipt_only = name == "recover_dispatch" and kwargs.get("receipt_only") is True
                 internal_observation = (
                     self._resolve_observer_grant is not None
                     and self._initial_grant is not None
                     and kwargs.get("grant") in {self._initial_grant, self._current_grant}
-                    and name in {"history", "status", "stop", "stop_receipt"}
+                    and (name in {"history", "status", "stop", "stop_receipt"} or receipt_only)
                 )
                 if internal_observation:
                     self._current_grant = self._resolve_observer_grant(self._current_grant)
@@ -115,6 +116,7 @@ class _RouteStatusPeerClient:
                         "recover_dispatch",
                     }
                     and "grant" in kwargs
+                    and not (internal_observation and receipt_only)
                 ):
                     from gateway.hosted_room_peer import (
                         room_grant_needs_dispatch_refresh,
