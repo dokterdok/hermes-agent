@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HostedRoomCapability } from './hosted-room-client'
+import { classifyHostedRoomCapability } from './hosted-room-client'
 import { registerHostedPeerControl } from './hosted-room-peer-setup'
 import type { ProfileRoute } from './types'
 
@@ -47,6 +48,16 @@ function setup() {
 beforeEach(() => vi.clearAllMocks())
 
 describe('peer messaging return path', () => {
+  it.each([false, true])('requires safe registration recovery support: %s', supported => {
+    const capability = classifyHostedRoomCapability({
+      driver: true,
+      persistent_process: true,
+      authority_gateway_id: 'install:home',
+      features: ['reciprocal_room_control', ...(supported ? ['reciprocal_room_control_setup'] : [])]
+    })
+
+    expect(capability.reciprocalRoomControl).toBe(supported)
+  })
   it('registers only the frozen room/member/profile and requests non-rotating reuse', async () => {
     const { input, invitation, requestPeer } = setup()
     await registerHostedPeerControl(input)
@@ -67,9 +78,13 @@ describe('peer messaging return path', () => {
   it.each(['home', 'peer', 'absent-peer'])('does not call unsupported %s gateways', async mode => {
     const { input, requestPeer } = setup()
 
-    if (mode === 'home') {input.homeCapability.reciprocalRoomControl = false}
-    else if (mode === 'peer') {input.peerCapability.reciprocalRoomControl = false}
-    else {input.peerCapability = undefined as unknown as HostedRoomCapability}
+    if (mode === 'home') {
+      input.homeCapability.reciprocalRoomControl = false
+    } else if (mode === 'peer') {
+      input.peerCapability.reciprocalRoomControl = false
+    } else {
+      input.peerCapability = undefined as unknown as HostedRoomCapability
+    }
 
     await registerHostedPeerControl(input)
     expect(requestHome).not.toHaveBeenCalled()
@@ -96,8 +111,11 @@ describe('peer messaging return path', () => {
   it.each(['home', 'peer'])('checks the %s installation before issuing control access', async which => {
     const { input, requestPeer } = setup()
 
-    if (which === 'home') {input.homeCapability.authorityId = 'install:other'}
-    else {input.peerCapability.authorityId = 'install:other'}
+    if (which === 'home') {
+      input.homeCapability.authorityId = 'install:other'
+    } else {
+      input.peerCapability.authorityId = 'install:other'
+    }
 
     await expect(registerHostedPeerControl(input)).rejects.toThrow('Messaging could not connect')
     expect(requestHome).not.toHaveBeenCalled()
@@ -111,7 +129,9 @@ describe('peer messaging return path', () => {
       registerHostedPeerControl({
         ...input,
         assertCurrent: () => {
-          if (++checks === 2) {throw new Error('room closed')}
+          if (++checks === 2) {
+            throw new Error('room closed')
+          }
         }
       })
     ).rejects.toThrow('room closed')

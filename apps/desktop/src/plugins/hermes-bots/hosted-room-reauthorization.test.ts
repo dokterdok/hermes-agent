@@ -174,7 +174,7 @@ describe('hosted Group Chat peer reauthorization', () => {
       if (method === 'groups.capabilities') {
         return {
           authority_gateway_id: 'install:peer',
-          features: mode === 'reciprocal' ? ['reciprocal_room_control'] : [],
+          features: mode === 'reciprocal' ? ['reciprocal_room_control', 'reciprocal_room_control_setup'] : [],
           methods: ['groups.peer.revoke_exact'],
           driver: true,
           persistent_process: true,
