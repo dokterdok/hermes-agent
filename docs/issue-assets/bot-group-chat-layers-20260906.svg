@@ -42,8 +42,8 @@
   <text x="849" y="566" class="number" fill="#386c87">6</text>
   <text x="892" y="564" font-size="31" font-weight="700" fill="#22332e">Control from messaging</text>
   <text x="843" y="612" class="body">Send, approve, Stop, or get files.</text>
-  <text x="843" y="652" class="ref">#98073  /  Draft, live testing</text>
-  <text x="843" y="690" font-size="22" fill="#52665c">From your connected Hermes chat.</text>
+  <text x="843" y="652" class="ref">#98073  /  Ready for review</text>
+  <text x="843" y="690" font-size="22" fill="#52665c">Native Files: complete field build.</text>
 
   <g filter="url(#shadow)"><rect x="220" y="766" width="1160" height="166" rx="8" fill="#ffffff" stroke="#d3ddd8"/></g>
   <rect x="249" y="797" width="40" height="40" rx="6" fill="#e6f0f5"/>
