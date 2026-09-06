@@ -1,6 +1,6 @@
 /** Register peer execution and the optional return path for owner messaging. */
 
-import { profileScopedRoomLinkEndpoint } from './hosted-room-client'
+import { classifyHostedRoomCapability, profileScopedRoomLinkEndpoint } from './hosted-room-client'
 import type { HostedRoomCapability } from './hosted-room-client'
 import type { HostedRoomProbe } from './hosted-room-runtime'
 import { requestHostedConnection } from './hosted-room-transport'
@@ -51,7 +51,7 @@ export async function registerHostedPeerControl(input: PeerControlInput) {
   const { homeCapability, peerCapability, requestPeer, assertCurrent = () => undefined } = input
 
   if (!homeCapability.reciprocalRoomControl || !peerCapability?.reciprocalRoomControl) {
-    return
+    return false
   }
 
   const failure = () => new Error('Messaging could not connect to this Bot. Reconnect it and try again.')
@@ -120,6 +120,96 @@ export async function registerHostedPeerControl(input: PeerControlInput) {
   if (result.registered !== true || result.room_id !== input.roomId) {
     throw failure()
   }
+
+  return true
+}
+
+export type PeerControlRecoveryInput = Omit<
+  PeerControlInput,
+  'homeCapability' | 'peerCapability' | 'requestPeer' | 'assertCurrent'
+> & {
+  peerRoute: ProfileRoute
+}
+
+export async function verifyHostedPeerControlScope(input: PeerControlRecoveryInput): Promise<
+  | 'gone'
+  | {
+      homeCapability: HostedRoomCapability
+      peerCapability: HostedRoomCapability
+    }
+> {
+  const homeCapability = classifyHostedRoomCapability(
+    await requestHostedConnection(input.homeRoute, 'groups.capabilities'),
+    {
+      connectionId: input.homeRoute.connectionId
+    }
+  )
+
+  const peerCapability = classifyHostedRoomCapability(
+    await requestHostedConnection(input.peerRoute, 'groups.capabilities'),
+    {
+      connectionId: input.peerRoute.connectionId
+    }
+  )
+
+  if (homeCapability.authorityId !== input.authorityId || peerCapability.authorityId !== input.targetAuthority) {
+    throw new Error('Messaging connection identity changed.')
+  }
+
+  let state: Record<string, unknown>
+
+  try {
+    state = record(await requestHostedConnection(input.homeRoute, 'groups.state', { room_id: input.roomId }))
+  } catch (error) {
+    const code = record(error).code ?? record(record(error).error).code
+
+    if (code === 4114) {
+      return 'gone'
+    }
+
+    throw error
+  }
+
+  const room = record(state.room)
+
+  if (room.room_id !== input.roomId || !Array.isArray(room.members)) {
+    throw new Error('Group Chat identity could not be verified.')
+  }
+
+  const member = room.members.map(record).find(value => value.member_id === input.memberId)
+  const target = record(member?.target)
+
+  if (
+    room.disbanded_at ||
+    room.authority_gateway_id !== input.authorityId ||
+    room.authority_epoch !== input.authorityEpoch ||
+    !member ||
+    target.kind !== 'peer' ||
+    target.installation_id !== input.targetAuthority ||
+    String(target.profile || member.profile || '') !== input.targetProfile
+  ) {
+    return 'gone'
+  }
+
+  return { homeCapability, peerCapability }
+}
+
+export async function recoverHostedPeerControl(input: PeerControlRecoveryInput): Promise<'complete' | 'gone'> {
+  const scope = await verifyHostedPeerControlScope(input)
+
+  if (scope === 'gone') {return scope}
+
+  const registered = await registerHostedPeerControl({
+    ...input,
+    ...scope,
+    requestPeer: (method, params) => requestHostedConnection(input.peerRoute, method, params)
+  })
+
+  if (!registered) {
+    throw new Error('Messaging setup needs compatible gateways.')
+  }
+
+  return 'complete'
 }
 
 export async function registerHostedPeers(

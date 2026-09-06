@@ -1164,7 +1164,9 @@ describe('hosted Group Chat runtime', () => {
               ? []
               : [
                   'peer_grant_renewal',
-                  ...(['reciprocal', 'control-offline'].includes(mode) ? ['reciprocal_room_control'] : [])
+                  ...(['reciprocal', 'control-offline'].includes(mode)
+                    ? ['reciprocal_room_control', 'reciprocal_room_control_setup']
+                    : [])
                 ],
           driver: true,
           persistent_process: true,

@@ -443,7 +443,7 @@ export function classifyHostedRoomCapability(
       Array.isArray(capabilities.features) && capabilities.features.includes('peer_route_grant_fingerprint'),
     peerGrantRenewal: Array.isArray(capabilities.features) && capabilities.features.includes('peer_grant_renewal'),
     reciprocalRoomControl:
-      Array.isArray(capabilities.features) && capabilities.features.includes('reciprocal_room_control'),
+      Array.isArray(capabilities.features) && capabilities.features.includes('reciprocal_room_control_setup'),
     roomLink: roomLinkCapability(capabilities.room_link),
     maxLogLimit: positiveInteger(capabilities.max_log_limit, 100) || 100,
     limits: hostedCapabilityLimits(capabilities)
