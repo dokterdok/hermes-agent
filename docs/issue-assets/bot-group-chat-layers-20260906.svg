@@ -36,7 +36,7 @@
   <text x="367" y="564" font-size="28" font-weight="700" fill="#22332e">Files and Bot-to-Bot handoff</text>
   <text x="318" y="612" class="body">Share, find, and retrieve files.</text>
   <text x="318" y="652" class="ref">#98072 + #99159  /  In review</text>
-  <text x="318" y="690" font-size="22" fill="#745699">Files UI + classic sharing: fork drafts #1 / #2</text>
+  <text x="318" y="690" font-size="22" fill="#745699">Drafts: Files UI #104199 / classic #104198</text>
 
   <rect x="838" y="538" width="37" height="37" rx="6" fill="#e6f0f5"/>
   <text x="849" y="566" class="number" fill="#386c87">6</text>
@@ -80,5 +80,5 @@
   <text x="1405" y="1418" class="status" fill="#286344">On main</text>
 
   <text x="80" y="1594" font-size="25" fill="#334d40">Today, the coordinating host must stay online. Automatic takeover is not enabled.</text>
-  <text x="80" y="1640" font-size="24" fill="#52665c">#97681 links every source PR, contributor fork draft, test receipt, and remaining gate.</text>
+  <text x="80" y="1640" font-size="24" fill="#52665c">#97681 links the source PRs, test receipts, and remaining acceptance gates.</text>
 </svg>
