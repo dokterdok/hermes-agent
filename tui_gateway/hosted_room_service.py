@@ -34,7 +34,8 @@ from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_artifact_service import HostedRoomArtifactMixin
 from tui_gateway.hosted_room_peer_http import (
-    PeerRunsHTTPClient, PeerRunsHTTPError)
+    PeerRunsHTTPClient, PeerRunsHTTPError,
+    room_grant_request_budget, room_grant_request_budget_remaining)
 from tui_gateway.hosted_room_peer_transport import (
     HostedRoomPeerClient, PeerHostedRoomTransport, PeerMemberRoute, build_member_dispatch)
 
@@ -98,6 +99,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
         self._peer_renewals: dict[tuple[str, str], tuple[str, float, float]] = {}
+        self._peer_renewal_scans: dict[str, float] = {}
         self._persisted_peer_route_keys: set[tuple[str, str]] = set()
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
         self.peer_clients: dict[tuple[str, str], Any] = {}
@@ -124,6 +126,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
             db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self.prepare_room, prepare_leased_room=self._apply_pending_controls,
+            maintain_leased_room=lambda binding, lease: self._renew_idle_peer_grants(binding, lease),
             publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
             attachment_loader=self._load_task_attachments,
@@ -299,6 +302,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
             self.peer_clients[key] = client
             self._peer_route_status[key] = "ready"
             self._persisted_peer_route_keys.add(key)
+            self._peer_renewal_scans.pop(room_id, None)
         self._unblock_artifact_retries(room_id, member_id)
         self.runtime.wakeup()
 
@@ -365,6 +369,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 self.peer_clients.pop(key, None)
                 self._peer_renewals.pop(key, None)
                 self._persisted_peer_route_keys.discard(key)
+            self._peer_renewal_scans.pop(room_id, None)
         return len(routes)
 
     def _resolve_member_transport(
@@ -1219,25 +1224,41 @@ class HostedRoomService(HostedRoomArtifactMixin):
     ) -> None:
         self._apply_pending_control_retries(binding, lease)
         self._apply_pending_control_approvals(binding)
-        self._renew_idle_peer_grants(binding, lease)
 
     def _renew_idle_peer_grants(self, binding: HostedRoomBinding, lease: driver.DriverLease) -> None:
-        """Use the leased room cycle, never another timer or an unverified expiry as authority."""
+        """Bound upkeep after urgent work and inside active polling, never a new timer."""
         now = self.runtime.clock()
-        stored_links, _errors = hosted_room_links.load_room_links_tolerant(self.db_path)
-        links = [link for link in stored_links if link.room_id == binding.room_id]
+        if now < self._peer_renewal_scans.get(binding.room_id, 0):
+            return
+        if driver.list_tasks(self.db_path, room_id=binding.room_id, status="stopping"):
+            return
+        # Keep heartbeat/Stop headroom even with a non-default short driver lease.
+        budget = min(2.0, lease.expires_at - now - 5.0)
+        if budget <= 0:
+            return
+        self._peer_renewal_scans[binding.room_id] = now + 5.0
+        with room_grant_request_budget(budget, clock=self.runtime.clock):
+            self._renew_peer_grants_with_budget(binding, lease, now)
+
+    def _renew_peer_grants_with_budget(
+        self, binding: HostedRoomBinding, lease: driver.DriverLease, now: float,
+    ) -> None:
+        links, _errors = hosted_room_links.load_room_links_tolerant(self.db_path, room_id=binding.room_id)
         current_keys = {(link.room_id, link.member_id) for link in links}
         for key in list(self._peer_renewals):
             if key[0] == binding.room_id and key not in current_keys:
                 self._peer_renewals.pop(key, None)
         for link in links:
+            remaining = room_grant_request_budget_remaining()
+            if remaining is None or remaining <= 0:
+                break
             key = (link.room_id, link.member_id)
             if link.status == "needs_reauthorization":
                 continue
             fingerprint = hashlib.sha256(link.grant.encode()).hexdigest()
             observed, next_at, delay = self._peer_renewals.get(key, (fingerprint, 0.0, 30.0))
             if observed != fingerprint:
-                next_at, delay = 0.0, 30.0
+                delay = 30.0  # Rotation does not reset the network throttle near hard expiry.
             if now < next_at:
                 continue
             self._peer_renewals[key] = (fingerprint, now + 60, 30.0)
@@ -1255,6 +1276,9 @@ class HostedRoomService(HostedRoomArtifactMixin):
             except Exception:
                 self._peer_renewals[key] = (fingerprint, now + delay, min(120.0, delay * 2))
                 logger.warning("Peer grant renewal pending: room=%s member=%s", *key)
+        due = [self._peer_renewals.get((link.room_id, link.member_id), ("", now + 5, 0))[1]
+               for link in links if link.status != "needs_reauthorization"]
+        self._peer_renewal_scans[binding.room_id] = max(now + 5, min(due, default=now + 60))
 
 
     def _apply_pending_control_approvals(
