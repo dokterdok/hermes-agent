@@ -36,7 +36,7 @@
   <text x="367" y="564" font-size="28" font-weight="700" fill="#22332e">Files and Bot-to-Bot handoff</text>
   <text x="318" y="612" class="body">Share, find, and retrieve files.</text>
   <text x="318" y="652" class="ref">#98072 + #99159  /  In review</text>
-  <text x="318" y="690" font-size="22" fill="#745699">Drafts: Files UI #104199 / classic #104198</text>
+  <text x="318" y="690" font-size="22" fill="#3b6657">Also ready: #104199 UI + #104198 classic</text>
 
   <rect x="838" y="538" width="37" height="37" rx="6" fill="#e6f0f5"/>
   <text x="849" y="566" class="number" fill="#386c87">6</text>
