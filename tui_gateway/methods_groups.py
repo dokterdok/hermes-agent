@@ -752,6 +752,7 @@ def _(rid, params: dict) -> dict:
             authority_epoch=int(room["authority_epoch"]),
             expires_at=hosted_room_controls.ROOM_LIFETIME_EXPIRES_AT,
             request_id=request_id,
+            reuse_existing=params.get("reuse_existing") is True,
             now=now,
         )
         return _ok(
