@@ -17,6 +17,7 @@ import {
   ROOM_GRANT_STATUS_TTL_SECONDS,
   ROOM_GRANT_TTL_SECONDS
 } from './hosted-room-client'
+import { registerHostedPeerControl } from './hosted-room-peer-setup'
 import {
   $hostedRoomCapabilities,
   hostedRoomLifecycleIsCurrent,
@@ -319,6 +320,21 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
       grant,
       catalog,
       expected_grant_sha256: expectedGrantSha256
+    })
+    await abandonIfStale()
+    await registerHostedPeerControl({
+      homeRoute,
+      homeCapability,
+      peerCapability,
+      roomId,
+      authorityId,
+      authorityEpoch,
+      memberId,
+      targetProfile,
+      targetAuthority,
+      requestId: setupId,
+      assertCurrent,
+      requestPeer: (method, params) => requestForBot(localMember, method, params)
     })
     await abandonIfStale()
   } catch (error) {

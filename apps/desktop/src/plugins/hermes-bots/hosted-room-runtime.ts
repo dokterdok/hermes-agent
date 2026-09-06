@@ -90,6 +90,8 @@ import {
   withHostedRoomCommandOrder,
   withHostedRoomOutboxDispatch
 } from './hosted-room-outbox'
+import { registerHostedPeers } from './hosted-room-peer-setup'
+import type { AutonomousHostedRoomCreateInput, PreparedHostedPeer } from './hosted-room-peer-setup'
 import { requestHostedConnection, withHostedRoomProbeTimeout } from './hosted-room-transport'
 import { hostedUserEventReceipt, outgoingHostedUserEvent, restoreHostedUserOutboxIntents } from './hosted-user-events'
 import { botsText } from './i18n'
@@ -204,20 +206,6 @@ interface HostedRoomCreateInput {
   name: string
   roomId: string
   route: HostedRoomRouteResolution
-}
-
-interface AutonomousHostedRoomMember {
-  displayName?: string
-  handle: string
-  member: GroupMember
-  profile: string
-}
-
-interface AutonomousHostedRoomCreateInput {
-  members: AutonomousHostedRoomMember[]
-  name: string
-  probe: HostedRoomProbe
-  roomId: string
 }
 
 interface HostedRoomServerState {
@@ -1522,7 +1510,7 @@ export async function createAutonomousHostedGroupChat({
   }
 
   const hostedMembers: Array<Record<string, unknown>> = []
-  const peerRegistrations: Array<Record<string, unknown>> = []
+  const peerRegistrations: PreparedHostedPeer[] = []
 
   try {
     await addHostedRoomCleanup({
@@ -1625,12 +1613,16 @@ export async function createAutonomousHostedGroupChat({
         }
       })
       peerRegistrations.push({
-        room_id: roomId,
-        member_id: memberId,
-        target_url: scopedTargetUrl,
-        target_profile: invitation.target_profile,
-        grant: invitation.grant,
-        catalog
+        capability: probe.capabilities[connectionId],
+        requestPeer: (method, params) => requestForBot(item.member, method, params),
+        registration: {
+          room_id: roomId,
+          member_id: memberId,
+          target_url: scopedTargetUrl,
+          target_profile: invitation.target_profile,
+          grant: invitation.grant,
+          catalog
+        }
       })
     }
 
@@ -1641,9 +1633,7 @@ export async function createAutonomousHostedGroupChat({
       members: hostedMembers as HostedRoomCreateInput['members']
     })
 
-    for (const registration of peerRegistrations) {
-      await requestHostedConnection(homeRoute, 'groups.peer.register', registration)
-    }
+    await registerHostedPeers({ probe, roomId, name, members }, created, peerRegistrations)
 
     await releaseHostedRoomCleanup(roomId)
 
