@@ -97,6 +97,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
         self.rpc = HostedRoomServerRPC(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
+        self._peer_renewals: dict[tuple[str, str], tuple[str, float, float]] = {}
         self._persisted_peer_route_keys: set[tuple[str, str]] = set()
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
         self.peer_clients: dict[tuple[str, str], Any] = {}
@@ -362,6 +363,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 self.peer_routes.pop(key, None)
                 self._peer_route_status.pop(key, None)
                 self.peer_clients.pop(key, None)
+                self._peer_renewals.pop(key, None)
                 self._persisted_peer_route_keys.discard(key)
         return len(routes)
 
@@ -1217,6 +1219,42 @@ class HostedRoomService(HostedRoomArtifactMixin):
     ) -> None:
         self._apply_pending_control_retries(binding, lease)
         self._apply_pending_control_approvals(binding)
+        self._renew_idle_peer_grants(binding, lease)
+
+    def _renew_idle_peer_grants(self, binding: HostedRoomBinding, lease: driver.DriverLease) -> None:
+        """Use the leased room cycle, never another timer or an unverified expiry as authority."""
+        now = self.runtime.clock()
+        stored_links, _errors = hosted_room_links.load_room_links_tolerant(self.db_path)
+        links = [link for link in stored_links if link.room_id == binding.room_id]
+        current_keys = {(link.room_id, link.member_id) for link in links}
+        for key in list(self._peer_renewals):
+            if key[0] == binding.room_id and key not in current_keys:
+                self._peer_renewals.pop(key, None)
+        for link in links:
+            key = (link.room_id, link.member_id)
+            if link.status == "needs_reauthorization":
+                continue
+            fingerprint = hashlib.sha256(link.grant.encode()).hexdigest()
+            observed, next_at, delay = self._peer_renewals.get(key, (fingerprint, 0.0, 30.0))
+            if observed != fingerprint:
+                next_at, delay = 0.0, 30.0
+            if now < next_at:
+                continue
+            self._peer_renewals[key] = (fingerprint, now + 60, 30.0)
+            if not room_grant_needs_dispatch_refresh(link.grant, now=now):
+                continue
+            try:
+                driver.require_active_lease(self.db_path, lease, clock=self.runtime.clock)
+                hydrated = self._hydrate_persisted_peer_route(*key)
+                if hydrated is None or hydrated[0].grant != link.grant:
+                    continue
+                route, client = hydrated
+                self._tracked_peer_client(*key, client, route=route, renewal_lease=lease).probe(grant=route.grant)
+            except (driver.StaleLeaseError, driver.RoomUnavailableError):
+                raise
+            except Exception:
+                self._peer_renewals[key] = (fingerprint, now + delay, min(120.0, delay * 2))
+                logger.warning("Peer grant renewal pending: room=%s member=%s", *key)
 
 
     def _apply_pending_control_approvals(
@@ -1463,6 +1501,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
         client: HostedRoomPeerClient,
         *,
         route: PeerMemberRoute | None = None,
+        renewal_lease: driver.DriverLease | None = None,
     ) -> "_RouteStatusPeerClient":
         route = route or self.peer_routes.get((room_id, member_id))
         if route is None:
@@ -1470,6 +1509,8 @@ class HostedRoomService(HostedRoomArtifactMixin):
         target_url = getattr(client, "base_url", None)
 
         def require_current(grant):
+            if renewal_lease is not None:
+                driver.require_active_lease(self.db_path, renewal_lease, clock=self.runtime.clock)
             if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
                 raise RuntimeError("peer room route is no longer current")
             stored = hosted_room_links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)

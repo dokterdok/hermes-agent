@@ -101,6 +101,7 @@ class _RouteStatusPeerClient:
                         "acknowledge_artifacts",
                         "discard_artifacts",
                         "dispatch",
+                        "probe",
                         "read_artifact",
                         "recover_dispatch",
                         "stage_attachments",
@@ -137,6 +138,7 @@ class _RouteStatusPeerClient:
                                     grant=grant,
                                     capability_digest=capability_digest,
                                     execution_policy_digest=execution_policy_digest,
+                                    **({"ttl_seconds": 3600} if name == "probe" else {}),
                                 )
                             except Exception as exc:
                                 if bool(getattr(exc, "needs_reauthorization", False)):
@@ -153,6 +155,7 @@ class _RouteStatusPeerClient:
                                     raise RuntimeError(
                                         "peer returned no refreshed room grant"
                                     )
+                                rotation_started = False
                                 try:
                                     refreshed_catalog = None
                                     if refreshed.get("catalog") is not None:
@@ -179,6 +182,9 @@ class _RouteStatusPeerClient:
                                                 error_code="room_capability_catalog_changed",
                                                 not_admitted=True,
                                             )
+                                    if self._before_admission is not None:
+                                        self._before_admission(grant)
+                                    rotation_started = True
                                     if self._initial_grant is None:
                                         self._on_refreshed(replacement, refreshed_catalog)
                                     else:
@@ -190,14 +196,13 @@ class _RouteStatusPeerClient:
                                             ).hexdigest(),
                                         )
                                         self._current_grant = replacement
-                                except Exception:
+                                except Exception as exc:
                                     revoke = getattr(
                                         self._client, "revoke_grant_exact", None
                                     )
                                     try:
-                                        self._notify(
-                                            self._on_reauthorization, observed_grant
-                                        )
+                                        if rotation_started or bool(getattr(exc, "needs_reauthorization", False)):
+                                            self._notify(self._on_reauthorization, observed_grant)
                                     except Exception:
                                         logger.warning(
                                             "Could not persist peer reauthorization status"
