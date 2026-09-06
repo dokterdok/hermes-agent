@@ -236,3 +236,26 @@ def test_disband_fence_allows_accepted_peer_reads_and_stop_without_new_work(rene
         transports[0].client.recover_dispatch(dispatch=admissions[0], grant=r.old, receipt_only=True)
     assert len(r.peer.refreshes) == refresh_count
     assert len(admissions) == 1
+
+
+def test_ordinary_stop_without_a_proven_receipt_never_replays_admission(renewal, monkeypatch):
+    r = renewal
+    binding = r.service.bindings()[0]
+    r.service.send(room_id=binding.room_id, event_id="unknown-stop", payload={
+        "text": "@ops Stop an uncertain remote task", "thread_id": "unknown-stop-thread",
+    })
+    (task,) = driver.list_tasks(r.service.db_path, room_id=binding.room_id, status="queued")
+    lease = r.service.runtime._ensure_lease(binding)
+    driver.start_task(r.service.db_path, task["identity"], lease,
+                      expected_cancel_generation=0, clock=lambda: r.clock[0])
+    requests = []
+
+    def no_remote_admission(path, **kwargs):
+        requests.append(path)
+        raise PeerRunsHTTPError("unknown remote result", retryable=True, ambiguous=True)
+
+    monkeypatch.setattr(r.peer, "_request", no_remote_admission)
+    assert not hosted_room_link_records.room_link_retirement_started(r.service.db_path, room_id=binding.room_id)
+    r.service.stop_room(binding.room_id, cancel_id="ordinary-stop")
+    assert driver.get_task(r.service.db_path, task["identity"])["status"] == "stopping"
+    assert requests == []
