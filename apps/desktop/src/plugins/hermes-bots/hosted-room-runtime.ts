@@ -88,6 +88,9 @@ import {
   withHostedRoomCommandOrder,
   withHostedRoomOutboxDispatch
 } from './hosted-room-outbox'
+import { registerHostedPeers } from './hosted-room-peer-setup'
+import type { AutonomousHostedRoomCreateInput, PreparedHostedPeer } from './hosted-room-peer-setup'
+import { requestHostedConnection, withHostedRoomProbeTimeout } from './hosted-room-transport'
 import { hostedUserEventReceipt, outgoingHostedUserEvent, restoreHostedUserOutboxIntents } from './hosted-user-events'
 import { botsText } from './i18n'
 import { requestForBot } from './routing'
@@ -97,6 +100,7 @@ export { $hostedRoomCapabilities } from './hosted-room-capability-state'
 export { $hostedRoomCleanup } from './hosted-room-cleanup'
 export { describeAutonomousRoomPlan, describeHostedRoomCreationError } from './hosted-room-client'
 export { hostedRoomDriverDisplayStatus, hostedRoomPollFingerprint } from './hosted-room-inventory'
+export { requestHostedConnection } from './hosted-room-transport'
 
 const HOSTED_ROOM_SYNC_INTERVAL_MS = 5000
 const HOSTED_ROOM_UNSUPPORTED_REPROBE_MS = 30_000
@@ -202,20 +206,6 @@ interface HostedRoomCreateInput {
   route: HostedRoomRouteResolution
 }
 
-interface AutonomousHostedRoomMember {
-  displayName?: string
-  handle: string
-  member: GroupMember
-  profile: string
-}
-
-interface AutonomousHostedRoomCreateInput {
-  members: AutonomousHostedRoomMember[]
-  name: string
-  probe: HostedRoomProbe
-  roomId: string
-}
-
 interface HostedRoomServerState {
   authority_epoch?: unknown
   authority_gateway_id?: unknown
@@ -254,35 +244,6 @@ async function hostedDefaultRoutes(): Promise<ProfileRoute[]> {
   }
 
   return [...byConnection.values()]
-}
-
-export async function requestHostedConnection<T>(
-  route: ProfileRoute,
-  method: string,
-  params: Record<string, unknown> = {}
-): Promise<T> {
-  if (!route?.connectionId || typeof host.requestProfile !== 'function') {
-    throw new Error(botsText().group.hostRouteMissing)
-  }
-
-  return host.requestProfile(route, method, params) as Promise<T>
-}
-
-async function withHostedRoomProbeTimeout<T>(task: Promise<T>, timeoutMs = 3000) {
-  let timer: null | ReturnType<typeof setTimeout> = null
-
-  try {
-    return await Promise.race([
-      task,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Host check timed out')), timeoutMs)
-      })
-    ])
-  } finally {
-    if (timer !== null) {
-      clearTimeout(timer)
-    }
-  }
 }
 
 async function verifiedHostedAuthorityRoute(routes: ProfileRoute[], authorityId: string, preferredConnectionId = '') {
@@ -1528,7 +1489,7 @@ export async function createAutonomousHostedGroupChat({
   }
 
   const hostedMembers: Array<Record<string, unknown>> = []
-  const peerRegistrations: Array<Record<string, unknown>> = []
+  const peerRegistrations: PreparedHostedPeer[] = []
 
   try {
     await addHostedRoomCleanup({
@@ -1631,12 +1592,16 @@ export async function createAutonomousHostedGroupChat({
         }
       })
       peerRegistrations.push({
-        room_id: roomId,
-        member_id: memberId,
-        target_url: scopedTargetUrl,
-        target_profile: invitation.target_profile,
-        grant: invitation.grant,
-        catalog
+        capability: probe.capabilities[connectionId],
+        requestPeer: (method, params) => requestForBot(item.member, method, params),
+        registration: {
+          room_id: roomId,
+          member_id: memberId,
+          target_url: scopedTargetUrl,
+          target_profile: invitation.target_profile,
+          grant: invitation.grant,
+          catalog
+        }
       })
     }
 
@@ -1647,9 +1612,7 @@ export async function createAutonomousHostedGroupChat({
       members: hostedMembers as HostedRoomCreateInput['members']
     })
 
-    for (const registration of peerRegistrations) {
-      await requestHostedConnection(homeRoute, 'groups.peer.register', registration)
-    }
+    await registerHostedPeers({ probe, roomId, name, members }, created, peerRegistrations)
 
     await releaseHostedRoomCleanup(roomId)
 
