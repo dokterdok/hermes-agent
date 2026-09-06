@@ -43,11 +43,14 @@ import {
   createHostedRoomOutbox,
   createHostedRoomReplayState,
   deriveFriendlyHostedRoomStatus,
+  hasRequestedRoomGrantLifetime,
   isHostedRoomContinuityEligible,
   isHostedRoomReadEligible,
   profileScopedRoomLinkEndpoint,
   replayHostedRoomPages,
-  resolveAutonomousRoomPlan
+  resolveAutonomousRoomPlan,
+  ROOM_GRANT_STATUS_TTL_SECONDS,
+  ROOM_GRANT_TTL_SECONDS
 } from './hosted-room-client'
 import type {
   AutonomousRoomPlan,
@@ -1514,6 +1517,10 @@ export async function createAutonomousHostedGroupChat({
     throw new Error('This Group Chat cannot continue without Desktop yet.')
   }
 
+  if (plan.kind === 'multi-gateway' && !homeCapability.peerGrantRenewal) {
+    throw new Error(botsText().group.hostUpdateNeeded(homeConnectionId))
+  }
+
   const hostedMembers: Array<Record<string, unknown>> = []
   const peerRegistrations: Array<Record<string, unknown>> = []
 
@@ -1556,6 +1563,8 @@ export async function createAutonomousHostedGroupChat({
           authority_gateway_id: homeCapability.authorityId,
           authority_epoch: 1,
           member_id: memberId,
+          ttl_seconds: ROOM_GRANT_TTL_SECONDS,
+          status_ttl_seconds: ROOM_GRANT_STATUS_TTL_SECONDS,
           profile
         })
       )
@@ -1576,7 +1585,22 @@ export async function createAutonomousHostedGroupChat({
           connectionId,
           profile: invitedProfile,
           grant: String(invitation.grant)
+        }).catch(async error => {
+          try {
+            await requestForBot(item.member, 'groups.peer.revoke', {
+              grant: String(invitation.grant),
+              profile: invitedProfile
+            })
+          } catch {
+            throw Object.assign(new Error('Peer grant cleanup failed.'), { fallbackSafe: false })
+          }
+
+          throw error
         })
+      }
+
+      if (!hasRequestedRoomGrantLifetime(invitation)) {
+        throw new Error(botsText().group.hostUpdateNeeded(item.displayName || item.handle || profile))
       }
 
       if (
