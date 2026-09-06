@@ -5,17 +5,17 @@
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#273e38" flood-opacity=".07"/></filter>
     <style>
       text { font-family: Arial, Helvetica, sans-serif; letter-spacing: 0; }
-      .heading { font-size: 34px; font-weight: 700; fill: #22332e; }
-      .body { font-size: 26px; fill: #51645c; }
+      .heading { font-size: 34px; font-weight: 700; fill: #273039; }
+      .body { font-size: 26px; fill: #56616b; }
       .ref { font-size: 24px; fill: #3b6657; }
       .number { font-size: 25px; font-weight: 700; }
       .status { font-size: 21px; font-weight: 700; }
-      .line { stroke: #c8d6ce; stroke-width: 3; fill: none; }
+      .line { stroke: #c9d3db; stroke-width: 3; fill: none; }
     </style>
   </defs>
-  <rect width="1600" height="1690" fill="#f6f8f7"/>
-  <text x="80" y="92" font-size="52" font-weight="700" fill="#20372d">Bot Group Chats, beyond Desktop</text>
-  <text x="80" y="143" font-size="28" fill="#52665c">One conversation. Shared work. A clear path to production.</text>
+  <rect width="1600" height="1690" fill="#f8fafb"/>
+  <text x="80" y="92" font-size="52" font-weight="700" fill="#273039">Bot Group Chats, beyond Desktop</text>
+  <text x="80" y="143" font-size="28" fill="#56616b">Shared work. Real files. Pick up from another device.</text>
 
   <path class="line" d="M800 308V340M800 464V488M800 488H540V516M800 488H1060V516M540 716V741H800V766M1060 716V741H800M800 932V964M800 1130V1162M800 1328V1360"/>
 
@@ -23,7 +23,7 @@
   <text x="500" y="235" font-size="20" font-weight="700" fill="#526079">NEXT MILESTONE</text>
   <text x="500" y="273" font-size="27" font-weight="700" fill="#33445d">Continue if the coordinating host goes offline</text>
 
-  <rect x="400" y="340" width="800" height="124" rx="8" fill="#214a3c" filter="url(#shadow)"/>
+  <rect x="400" y="340" width="800" height="124" rx="8" fill="#273039" filter="url(#shadow)"/>
   <text x="440" y="389" font-size="34" font-weight="700" fill="#ffffff">Try the complete stack</text>
   <text x="440" y="431" font-size="25" fill="#dceee6">#98307  /  Integration draft for end-to-end testing</text>
 
@@ -43,14 +43,14 @@
   <text x="892" y="564" font-size="31" font-weight="700" fill="#22332e">Control from messaging</text>
   <text x="843" y="612" class="body">Send, approve, Stop, or get files.</text>
   <text x="843" y="652" class="ref">#98073  /  Ready for review</text>
-  <text x="843" y="690" font-size="22" fill="#52665c">Scoped approvals: field checks next.</text>
+  <text x="843" y="690" font-size="22" fill="#52665c">Scoped approvals: verified in Telegram.</text>
 
   <g filter="url(#shadow)"><rect x="220" y="766" width="1160" height="166" rx="8" fill="#ffffff" stroke="#d3ddd8"/></g>
   <rect x="249" y="797" width="40" height="40" rx="6" fill="#e6f0f5"/>
   <text x="262" y="826" class="number" fill="#386c87">4</text>
   <text x="312" y="827" class="heading">Automatic Desktop continuity</text>
   <text x="249" y="871" class="body">Create a Group Chat normally. Hermes shows when Desktop is still needed.</text>
-  <text x="249" y="908" class="ref">#97846  /  Desktop-only client in review</text>
+  <text x="249" y="908" class="ref">#97846  /  Desktop-only; maintainer review deferred</text>
 
   <g filter="url(#shadow)"><rect x="150" y="964" width="1300" height="166" rx="8" fill="#ffffff" stroke="#d3ddd8"/></g>
   <rect x="179" y="995" width="40" height="40" rx="6" fill="#e5f1e9"/>
@@ -80,5 +80,5 @@
   <text x="1405" y="1418" class="status" fill="#286344">On main</text>
 
   <text x="80" y="1594" font-size="25" fill="#334d40">Today, the coordinating host must stay online. Automatic takeover is not enabled.</text>
-  <text x="80" y="1640" font-size="24" fill="#52665c">#97681 links the source PRs, test receipts, and remaining acceptance gates.</text>
+  <text x="80" y="1640" font-size="24" fill="#56616b">#97681 links source PRs and exact test evidence. Files menus require the complete stack.</text>
 </svg>
