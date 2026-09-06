@@ -551,6 +551,10 @@ class PeerRunsHTTPClient:
     def _poll_receipt(self, record: Mapping[str, Any], *, grant: str) -> dict[str, Any]:
         run_id, now = str(record["run_id"]), self.clock()
         cached = self._status_cache.get(run_id)
+        fingerprint = hashlib.sha256(grant.encode()).hexdigest()
+        if (cached is not None and getattr(cached.get("error"), "needs_reauthorization", False)
+                and cached.get("grant_sha256") != fingerprint):
+            cached = None  # A retired bearer's refusal must not poison its validated replacement.
         if cached is not None:
             status = cached["status"]
             if status.get("status") in _TERMINAL_RUN_STATES:
@@ -561,7 +565,7 @@ class PeerRunsHTTPClient:
                     raise error
                 return status
         delay = self._next_poll_delay(cached)
-        entry = {"delay": delay, "next_poll_at": now + delay}
+        entry = {"delay": delay, "next_poll_at": now + delay, "grant_sha256": fingerprint}
         try:
             full = self._request(_run_path(record), room_grant=self._require_room_grant(grant))
             status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
