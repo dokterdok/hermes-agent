@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1778" viewBox="0 0 1600 1778" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1820" viewBox="0 0 1600 1820" role="img" aria-labelledby="title desc">
   <title id="title">Bot Group Chats beyond Desktop: the path to production</title>
-  <desc id="desc">A widening stack of seven layers, built from the bottom up. Shared history, single-gateway execution and cross-gateway work have landed. The Desktop client, Files and Bot-to-Bot handoff, and messaging controls have separate review paths. Layer 7 aims to keep work going when a host goes offline. Its history and task-record copies are implemented in PRs 104601 and 104759; automatic recovery on another host is not enabled yet. The complete integration draft is PR 98307.</desc>
+  <desc id="desc">A widening stack of seven layers, built from the bottom up. Shared history, single-gateway execution and cross-gateway work have landed. The Desktop client, Files and Bot-to-Bot handoff, and messaging controls have separate review paths. Layer 7 aims to keep work going when a host goes offline. History and task-record copies in PRs 104601 and 104759 are under review; owner Stop for default-profile participants is draft PR 105079. Automatic recovery on another host is not enabled yet. The complete integration draft is PR 98307.</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#273e38" flood-opacity=".07"/></filter>
     <style>
@@ -13,26 +13,27 @@
       .line { stroke: #c9d3db; stroke-width: 3; fill: none; }
     </style>
   </defs>
-  <rect width="1600" height="1778" fill="#f8fafb"/>
+  <rect width="1600" height="1820" fill="#f8fafb"/>
   <text x="80" y="92" font-size="52" font-weight="700" fill="#273039">Bot Group Chats, beyond Desktop</text>
   <text x="80" y="143" font-size="28" fill="#56616b">Shared work. Real files. Pick up from another device.</text>
 
   <g id="layer-seven">
-    <g filter="url(#shadow)"><rect x="350" y="198" width="900" height="210" rx="8" fill="#ffffff" stroke="#d3ddd8"/></g>
+    <g filter="url(#shadow)"><rect x="350" y="198" width="900" height="252" rx="8" fill="#ffffff" stroke="#d3ddd8"/></g>
     <rect x="379" y="229" width="40" height="40" rx="6" fill="#e6f0f5"/>
     <text x="392" y="258" class="number" fill="#386c87">7</text>
     <text x="442" y="259" font-size="34" font-weight="700" fill="#273039">Keep working when a host goes offline</text>
     <text x="379" y="303" class="body">Preserve history and task records on other gateways.</text>
     <text x="379" y="342" class="ref">#104601 + #104759  /  Under review</text>
-    <text x="379" y="382" font-size="24" fill="#56616b">In progress: automatic recovery is not enabled yet.</text>
+    <text x="379" y="379" font-size="24" fill="#386c87">Stop a participant: #105079  /  Draft</text>
+    <text x="379" y="420" font-size="24" fill="#56616b">In progress: automatic recovery is not enabled yet.</text>
   </g>
 
-  <g transform="translate(0 88)">
+  <g transform="translate(0 130)">
   <path class="line" d="M800 320V340M800 464V488M800 488H540V516M800 488H1060V516M540 716V741H800V766M1060 716V741H800M800 932V964M800 1130V1162M800 1328V1360"/>
 
   <rect x="400" y="340" width="800" height="124" rx="8" fill="#273039" filter="url(#shadow)"/>
-  <text x="440" y="389" font-size="34" font-weight="700" fill="#ffffff">Try the complete stack</text>
-  <text x="440" y="431" font-size="25" fill="#dceee6">#98307  /  Integration draft for end-to-end testing</text>
+  <text x="440" y="389" font-size="34" font-weight="700" fill="#ffffff">Test the integrated stack</text>
+  <text x="440" y="431" font-size="25" fill="#dceee6">#98307  /  Field build; #105079 is not included yet.</text>
 
   <g filter="url(#shadow)">
     <rect x="290" y="516" width="495" height="200" rx="8" fill="#ffffff" stroke="#d3ddd8"/>
