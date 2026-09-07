@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1690" viewBox="0 0 1600 1690" role="img" aria-labelledby="title desc">
   <title id="title">Bot Group Chats beyond Desktop: the path to production</title>
-  <desc id="desc">A widening stack of six layers, built from the bottom up. Shared history, single-gateway execution and cross-gateway work have landed. The Desktop client, Files and Bot-to-Bot handoff, and messaging controls have separate review paths. The complete integration draft is PR 98307. Review-ready PR 104601 adds verified participant history copies and safe cleanup after disband as the first host-offline step. Automatic takeover is not enabled.</desc>
+  <desc id="desc">A widening stack of six layers, built from the bottom up. Shared history, single-gateway execution and cross-gateway work have landed. The Desktop client, Files and Bot-to-Bot handoff, and messaging controls have separate review paths. The complete integration draft is PR 98307. Review-ready PR 104601 adds verified history copies and safe cleanup; draft PR 104759 adds passive task and Stop records. Automatic takeover is not enabled.</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#273e38" flood-opacity=".07"/></filter>
     <style>
@@ -20,9 +20,9 @@
   <path class="line" d="M800 320V340M800 464V488M800 488H540V516M800 488H1060V516M540 716V741H800V766M1060 716V741H800M800 932V964M800 1130V1162M800 1328V1360"/>
 
   <rect x="465" y="198" width="670" height="122" rx="8" fill="#eef2f6" stroke="#b4c0cf" stroke-dasharray="7 6"/>
-  <text x="500" y="235" font-size="20" font-weight="700" fill="#526079">HOST-OFFLINE CONTINUITY / STEP 1</text>
-  <text x="500" y="273" font-size="28" font-weight="700" fill="#33445d">Keep verified history on other hosts</text>
-  <text x="500" y="304" font-size="20" fill="#3b6657">#104601 / Ready: history delivery and safe cleanup</text>
+  <text x="500" y="235" font-size="20" font-weight="700" fill="#526079">HOST-OFFLINE CONTINUITY / IN PROGRESS</text>
+  <text x="500" y="273" font-size="28" font-weight="700" fill="#33445d">Keep history and task records on other hosts</text>
+  <text x="500" y="304" font-size="20" fill="#3b6657">#104601 ready  /  #104759 draft  /  No takeover yet</text>
 
   <rect x="400" y="340" width="800" height="124" rx="8" fill="#273039" filter="url(#shadow)"/>
   <text x="440" y="389" font-size="34" font-weight="700" fill="#ffffff">Try the complete stack</text>
