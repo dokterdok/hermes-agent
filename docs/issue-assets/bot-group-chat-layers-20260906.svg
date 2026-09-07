@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1862" viewBox="0 0 1600 1862" role="img" aria-labelledby="title desc">
   <title id="title">Bot Group Chats beyond Desktop: the path to production</title>
-  <desc id="desc">A widening stack of seven layers, built from the bottom up. Shared history, single-gateway execution and cross-gateway work have landed. The Desktop client, Files and Bot-to-Bot handoff, and messaging controls have separate review paths. Layer 7 aims to keep work going when a host goes offline. History and task-record copies in PRs 104601 and 104759 are under review. Manual same-group recovery starts in draft PR 105197; participant owner Stop is draft PR 105079. Recovery is not activated yet. These drafts are separate from integration PR 98307.</desc>
+  <desc id="desc">A separate banner above the seven-layer pyramid points to integration PR 98307: layers 1 through 6 and passive history/task copies, not the recovery drafts. Numbered layers widen toward their foundation. Shared history, single-gateway execution and cross-gateway work have landed. Desktop, Files and Bot-to-Bot handoff, and messaging have separate review paths. Layer 7 aims to continue the same group after host loss. PRs 104601 and 104759 retain passive copies; manual recovery PR 105197 and participant owner Stop PR 105079 remain draft. Recovery is not activated.</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#273e38" flood-opacity=".07"/></filter>
     <style>
@@ -17,7 +17,13 @@
   <text x="80" y="92" font-size="52" font-weight="700" fill="#273039">Bot Group Chats, beyond Desktop</text>
   <text x="80" y="143" font-size="28" fill="#56616b">Shared work. Real files. Pick up from another device.</text>
 
-  <g id="layer-seven">
+  <g id="integration-banner">
+    <rect x="80" y="184" width="1440" height="126" rx="8" fill="#273039" filter="url(#shadow)"/>
+    <text x="120" y="235" font-size="34" font-weight="700" fill="#ffffff">Try the integration build · #98307</text>
+    <text x="120" y="281" font-size="25" fill="#dceee6">Layers 1–6 and passive history/task copies. Recovery drafts are separate.</text>
+  </g>
+
+  <g id="layer-seven" transform="translate(0 150)">
     <g filter="url(#shadow)"><rect x="350" y="198" width="900" height="294" rx="8" fill="#ffffff" stroke="#d3ddd8"/></g>
     <rect x="379" y="229" width="40" height="40" rx="6" fill="#e6f0f5"/>
     <text x="392" y="258" class="number" fill="#386c87">7</text>
@@ -30,11 +36,7 @@
   </g>
 
   <g transform="translate(0 172)">
-  <path class="line" d="M800 320V340M800 464V488M800 488H540V516M800 488H1060V516M540 716V741H800V766M1060 716V741H800M800 932V964M800 1130V1162M800 1328V1360"/>
-
-  <rect x="400" y="340" width="800" height="124" rx="8" fill="#273039" filter="url(#shadow)"/>
-  <text x="440" y="389" font-size="34" font-weight="700" fill="#ffffff">Test the integrated stack</text>
-  <text x="440" y="431" font-size="25" fill="#dceee6">#98307  /  Recovery drafts are separate.</text>
+  <path class="line" d="M800 470V488M800 488H540V516M800 488H1060V516M540 716V741H800V766M1060 716V741H800M800 932V964M800 1130V1162M800 1328V1360"/>
 
   <g filter="url(#shadow)">
     <rect x="290" y="516" width="495" height="200" rx="8" fill="#ffffff" stroke="#d3ddd8"/>
