@@ -23,7 +23,7 @@
     <text x="392" y="258" class="number" fill="#386c87">7</text>
     <text x="442" y="259" font-size="34" font-weight="700" fill="#273039">Keep working when a host goes offline</text>
     <text x="379" y="303" class="body">Preserve history and task records on other gateways.</text>
-    <text x="379" y="342" class="ref">#104601 + #104759  /  Ready for focused review</text>
+    <text x="379" y="342" class="ref">#104601 + #104759  /  Under review</text>
     <text x="379" y="382" font-size="24" fill="#56616b">In progress: automatic recovery is not enabled yet.</text>
   </g>
 
@@ -42,8 +42,8 @@
   <text x="324" y="566" class="number" fill="#745699">5</text>
   <text x="367" y="564" font-size="28" font-weight="700" fill="#22332e">Files and Bot-to-Bot handoff</text>
   <text x="318" y="612" class="body">Share, find, and retrieve files.</text>
-  <text x="318" y="652" class="ref">#98072 Ready  /  #99159 Draft</text>
-  <text x="318" y="690" font-size="20" fill="#3b6657">UI #104199 Ready / Classic #104198 Draft</text>
+  <text x="318" y="652" class="ref">#98072 + #99159  /  Ready for review</text>
+  <text x="318" y="690" font-size="20" fill="#3b6657">UI #104199 + Classic #104198: ready</text>
 
   <rect x="838" y="538" width="37" height="37" rx="6" fill="#e6f0f5"/>
   <text x="849" y="566" class="number" fill="#386c87">6</text>
