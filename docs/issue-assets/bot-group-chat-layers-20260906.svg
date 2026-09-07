@@ -23,7 +23,7 @@
     <text x="392" y="258" class="number" fill="#386c87">7</text>
     <text x="442" y="259" font-size="34" font-weight="700" fill="#273039">Keep working when a host goes offline</text>
     <text x="379" y="303" class="body">Preserve history and task records on other gateways.</text>
-    <text x="379" y="342" class="ref">#104601 Ready  /  #104759 Draft</text>
+    <text x="379" y="342" class="ref">#104601 + #104759  /  Ready for focused review</text>
     <text x="379" y="382" font-size="24" fill="#56616b">In progress: automatic recovery is not enabled yet.</text>
   </g>
 
