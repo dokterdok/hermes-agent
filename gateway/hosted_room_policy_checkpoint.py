@@ -20,7 +20,7 @@ from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 MAX_ACTIVE_POLICY_EVENTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 4
+_TRANSCRIPT_SCHEMA_VERSION = 6
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 
@@ -141,9 +141,11 @@ class HostedRoomPolicyCheckpoint:
                ON CONFLICT(room_id, thread_id, seq) DO UPDATE SET
                    settled_seq=COALESCE(excluded.settled_seq, hosted_room_policy_transcript.settled_seq)""",
             (event["room_id"], thread_id, int(event["seq"]), str(event["kind"]), settled_seq))
-        if event["kind"] in {"message.user", "message.member"}:
+        from gateway.hosted_room_event_policy import MESSAGE_KINDS, NOTICE_KINDS
+        if event["kind"] in MESSAGE_KINDS | NOTICE_KINDS:
             cutoff = conn.execute("""SELECT seq FROM hosted_room_policy_transcript
-                   WHERE room_id=? AND thread_id=? AND kind IN ('message.user', 'message.member')
+                   WHERE room_id=? AND thread_id=? AND kind IN ('message.user', 'message.member', 'message.participant',
+                       'message.edited', 'message.deleted', 'message.reaction')
                    ORDER BY seq DESC LIMIT 1 OFFSET ?""",
                 (event["room_id"], thread_id, MAX_THREAD_TRANSCRIPT_EVENTS - 1)).fetchone()
             if cutoff is not None:
@@ -167,7 +169,10 @@ class HostedRoomPolicyCheckpoint:
         events_by_seq = {
             int(event["seq"]): event
             for event in (*map(_event_from_room_row, rows), *(json.loads(row["event_json"]) for row in active_rows))}
-        return [events_by_seq[seq] for seq in sorted(events_by_seq)]
+        result = [events_by_seq[seq] for seq in sorted(events_by_seq)]
+        from gateway.hosted_room_event_policy import policy_for, augment_references, NOTICE_KINDS
+        kinds = None if policy_for(conn, room_id)["mode"] == "event_driven" else NOTICE_KINDS | {"message.participant"}
+        return augment_references(conn, room_id, result, thread_id, pending_kinds=kinds)
 
     # -- per-kind projection handlers (dispatched by _apply_event) -----------
 
@@ -219,7 +224,11 @@ class HostedRoomPolicyCheckpoint:
             committed = _settled_message(conn, room_id, discussion_event_id, payload["message_event_id"])
             if committed is not None:
                 if source is not None and seen_through_seq >= int(source["seq"]):
-                    seen_through_seq = max(seen_through_seq, int(committed["seq"]))
+                    unseen = conn.execute("""SELECT MIN(seq) FROM hosted_room_events WHERE room_id=?
+                        AND json_extract(payload_json, '$.thread_id')=? AND seq>? AND seq<?
+                        AND kind IN ('message.participant','message.edited','message.deleted','message.reaction')""",
+                        (room_id, thread_id, seen_through_seq, int(committed["seq"]))).fetchone()[0]
+                    seen_through_seq = int(unseen) - 1 if unseen else max(seen_through_seq, int(committed["seq"]))
                 self._store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
         else:
             # Non-visible receipts still supply historical reconstruction watermarks.
@@ -246,6 +255,9 @@ class HostedRoomPolicyCheckpoint:
         cursor = conn.execute("SELECT stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?",
                               (room_id,)).fetchone()
         if int(source["seq"]) <= int(cursor["stopped_through_seq"]):
+            return None
+        from gateway.hosted_room_scoped_controls import thread_stop_seq
+        if int(source["seq"]) <= thread_stop_seq(conn, room_id, thread_id):
             return None
         # Repeated explicit retries may leave many obsolete deferrals. Retain
         # the latest receipt per task and completion per status, not their history.
@@ -285,12 +297,20 @@ class HostedRoomPolicyCheckpoint:
                SET stopped_through_seq=MAX(stopped_through_seq, ?) WHERE room_id=?""",
             (int(event["seq"]), str(event["room_id"])))
 
+    def _apply_thread_stop(self, conn, event, payload):
+        conn.execute("""UPDATE hosted_room_policy_threads SET completed=1
+            WHERE room_id=? AND thread_id=? AND latest_user_seq<?""",
+            (event["room_id"], payload["thread_id"], int(event["seq"])))
+
     _APPLY_BY_KIND: dict[str, Callable[..., None]] = {
         "message.user": _apply_user_message, "message.member": _apply_discussion_event,
         **dict.fromkeys(_TERMINAL_KINDS, _apply_discussion_event), "room.activity": _apply_room_activity,
-        "room.stop_requested": _apply_stop_requested}
+        "room.stop_requested": _apply_stop_requested, "thread.stop_requested": _apply_thread_stop}
 
     def _apply_event(self, conn: sqlite3.Connection, event: Mapping[str, Any]) -> None:
+        from gateway.hosted_room_event_policy import apply_event
+        if apply_event(self, conn, event):
+            return
         handler = self._APPLY_BY_KIND.get(_text(event, "kind"))
         if handler is not None:
             payload = event.get("payload")
@@ -383,9 +403,21 @@ class HostedRoomPolicyCheckpoint:
                 bound_error="active room policy projection exceeded its bound")
             watermark_rows = conn.execute("""SELECT member_id, seen_through_seq FROM hosted_room_policy_watermarks
                    WHERE room_id=? AND thread_id=?""", (room_id, thread_id)).fetchall()
+            watermarks = {(thread_id, str(row["member_id"])): int(row["seen_through_seq"]) for row in watermark_rows}
+            from gateway.hosted_room_event_policy import policy_for
+            if policy_for(conn, room_id)["mode"] == "event_driven":
+                # The bounded snapshot omits policy events. Carry their input floor
+                # separately so restored pre-policy sources remain identity-only.
+                floor = conn.execute("SELECT MAX(seq) FROM hosted_room_events WHERE room_id=? "
+                    "AND kind='room.policy_changed' AND seq<=?", (room_id, through_seq)).fetchone()[0] or 0
+                members = json.loads(conn.execute("SELECT members_json FROM hosted_rooms WHERE room_id=?",
+                                                  (room_id,)).fetchone()[0])
+                for member in members:
+                    key = (thread_id, member["member_id"])
+                    watermarks[key] = max(watermarks.get(key, 0), int(floor))
         return PolicySnapshot(
             through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=tuple(events),
-            watermarks={(thread_id, str(row["member_id"])): int(row["seen_through_seq"]) for row in watermark_rows})
+            watermarks=watermarks)
 
     def publication_exists(self, *, room_id: str, task_id: str, status: str, execution_generation: int) -> bool:
         """Return whether one exact driver outcome is already in the room log."""
@@ -448,6 +480,9 @@ class HostedRoomPolicyCheckpoint:
     def compact_completed(self, *, room_id: str) -> None:
         """Drop any completed projections left by an interrupted sync."""
         with self._connect() as conn:
+            from gateway.hosted_room_event_policy import policy_for
+            if policy_for(conn, room_id)["mode"] == "event_driven":
+                return
             for row in conn.execute(
                 "SELECT discussion_event_id FROM hosted_room_policy_threads WHERE room_id=? AND completed=1", (room_id,)
             ).fetchall():

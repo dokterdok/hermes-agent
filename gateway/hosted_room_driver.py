@@ -39,7 +39,7 @@ TASK_STATUSES = frozenset(get_args(TaskStatus))
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({"target_profile", "prompt", "source_event_seq"})
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "attachments", "input_context", "recipient_member_ids"})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "attachments", "input_context", "recipient_member_ids", "session_scope"})
 _LEASE_COLUMNS = frozenset({
     "room_id", "gateway_id", "authority_epoch", "process_generation", "lease_generation", "expires_at", "acquired_at",
     "updated_at", "released_at"})
@@ -83,6 +83,8 @@ _BEGIN_STOP_SQL = _task_update(
     "status='stopping', cancel_generation=?, cancel_id=?, updated_at=?",
     "status IN ('running', 'indeterminate', 'deferred') AND cancel_generation=?")
 _COMPLETE_STOP_SQL = _task_update(
+    "result_json=CASE WHEN ? THEN json_set(COALESCE(result_json, '{}'), "
+    "'$.native_terminal_acknowledged', json('true')) ELSE result_json END, "
     "status='cancelled', terminal_at=?, updated_at=?", "status='stopping' AND cancel_id=? AND cancel_generation=?")
 
 # Lease-first recovery transitions: name -> (fenced status, SET clause, generation-guard stale message,
@@ -171,6 +173,10 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         "prompt": prompt,
         "source_event_seq": source_event_seq,
     }
+    if "session_scope" in value:
+        if value["session_scope"] != "thread_member_v1" or not value.get("target_member_id"):
+            raise DriverValidationError("unsupported room session scope")
+        normalized["session_scope"] = value["session_scope"]
     if "input_context" in value:
         from gateway.hosted_room_task_input import validate_task_input
 
@@ -526,6 +532,8 @@ def _settlement(
     result_json = _canonical_json(result)
     now = _timestamp(clock)
     def replay(row: sqlite3.Row) -> dict[str, Any] | None:
+        from gateway.hosted_room_driver_native import require_native_ack
+        require_native_ack(row, result)
         if row["settlement_id"] is None:
             return None
         if (row["settlement_id"], row["settlement_status"], row["result_json"]) == (settlement_id, status, result_json):
@@ -699,6 +707,10 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
             if existing["payload_digest"] != payload_digest or existing["payload_json"] != payload_json:
                 raise TaskConflictError("task_id is already bound to a different payload")
             return _task_from_row(existing, idempotent=True)
+        from gateway.hosted_room_event_policy import require_admission_budget
+        require_admission_budget(conn, identity.room_id, now, RoomUnavailableError)
+        from gateway.hosted_room_membership import require_active_member
+        require_active_member(conn, identity.room_id, normalized_payload, error=RoomUnavailableError)
         if conn.execute(
             "SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND thread_id=? AND turn_id=?",
             (identity.room_id, identity.thread_id, identity.turn_id)).fetchone() is not None:
@@ -862,6 +874,8 @@ def resolve_indeterminate_task(
     with _transaction(db_path) as conn:
         _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
+        from gateway.hosted_room_driver_native import require_native_ack
+        require_native_ack(row, result)
         if row["settlement_id"] is not None:
             if (
                 row["settlement_id"] == settlement_id
@@ -934,6 +948,8 @@ def resolve_indeterminate_cancellation(
     with _transaction(db_path) as conn:
         _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
+        from gateway.hosted_room_driver_native import require_native_ack
+        require_native_ack(row)
         if row["status"] == "cancelled" and row["cancel_id"] == cancel_id:
             _record_retry_receipt(conn, retry_id=retry_id, row=row, now=now)
             return _task_from_row(row, idempotent=True)
@@ -1002,6 +1018,8 @@ def requeue_indeterminate_task(
             or int(row["cancel_generation"]) != expected_cancel_generation
         ):
             raise StaleTaskError("indeterminate task generation changed")
+        from gateway.hosted_room_driver_native import require_native_ack
+        require_native_ack(row)
         stopped = _cancel_task_behind_stop_fence(conn, row, now=now)
         if stopped is not None:
             _record_retry_receipt(conn, retry_id=retry_id, row=row, now=now)
@@ -1037,6 +1055,8 @@ def defer_indeterminate_task(
     result_json = _canonical_json({"reason": reason, "retryable": True})
     now = _timestamp(clock)
     def replay(row: sqlite3.Row) -> dict[str, Any] | None:
+        from gateway.hosted_room_driver_native import require_native_ack
+        require_native_ack(row)
         deferred = _generations_match(row, "deferred", expected_execution_generation, expected_cancel_generation)
         return _task_from_row(row, idempotent=True) if deferred and row["result_json"] == result_json else None
     return _generation_transition(
@@ -1123,13 +1143,16 @@ def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: C
 
 
 def cancel_task(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    expected_execution_generation: int | None = None,
 ) -> dict[str, Any]:
     """Cancel a queued task before any external work was admitted."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
     _cancel_generation(expected_cancel_generation)
     now = _timestamp(clock)
     def guard(row: sqlite3.Row) -> None:
+        if expected_execution_generation is not None and int(row["execution_generation"]) != expected_execution_generation:
+            raise StaleTaskError("task_attempt_changed")
         if row["status"] in TERMINAL_STATUSES:
             raise InvalidTaskTransitionError(f"cannot cancel task in state '{row['status']}'")
         if row["status"] not in {"queued", "deferred"}:
@@ -1142,13 +1165,16 @@ def cancel_task(
 
 
 def begin_task_cancel(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    expected_execution_generation: int | None = None,
 ) -> dict[str, Any]:
     """Persist a stop intent without claiming the remote run has stopped."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
     _cancel_generation(expected_cancel_generation)
     now = _timestamp(clock)
     def guard(row: sqlite3.Row) -> None:
+        if expected_execution_generation is not None and int(row["execution_generation"]) != expected_execution_generation:
+            raise StaleTaskError("task_attempt_changed")
         if row["status"] in TERMINAL_STATUSES or row["status"] == "queued":
             raise InvalidTaskTransitionError(f"cannot request remote stop in state '{row['status']}'")
         _require_cancel_generation(row, expected_cancel_generation)
@@ -1159,18 +1185,25 @@ def begin_task_cancel(
 
 
 def complete_task_cancel(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    expected_execution_generation: int | None = None, native_terminal_acknowledged: bool | None = None,
 ) -> dict[str, Any]:
     """Commit cancellation only after the transport acknowledges exact Stop."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
     now = _timestamp(clock)
     def guard(row: sqlite3.Row) -> None:
+        if expected_execution_generation is not None and row["execution_generation"] != expected_execution_generation:
+            raise StaleTaskError("task stop acknowledgement execution is stale")
+        from gateway.hosted_room_driver_native import require_native_ack
+        require_native_ack(row, {"native_terminal_acknowledged": native_terminal_acknowledged})
         if (row["status"], row["cancel_id"], int(row["cancel_generation"])) != (
             "stopping", cancel_id, expected_cancel_generation):
             raise StaleTaskError("task stop acknowledgement is stale")
     return _transition(
-        db_path, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_COMPLETE_STOP_SQL,
-        set_params=(now, now), fence_params=(cancel_id, expected_cancel_generation),
+        db_path, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard,
+        sql=_COMPLETE_STOP_SQL,
+        set_params=(native_terminal_acknowledged is True, now, now),
+        fence_params=(cancel_id, expected_cancel_generation),
         stale="task changed during stop acknowledgement")
 
 
@@ -1351,9 +1384,12 @@ def _cancel_task_behind_stop_fence(
 ) -> sqlite3.Row | None:
     stop = conn.execute(
         """SELECT seq FROM hosted_room_events
-            WHERE room_id=? AND kind='room.stop_requested'
+            WHERE room_id=? AND (kind='room.stop_requested'
+                OR (kind='thread.stop_requested' AND json_extract(payload_json, '$.thread_id')=?)
+                OR (kind='task.stop_requested' AND json_extract(payload_json, '$.task_id')=?
+                    AND json_extract(payload_json, '$.execution_generation')=?))
             ORDER BY seq DESC LIMIT 1""",
-        (row["room_id"],),
+        (row["room_id"], row["thread_id"], row["task_id"], row["execution_generation"]),
     ).fetchone()
     if stop is None or int(row["source_event_seq"]) >= int(stop["seq"]):
         return None

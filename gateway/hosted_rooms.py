@@ -51,11 +51,11 @@ CONTROL_EVENT_BYTE_RESERVE = 1024 * 1024
 _JOURNAL_MODE_LOCK_RETRIES = 8
 
 _EVENT_KIND_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
-_CONTROL_EVENT_KINDS = frozenset({"authority.claimed", "authority.lost", "room.disbanded", "room.stop_requested"})
+_CONTROL_EVENT_KINDS = frozenset({"authority.claimed", "authority.lost", "room.disbanded", "room.stop_requested", "thread.stop_requested", "task.stop_requested"})
 _EVENT_KINDS_BY_ACTOR = {
-    "user": frozenset({"message.user"}), "member": frozenset({"message.member"}),
+    "user": frozenset({"message.user"}), "member": frozenset({"message.member", "message.participant"}),
     "gateway": frozenset({
-        "member.unavailable", "room.activity", "room.stop_requested", "turn.deferred", "turn.reassigned",
+        "member.unavailable", "room.activity", "room.stop_requested", "thread.stop_requested", "task.stop_requested", "turn.deferred", "turn.reassigned",
         "turn.cancelled", "turn.failed", "turn.settled", "turn.started"}),
     "system": frozenset({
         "authority.claimed", "authority.lost", "room.created", "room.disbanded", "room.members_changed", "room.renamed"
@@ -94,6 +94,8 @@ _SCHEMA_DDL = (
             room_id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             members_json TEXT NOT NULL,
+            retired_members_json TEXT NOT NULL DEFAULT '[]',
+            responder_policy_json TEXT NOT NULL DEFAULT '{}',
             authority_gateway_id TEXT NOT NULL,
             authority_epoch INTEGER NOT NULL DEFAULT 1 CHECK (authority_epoch >= 1),
             next_seq INTEGER NOT NULL DEFAULT 1 CHECK (next_seq >= 1),
@@ -163,10 +165,10 @@ _SELECT_EVENT = f"SELECT {_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=
 _INSERT_EVENT = (f"INSERT INTO hosted_room_events ({_EVENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
 _ROOM_COLUMNS = (
     "room_id, name, members_json, authority_gateway_id, authority_epoch, next_seq, revision,"
-    " created_at, updated_at, disbanded_at")
+    " created_at, updated_at, disbanded_at, retired_members_json, responder_policy_json")
 _ROOM_COLUMNS_WITH_BYTES = (
     "room_id, name, members_json, authority_gateway_id, authority_epoch, next_seq, event_bytes,"
-    " revision, created_at, updated_at, disbanded_at")
+    " revision, created_at, updated_at, disbanded_at, retired_members_json, responder_policy_json")
 _SELECT_ROOM = f"SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE room_id=?"
 _SELECT_ROOM_WITH_BYTES = f"SELECT {_ROOM_COLUMNS_WITH_BYTES} FROM hosted_rooms WHERE room_id=?"
 _SUM_EVENT_BYTES = "SELECT COALESCE(SUM(event_bytes), 0) FROM hosted_rooms"
@@ -298,7 +300,9 @@ def _validate_actor(value: Any, *, kind: str) -> tuple[dict[str, str], str]:
     actor_kind = value.get("kind")
     if not isinstance(actor_kind, str) or actor_kind not in _EVENT_KINDS_BY_ACTOR:
         raise HostedRoomError("invalid actor.kind")
-    if kind not in _EVENT_KINDS_BY_ACTOR[actor_kind]:
+    from gateway.hosted_room_history import MUTATION_KINDS
+    if kind not in _EVENT_KINDS_BY_ACTOR[actor_kind] and not (
+            actor_kind in {"user", "member"} and kind in MUTATION_KINDS):
         raise HostedRoomError(f"actor kind '{actor_kind}' cannot append '{kind}'")
     actor = {"kind": actor_kind, "id": _actor_id(value.get("id"), "actor.id")}
     for field, max_chars in _OPTIONAL_ACTOR_FIELDS:
@@ -352,6 +356,10 @@ def _migrate_remote_run_schema(conn: sqlite3.Connection) -> None:
 _LEGACY_ACTOR_JSON = _system_actor_json("legacy").replace("'", "''")
 # (table, column, ddl) applied in this exact order; each table's PRAGMA is read on first use.
 _LEGACY_COLUMN_DDL = (
+    ("hosted_rooms", "responder_policy_json",
+     "ALTER TABLE hosted_rooms ADD COLUMN responder_policy_json TEXT NOT NULL DEFAULT '{}'"),
+    ("hosted_rooms", "retired_members_json",
+     "ALTER TABLE hosted_rooms ADD COLUMN retired_members_json TEXT NOT NULL DEFAULT '[]'"),
     ("hosted_rooms", "authority_gateway_id",
      "ALTER TABLE hosted_rooms ADD COLUMN authority_gateway_id TEXT NOT NULL DEFAULT 'legacy'"),
     ("hosted_rooms", "authority_epoch",
@@ -486,6 +494,8 @@ def _room_from_row(row: sqlite3.Row, *, idempotent: bool = False) -> dict[str, A
     keys = row.keys()  # sqlite3.Row: ``x in row`` scans values, so ``.keys()`` is load-bearing.
     result = {
         "room_id": row["room_id"], "name": row["name"], "members": json.loads(row["members_json"]),
+        "retired_members": json.loads(row["retired_members_json"]) if "retired_members_json" in keys else [],
+        "responder_policy": json.loads(row["responder_policy_json"]) if "responder_policy_json" in keys else {},
         "authority_gateway_id": row["authority_gateway_id"], "authority_epoch": int(row["authority_epoch"]),
         "revision": int(row["revision"]), "created_at": float(row["created_at"]),
         "updated_at": float(row["updated_at"]), "idempotent": idempotent,
@@ -523,6 +533,8 @@ def _insert_event(
     conn: sqlite3.Connection, room: sqlite3.Row, room_id: str, seq: int, event_id: str, kind: str, actor_json: str,
     epoch: int, payload_json: str, now: float, *, allow_control: bool = False) -> int:
     """Capacity-check then INSERT one event at ``seq``; returns its accounted bytes."""
+    from gateway.hosted_room_capabilities import require_peer_writers
+    require_peer_writers(conn, room_id, kind)
     event_bytes = _prepare_event(conn, room, event_id, kind, actor_json, payload_json, allow_control=allow_control)
     conn.execute(_INSERT_EVENT, (room_id, seq, event_id, kind, actor_json, epoch, payload_json, now))
     return event_bytes
@@ -1107,7 +1119,7 @@ def create_room(
             raise HostedRoomError("This host has too many active Group Chats. Delete one and try again.")
         conn.execute(
             f"""INSERT INTO hosted_rooms ({_ROOM_COLUMNS_WITH_BYTES})
-                VALUES (?, ?, ?, ?, 1, 1, 0, 1, ?, ?, NULL)""",
+                VALUES (?, ?, ?, ?, 1, 1, 0, 1, ?, ?, NULL, '[]', '{{}}')""",
             (room_id, name, members_json, authority_gateway_id, now, now))
         row = _reload(
             conn, """SELECT room_id, name, members_json, authority_gateway_id, authority_epoch, revision,
@@ -1133,14 +1145,18 @@ def list_rooms(
     return [_room_from_row(row) for row in rows]
 
 
-def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now: float | None = None) -> dict[str, Any]:
+def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now: float | None = None,
+                expected_revision: int | None = None) -> dict[str, Any]:
     """Rename a live room and append its replay event atomically."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     name = _validate_room_name(name)
     now = _now(now)
     actor_json = _system_actor_json("room-control")
-    payload_json = _payload_json({"name": name})
+    if expected_revision is not None:
+        _require_positive_int(expected_revision, "expected_revision")
+    payload_json = _payload_json({"name": name, **(
+        {"expected_revision": expected_revision} if expected_revision is not None else {})})
     with _transaction(db_path, immediate=True) as conn:
         room_safety._raise_if_quarantined(conn, room_id)
         room = _room_row(conn, _SELECT_ROOM_WITH_BYTES, (room_id,), room_id)
@@ -1151,6 +1167,8 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
             if existing["kind"] != "room.renamed" or existing["payload_json"] != payload_json:
                 raise EventConflictError("event_id already exists with different immutable content")
             return {**_room_from_row(room, idempotent=True), "event": _event_from_row(existing, idempotent=True)}
+        if expected_revision is not None and int(room["revision"]) != expected_revision:
+            raise RoomConflictError("room revision changed; reload before renaming")
         seq = int(room["next_seq"])
         event_bytes = _prepare_event(conn, room, event_id, "room.renamed", actor_json, payload_json)
         # Rename updates the room row before inserting its event (order is load-bearing).
@@ -1166,13 +1184,15 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
     authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
-    expected_latest_seq: int | None = None) -> dict[str, Any]:
+    expected_latest_seq: int | None = None, expected_revision: int | None = None) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
     with identical content returns the original, different content fails closed."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     if expected_latest_seq is not None:
         _bounded_int(expected_latest_seq, message="expected_latest_seq must be a nonnegative integer")
+    if expected_revision is not None:
+        _require_positive_int(expected_revision, "expected_revision")
     kind = _validate_event_kind(kind)
     normalized_actor, actor_json = _validate_actor(actor, kind=kind)
     # Every admitted actor kind is room-scoped, so authority fields are always required.
@@ -1192,14 +1212,18 @@ def append_event(
                 raise EventConflictError("event_id already exists with different content")
             return _event_from_row(existing, idempotent=True)
         room = _room_row(
-            conn, """SELECT next_seq, event_bytes, authority_gateway_id, authority_epoch
+            conn, """SELECT next_seq, event_bytes, authority_gateway_id, authority_epoch, revision
                 FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""", (room_id,), room_id)
         _require_authority(room, authority_gateway_id, authority_epoch, "stale hosted room authority")
+        if expected_revision is not None and int(room["revision"]) != expected_revision:
+            raise RoomConflictError("room revision changed; reload before sending")
         if kind == "message.user":
             route_schema.require_room_work_open(conn, room_id, error=HostedRoomError)
         seq = int(room["next_seq"])
         if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
             raise EventCursorConflictError("room changed before event publication")
+        from gateway.hosted_room_event_policy import require_input_capacity
+        require_input_capacity(conn, room_id, kind, payload)
         if kind in {"message.user", "message.member"}:
             from gateway.hosted_room_attachments import retain_message_attachments
             retain_message_attachments(conn, room_id=room_id, event_id=event_id,
@@ -1381,13 +1405,18 @@ def disband_room(
 
 
 def read_events(
-    db_path: DbPath, *, room_id: Any, since_seq: Any = 0, limit: Any = 100, include_disbanded: bool = False
+    db_path: DbPath, *, room_id: Any, since_seq: Any = 0, limit: Any = 100, include_disbanded: bool = False,
+    supported_features: list[str] | None = None,
 ) -> dict[str, Any]:
     """Read a monotonic room-log delta after ``since_seq``."""
     room_id = _room_id(room_id)
     since_seq = _non_negative(since_seq, "since_seq")
     limit = _bounded_limit(limit, MAX_LOG_LIMIT)
     with _transaction(db_path) as conn:
+        conn.execute("BEGIN")
+        if supported_features is not None:
+            from gateway.hosted_room_capabilities import require_reader
+            require_reader(conn, room_id, supported_features)
         room = _room_row(
             conn, """SELECT next_seq, authority_gateway_id, authority_epoch FROM hosted_rooms
                 WHERE room_id=? AND (disbanded_at IS NULL OR ?)""", (room_id, int(include_disbanded)), room_id)

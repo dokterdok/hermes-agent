@@ -61,6 +61,47 @@ def _create_room():
     )["room"]
 
 
+def test_membership_rpc_negotiates_and_persists_revision_fences(home):
+    room = _create_room()
+    (home / "profiles" / "review").mkdir()
+    capabilities = _result(srv._methods["groups.capabilities"](2, {}))
+    assert "groups.members.update" in capabilities["methods"]
+    assert "groups.members.update" in srv._LONG_HANDLERS
+    members = [*room["members"], {"member_id": "review", "profile": "review", "handle": "review"}]
+    params = {"room_id": room["room_id"], "event_id": "membership-1", "expected_revision": room["revision"], "members": members}
+    updated = _result(srv._methods["groups.members.update"](3, params))["room"]
+    assert len(updated["members"]) == len(members)
+    replay = _result(srv._methods["groups.members.update"](4, params))["room"]
+    assert replay["idempotent"] is True
+    assert replay["revision"] == updated["revision"]
+    stale = srv._methods["groups.members.update"](5, {**params, "event_id": "stale"})
+    assert "revision" in stale["error"]["message"]
+    state = _result(srv._methods["groups.state"](6, {"room_id": room["room_id"]}))["room"]
+    assert state["members"] == updated["members"]
+    from gateway.hosted_room_driver import TaskIdentity, admit_task
+    from gateway.hosted_rooms import default_db_path
+    admit_task(default_db_path(), TaskIdentity(room["room_id"], "queued", "t1", "turn1"),
+               payload={"target_profile": "ops", "target_member_id": "ops", "source_event_seq": 1, "prompt": "waiting"},
+               clock=lambda: 10)
+    busy = srv._methods["groups.members.update"](7, {**params, "event_id": "busy", "expected_revision": updated["revision"]})
+    assert busy["error"]["data"]["reason"] == "room_membership_busy"
+
+
+def test_rename_revision_conflict_preserves_title_and_retry_receipt(home):
+    room = _create_room()
+    params = {"room_id": room["room_id"], "event_id": "rename-1", "name": "New title", "expected_revision": room["revision"]}
+    first = _result(srv._methods["groups.rename"](1, params))["room"]
+    conflict = srv._methods["groups.rename"](2, {**params, "event_id": "rename-2", "name": "Stale title"})
+    assert "error" in conflict, "stale client overwrote the newer title"
+    replay = _result(srv._methods["groups.rename"](3, params))["room"]
+    assert replay["idempotent"] is True
+    state = _result(srv._methods["groups.state"](4, {"room_id": room["room_id"]}))["room"]
+    assert state["name"] == first["name"]
+    assert state["revision"] == first["revision"]
+    malformed = srv._methods["groups.rename"](5, {**params, "event_id": "rename-3", "expected_revision": True})
+    assert "error" in malformed
+
+
 def test_capabilities_are_honest_about_the_driver_boundary(home):
     methods_groups.stop_hosted_room_service(timeout=1.0)
     result = _result(srv._methods["groups.capabilities"](1, {}))

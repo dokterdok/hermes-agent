@@ -16,7 +16,7 @@ from contextlib import contextmanager, suppress
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from gateway.hosted_room_attachments import (
     MAX_ATTACHMENT_BYTES,
@@ -940,12 +940,13 @@ class RoomArtifactOutbox:
         data: bytes,
         source_name: str,
         name: str | None = None,
+        write_guard: Callable[[sqlite3.Connection], Any] | None = None,
     ) -> dict[str, Any]:
         """Store bounded bytes already read through a trusted backend adapter."""
 
         if not isinstance(data, bytes) or not 0 < len(data) <= MAX_ATTACHMENT_BYTES:
             raise RoomArtifactError("artifact must be a bounded regular file")
-        self.discard_superseded(scope)
+        self.discard_superseded(scope, write_guard=write_guard)
         safe_name = self._safe_name(name or source_name)
         kind, mime = self._classify(safe_name, data)
         digest = hashlib.sha256(data).hexdigest()
@@ -956,6 +957,8 @@ class RoomArtifactOutbox:
         with self._lock, self._connect() as conn:
             self._initialize(conn)
             conn.execute("BEGIN IMMEDIATE")
+            if write_guard is not None:
+                write_guard(conn)
             self._admit_generation(conn, scope)
             existing = conn.execute(
                 """SELECT * FROM hosted_room_output_artifacts
@@ -1065,7 +1068,11 @@ class RoomArtifactOutbox:
         if row is None:
             raise RoomArtifactError("room artifact not found")
         path = self.blob_root / str(row["blob_name"])
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = (
+            _open_artifact_path_windows(path)
+            if os.name == "nt"
+            else os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        )
         try:
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_size != int(row["size"]):
@@ -1277,7 +1284,8 @@ class RoomArtifactOutbox:
             removed += self.discard(scope)
         return removed
 
-    def discard_superseded(self, scope: RoomArtifactScope) -> int:
+    def discard_superseded(self, scope: RoomArtifactScope, *,
+                           write_guard: Callable[[sqlite3.Connection], Any] | None = None) -> int:
         """Purge older execution generations for the same logical task."""
 
         if scope.as_mapping().get("kind") == "classic":
@@ -1287,6 +1295,8 @@ class RoomArtifactOutbox:
         with self._lock, self._connect() as conn:
             self._initialize(conn)
             conn.execute("BEGIN IMMEDIATE")
+            if write_guard is not None:
+                write_guard(conn)
             self._admit_generation(conn, scope)
             rows = conn.execute(
                 "SELECT * FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL"

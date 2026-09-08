@@ -77,7 +77,10 @@ def _authority(room: Mapping[str, Any]) -> tuple[str, int]:
     return str(room["authority_gateway_id"]), int(room["authority_epoch"])
 
 
-class HostedRoomService(HostedRoomArtifactMixin):
+from tui_gateway.hosted_room_scoped_controls import HostedRoomScopedControlsMixin
+
+
+class HostedRoomService(HostedRoomScopedControlsMixin, HostedRoomArtifactMixin):
     """Own the hosted Discussion policy and its transport-free worker."""
 
     def __init__(
@@ -457,8 +460,10 @@ class HostedRoomService(HostedRoomArtifactMixin):
             or not isinstance(payload, Mapping) or execution_generation < 1
             or task.get("status") not in {"indeterminate", "stopping"}):
             return
-        receipt_only = task.get("status") == "stopping" or (
-            hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=binding.room_id))
+        receipt_only = (
+            (task.get("result") or {}).get("native_terminal_acknowledged") is False
+            or task.get("status") == "stopping"
+            or hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=binding.room_id))
         prompt = payload.get("prompt")
         source_event_seq = int(payload.get("source_event_seq") or 0)
         if not isinstance(prompt, str) or source_event_seq < 1 or not route.trace_id:
@@ -528,9 +533,15 @@ class HostedRoomService(HostedRoomArtifactMixin):
         stored_action = (
             {**action, "member_id": member_id} if action is not None else None
         )
+        if stored_action is not None and stored_action.get("kind") == "input":
+            supported = not self._member_is_peer(room_id, member_id)
+            stored_action["input_supported"] = supported
+            if not supported:
+                stored_action["unsupported_reason"] = "scoped_input_unsupported_for_peer"
         if stored_action is not None and stored_action.get("kind") in {
             "approval",
             "approval_clear",
+            "input",
         }:
             profile = ""
             try:
@@ -684,6 +695,11 @@ class HostedRoomService(HostedRoomArtifactMixin):
             with self._policy_lock:
                 if self._pending_actions.get(key) == previous_action:
                     self._pending_actions.pop(key, None)
+        elif changed and stored_action.get("kind") == "input" and (previous_action or {}).get("kind") == "approval":
+            approvals.clear_pending_approval(self.db_path, room_id=room_id, member_id=member_id,
+                request_id=previous_action.get("request_id"),
+                authority_gateway_id=previous_action.get("authority_gateway_id"),
+                authority_epoch=previous_action.get("authority_epoch"))
         elif changed and stored_action.get("kind") == "approval":
             try:
                 approvals.persist_pending_approval(
@@ -836,6 +852,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
     def prepare_room(self, binding: HostedRoomBinding) -> None:
         with self._policy_lock:
             room = self._room(binding.room_id)
+            self._apply_scoped_stop_fences(binding.room_id)
             snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
             if self._publish_terminal_tasks(room):
                 room = self._room(binding.room_id)
@@ -850,10 +867,15 @@ class HostedRoomService(HostedRoomArtifactMixin):
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.local_profiles(),
                 initial_watermarks=snapshot.watermarks, freeze_input_context=True)
+            from gateway.hosted_room_event_policy import service_state, publish_unavailable_mentions
+            publish_unavailable_mentions(self, room, snapshot.events)
             if decision.status == "task" and decision.task is not None:
+                if service_state(self, binding.room_id)["state"] == "cooldown":
+                    return
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
                 legacy_payload = dict(decision.task.payload)
                 legacy_payload.pop("input_context", None)
+                legacy_payload.pop("session_scope", None)
                 if existing is not None and "input_context" in existing["payload"]:
                     # A rebuilt cache may add older committed context. The slot
                     # already belongs to its original, frozen admission.
@@ -868,7 +890,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                     admitted = existing
                 else:
                     admitted = driver.admit_task(
-                        self.db_path, decision.task.identity, payload=decision.task.payload, clock=time.time)
+                        self.db_path, decision.task.identity, payload=decision.task.payload, clock=self.runtime.clock)
                 # A stop can race the policy read from another process: re-read after admission
                 # and cancel a task whose source event is now behind the room stop fence.
                 fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
@@ -894,6 +916,17 @@ class HostedRoomService(HostedRoomArtifactMixin):
             authority_gateway_id=hosted_rooms.local_authority_gateway_id())
         self.runtime.wakeup()
         return room
+
+    def update_members(self, *, room_id: str, event_id: str, expected_revision: int, members: Any) -> dict[str, Any]:
+        from gateway.hosted_room_membership import update_members
+        with self._policy_lock:
+            self._owned_room(room_id)
+            result = update_members(
+                self.db_path, room_id=room_id, event_id=event_id, expected_revision=expected_revision,
+                members=members, local_profiles=self.local_profiles(),
+                authority_gateway_id=hosted_rooms.local_authority_gateway_id())
+        self.runtime.wakeup()
+        return result
 
     def send(
         self,
@@ -1013,6 +1046,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
         choice: str,
         request_id: str | None = None,
         command_id: str | None = None,
+        thread_id: str | None = None,
     ) -> Mapping[str, Any]:
         """Resolve one exact local or peer approval and wake room observation."""
         key = (room_id, member_id)
@@ -1120,7 +1154,8 @@ class HostedRoomService(HostedRoomArtifactMixin):
 
         result = approvals.apply_pending_decision(
             self.db_path,
-            pending={**action, "room_id": room_id, "member_id": member_id},
+            pending={**action, "room_id": room_id, "member_id": member_id,
+                     **({"requested_thread_id": thread_id} if thread_id is not None else {})},
             choice=choice,
             apply=apply,
             command_id=command_id,
@@ -1158,6 +1193,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
         return result
 
     def status(self, room_id: str | None = None) -> dict[str, Any]:
+        from gateway.hosted_room_event_policy import service_state
         runtime = {**self.runtime.status(), "peer_routes": self._route_statuses(room_id)}
         runtime["replication"] = self.replication.status(room_id) if self.replication is not None else {
             "running": False, "workers": 0, "routes": None, "error": self._replication_error,
@@ -1181,11 +1217,13 @@ class HostedRoomService(HostedRoomArtifactMixin):
         return {
             "running": runtime["running"], "working": any(counts.get(s) for s in _LIVE_STATUSES),
             "blocked": room_id in runtime["blocked_rooms"]
-            or bool(counts.get("indeterminate") or counts.get("stopping")),
+            or bool(counts.get("indeterminate") or counts.get("stopping"))
+            or any(action.get("kind") in {"input", "approval"} for action in pending_actions),
             "counts": dict(counts), "pending_actions": pending_actions,
             "needs_attention": bool(pending_actions),
             "replication": runtime["replication"],
-            "peer_routes": self._route_statuses(room_id)}
+            "peer_routes": self._route_statuses(room_id),
+            "continuation": service_state(self, room_id)}
 
 
     def _apply_pending_control_retries(
@@ -1438,6 +1476,9 @@ class HostedRoomService(HostedRoomArtifactMixin):
         authority = expected_authority
         if authority is None:
             authority = (str(room["authority_gateway_id"]), int(room["authority_epoch"]))
+        from gateway.hosted_room_thread_refs import resolve_reply_payload
+        with hosted_rooms._transaction(self.db_path) as conn:
+            payload = resolve_reply_payload(conn, room_id=room_id, payload=payload)
         member_ids = tuple(
             str(member.get("member_id") or member.get("profile") or "")
             for member in room["members"]
@@ -1448,6 +1489,8 @@ class HostedRoomService(HostedRoomArtifactMixin):
             payload,
             member_ids=member_ids,
         )
+        from gateway.hosted_room_responder_policy import validate_mentions
+        validate_mentions(normalized["text"], room["members"])
         if self._room_is_disbanding(room_id):
             return hosted_rooms.append_event(
                 self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
@@ -1475,6 +1518,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 payload=normalized,
                 authority_gateway_id=authority[0],
                 authority_epoch=authority[1],
+                expected_revision=int(room["revision"]),
             )
         except Exception:
             if transitioned_attachment_ids:

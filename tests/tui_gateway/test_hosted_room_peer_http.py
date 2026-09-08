@@ -275,6 +275,23 @@ def test_target_interruption_history_is_an_exact_truthful_failure(
     ]
 
 
+@pytest.mark.parametrize("ack", [False, True])
+def test_native_acknowledgement_survives_peer_history_and_info(peer_server, ack):
+    from gateway.hosted_room_driver import TaskIdentity
+    from tui_gateway.hosted_room_driver import _find_terminal_receipt, _target_interruption_from_info
+    client = PeerRunsHTTPClient(base_url=peer_server, api_key="")
+    accepted = client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    FakePeer.runs["run-1"].update(status="interrupted", native_terminal_acknowledged=ack,
+                                  codex_thread_id="native-thread", codex_turn_id="native-turn")
+    coords = dict(room_id="room-1", profile="reviewer", session_id=accepted["session_id"], grant="signed.room.grant")
+    history, info = client.history(**coords), client.status(**coords)
+    assert history[0]["native_terminal_acknowledged"] is ack
+    assert info["native_terminal_acknowledged"] is ack
+    identity = TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    assert (_find_terminal_receipt(history, identity, 1) is None) is (ack is False)
+    assert (_target_interruption_from_info(info, identity, 1) is None) is (ack is False)
+
+
 @pytest.mark.parametrize("scoped", [False, True])
 def test_named_profile_prefixes_every_roomlink_request(monkeypatch, scoped):
     captured = {}
@@ -1233,15 +1250,17 @@ def test_attachment_manifest_never_follows_redirect_or_forwards_grant(
         redirected_requests = []
 
         def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             if self.path == "/sink":
                 type(self).redirected_requests.append(
-                    (self.headers.get("Authorization"), self.rfile.read())
+                    (self.headers.get("Authorization"), body)
                 )
                 self.send_response(200)
                 self.end_headers()
                 return
             self.send_response(redirect_status)
             self.send_header("Location", "/sink")
+            self.send_header("Content-Length", "0")
             self.end_headers()
 
         def log_message(self, *args):
@@ -1267,6 +1286,7 @@ def test_attachment_manifest_never_follows_redirect_or_forwards_grant(
     finally:
         server.shutdown()
         thread.join(timeout=5)
+        server.server_close()
 
 
 @pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
@@ -1277,15 +1297,17 @@ def test_attachment_upload_never_follows_redirect_or_forwards_grant(
         redirected_requests = []
 
         def do_PUT(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             if self.path == "/sink":
                 type(self).redirected_requests.append(
-                    (self.headers.get("Authorization"), self.rfile.read())
+                    (self.headers.get("Authorization"), body)
                 )
                 self.send_response(200)
                 self.end_headers()
                 return
             self.send_response(redirect_status)
             self.send_header("Location", "/sink")
+            self.send_header("Content-Length", "0")
             self.end_headers()
 
         def log_message(self, *args):
@@ -1309,6 +1331,7 @@ def test_attachment_upload_never_follows_redirect_or_forwards_grant(
     finally:
         server.shutdown()
         thread.join(timeout=5)
+        server.server_close()
 
 
 def test_attachment_network_errors_do_not_expose_local_paths(monkeypatch):
@@ -1524,3 +1547,30 @@ def test_renewal_requests_and_response_reads_share_one_deadline(monkeypatch):
             client._request("/test")
     assert timeouts == [1, 1, 0.5]
     assert now[0] == 102
+
+
+@pytest.mark.parametrize("operation", ["upload", "download"])
+def test_binary_redirect_closes_without_consuming_untrusted_body(monkeypatch, operation):
+    from tui_gateway import hosted_room_peer_http as http
+
+    class Body(io.BytesIO):
+        reads = 0
+        def read1(self, size=-1):
+            self.reads += 1
+            raise TimeoutError("untrusted redirect body stalls")
+
+    body = Body(b"not needed")
+    response = urllib.error.HTTPError("http://127.0.0.1/file", 307, "redirect", {}, body)
+    def redirected(*args, **kwargs):
+        raise response
+    monkeypatch.setattr(http, "_open_roomlink_url", redirected)
+    client = PeerRunsHTTPClient(base_url="http://127.0.0.1", api_key="")
+    with pytest.raises(PeerRunsHTTPError, match="refused an HTTP redirect") as caught:
+        if operation == "upload":
+            client._put_attachment("/upload", data=b"bytes", grant="scoped.grant")
+        else:
+            client.read_artifact(run_id="run", artifact_id="file", grant="scoped.grant")
+    assert caught.value.status_code == 307
+    assert not caught.value.retryable
+    assert body.reads == 0
+    assert body.closed

@@ -5,6 +5,8 @@ Handlers are rebound onto server.py's globals at install (method_ctx.py); module
 helpers reach them through keyword defaults. ``_room_method`` is the shared envelope."""
 
 from .method_ctx import HandlerRegistry
+from .methods_groups_history import METHODS as HISTORY_METHODS, FEATURES as HISTORY_FEATURES
+from .methods_groups_controls import METHODS as CONTROL_METHODS, FEATURES as CONTROL_FEATURES
 
 import contextlib
 import importlib
@@ -20,12 +22,13 @@ method = _registry.method
 _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.attachment.put", "groups.attachment.list", "groups.attachment.read",
-    "groups.rename", "groups.log", "groups.disband", "groups.replica_state",
+    "groups.rename", "groups.members.update", "groups.policy.update", "groups.log", "groups.disband", "groups.replica_state",
     "groups.stop", "groups.retry", "groups.approve",
     "groups.replication.prepare", "groups.replication.enroll", "groups.replication.revoke",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.revoke_exact", "groups.peer.register",
     "groups.desktop.claim", "groups.desktop.presence", "groups.desktop.renew", "groups.desktop.complete",
-    "groups.control.invite", "groups.control.register", "groups.control.revoke")
+    "groups.control.invite", "groups.control.register", "groups.control.revoke") + CONTROL_METHODS
+_METHODS += HISTORY_METHODS
 LONG_HANDLERS = frozenset(_METHODS)
 
 _service_lock = threading.Lock()
@@ -221,6 +224,8 @@ def _room_method(
                     "Group Chat RPC refused: method=%s type=%s status=%s",
                     name, type(exc).__name__, status if type(status) is int else None)
                 if room_code is not None and isinstance(exc, error_class(replica_only)):
+                    if getattr(exc, "reason", None) == "room_reader_upgrade_required":
+                        return _err(rid, room_code, str(exc), exc.data)
                     reason = getattr(exc, "reason", None) if with_reason else None
                     return _err(rid, room_code, str(exc), {"reason": reason} if reason else None)
                 return _err(rid, code, str(exc))
@@ -230,7 +235,8 @@ def _room_method(
 
 
 @method("groups.capabilities")
-def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
+def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _control_features=CONTROL_FEATURES,
+      _history_features=HISTORY_FEATURES) -> dict:
     """Describe the hosted-room protocol implemented by this gateway."""
     from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
     service = get_hosted_room_service()
@@ -254,13 +260,16 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
         "protocol_version": PROTOCOL_VERSION, "driver": driver_ready,
         "persistent_process": bool(room_link.get("catalog", {}).get("persistent_process", False)),
         "authority_gateway_id": local_authority_gateway_id(), "room_link": room_link,
+        "participant_tools": {"core": True, "native": False, "peer": False},
         "features": [
             "attachment_ids", "attachment_metadata_catalog", "attachment_same_gateway_delivery",
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
             "desktop_compatibility_mailbox", "reciprocal_room_control", "reciprocal_room_control_setup",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity", "peer_route_grant_fingerprint",
-            "peer_grant_renewal",
-            ] + (["authenticated_replication", "replica_retirement"] if room_link.get("enabled") else []),
+            "peer_grant_renewal", "local_membership_revision", "historical_member_identity", "rename_revision",
+            "local_thread_member_sessions", "responder_policy_v1", "event_driven_continuation_v1", "thread_parent_references_v1",
+            "participant_tools_v1", "participant_messages_v1",
+            ] + list(_control_features) + list(_history_features) + (["authenticated_replication", "replica_retirement"] if room_link.get("enabled") else []),
         "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
 
 
@@ -482,6 +491,24 @@ def _(rid, params: dict, service) -> dict:
     return _ok(rid, {"room": room})
 
 
+@_room_method("groups.members.update", code=5120, room_code=4124, service_code=4123,
+              service_message=_WORKER_UNAVAILABLE)
+def _(rid, params: dict, service) -> dict:
+    """Replace idle local membership without discarding historical authors."""
+    return _ok(rid, {"room": service.update_members(
+        room_id=params.get("room_id"), event_id=params.get("event_id"),
+        expected_revision=params.get("expected_revision"), members=params.get("members"))})
+
+
+@_room_method("groups.policy.update", code=5120, room_code=4124, service_code=4123,
+              service_message=_WORKER_UNAVAILABLE)
+def _(rid, params: dict, service) -> dict:
+    from gateway.hosted_room_responder_policy import update_policy
+    if set(params) != {"room_id", "event_id", "expected_revision", "policy"}:
+        raise ValueError("policy update requires exactly room_id, event_id, expected_revision, policy")
+    return _ok(rid, {"room": update_policy(service, **params)})
+
+
 @_room_method("groups.state", code=5115, room_code=4114, db=True)
 def _(rid, params: dict, db_path) -> dict:
     """Return one hosted room's replay cursor and fenced authority state."""
@@ -565,7 +592,8 @@ def _(rid, params: dict, service) -> dict:
         str(params.get("room_id") or ""), member_id=str(params.get("member_id") or ""),
         task_id=str(params.get("task_id") or ""),
         execution_generation=int(params.get("execution_generation") or 0),
-        choice=str(params.get("choice") or ""), request_id=str(params.get("request_id") or ""))
+        choice=str(params.get("choice") or ""), request_id=str(params.get("request_id") or ""),
+        **({"thread_id": str(params["thread_id"])} if "thread_id" in params else {}))
     return _ok(rid, {"approved": True, "result": result})
 
 
@@ -608,14 +636,15 @@ def _passthrough(
 _passthrough(
     "groups.rename", "gateway.hosted_rooms", "rename_room",
     """Rename one hosted room atomically with its replay event.""",
-    code=5117, room_code=4117, params=("room_id", "event_id", "name"), wrap="room")
+    code=5117, room_code=4117, params=("room_id", "event_id", "name", "expected_revision"), wrap="room")
 _passthrough(
     "groups.log", "gateway.hosted_rooms", "read_events",
     """Return a monotonic room-log delta after ``since_seq``.""",
     code=5113, room_code=4112,
     params=(
         "room_id", ("since_seq", lambda p: p.get("since_seq", 0)),
-        ("limit", lambda p: p.get("limit", 100)), ("include_disbanded", _include_disbanded)))
+        ("limit", lambda p: p.get("limit", 100)), ("include_disbanded", _include_disbanded),
+        ("supported_features", lambda p: [] if p.get("supported_features") is None else p["supported_features"])))
 @method("groups.replicate")
 def _(rid, params: dict) -> dict:
     return _err(rid, 4116, "Group Chat replication requires a verified RoomLink grant.",
@@ -643,6 +672,10 @@ def _(rid, params: dict) -> dict:
 
 def register(server) -> None:
     _registry.install(server)
+    from .methods_groups_history import register as register_history
+    register_history(server)
+    from tui_gateway.methods_groups_controls import register as register_controls
+    register_controls(server)
 
 def _revoke_peer_room_control(room_id: str, member_id: str) -> int:
     from gateway.hosted_room_control_client import revoke_stored_peer_control

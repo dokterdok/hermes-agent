@@ -48,7 +48,8 @@ _RECEIPT_SCOPE_FIELDS = (
 _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
-_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event", "artifacts")
+_NATIVE_PROOF_KEYS = ("native_terminal_acknowledged", "codex_thread_id", "codex_turn_id")
+_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event", "artifacts", *_NATIVE_PROOF_KEYS)
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -123,6 +124,11 @@ def _read_bounded_response(response: Any, *, max_bytes: int, deadline: float) ->
         _set_response_socket_timeout(response, remaining)
         try:
             chunk = reader(min(_PEER_RESPONSE_CHUNK_BYTES, max_bytes + 1 - len(body)))
+        except TimeoutError as exc:
+            # The socket timeout is set to this request's remaining budget. A
+            # timeout therefore exhausts that budget even if clock sampling
+            # lands fractionally before the computed deadline.
+            raise _PeerResponseDeadlineExceeded from exc
         except Exception as exc:
             if time.monotonic() >= deadline:
                 raise _PeerResponseDeadlineExceeded from exc
@@ -580,7 +586,7 @@ class PeerRunsHTTPClient:
             cached = None  # A retired bearer's refusal must not poison its validated replacement.
         if cached is not None:
             status = cached["status"]
-            if status.get("status") in _TERMINAL_RUN_STATES:
+            if status.get("status") in _TERMINAL_RUN_STATES and status.get("native_terminal_acknowledged") is not False:
                 return status
             if now < float(cached["next_poll_at"]):
                 error = cached.get("error")
@@ -619,6 +625,7 @@ class PeerRunsHTTPClient:
         target_interrupted = state in {"interrupted", "cancelled"}
         return [{
             "role": "assistant", "task_id": receipt["task_id"],
+            **{key: status[key] for key in _NATIVE_PROOF_KEYS if key in status},
             "execution_generation": receipt["execution_generation"],
             "status": "settled" if state == "completed" else "failed",
             "message_id": f"peer-run:{status.get('run_id')}",
@@ -640,7 +647,8 @@ class PeerRunsHTTPClient:
             "active": status.get("status") in _ACTIVE_RUN_STATES, "task_id": receipt["task_id"],
             "execution_generation": receipt["execution_generation"],
             "status": status.get("status"), "run_id": status.get("run_id"),
-            "approval": status.get("approval")}
+            "approval": status.get("approval"),
+            **{key: status[key] for key in _NATIVE_PROOF_KEYS if key in status}}
 
     def approve_receipt(
         self, *, task_id: str, execution_generation: int, request_id: str, choice: str, grant: str
@@ -896,6 +904,11 @@ class PeerRunsHTTPClient:
                 ambiguous=True,
             ) from exc
         except urllib.error.HTTPError as exc:
+            if exc.code in {301, 302, 303, 307, 308}:
+                exc.close()
+                raise PeerRunsHTTPError(
+                    "peer attachment upload refused an HTTP redirect", status_code=exc.code,
+                ) from exc
             try:
                 detail = _read_bounded_response(
                     exc,
@@ -910,11 +923,6 @@ class PeerRunsHTTPClient:
                 exc.code,
                 error_code or "no-code",
             )
-            if exc.code in {301, 302, 303, 307, 308}:
-                raise PeerRunsHTTPError(
-                    "peer attachment upload refused an HTTP redirect",
-                    status_code=exc.code,
-                ) from exc
             raise PeerRunsHTTPError(
                 f"peer rejected attachment upload with HTTP {exc.code}",
                 retryable=exc.code in {408, 425, 429} or exc.code >= 500,
@@ -1083,6 +1091,11 @@ class PeerRunsHTTPClient:
                 retryable=True,
             ) from exc
         except urllib.error.HTTPError as exc:
+            if exc.code in {301, 302, 303, 307, 308}:
+                exc.close()
+                raise PeerRunsHTTPError(
+                    "peer artifact download refused an HTTP redirect", status_code=exc.code,
+                ) from exc
             try:
                 detail = _read_bounded_response(
                     exc,
@@ -1103,11 +1116,7 @@ class PeerRunsHTTPClient:
             except Exception:
                 detail = ""
             raise PeerRunsHTTPError(
-                (
-                    "peer artifact download refused an HTTP redirect"
-                    if exc.code in {301, 302, 303, 307, 308}
-                    else f"peer rejected artifact download with HTTP {exc.code}: {detail}"
-                ),
+                f"peer rejected artifact download with HTTP {exc.code}: {detail}",
                 retryable=exc.code in {408, 425, 429} or exc.code >= 500,
                 status_code=exc.code,
                 error_code=_response_error_code(detail),

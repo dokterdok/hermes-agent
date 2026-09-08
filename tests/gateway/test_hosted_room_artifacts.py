@@ -90,7 +90,7 @@ def _insert_legacy_artifact(
 def test_outbox_is_idempotent_scoped_and_acknowledged(tmp_path: Path):
     db = tmp_path / "state.db"
     path = tmp_path / "handoff.md"
-    path.write_text("# Handoff\n", encoding="utf-8")
+    path.write_bytes(b"# Handoff\n")
     outbox = RoomArtifactOutbox(db)
     scope = _scope()
 
@@ -796,16 +796,17 @@ def test_remote_backend_reader_rejects_symlink_components(
         _read_backend_file_bytes_nofollow(file_ops, str(candidate))
 
 
-def test_remote_backend_reader_returns_exact_bounded_regular_bytes(tmp_path: Path):
-    candidate = tmp_path / "handoff.bin"
-    candidate.write_bytes(b"\x00exact remote bytes\xff")
+@pytest.mark.parametrize("filename", ["handoff.bin", "handoff 'quoted'.bin"])
+def test_remote_backend_reader_returns_exact_bounded_regular_bytes(tmp_path: Path, filename):
+    candidate = tmp_path / filename
+    candidate.write_bytes(b"\x00exact\r\nremote bytes\xff")
     file_ops = ShellFileOperations(
         LocalEnvironment(cwd=str(tmp_path), timeout=10),
         cwd=str(tmp_path),
     )
 
     assert _read_backend_file_bytes_nofollow(file_ops, str(candidate)) == (
-        b"\x00exact remote bytes\xff"
+        b"\x00exact\r\nremote bytes\xff"
     )
 
 
@@ -884,8 +885,13 @@ def test_share_group_file_copies_opened_bytes_after_path_swap(
     original_put = RoomArtifactOutbox.put_open_file
 
     def swap_path_then_put(outbox, *args, **kwargs):
-        source_dir.rename(tmp_path / "original-safe")
-        source_dir.symlink_to(hidden_dir, target_is_directory=True)
+        if os.name == "nt":
+            # Windows pins the containing directory while the file is open.
+            with pytest.raises(PermissionError):
+                source_dir.rename(tmp_path / "original-safe")
+        else:
+            source_dir.rename(tmp_path / "original-safe")
+            source_dir.symlink_to(hidden_dir, target_is_directory=True)
         return original_put(outbox, *args, **kwargs)
 
     monkeypatch.setattr(RoomArtifactOutbox, "put_open_file", swap_path_then_put)
@@ -1255,3 +1261,22 @@ def test_share_group_file_rejects_sibling_profile_state(
         "ok": False,
         "error": "Files owned by another Hermes profile cannot be shared.",
     }
+
+
+def test_outbox_rejects_blob_replaced_with_symlink(tmp_path):
+    scope = _scope()
+    outbox = RoomArtifactOutbox(tmp_path / "state.db")
+    content = b"exact\r\nartifact\x00\xff"
+    stored = outbox.put_bytes(scope=scope, data=content, source_name="handoff.bin")
+    with sqlite3.connect(outbox.db_path) as conn:
+        blob_name = conn.execute(
+            "SELECT blob_name FROM hosted_room_output_artifacts WHERE artifact_id=?",
+            (stored["artifact_id"],),
+        ).fetchone()[0]
+    blob = outbox.blob_root / blob_name
+    target = tmp_path / "outside.bin"
+    target.write_bytes(content)
+    blob.unlink()
+    blob.symlink_to(target)
+    with pytest.raises((RoomArtifactError, OSError)):
+        outbox.read(scope, stored["artifact_id"])

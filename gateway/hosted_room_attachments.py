@@ -464,10 +464,15 @@ class HostedRoomAttachmentStore:
 
     def _read_blob(self, *, blob_id: str, size: int, sha256: str) -> bytes:
         path = self._blob_path(blob_id)
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        from gateway.hosted_room_artifacts import RoomArtifactError, _open_artifact_path_windows
+
         try:
-            descriptor = os.open(path, flags)
-        except OSError as exc:
+            descriptor = (
+                _open_artifact_path_windows(path)
+                if os.name == "nt"
+                else os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            )
+        except (OSError, RoomArtifactError) as exc:
             raise AttachmentIntegrityError("canonical attachment blob is unavailable") from exc
         try:
             info = os.fstat(descriptor)
