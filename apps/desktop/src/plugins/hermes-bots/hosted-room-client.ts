@@ -67,6 +67,8 @@ const MAX_HOSTED_ROOM_OUTBOX_COMMANDS = 256
 export type HostedRoomCapabilityKind = 'driver-capable' | 'transient-failure' | 'unsupported'
 
 export interface HostedRoomCapability {
+  methods?: string[]
+  features?: string[]
   authorityId: null | string
   connectionId: null | string
   exactPeerGrantRevoke: boolean
@@ -246,6 +248,7 @@ const KNOWN_EVENT_KINDS = new Set([
   'authority.lost',
   'member.unavailable',
   'message.member',
+  'message.participant',
   'message.user',
   'room.activity',
   'room.created',
@@ -409,6 +412,8 @@ export function classifyHostedRoomCapability(
     return {
       kind: 'unsupported',
       reason: capabilities.driver === false ? 'driver-disabled' : 'incomplete-contract',
+      methods: Array.isArray(capabilities.methods) ? capabilities.methods.filter((v): v is string => typeof v === 'string') : [],
+      features: Array.isArray(capabilities.features) ? capabilities.features.filter((v): v is string => typeof v === 'string') : [],
       connectionId: localConnectionId,
       exactPeerGrantRevoke: false,
       authorityId: capabilities.driver === false ? text(capabilities.authority_gateway_id) : null,
@@ -440,6 +445,8 @@ export function classifyHostedRoomCapability(
 
   return {
     kind: 'driver-capable',
+    methods: Array.isArray(capabilities.methods) ? capabilities.methods.filter((v): v is string => typeof v === 'string') : [],
+    features: Array.isArray(capabilities.features) ? capabilities.features.filter((v): v is string => typeof v === 'string') : [],
     reason: null,
     connectionId: localConnectionId,
     exactPeerGrantRevoke:
@@ -825,7 +832,8 @@ function messageFromEvent(event: HostedRoomEvent, roomId: null | string): Hosted
     ...(user && (event.roomId || roomId) ? { roomId: (event.roomId || roomId)! } : {}),
     from: {
       kind: user ? 'user' : 'member',
-      name: user ? 'You' : memberLabel(event),
+      name: user ? text(event.actor.display_name) || text(event.actor.id) || 'User' : memberLabel(event),
+      ...(user && event.actor.kind === 'user' && text(event.actor.id) ? { hostedUserId: text(event.actor.id)! } : {}),
       ...(identity ? { hostedIdentity: identity } : {}),
       ...(text(event.actor.connection_id) ? { source: text(event.actor.connection_id) || undefined } : {})
     },
@@ -845,7 +853,7 @@ function applyReplayEvent(state: HostedRoomReplayState, event: HostedRoomEvent):
     })
   }
 
-  if (event.kind === 'message.user' || event.kind === 'message.member') {
+  if (['message.user', 'message.member', 'message.participant'].includes(event.kind)) {
     state.messages.push(messageFromEvent(event, state.roomId))
   } else if (event.kind === 'room.created') {
     state.name = text(event.payload.name) || state.name

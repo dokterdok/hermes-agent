@@ -11,6 +11,7 @@
 
 import type { ClassicFileRef, ClassicTurn } from './classic-output'
 import type { DesktopCommandSettled } from './group-command-receipts'
+import type { HostedHistory, HostedReadCursor } from './hosted-room-history'
 
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
@@ -162,6 +163,8 @@ export interface GroupMessageAuthor {
   name: string
   /** Connection label, present when the speaker lives on another machine. */
   source?: string
+  /** Server-owned human actor ID. It does not prove this client authored the message. */
+  hostedUserId?: string
   /** Hosted event actor identity for display binding, never a dispatch route. */
   hostedIdentity?: HostedMessageIdentity
   /** Display-only evidence: weak inheritance or a durable unresolved actor conflict. */
@@ -222,6 +225,8 @@ export interface GroupChat {
   hostedEpoch?: null | number
   /** Last contiguous hosted-room event sequence applied locally. */
   hostedSeq?: number
+  hostedHistory?: HostedHistory
+  hostedRead?: HostedReadCursor
   /** Local groups.state verification; never accepted from or sent to ui_meta. */
   hostedMembersVerified?: boolean
   /** A conflicting display mirror requires a fresh authoritative membership read. */
@@ -279,7 +284,9 @@ export interface GroupPrompt {
   group: string
   /** Exact hosted-task identity when the prompt is owned by a Group Chat
    * authority rather than a visible member session. */
+  hostedInput?: { executionGeneration: number; memberId: string; roomId: string; taskId: string; threadId: string }
   hostedApproval?: {
+    threadId?: string
     executionGeneration: number
     memberId: string
     roomId: string

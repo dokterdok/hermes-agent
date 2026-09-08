@@ -27,6 +27,7 @@ import {
   syncHostedRoomApprovals
 } from './hosted-room-approval-state'
 import { stageHostedMessageAttachments } from './hosted-room-attachments-client'
+import { noteHostedRoomMentions } from './hosted-room-attention'
 import { $hostedRoomCapabilities } from './hosted-room-capability-state'
 import {
   addHostedRoomCleanup,
@@ -68,6 +69,8 @@ import {
   surfaceHostedRoomCommandFailure
 } from './hosted-room-command-failures'
 import { readHostedGroupAttachment } from './hosted-room-file-read'
+import { readHostedHistory, supportsHostedMethod } from './hosted-room-history'
+import type { HostedReadCursor } from './hosted-room-history'
 import {
   hostedReadOnlyState,
   hostedRoomCapabilityFingerprint,
@@ -109,7 +112,8 @@ const HOSTED_ROOM_UNSUPPORTED_REPROBE_MS = 30_000
 
 export const $hostedRoomOutbox = atom<HostedRoomOutbox>(createHostedRoomOutbox())
 
-const hostedRoomPollCache = new Map<string, string>()
+const hostedRoomPollCache = new Map<string, { fingerprint: string; refreshedAt: number }>()
+const HOSTED_ROOM_IDLE_HISTORY_REFRESH_MS = 30_000
 const hostedRoomPollGenerations = new Map<string, number>()
 const hostedRoomMutationGenerations = new Map<string, number>()
 const hostedRoomLocallyDeleted = new Set<string>()
@@ -401,12 +405,18 @@ export function shouldRefreshHostedRoom(room: GroupChat | undefined, listed: unk
     $hostedRoomOutbox.get().commands.some(command => command.roomId === room.roomId && command.status !== 'failed')
 
   const fingerprint = hostedRoomPollFingerprint(listed)
+  const cached = hostedRoomPollCache.get(String(room.roomId || ''))
+
+  // Read cursors and history projections can change outside summary revisions.
+  const historyExpired = Boolean(room.hostedHistory || room.hostedRead) &&
+    Date.now() - (cached?.refreshedAt ?? 0) >= HOSTED_ROOM_IDLE_HISTORY_REFRESH_MS
 
   return (
     active ||
     room.hostedMembersNeedRefresh ||
     (Boolean(groupChatHostedGateway(room)) && !room.hostedMembersVerified) ||
-    hostedRoomPollCache.get(String(room.roomId || '')) !== fingerprint
+    historyExpired ||
+    cached?.fingerprint !== fingerprint
   )
 }
 
@@ -736,6 +746,14 @@ export async function refreshHostedRooms() {
           continue
         }
 
+        const history = supportsHostedMethod(capability, 'groups.history', 'message_history_projection_v1') && !includeDisbanded
+          ? await readHostedHistory(read, roomId) : undefined
+
+        const readCursor = supportsHostedMethod(capability, 'groups.read.get', 'room_read_cursors_v1') && !includeDisbanded
+          ? await read('groups.read.get', { room_id: roomId }) as HostedReadCursor : undefined
+
+        if (stale() || !hostedRoomMutationIsCurrent(roomId, refreshGeneration)) {continue}
+
         const replayStatus = deriveFriendlyHostedRoomStatus(replay.state)
         const driver = record(stateResponse.driver_status)
 
@@ -820,6 +838,7 @@ export async function refreshHostedRooms() {
           sourceLabel
         )
 
+        const previousSeq = $groupChats.get()[localName]?.hostedSeq || 0
         updateGroupChat(
           localName,
           current => {
@@ -842,6 +861,8 @@ export async function refreshHostedRooms() {
               ),
               hostedConnectionId: connectionId,
               hostedSeq: replay.state.cursor,
+              ...(history ? { hostedHistory: history } : {}),
+              ...(readCursor ? { hostedRead: readCursor } : {}),
               hostedStatus: commandFailure
                 ? {
                     canRetry: true,
@@ -892,8 +913,10 @@ export async function refreshHostedRooms() {
           continue connectionLoop
         }
 
+        noteHostedRoomMentions(localName, previousSeq, replay.state.messages)
+
         if (writable) {
-          syncHostedRoomApprovals(localName, serverRoom, memberDescriptors, pendingActions)
+          syncHostedRoomApprovals(localName, serverRoom, memberDescriptors, pendingActions, supportsHostedMethod(capability, 'groups.input.respond', 'scoped_input_v1'))
         } else {
           clearHostedRoomApprovalState(localName)
         }
@@ -907,7 +930,7 @@ export async function refreshHostedRooms() {
           (!reconnectMemberId || Boolean(reconnectUpdateConnectionId)) &&
           Number(hostedRoomPollGenerations.get(roomId) || 0) === pollGeneration
         ) {
-          hostedRoomPollCache.set(roomId, hostedRoomPollFingerprint(listedRoom))
+          hostedRoomPollCache.set(roomId, { fingerprint: hostedRoomPollFingerprint(listedRoom), refreshedAt: Date.now() })
 
           if (includeDisbanded) {
             caughtUpDisbandedIds.add(roomId)
@@ -1324,6 +1347,7 @@ export async function approveHostedGroupChat(entry: GroupPrompt, choice: string)
     member_id: approval.memberId,
     task_id: approval.taskId,
     execution_generation: approval.executionGeneration,
+    ...(approval.threadId ? { thread_id: approval.threadId } : {}),
     choice,
     request_id: entry.requestId
   })

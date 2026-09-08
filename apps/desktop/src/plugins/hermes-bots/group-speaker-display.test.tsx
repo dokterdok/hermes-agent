@@ -58,6 +58,63 @@ async function show(room: GroupChat, members: GroupMember[] = room.members || []
 }
 
 describe('room speaker click and sidebar preview', () => {
+  it('renders current canonical text and tombstones without exposing deleted attachments', async () => {
+    const message = canonicalUser()
+    const room = userRoom([message])
+    room.hostedHistory = { snapshotSeq: 20, messages: { [message.eventId!]: {
+      event_id: message.eventId!, seq: message.seq!, thread_id: message.thread!, actor: { kind: 'user', id: 'desktop' }, original_text: message.text,
+      text: 'Current edited content', deleted: false, revision: 20, attachments: [], reactions: [{ reaction: '👍', actors: [{ kind: 'user', id: 'desktop' }] }]
+    } } }
+    await show(room)
+    expect(screen.getByText('Current edited content', { exact: true })).toBeTruthy()
+    expect(screen.getByText('👍 1', { exact: true })).toBeTruthy()
+    cleanup()
+    room.hostedHistory.messages[message.eventId!].deleted = true
+    room.hostedHistory.messages[message.eventId!].text = null
+    await show(room)
+    expect(screen.getByText('Message deleted', { exact: true })).toBeTruthy()
+    expect(document.body.textContent).not.toContain(message.text)
+    expect(screen.queryByText('Current edited content', { exact: true })).toBeNull()
+    expect(room.log[0].text).toBe(message.text)
+  })
+
+  it('preserves a hosted human actor through replay, cold persistence and rendering without calling them You', async () => {
+    const { createHostedRoomReplayState, reduceHostedRoomEvents } = await import('./hosted-room-client')
+    const chat = await import('./group-chat')
+
+    const replay = reduceHostedRoomEvents(createHostedRoomReplayState({ roomId: 'room-1' }), [
+      {
+        room_id: 'room-1',
+        event_id: 'human-peer',
+        seq: 1,
+        kind: 'message.user',
+        actor: { kind: 'user', id: 'remote-human-27', display_name: 'Jordan', connection_id: 'phone-client' },
+        payload: { text: 'A human peer wrote this', thread_id: 'human-thread' },
+        created_at: 10
+      }
+    ])
+
+    const cold = JSON.parse(JSON.stringify(chat.durableGroupChatRooms({ Board: userRoom(replay.messages) })))
+    const restored = chat.mergeRemoteGroupChatSnapshotIntoRooms(chat.groupChatSyncSnapshot(cold), {}).Board
+    expect(restored.log[0].from).toMatchObject({
+      name: 'Jordan',
+      hostedUserId: 'remote-human-27',
+      source: 'phone-client'
+    })
+    await show(restored)
+    expect(screen.getByText('Jordan', { exact: true })).toBeTruthy()
+    expect(screen.queryByText('You', { exact: true })).toBeNull()
+  })
+
+  it('does not let an older mirror erase the canonical human actor', async () => {
+    const chat = await import('./group-chat')
+    const canonical = canonicalUser()
+    const oldMirror = { ...canonical, seq: undefined, from: { kind: 'user' as const, name: 'You' } }
+    const merged = chat.mergeGroupChatSyncEntries([canonical], [oldMirror])
+    expect(merged).toHaveLength(1)
+    expect(merged[0].from).toMatchObject({ name: 'desktop', hostedUserId: 'desktop' })
+  })
+
   it('renders one user entry after actual room merge heals a cold optimistic/canonical cache', async () => {
     const chat = await import('./group-chat')
 
@@ -71,7 +128,7 @@ describe('room speaker click and sidebar preview', () => {
     await show(restored)
 
     expect(screen.getAllByText(USER_TEXT, { exact: true })).toHaveLength(1)
-    expect(screen.getAllByText('You', { exact: true })).toHaveLength(1)
+    expect(screen.getAllByText('desktop', { exact: true })).toHaveLength(1)
     expect(sendToGroupChatDurably).not.toHaveBeenCalled()
     expect(host.requestAgent).not.toHaveBeenCalled()
   })
@@ -87,7 +144,7 @@ describe('room speaker click and sidebar preview', () => {
     await show(restored)
 
     expect(screen.getAllByText(USER_TEXT, { exact: true })).toHaveLength(2)
-    expect(screen.getAllByText('You', { exact: true })).toHaveLength(2)
+    expect(screen.getAllByText('desktop', { exact: true })).toHaveLength(2)
   })
 
   it('reveals Product (@pm) from real replay, never the display label as a handle', async () => {

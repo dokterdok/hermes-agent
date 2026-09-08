@@ -104,7 +104,11 @@ import {
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChatDurably, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
+import { $hostedRoomCapabilities } from './hosted-room-capability-state'
 import { $hostedRoomCleanup } from './hosted-room-cleanup'
+import type { HostedHistory } from './hosted-room-history'
+import { HostedHistoryToolbar, HostedThreadActions } from './hosted-room-history-controls'
+import { HostedMessageActions } from './hosted-room-message-actions'
 import { reconnectHostedGroupChatPeer } from './hosted-room-reauthorization'
 import {
   beginHostedRoomMutation,
@@ -600,6 +604,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  const capabilities = useValue($hostedRoomCapabilities)
+  const capability = capabilities[rooms[group]?.hostedConnectionId || '']
 
   const room: GroupChatRoom = rooms[group] || {
     log: [],
@@ -611,12 +617,20 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const canStop = Boolean(room.running && hostedState !== 'stopping' && room.hostedStatus?.canStop !== false)
 
   const composerKey = groupComposerDraftKey(group, room)
+  const [search, setSearch] = useState<{ scope: string; result: HostedHistory } | null>(null)
+  const searchResult = search?.scope === composerKey ? search.result : null
   const composerKeyRef = useRef(composerKey)
   const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
 
   if (composerKeyRef.current !== composerKey) {
-    migrateGroupComposerDraft(composerKeyRef.current, composerKey)
+    // Only upgrade this room's legacy name key. Navigating to another room
+    // must not move private drafts (including active reply and attachments).
+    if (composerKeyRef.current === `name:${group}`) {
+      migrateGroupComposerDraft(composerKeyRef.current, composerKey)
+    }
+
     composerKeyRef.current = composerKey
+    setComposerDraft(groupComposerDraftSnapshot(composerKey))
   }
 
   const updateComposerDraft = (mutate: (draft: GroupComposerDraft) => GroupComposerDraft) => {
@@ -656,7 +670,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }))
 
   const [confirmDisband, setConfirmDisband] = useState(false)
-  const [confirmRetry, setConfirmRetry] = useState(false)
+  const [confirmRetry, setConfirmRetry] = useState<null | { scope: string; taskId: string }>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Click-to-disambiguate: which log entry is showing its speaker's full
   // @handle (the roster's name-device form when names collide across
@@ -669,8 +683,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // (null = the main composer, which STARTS a new thread).
   const [openThreads, setOpenThreads] = useState<Record<string, boolean>>({})
   // Pending image attachments per composer: `null` thread key = the main
-  // composer, otherwise the reply box of that thread. Data URLs, already
-  // downscaled — they ride the send into every responding member's session.
+  // composer, otherwise the reply box of that thread. Original data URLs
+  // ride the send into each responding member's attachment staging.
 
   // Scroll anchoring (#89835): rooms used to open at scroll position 0 and
   // stay there while replies streamed in. Scroll the bottom sentinel into
@@ -919,7 +933,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       return
     }
 
-    await stopGroupThread(group, latestActivity?.thread || null, memberDescriptors())
+    await stopGroupThread(group, groupChatHostedGateway(room) ? null : latestActivity?.thread || null, memberDescriptors())
     host.notify({
       kind: 'success',
       message: b.group.stopped(group)
@@ -963,7 +977,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               retryCommandId
                 ? void retryFailedHostedRoomCommand(group, retryCommandId).catch(() => undefined)
                 : retryTaskId
-                  ? setConfirmRetry(true)
+                  ? setConfirmRetry({ scope: composerKey, taskId: retryTaskId })
                   : void retryHostedRoomReplay(group).catch(() => undefined)
             }
             size="xs"
@@ -1198,6 +1212,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
+    const projection = entry.eventId ? searchResult?.messages[entry.eventId] || room.hostedHistory?.messages[entry.eventId] : undefined
+    const currentText = projection ? projection.deleted ? 'Message deleted' : projection.text || '' : entry.text
     const isUser = entry.from.kind === 'user'
     const hostedSpeaker = hostedMessageSpeaker(entry.from, room, members)
 
@@ -1226,7 +1242,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     const display = hostedSpeaker
       ? hostedSpeaker.display
       : isUser
-        ? 'You'
+        ? entry.from.name || 'User'
         : displayName(
             member || {
               name: entry.from.name
@@ -1241,7 +1257,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     // Clicked: append the gateway name so same-named agents on
     // two connections are tellable apart on demand.
     const label = isUser
-      ? 'You'
+      ? display
       : revealed && (!hostedSpeaker || handle)
         ? `${display}${!hostedSpeaker && entry.from.source ? `-${entry.from.source}` : ''} (@${handle})`
         : display
@@ -1291,9 +1307,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               </Button>
             )}
             <span className="text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(entry.at)}</span>
-            {entry.text.trim() ? (
+            {currentText.trim() && !projection?.deleted ? (
               <div className="ml-auto shrink-0 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
-                <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} />
+                <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={currentText} />
               </div>
             ) : null}
           </div>
@@ -1302,12 +1318,14 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
           >
-            {Streamdown ? <Streamdown>{entry.text}</Streamdown> : entry.text}
+            {Streamdown ? <Streamdown>{currentText}</Streamdown> : currentText}
           </div>
+          {projection?.reactions.map(reaction => <span className="mr-2 text-xs text-(--ui-text-secondary)" key={reaction.reaction}>{reaction.reaction} {reaction.actors.length}</span>)}
+          {projection ? <HostedMessageActions capability={capability} group={group} key={`${room.roomId}:${projection.event_id}`} message={projection} /> : null}
           {/* User attachments: what every responding bot was */
           /* shown — image previews, or a named chip for */
           /* PDFs/files. */}
-          {Array.isArray(entry.images) && entry.images.length ? (
+          {!projection?.deleted && Array.isArray(entry.images) && entry.images.length ? (
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               {entry.images.map((img, imgIndex) =>
                 img.kind === 'pdf' || img.kind === 'file' || !img.data ? (
@@ -1344,6 +1362,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
   for (let i = 0; i < room.log.length; i++) {
     const entry = room.log[i]
+
+    if (searchResult && (!entry.eventId || !searchResult.messages[entry.eventId])) {continue}
     const id = groupThreadOf(entry)
     let bucket = threadsById.get(id)
 
@@ -1372,11 +1392,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     const { entries, id } = threadBucket
     const head = entries.find(({ entry }) => entry.from.kind === 'user')?.entry || entries[0].entry
     const isNewest = id === newestThread
-    const expanded = openThreads[id] ?? isNewest
+    const expanded = Boolean(searchResult) || (openThreads[id] ?? isNewest)
 
     if (!expanded) {
       const replies = groupThreadReplyCount(room.log || [], id)
-      const headText = stripPreviewMarkdown(head?.text || '').slice(0, 80)
+      const projectedHead = head?.eventId ? room.hostedHistory?.messages[head.eventId] : undefined
+      const headText = stripPreviewMarkdown(projectedHead ? projectedHead.deleted ? 'Message deleted' : projectedHead.text || '' : head?.text || '').slice(0, 80)
       logChildren.push(
         <RowButton
           className="flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover)"
@@ -1424,6 +1445,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     for (const { entry, index } of entries) {
       threadRows.push(renderEntry(entry, index))
     }
+
+    if (room.hostedHistory) {threadRows.push(<HostedThreadActions capability={capability} group={group} key={`${room.hostedConnectionId}:${room.hostedEpoch}:${room.roomId}:${id}:controls`} roomId={room.roomId || undefined} thread={id} throughSeq={room.hostedHistory.snapshotSeq} />)}
 
     // Reply-in-thread: the newest thread's continuation ALSO lives here, so
     // the main composer below can stay "new thread" without ambiguity.
@@ -1512,6 +1535,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         </div>
       ) : null}
       {header}
+      <HostedHistoryToolbar capability={capability} group={group} key={composerKey} onResults={result => setSearch(result ? { scope: composerKey, result } : null)} room={room} />
+      {searchResult ? <div className="px-2.5 text-xs text-(--ui-text-secondary)">{Object.keys(searchResult.messages).length} matching messages</div> : null}
       <GroupHoldStatus
         holds={room.holds}
         memberLabel={member => displayName(member, botRosterMeta(member, allMeta))}
@@ -1615,11 +1640,13 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       <ConfirmDialog
         confirmLabel={b.group.retryAction}
         description={b.group.retryDesc}
-        onClose={() => setConfirmRetry(false)}
+        onClose={() => setConfirmRetry(null)}
         onConfirm={async () => {
-          await retryHostedGroupChat(group, retryTaskId)
+          if (confirmRetry?.scope === composerKey) {
+            await retryHostedGroupChat(group, confirmRetry.taskId)
+          }
         }}
-        open={confirmRetry}
+        open={confirmRetry?.scope === composerKey}
         title={b.group.retryTitle}
       />
     </div>
