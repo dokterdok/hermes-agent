@@ -65,6 +65,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from .choice_picker import MatrixChoicePickerPrompt
 
 logger = logging.getLogger(__name__)
 
@@ -886,7 +887,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_require_sender: bool = _env_truthy("MATRIX_APPROVAL_REQUIRE_SENDER", "true")
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
+        self._choice_picker_prompts_by_event: Dict[str, MatrixChoicePickerPrompt] = {}
         # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
         # allowlist, which must not decide who approves tool calls on a secondary bot.
         self._allowed_user_ids: Set[str] = _csv_set(_startup_env_secret("MATRIX_ALLOWED_USERS"))
@@ -1353,6 +1354,8 @@ class MatrixAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        from .choice_picker import cancel_choice_pages
+        cancel_choice_pages(self)
         self._closing = True
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -1701,27 +1704,17 @@ class MatrixAdapter(BasePlatformAdapter):
                 on_selected=on_selected, requester_user_id=requester, expires_at=expires_at),
             registry, choices, label)
 
+    supports_choice_pages = True
+    choice_pages_edit_in_place = False
+
     async def send_choice_picker(
         self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Reaction-based choice picker (/reasoning, /fast); choice = {value, label, is_current}."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        emoji_choices: dict[str, str] = {}
-        lines = [title, ""]
-        for emoji, choice in zip(_MATRIX_CHOICE_PICKER_REACTIONS, choices):
-            value = str(choice.get("value") or "")
-            label = str(choice.get("label") or value)
-            if choice.get("is_current"):
-                label = f"{label} ← current"
-            emoji_choices[emoji] = value
-            lines.append(f"{emoji} {label}")
-        if not emoji_choices:
-            return SendResult(success=False, error="No choices")
-        lines += ["", "React to choose."]
-        return await self._send_picker(
-            chat_id, lines, emoji_choices, session_key, on_choice_selected, metadata,
-            self._choice_picker_prompts_by_event, "choice picker")
+        from .choice_picker import send_choice_picker
+        return await send_choice_picker(
+            self, chat_id, title, choices, session_key, on_choice_selected,
+            metadata, _MATRIX_CHOICE_PICKER_REACTIONS)
 
     def format_message(self, content: str) -> str:
         """Markdown passes through; strip image markdown (media is uploaded separately)."""
@@ -2338,10 +2331,10 @@ class MatrixAdapter(BasePlatformAdapter):
             reacts_to = str(getattr(relates_to, "event_id", ""))
             key = str(getattr(relates_to, "key", ""))
         logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
-        for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
-                        self._handle_choice_picker_reaction):
+        for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):
                 return
+        await self._handle_choice_picker_reaction(room_id, reacts_to, key, sender, event_id=event_id)
 
     async def _claim_reaction_prompt(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,
@@ -2394,13 +2387,16 @@ class MatrixAdapter(BasePlatformAdapter):
             "That reaction is not one of the available model choices.", self._expire_matrix_model_picker_prompt,
             ("switch model", "switch model"), redact_bot_reactions=True)
 
-    async def _handle_choice_picker_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
+    async def _handle_choice_picker_reaction(
+        self, room_id: str, reacts_to: str, key: str, sender: str, *, event_id: str = ""
+    ) -> bool:
         """Apply a choice-picker reaction. True if the reaction targeted a pending picker."""
-        async def _expire(_room_id, target_event_id, _prompt):
-            self._choice_picker_prompts_by_event.pop(target_event_id, None)
-        return await self._handle_picker_reaction(
-            self._choice_picker_prompts_by_event, room_id, reacts_to, key, sender, "choice picker",
-            "That reaction is not one of the available choices.", _expire, ("apply choice", "apply selection"))
+        from .choice_picker import handle_choice_reaction
+        if reacts_to not in self._choice_picker_prompts_by_event:
+            return False
+        await handle_choice_reaction(
+            self, room_id, reacts_to, sender, key, event_id, _MATRIX_CHOICE_PICKER_REACTIONS)
+        return True
 
     async def _handle_picker_reaction(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,

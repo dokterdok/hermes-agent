@@ -5411,23 +5411,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, BasePlatformA
             return {"embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_model_picker")
 
+    supports_choice_pages = True
+    choice_pages_edit_in_place = True
+
     async def send_choice_picker(
         self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Flat select-menu picker (one selection → one value) for `/reasoning`, `/fast`,
         etc. Each choice: ``{"value": str, "label": str, "is_current": bool}``."""
-        def _build(_channel):
-            embed = discord.Embed(
-                title="⚙ " + (title.splitlines()[0] if title else "Choose an option"),
-                description="\n".join(title.splitlines()[1:]) or None, color=discord.Color.blue(),
-            )
-            view = ChoicePickerView(
-                choices=choices, on_choice_selected=on_choice_selected,
-                allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
-            )
-            return {"embed": embed, "view": view}, view
-        return await self._send_prompt(chat_id, metadata, _build, fail_log="send_choice_picker")
+        from .choice_picker import send_choice_picker
+        return await send_choice_picker(
+            self, chat_id, title, choices, session_key, on_choice_selected, metadata,
+            discord_sdk=discord, discord_available=DISCORD_AVAILABLE,
+            view_class=globals().get("ChoicePickerView"), logger=logger)
 
     def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
         """Return the parent channel ID for a Discord thread-like channel, if present."""
@@ -6386,57 +6383,12 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass
 
-    class ChoicePickerView(_HermesView):
-        """Flat single-select picker for finite-choice commands (/reasoning, /fast); 2-minute timeout."""
+    from .choice_picker import define_choice_picker_view
 
-        def __init__(self, choices: list, on_choice_selected, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=120)
-            self.choices = list(choices)[:_DISCORD_SELECT_MAX_OPTIONS]
-            self.on_choice_selected = on_choice_selected
-            options = []
-            for choice in self.choices:
-                label = str(choice.get("label") or choice.get("value") or "")
-                options.append(
-                    discord.SelectOption(
-                        label=_truncate_discord_component_text(label, _DISCORD_SELECT_FIELD_LIMIT),
-                        value=str(choice.get("value") or ""),
-                        description="current" if choice.get("is_current") else None,
-                    )
-                )
-            select = discord.ui.Select(placeholder="Choose an option...", options=options)
-            select.callback = self._on_select
-            self.add_item(select)
-
-        async def _on_select(self, interaction: discord.Interaction):
-            if not self._check_auth(interaction):
-                await interaction.response.send_message("⛔ You are not authorized to change this setting.", ephemeral=True)
-                return
-            if self.resolved:
-                await interaction.response.defer()
-                return
-            self.resolved = True
-            value = interaction.data.get("values", [""])[0]
-            try:
-                result_text = await self.on_choice_selected(str(interaction.channel_id), value)
-            except Exception as exc:
-                logger.error("Choice picker selection failed: %s", exc)
-                result_text = f"Error applying selection: {exc}"
-            embed = discord.Embed(description=result_text, color=discord.Color.green())
-            self.clear_items()
-            self.stop()
-            await interaction.response.edit_message(embed=embed, view=self)
-
-        async def on_timeout(self):
-            if self.resolved:
-                return
-            msg = self._message
-            if msg is not None:
-                try:
-                    embed = discord.Embed(description="⏱ Selection expired — no change made.", color=discord.Color.greyple())
-                    self.clear_items()
-                    await msg.edit(embed=embed, view=self)
-                except Exception:
-                    pass
+    ChoicePickerView = define_choice_picker_view(
+        discord_sdk=discord, component_check_auth=_component_check_auth,
+        truncate_component_text=_truncate_discord_component_text, logger=logger,
+        max_options=_DISCORD_SELECT_MAX_OPTIONS, field_limit=_DISCORD_SELECT_FIELD_LIMIT)
 
     class ClarifyChoiceView(_HermesView):
         """One button per clarify choice (max 24) plus ``✏️ Other``. A numeric click resolves the
