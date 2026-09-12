@@ -60,7 +60,7 @@ def _record(conn, room_id, member_id, gateway, epoch):
         (room_id, member_id, gateway, epoch)).fetchone()
 
 
-def dispatch_owner_delegation(authority, actor, method, params):
+def dispatch_owner_delegation(authority, actor, method, params, *, peer_install_id=None):
     if (method not in _OWNER_METHODS or not isinstance(params, dict)
             or set(params) - _OWNER_FIELDS[method]):
         raise RuntimeStoreError('invalid_params')
@@ -88,6 +88,13 @@ def dispatch_owner_delegation(authority, actor, method, params):
                 authority_epoch=epoch, _conn=conn)
             return {'revoked': count}
         require_room_work_open(conn, room_id, error=controls.HostedRoomControlError)
+        if peer_install_id is not None:
+            row = conn.execute('SELECT members_json FROM hosted_rooms WHERE room_id=?', (room_id,)).fetchone()
+            members = json.loads(row['members_json']) if row else []
+            member = next((m for m in members if m.get('member_id') == member_id), {})
+            target = member.get('target') or {}
+            if target.get('kind') != 'peer' or target.get('installation_id') != peer_install_id:
+                raise RuntimeStoreError('room_control_participant_mismatch')
         existing = _record(conn, room_id, member_id, gateway, epoch)
         if reuse and existing is not None and not str(existing['request_id']).startswith(_prefix(authority, actor.subject)):
             raise RuntimeStoreError('control_reauthorization_required')

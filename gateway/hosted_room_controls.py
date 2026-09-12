@@ -737,6 +737,7 @@ def revoke_home_control_token_value(
     member_id: Any,
     control_token: Any,
     now: float | None = None,
+    _conn: sqlite3.Connection | None = None,
 ) -> int:
     """Idempotently revoke the exact bearer, including response-lost retries."""
 
@@ -744,7 +745,7 @@ def revoke_home_control_token_value(
     member_id = _identifier(member_id, label="member_id")
     token_hash = hashlib.sha256(_control_token(control_token).encode("ascii")).digest()
     timestamp = _timestamp(time.time() if now is None else now, label="now")
-    with _transaction(db_path, immediate=True) as conn:
+    with (_transaction(db_path, immediate=True) if _conn is None else nullcontext(_conn)) as conn:
         rows = conn.execute(
             """SELECT token_hash, status FROM hosted_room_control_tokens
                 WHERE room_id=? AND member_id=?""",
@@ -830,6 +831,7 @@ def save_peer_control_link(
     expires_at: Any,
     allow_rotation: bool = False,
     now: float | None = None,
+    _conn: sqlite3.Connection | None = None,
 ) -> PeerRoomControlSave:
     """Persist a private peer link, rejecting any immutable identity drift."""
 
@@ -848,7 +850,7 @@ def save_peer_control_link(
     if expires_at <= timestamp:
         raise HostedRoomControlError("control link expiry must be in the future")
 
-    with _transaction(db_path, immediate=True) as conn:
+    with (_transaction(db_path, immediate=True) if _conn is None else nullcontext(_conn)) as conn:
         existing = conn.execute(
             """SELECT * FROM hosted_room_peer_controls
                 WHERE room_id=? AND member_id=?""",
