@@ -128,6 +128,9 @@ def _http_routes(adapter):
         from gateway.session_group_messaging_send import send_from_peer
         try:
             _authorize(adapter, request)
+            draining = adapter._draining_response()
+            if draining is not None:
+                return draining
             with _reserve_pending_api_work(adapter):
                 if request.query:
                     raise ValueError('unexpected query')

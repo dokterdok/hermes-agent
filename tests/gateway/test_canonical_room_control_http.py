@@ -24,6 +24,8 @@ from hermes_state_runtime import begin_runtime_epoch
 def homes(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     runner = SimpleNamespace(config=GatewayConfig(multiplex_profiles=True), _draining=False)
+    from gateway import run
+    monkeypatch.setattr(run, '_gateway_runner_ref', lambda: runner)
     runner.session_authorities = SessionAuthorities(tmp_path)
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={'key': 'unused-api-key'}))
     adapter.gateway_runner = runner
@@ -235,3 +237,39 @@ async def test_http_send_accepts_one_command_and_keeps_receiving_profile(homes):
         rejected = await client.post('/v1/room-controls/room', headers=_headers(rows['default'][2]),
                                      json={**body, 'profile': 'reviewer'})
         assert rejected.status == 400
+
+
+@pytest.mark.asyncio
+async def test_already_draining_send_does_not_parse_body_or_reserve_work(homes, monkeypatch):
+    adapter, rows = homes
+    adapter.gateway_runner._draining = True
+    async def unexpected_body(request):
+        pytest.fail('Already-draining requests must not start body parsing')
+    monkeypatch.setattr(adapter, '_read_json_body', unexpected_body)
+    from gateway.platforms import api_server
+    def unexpected_reservation(*args):
+        pytest.fail('Already-draining requests must not reserve pending work')
+    monkeypatch.setattr(api_server, '_reserve_pending_api_work', unexpected_reservation)
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.post('/v1/room-controls/room', headers=_headers(rows['default'][2]),
+                                     json={'action': 'send', 'command_id': 'one', 'text': 'Hello'})
+        assert response.status == 503
+        assert not any(e['kind'] == 'message.user' for e in rows['default'][0].hosted_room_service._events('room'))
+
+
+@pytest.mark.asyncio
+async def test_send_rechecks_drain_after_completed_body_parse(homes, monkeypatch):
+    adapter, rows = homes
+    original = adapter._read_json_body
+    async def parse_then_drain(request):
+        result = await original(request)
+        adapter.gateway_runner._draining = True
+        return result
+    monkeypatch.setattr(adapter, '_read_json_body', parse_then_drain)
+    before = adapter._pending_agent_requests
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.post('/v1/room-controls/room', headers=_headers(rows['default'][2]),
+                                     json={'action': 'send', 'command_id': 'one', 'text': 'Hello'})
+        assert response.status == 503
+        assert adapter._pending_agent_requests == before
+        assert not any(e['kind'] == 'message.user' for e in rows['default'][0].hosted_room_service._events('room'))
