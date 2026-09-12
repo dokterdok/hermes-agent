@@ -141,14 +141,17 @@ def acknowledge_published(
                 or actor.get("kind") != "member" or actor.get("id") != scope.member_id
                 or actor.get("profile") != scope.target_profile
                 or payload.get("task_id") != scope.task_id
-                or payload.get("execution_generation") != scope.execution_generation
-                or payload.get("artifact_scope_sha256") != scope.key
-                or payload.get("artifact_manifest_digest") != manifest["manifest_digest"]):
+                or ("execution_generation" in payload and payload["execution_generation"] != scope.execution_generation)
+                or ("artifact_scope_sha256" in payload and payload["artifact_scope_sha256"] != scope.key)
+                or ("artifact_manifest_digest" in payload and payload["artifact_manifest_digest"] != manifest["manifest_digest"])):
             raise RoomArtifactError("output publication commitment changed")
         attachments = payload.get("attachments")
         if not isinstance(attachments, list) or len(attachments) != len(items):
             raise RoomArtifactError("output publication manifest changed")
         for item, attachment in zip(items, attachments):
+            # Canonical member events keep their existing wire fields. The
+            # persisted upload identity binds every version to the full scope,
+            # including task generation, without adding public authority fields.
             row = conn.execute(
                 "SELECT upload_id FROM hosted_room_attachments WHERE room_id=? AND attachment_id=?",
                 (scope.room_id, attachment.get("attachment_id")),
