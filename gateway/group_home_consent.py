@@ -349,6 +349,7 @@ async def prepare_group_access(runner, event):
     if query in {'help', 'usage', '?'}:
         return runner._group_chat_help(group_command_prefix(runner, event.source) + 'group')
     if query == 'cancel':
+        cancellation = _cancel(runner, event)
         from gateway.group_chat_menu import cancel_navigation
         await cancel_navigation(runner, event)
         # Retire only this requester's existing read chooser, without a config
@@ -362,7 +363,7 @@ async def prepare_group_access(runner, event):
             if isinstance(stamp, tuple) and len(stamp) == 10 and context is not None:
                 if stamp[0] == str(context.home) and stamp[5:9] == location:
                     tokens.pop(stamp, None)
-        return _cancel(runner, event)
+        return cancellation
     key = _key(runner, event)
     if key is None:
         return denial(runner, event)

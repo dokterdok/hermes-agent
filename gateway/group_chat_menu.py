@@ -18,6 +18,17 @@ def callback_destination(source):
     return str(source.thread_id if source.platform.value == 'discord' and source.thread_id else source.chat_id)
 
 
+def retire_navigation(menu):
+    """Revoke in-memory permissions before any cancellation I/O can wait."""
+    menu.deadline = 0
+    menu.actions.clear()
+    request = getattr(menu, 'compose_request', None)
+    if request is not None:
+        request.deadline = 0
+        request.pending = False
+    return request
+
+
 class GroupMenu:
     def __init__(self, runner, event, backend, command, stamp):
         context = receiving_group_context(runner, event.source)
@@ -33,13 +44,13 @@ class GroupMenu:
             active = runner._canonical_group_menus = {}
         for key in list(active):
             if active[key].deadline <= time.monotonic():
-                active.pop(key)
+                retire_navigation(active.pop(key))
         previous = active.pop(stamp, None)
         if previous is not None:
-            previous.deadline = 0
+            retire_navigation(previous)
         active[stamp] = self
         while len(active) > 128:
-            active.pop(next(iter(active))).deadline = 0
+            retire_navigation(active.pop(next(iter(active))))
 
     def check(self):
         require_current(self.runner, self.event, self.stamp)
@@ -74,6 +85,8 @@ class GroupMenu:
         count = (len(rooms) + 7) // 8
         if not 0 <= index < count:
             return text('group_files', 'expired')
+        for room in rooms[index * 8:(index + 1) * 8]:
+            await run_group_read(lambda room=room: self.backend.check(room))
         actions = [(f"{room_reference(room)}. {_plain_display_label(room['name'], limit=60)} · {len(room.get('members', []))} Bots",
                     ('room', room_key(room))) for room in rooms[index * 8:(index + 1) * 8]]
         if index:
@@ -283,14 +296,13 @@ async def cancel_navigation(runner, event):
     source = logical_home_source(event)
     location = (str(source.user_id), str(source.chat_id), str(source.thread_id or ''), str(source.scope_id or ''))
     active = getattr(runner, '_canonical_group_menus', {})
+    requests = []
     for key, menu in list(active.items()):
         if key[0] != str(context.home) or key[5:9] != location:
             continue
-        menu.deadline = 0
-        menu.actions.clear()
+        request = retire_navigation(menu)
         active.pop(key, None)
-        request = getattr(menu, 'compose_request', None)
         if request is not None:
-            request.deadline = 0
-            request.pending = False
-            await asyncio.to_thread(request.cancel)
+            requests.append(request)
+    for request in requests:
+        await asyncio.to_thread(request.cancel)
