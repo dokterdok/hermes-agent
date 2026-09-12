@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', () => ({ host: { requestProfile: request } }))
-import { prepareCanonicalGroupCreate, readCanonicalGroupCreate, resumeCanonicalGroupCreate } from './canonical-group-create'
+import { normalizeCanonicalGroupName, prepareCanonicalGroupCreate, readCanonicalGroupCreate, resumeCanonicalGroupCreate } from './canonical-group-create'
 
 const route = { connectionId: 'source', profile: 'default' }
 const members = ['writer', 'reviewer'].map(profile => ({ member_id: profile, profile, handle: profile, target: { kind: 'local', profile } }))
@@ -80,4 +80,31 @@ it('a mismatched response cannot retire the saved group and late success cannot 
   await resumeCanonicalGroupCreate(route, entry.binding.roomId)
   expect(await readCanonicalGroupCreate(route)).toEqual(replacement)
   await expect(resumeCanonicalGroupCreate(route, entry.binding.roomId)).rejects.toThrow('changed in another window')
+})
+
+it('normalizes fresh names but retires older raw-name intents by their unchanged journal identity', async () => {
+  const entry = await prepareCanonicalGroupCreate(route, 'Team \u0085', members)
+  expect(entry.params.name).toBe('Team')
+  expect(normalizeCanonicalGroupName('\ufeffTeam\ufeff')).toBe('\ufeffTeam\ufeff')
+  const raw = { ...entry, params: { ...entry.params, name: 'Team ' } }
+  for (const key of Object.keys(entries)) {entries[key] = raw}
+  request.mockImplementation(async (_route, method, params) => method === 'groups.capabilities'
+    ? { driver: true, authority_gateway_id: entry.authorityId }
+    : { room: { ...params, name: params.name.trim(), authority_gateway_id: entry.authorityId } })
+  const result = await resumeCanonicalGroupCreate(route, entry.binding.roomId)
+  expect(result.room.name).toBe('Team')
+  expect(request.mock.calls.find(call => call[1] === 'groups.create')![2].name).toBe('Team ')
+  expect(await readCanonicalGroupCreate(route)).toBeUndefined()
+})
+
+it('checks native journal capabilities before new or saved creation without falling back to browser storage', async () => {
+  const entry = await prepareCanonicalGroupCreate(route, 'Team', members)
+  window.hermesDesktop!.preparedSubmissions!.compareAndSet = undefined
+  request.mockClear()
+  await expect(resumeCanonicalGroupCreate(route, entry.binding.roomId)).rejects.toThrow('Update Hermes Desktop')
+  expect(await readCanonicalGroupCreate(route)).toEqual(entry)
+  expect(request).not.toHaveBeenCalled()
+  window.hermesDesktop = {} as typeof window.hermesDesktop
+  await expect(prepareCanonicalGroupCreate(route, 'Another', members)).rejects.toThrow('Update Hermes Desktop')
+  expect(request).not.toHaveBeenCalled()
 })

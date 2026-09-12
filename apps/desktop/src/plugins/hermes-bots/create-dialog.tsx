@@ -44,7 +44,7 @@ import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { registerCanonicalGroup } from './canonical-group-registry'
-import { readCanonicalGroupCreate } from './canonical-group-create'
+import { normalizeCanonicalGroupName, readCanonicalGroupCreate } from './canonical-group-create'
 import type { PreparedCanonicalGroupCreate } from './canonical-group-create'
 import { CanonicalGroupCreateRecovery } from './canonical-group-create-recovery'
 import type { CanonicalGroupRoute } from './canonical-groups'
@@ -1187,7 +1187,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     const generation = openGeneration.current
 
     try {
-    const base = (name.trim() || placeholder).slice(0, 64)
+    const base = normalizeCanonicalGroupName((name.trim() || placeholder).slice(0, 64))
 
     if (selected.length < 2 || !base) {
       return

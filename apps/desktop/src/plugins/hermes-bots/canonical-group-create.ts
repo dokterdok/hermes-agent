@@ -4,6 +4,26 @@ import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, Canonic
 const PREFIX = 'canonical-group-create-v1'
 const STORAGE_KEY = 'hermes.desktop.canonicalGroupCreates.v1'
 
+export function normalizeCanonicalGroupName(name: string): string {
+  // Match Python str.strip, including its four information-separator characters.
+  return name.replace(/^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu, '')
+}
+
+function nativeJournal(writable = false) {
+  if (window.hermesDesktop === undefined) {return undefined}
+  const native = window.hermesDesktop?.preparedSubmissions
+  if (typeof native?.read !== 'function' || (writable && typeof native.compareAndSet !== 'function')) {
+    throw new Error('Update Hermes Desktop before continuing this Group Chat setup.')
+  }
+  return native
+}
+
+function requireSetupStorage() {
+  if (!nativeJournal(true) && !navigator.locks?.request) {
+    throw new Error('This browser cannot safely retain Group Chat setup. Use Hermes Desktop.')
+  }
+}
+
 export interface PreparedCanonicalGroupCreate {
   version: 1
   binding: CanonicalGroupBinding
@@ -19,7 +39,7 @@ function key(route: CanonicalGroupRoute): string {
 }
 
 async function journal(): Promise<Record<string, unknown>> {
-  const native = window.hermesDesktop?.preparedSubmissions
+  const native = nativeJournal()
   const value: unknown = JSON.parse(native ? await native.read() : localStorage.getItem(STORAGE_KEY) || '{}')
   if (!value || typeof value !== 'object' || Array.isArray(value)) {throw new Error('Could not read saved Group Chat setup.')}
   return value as Record<string, unknown>
@@ -27,10 +47,9 @@ async function journal(): Promise<Record<string, unknown>> {
 
 async function compareAndSet(route: CanonicalGroupRoute, expected: PreparedCanonicalGroupCreate | null, entry: PreparedCanonicalGroupCreate | null): Promise<boolean> {
   const entryKey = key(route)
-  const native = window.hermesDesktop?.preparedSubmissions
+  const native = nativeJournal(true)
   if (native) {
-    if (!native.compareAndSet) {throw new Error('Update Hermes Desktop before creating this Group Chat.')}
-    return native.compareAndSet(entryKey, expected === null ? null : JSON.stringify(expected), entry === null ? null : JSON.stringify(entry))
+    return native.compareAndSet!(entryKey, expected === null ? null : JSON.stringify(expected), entry === null ? null : JSON.stringify(entry))
   }
   if (!navigator.locks?.request) {throw new Error('This browser cannot safely retain Group Chat setup. Use Hermes Desktop.')}
   // Browser mode retains reload recovery, not the native journal's process-crash guarantee.
@@ -76,13 +95,15 @@ async function authority(route: CanonicalGroupRoute): Promise<string> {
 }
 
 export async function prepareCanonicalGroupCreate(route: CanonicalGroupRoute, name: string, members: CanonicalRoomMember[]): Promise<PreparedCanonicalGroupCreate> {
+  requireSetupStorage()
+  name = normalizeCanonicalGroupName(name)
   const bindingRoute = { connectionId: route.connectionId, profile: route.profile }
   key(bindingRoute)
   const authorityId = await authority(bindingRoute)
   const params = JSON.parse(JSON.stringify({ name, members })) as { name: string; members: CanonicalRoomMember[] }
   const existing = await readCanonicalGroupCreate(bindingRoute)
   const assertSameIntent = (entry: PreparedCanonicalGroupCreate) => {
-    if (entry.authorityId !== authorityId || JSON.stringify({ name: entry.params.name, members: entry.params.members }) !== JSON.stringify(params)) {
+    if (entry.authorityId !== authorityId || JSON.stringify({ name: normalizeCanonicalGroupName(entry.params.name), members: entry.params.members }) !== JSON.stringify(params)) {
       throw new Error(`Finish setting up "${entry.params.name}" before creating another group on this gateway.`)
     }
     return entry
@@ -101,6 +122,7 @@ export async function prepareCanonicalGroupCreate(route: CanonicalGroupRoute, na
 }
 
 export async function resumeCanonicalGroupCreate(route: CanonicalGroupRoute, expectedRoomId: string): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
+  requireSetupStorage()
   const entry = await readCanonicalGroupCreate(route)
   if (!entry) {throw new Error('No unfinished Group Chat setup remains on this gateway.')}
   if (entry.binding.roomId !== expectedRoomId) {throw new Error('Group Chat setup changed in another window. Refresh before continuing.')}
@@ -108,7 +130,7 @@ export async function resumeCanonicalGroupCreate(route: CanonicalGroupRoute, exp
   const result = await canonicalGroupRequest<{ room: CanonicalRoom & { authority_gateway_id?: string } }>(entry.binding, 'groups.create', entry.params)
   const room = result?.room
   if (!room || room.room_id !== entry.params.room_id || room.authority_gateway_id !== entry.authorityId
-    || room.name !== entry.params.name || room.disbanded_at != null || !Array.isArray(room.members)
+    || room.name !== normalizeCanonicalGroupName(entry.params.name) || room.disbanded_at != null || !Array.isArray(room.members)
     || room.members.length !== entry.params.members.length || !room.members.every(validMember)) {
     throw new Error('Group creation could not be confirmed. Continue the saved setup before creating another group.')
   }
