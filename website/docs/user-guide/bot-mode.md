@@ -86,25 +86,63 @@ Routines are plain [Hermes cron jobs](./features/cron.md) namespaced `[bot:<name
 
 ## Groups and group chats
 
-Right-click a local Bot → **Manage groups** to add or remove it from any number of group chats. Pick existing groups independently or create one inline. Local membership is stored in the Bot's backend-synced profile metadata, so it follows that profile across desktops; older profiles with one legacy group continue to work. Connections Bots join through the New Group Chat picker and remain source-qualified in the room's shared state.
+Create a Group Chat from the Bots pane and choose two to six Bots. A group has
+one shared conversation, while each Bot keeps its own private chat and working
+context. Address a Bot with its displayed `@handle` when you want that Bot to
+take the next step.
 
-**Rooms follow your gateways, not one Desktop.** Each room's recent transcript, members, picture, and name are mirrored into the shared profile metadata of **every** gateway your Desktop is connected to, with per-gateway versioning so two Desktops writing at once merge instead of overwriting each other. Open Hermes Desktop on another machine against the same gateway (local network, Tailscale, anywhere) and the room appears with its history; gateway-only clients see it too. Rooms carry a durable internal identity, so renaming one changes just its display name everywhere, disbanding one removes it permanently on every client — even ones that were offline at the time — and recreating a same-name group starts a genuinely fresh room. If a gateway dies or is removed, nothing is lost: every connected Desktop keeps the full room locally and re-seeds any gateway it reconnects to. (The full orchestration log stays in each Desktop's local storage; the shared mirror is a bounded recent-history projection.)
+**The gateway hosts the conversation; Desktop is a viewer.** The host retains
+the ordered group history and schedules member work through the gateway's
+normal session runtime. Closing Desktop does not stop accepted work while the
+required gateways remain available. Reconnecting reads the existing room log;
+it does not start the conversation again or copy it into a newly named room.
 
-Groups are standalone rows in the same activity-ordered roster as Bot DMs. A Bot keeps one DM row even when it belongs to several groups, while every group gets its own room row with member count, latest-message preview, timestamp, and needs-you state.
+### Connect Bots on different machines
 
-Use the **Move up** and **Move down** arrows beside a room to choose its position among rooms. Until the first move, the existing pinned-first, recent-activity order is unchanged. After a move, room order is saved on this Desktop and survives reloads; new rooms follow the explicitly ordered rooms within their pinned or unpinned band. Moves cannot cross the pinned boundary, and filtering does not discard hidden rooms from the saved order. These controls reorder actual Group Chat rooms, not user-created Bot folders, and do not change membership or gateway ownership.
+Use the host gateway's **default** profile when creating a group across gateways.
+Select the Bots through their saved connections. Each participating gateway must
+support Group Chat links and expose a reachable endpoint. Setup checks each
+Bot's actual installation and profile, including when two saved connections
+refer to the same machine. The gateways communicate directly; Desktop is not
+the courier for these hosted groups.
 
-**Open chat** on any group row (2–6 Bots) opens a shared room where the whole group coordinates:
+If setup is interrupted, reopen the creation dialog on the original connection
+and continue the saved setup. Hermes retains the original group and selected
+Bots instead of creating another group on each attempt. An expired invitation
+or changed gateway is not silently replaced with a new authorization.
 
-- **One visible conversation.** Public messages and each member's reply stay readable in arrival order, with the speaker's name and timestamp. Starting another topic does not collapse earlier replies. **Reply in thread** continues that topic without reordering the room; **Activity** is a secondary status view, not a replacement for messages. Private Bot Chats remain separate.
-- Your message triggers up to **three serial rounds** of member turns. @-mentioned Bots respond (everyone responds when nobody is mentioned); each Bot replies briefly or passes, and the room settles when a full round stays silent.
-- Bots pull each other in with `@name`, and escalate real judgment calls to you with `@user` — the group row shows a **needs you** badge when that happens. Pending questions and command approvals also light that badge; resolving the last prompt clears only prompt attention, not an independent mention. Prompts follow a renamed room, while disbanding retires them even if a member's in-flight poll arrives later.
-- Hard caps (10 messages per send, 3 rounds) keep rooms from spinning.
-- Each member keeps its own persistent `Group: <name>` session, so room context survives like any other conversation.
-- **Not every Bot replies to every message.** Speaking is each member's own choice — a Bot replies only when it has something new to add and passes otherwise, and @-mentioning specific members scopes the round to them. Expect the members you addressed (or whoever has something to say) to speak, and the rest to stay quiet.
-- **Rooms keep running when you close the Desktop.** When every member of a room lives on the same gateway, that gateway owns turn scheduling through a durable driver: closing Hermes Desktop (or losing its connection) does not stop a room mid-discussion, and the Desktop simply catches up from the room's log when it reconnects. `groups.capabilities` on the gateway reports `driver: true` when this applies. Rooms whose members span several machines are different: each member's turns run on its own gateway, and the cross-connection courier described under *Bot-to-bot messaging* still applies to them.
-- **Rooms can span machines.** The New Group Chat picker seats Bots from any registered connection; each member's turns run on its own machine, in its own `Group: <name>` session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together.
-- **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](/user-guide/features/hooks#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
+### Read, steer and get files
+
+- **Messages and attention:** the group shows attributed messages, member state
+  and pending questions or approvals. An unconfirmed operation remains unresolved
+  rather than being presented as completed.
+- **Files:** browse the group's shared files, search and download through the
+  normal Save workflow. Access is checked again when retrieving a file. A file
+  shared with the group is not private to the Bot mentioned in its message, and
+  sharing it does not make a background copy on every participant gateway.
+- **Messaging access:** the room owner can explicitly enable access from the
+  profile's authorized messaging chat. Use that chat to check progress, send
+  input and retrieve outputs on the go. Shared chats require an audience
+  confirmation. Available buttons depend on the messaging adapter; typed
+  commands remain available where native controls are not supported.
+
+Group access remains tied to the authenticated creator. Access to ordinary Bot
+Chats as a profile operator does not automatically grant access to another
+identity's groups, and being a Telegram or WhatsApp command admin does not make
+that account the Desktop room owner. Messaging consent connects these surfaces
+without merging their identities or granting access to every room.
+
+### Existing groups and unavailable gateways
+
+Retained classic rooms keep their saved history and locally retained files. A
+room without a verified canonical binding is not converted by matching its
+name. Its old execution path is available only when the connected backend
+explicitly supports that legacy mode; an unavailable or unidentified gateway
+never authorizes a fallback executor.
+
+This is distinct from automatic failover. Losing the group's host can interrupt
+the group even when other Bots remain online; see
+[If the group host goes offline](#if-the-group-host-goes-offline).
 
 ## Bot-to-bot messaging
 
