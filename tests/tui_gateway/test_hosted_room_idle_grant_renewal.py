@@ -160,7 +160,9 @@ def test_idle_renewal_cannot_cross_authority_or_grant_fences(renewal, change):
     if change == "expired":
         r.clock[0] = r.claims["expires_at"] + 1
     elif change == "revoked":
-        hosted_rooms.revoke_room_grant_scope(r.service.db_path, claims=r.claims,
+        # The target handler enforces the current shared RoomLink store, not
+        # this fixture's explicitly selected source-room database.
+        hosted_rooms.revoke_room_grant_scope(hosted_rooms.default_db_path(), claims=r.claims,
                                              expires_at=r.claims["status_expires_at"])
     elif change == "policy":
         (r.home / "profiles" / "ops" / "config.yaml").write_text("agent:\n  max_turns: 7\n", encoding="utf-8")
