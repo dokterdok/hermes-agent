@@ -265,11 +265,18 @@ async def _handle_room_member_capabilities(
         claims = self._room_grant_claims(request, permission="status")
         profile, installation_id = _local_target(claims, _api_request_profile)
         _, catalog = _local_room_catalog(self, profile, installation_id)
+        from gateway import hosted_rooms
+        from gateway.hosted_room_passive_protocol import passive_capabilities
+        from gateway.hosted_room_replica_retirement import current_target_enrollment
+        enrollment = current_target_enrollment(hosted_rooms.default_db_path(),
+            room_id=claims['room_id'], authority_gateway_id=claims['authority_gateway_id'],
+            authority_epoch=claims['authority_epoch'])
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response({
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
-        "target_profile": profile, "catalog": catalog})
+        "target_profile": profile, "catalog": catalog,
+        "passive_replication": passive_capabilities(), "retirement_enrollment": enrollment})
 
 
 async def _handle_room_member_grant_refresh(

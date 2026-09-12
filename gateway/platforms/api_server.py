@@ -1554,6 +1554,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
+        from gateway.platforms import (
+            api_server_room_replicas, api_server_room_work_records, api_server_replica_retirement,
+        )
+        for passive in (api_server_room_replicas, api_server_room_work_records, api_server_replica_retirement):
+            routes.extend(passive.http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.

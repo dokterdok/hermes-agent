@@ -7,15 +7,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway import hosted_room_passive_protocol as protocol
-from gateway import hosted_room_replica_retirement as retirement
 from gateway import hosted_room_replicas as replicas
 from gateway import hosted_rooms as rooms
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
-from gateway.platforms import api_server_room_grants as grants_api
 from gateway.platforms import api_server_room_replicas as history_api
-from gateway.platforms import api_server_room_work_records as work_api
 from tui_gateway.hosted_room_replication import HostedRoomReplicationPublisher
 from tui_gateway.hosted_room_replication_http import PassiveReplicationHTTPClient
 from tests.gateway.passive_ingress_fixtures import pair, OWNER_KEY, signed_grant  # noqa: F401
@@ -25,23 +21,10 @@ from tests.tui_gateway.passive_publisher_fixtures import KEY, enroll, save_link
 def app_for(pair):
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": OWNER_KEY}))
     app = web.Application()
-    for module in (history_api, work_api):
-        for method, path, handler in module.http_routes(adapter):
+    for method, path, handler in adapter._http_route_table():
+        if path in {'/v1/room-members/replica', '/v1/room-members/work-records',
+                    '/v1/room-members/capabilities'}:
             app.router.add_route(method, path, handler)
-    for method, path, handler in grants_api._http_routes(adapter):
-        if path != "/v1/room-members/capabilities":
-            continue
-        async def capabilities(request, handler=handler):
-            response = await handler(request)
-            if response.status != 200:
-                return response
-            # Test-only discovery composition, still absent from parent registration.
-            body = json.loads(response.text)
-            body.update(passive_replication=protocol.passive_capabilities(),
-                retirement_enrollment=retirement.current_target_enrollment(pair.target,
-                    room_id="room", authority_gateway_id=pair.gateway, authority_epoch=pair.epoch))
-            return web.json_response(body)
-        app.router.add_route(method, path, capabilities)
     return app
 
 
