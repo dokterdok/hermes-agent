@@ -191,6 +191,26 @@ class MessagingRoomBackend:
             self.check(room)
             return value
 
+    def permissions(self, room):
+        from gateway.session_group_rules import list_rules
+        with owner_scope(self.authority):
+            self.check(room)
+            if room.get('_room_mode') == 'remote':
+                raise RoomControlClientError("Manage permissions in the Group Chat's owner Home.")
+            result = list_rules(self.service, room['room_id'])
+            self.check(room)
+            return result
+
+    def forget_permission(self, room, rule_id, generation):
+        from gateway.session_group_rules import revoke
+        from gateway.session_group_messaging_send import _capture
+        with owner_scope(self.authority):
+            self.check(room)
+            if room.get('_room_mode') == 'remote':
+                raise RoomControlClientError("Manage permissions in the Group Chat's owner Home.")
+            proof = _capture(self.authority, room, guard=self.guard)
+            return revoke(self.service, proof, rule_id, generation)
+
     def send(self, *, room, command_id, text, actor, write_guard):
         with owner_scope(self.authority):
             self.check(room)

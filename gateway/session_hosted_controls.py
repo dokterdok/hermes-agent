@@ -5,6 +5,19 @@ from tui_gateway.hosted_room_driver import HostedRoomBinding
 
 
 class HostedControls:
+    def _set_pending_action(self, room_id, member_id, action):
+        super()._set_pending_action(room_id, member_id, action)
+        if action is not None and action.get('kind') == 'approval':
+            from gateway.session_group_rules import apply_remembered
+            try:
+                apply_remembered(self, room_id, member_id)
+            except (RuntimeStoreError, ValueError):
+                # A missing/stale permission leaves the real prompt waiting.
+                pass
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning('Remembered Group Chat decision remains pending: %s', type(exc).__name__)
+
     def approve_room_task(self, room_id, **params):
         from gateway.session_group_decisions import approve_task
         return approve_task(self, room_id, **params)

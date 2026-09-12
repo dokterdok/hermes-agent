@@ -116,6 +116,8 @@ class GroupMenu:
             for member in summary['room']['members']:
                 actions.append((text('group_presentation', 'view_bot') + ' · ' + _plain_display_label(
                     member.get('display_name') or member['handle'], limit=64), ('bot', '@' + member['handle'])))
+            if room.get('_room_mode') != 'remote':
+                actions.append(('Manage permissions', ('permissions', 0)))
         try:
             files = await run_group_read(lambda: self.backend.list_files(room=room, limit=1))
         except FileAccessError:
@@ -216,6 +218,8 @@ class GroupMenu:
             '**' + _plain_display_label(item['member_id']) + '**',
             _plain_preview_text(item['description'], limit=512), _plain_preview_text(item['command'], limit=512)])
         actions = [('Allow once', ('decide', (code, 'once'))), ('Deny', ('decide', (code, 'deny')))]
+        if room.get('_room_mode') != 'remote' and item.get('remember_key'):
+            actions.insert(1, ('Always allow in this chat', ('remember', item)))
         if index:
             actions.append((text('group_files', 'approval_previous'), ('approvals', index - 1)))
         if index + 1 < len(pending):
@@ -229,6 +233,46 @@ class GroupMenu:
         result = await decide_from_chat(self.runner, self.event, self.backend, room, code, choice, self.stamp)
         return self.page(result, [(text('group_files', 'approvals'), ('approvals', 0)),
                                   (text('group_files', 'view_group'), ('room', room_key(room)))])
+
+    async def remember(self, item):
+        from gateway.group_chat_decisions import decision_code, remember_warning
+        await self.current_room()
+        return self.page(remember_warning(item), [('Always allow in this chat', ('decide', (decision_code(item), 'remember'))),
+                                                ('Cancel', ('approvals', 0))])
+
+    async def permissions(self, index=0):
+        room = await self.current_room()
+        values = await run_group_read(lambda: self.backend.permissions(room))
+        index = min(max(0, index), max(0, (len(values) - 1) // 8))
+        actions = [('View permission · ' + _plain_display_label(rule['member_id'], limit=32) + ': ' + _plain_display_label(rule['command_text'], limit=48),
+                    ('permission', dict(rule))) for rule in values[index * 8:(index + 1) * 8]]
+        if index:
+            actions.append((text('group_presentation', 'go_to_page', page=index), ('permissions', index - 1)))
+        if (index + 1) * 8 < len(values):
+            actions.append((text('group_presentation', 'go_to_page', page=index + 2), ('permissions', index + 1)))
+        actions.append((text('group_files', 'view_group'), ('room', room_key(room))))
+        title = 'Manage permissions\n\n' + text('group_presentation', 'page', current=index + 1, total=(len(values) + 7) // 8) if values else 'No remembered permissions in this Group Chat.'
+        return self.page(title, actions)
+
+    async def permission(self, rule):
+        from gateway.hosted_room_messaging_presentation import _plain_preview_text
+        room = await self.current_room()
+        values = await run_group_read(lambda: self.backend.permissions(room))
+        current = next((value for value in values if (value['rule_id'], value['generation']) == (rule['rule_id'], rule['generation'])), None)
+        if current is None:
+            return await self.permissions()
+        title = '\n\n'.join(['Allowed in this chat' if current['state'] == 'active' else 'Permission not confirmed',
+            _plain_display_label(current['member_id']), _plain_preview_text(current['command_text'], limit=512),
+            _plain_preview_text(current['context_text'], limit=384),
+            'Removing this permission makes future requests ask again. A command already approved may still finish.'])
+        return self.page(title, [('Remove permission', ('forget', dict(current))), ('Manage permissions', ('permissions', 0))])
+
+    async def forget(self, rule):
+        from gateway.group_chat_work import run_group_command_work
+        room = await self.current_room()
+        changed = await run_group_command_work(self.runner, 'deny', lambda: self.backend.forget_permission(room, rule['rule_id'], rule['generation']))
+        return self.page('Future requests will ask again.' if changed else 'This permission changed. Refresh the list.',
+                         [('Manage permissions', ('permissions', 0))])
 
     async def choose(self, chat_id, value):
         try:
@@ -251,6 +295,8 @@ class GroupMenu:
                 'file_confirm': lambda: self.download(payload, confirmed=True),
                 'reply': lambda: self.reply(payload),
                 'approvals': lambda: self.approvals(payload), 'decide': lambda: self.decide(*payload),
+                'remember': lambda: self.remember(payload), 'permissions': lambda: self.permissions(payload),
+                'permission': lambda: self.permission(payload), 'forget': lambda: self.forget(payload),
                 'compose': lambda: begin_compose(self), 'cancel_compose': cancel_compose}
             return await handlers[kind]()
         except (PermissionError, TimeoutError):

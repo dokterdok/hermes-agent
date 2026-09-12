@@ -13,17 +13,29 @@ _FIELDS = {'member_id', 'task_id', 'execution_generation', 'request_id', 'choice
 
 def validate_pending_decision(item, room):
     fields = (_FIELDS - {'choice'}) | {'room_id', 'authority_gateway_id', 'authority_epoch', 'command', 'description', 'choices'}
-    if (not isinstance(item, dict) or set(item) != fields
+    optional = {'remember_key', 'remember_context', 'profile'}
+    if (not isinstance(item, dict) or not fields <= set(item) <= fields | optional
             or any(item.get(key) != room.get(key) for key in ('room_id', 'authority_gateway_id', 'authority_epoch'))
             or type(item['authority_epoch']) is not int or item['choices'] != ['once', 'deny']
             or any(not isinstance(item[key], str) or len(item[key]) > 512 for key in ('command', 'description'))):
         raise RuntimeStoreError('invalid_params')
     _decision({key: item[key] for key in _FIELDS - {'choice'}} | {'choice': 'once'})
+    if set(item) & optional:
+        from tools.approval_operation import valid_operation_key, valid_operation_context
+        if (not optional <= set(item) or not valid_operation_key(item['remember_key'])
+                or not valid_operation_context(item['remember_context'])):
+            raise RuntimeStoreError('invalid_params')
+        controls._identifier(item['profile'], label='profile')
     return dict(item)
 
 
 def _decision(params):
-    if not isinstance(params, dict) or set(params) != _FIELDS or params['choice'] not in {'once', 'deny'}:
+    if (not isinstance(params, dict) or not _FIELDS <= set(params) <= _FIELDS | {'remember_key'}
+            or not isinstance(params['choice'], str) or params['choice'] not in {'once', 'deny', 'remember'}):
+        raise RuntimeStoreError('invalid_params')
+    from tools.approval_operation import valid_operation_key
+    if (params['choice'] == 'remember') != ('remember_key' in params) or (
+            'remember_key' in params and not valid_operation_key(params['remember_key'])):
         raise RuntimeStoreError('invalid_params')
     if type(params['execution_generation']) is not int or params['execution_generation'] < 1:
         raise RuntimeStoreError('invalid_params')
@@ -31,8 +43,8 @@ def _decision(params):
                         for key in ('member_id', 'task_id', 'request_id')}}
 
 
-def _accept(proof, command_id, params):
-    controls._identifier(command_id, label='command_id')
+def _accept(proof, command_id, params, *, pending=None, remembered_rule=None):
+    command_id = controls._identifier(command_id, label='command_id')
     scope = {'room_id': proof.room_id, 'owner': proof.owner, 'gateway_id': proof.gateway_id,
              'epoch': proof.room_epoch, 'member': proof.member_id or 'home', 'params': params}
     key = _PREFIX + hashlib.sha256(json.dumps([scope['member'], proof.room_id, command_id]).encode()).hexdigest()
@@ -61,6 +73,14 @@ def _accept(proof, command_id, params):
         if conn.execute('SELECT COUNT(*) FROM state_meta WHERE key LIKE ?', (_PREFIX + '%',)).fetchone()[0] >= 4096:
             raise RuntimeStoreError('storage_unavailable')
         saved = {'scope': encoded, 'updated_at': time.time(), 'result': None}
+        if params['choice'] == 'remember':
+            if pending is None:
+                raise RuntimeStoreError('stale_generation')
+            from gateway.session_group_rules import stage
+            from gateway.session_group_delegation import _service
+            saved['rule'] = stage(_service(proof.authority), conn, proof.owner, pending, command_id)
+        elif remembered_rule is not None:
+            saved['rule_use'] = {'rule_id': remembered_rule['rule_id'], 'generation': remembered_rule['generation']}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, json.dumps(saved)))
         return saved
     return key, proof.authority.db._execute_write(write)
@@ -70,12 +90,31 @@ def decide(authority, *, room, command_id, params, guard=None, member_id=None, t
     """Consent is checked at durable acceptance; no await or network holds SQLite."""
     from gateway.session_group_delegation import _service
     params = _decision(params)
+    command_id = controls._identifier(command_id, label='command_id')
+    from gateway.session_group_rules import AUTO_PREFIX
+    if command_id.startswith(AUTO_PREFIX):
+        raise RuntimeStoreError('invalid_params')
+    if params['choice'] == 'remember' and member_id is not None:
+        raise RuntimeStoreError('permission_denied')
     proof = _capture(authority, room, guard=guard, member_id=member_id, token=token)
-    key, saved = _accept(proof, command_id, params)
+    pending = None
+    if params['choice'] == 'remember':
+        pending = next((item for item in pending_decisions(_service(authority), proof.room_id)
+                        if all(item.get(key) == params[key] for key in _FIELDS - {'choice'})
+                        and item.get('remember_key') == params['remember_key']), None)
+    return _apply(proof, command_id, params, pending=pending)
+
+
+def _apply(proof, command_id, params, *, pending=None, remembered_rule=None):
+    from gateway.session_group_delegation import _service
+    authority = proof.authority
+    key, saved = _accept(proof, command_id, params, pending=pending, remembered_rule=remembered_rule)
     if saved['result'] is not None:
         return saved['result']
     service = _service(authority)
-    result = service.approve_room_task(proof.room_id, **params)
+    effect = {key: value for key, value in params.items() if key != 'remember_key'}
+    effect['choice'] = 'once' if effect['choice'] == 'remember' else effect['choice']
+    result = service.approve_room_task(proof.room_id, **effect)
     if result.get('status') not in {'resolved', 'already_resolved'}:
         raise RuntimeStoreError('unknown_execution')
     def complete(conn):
@@ -84,6 +123,9 @@ def decide(authority, *, room, command_id, params, guard=None, member_id=None, t
         row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
         if row is None or json.loads(row[0]).get('scope') != saved['scope']:
             raise RuntimeStoreError('storage_unavailable')
+        if params['choice'] == 'remember':
+            from gateway.session_group_rules import activate
+            result['remembered'] = result['status'] == 'resolved' and activate(service, conn, proof.owner, pending, saved['rule'], command_id)
         conn.execute('UPDATE state_meta SET value=? WHERE key=?',
                      (json.dumps({**saved, 'result': result, 'updated_at': time.time()}), key))
     authority.db._execute_write(complete)
@@ -148,10 +190,13 @@ def pending_decisions(service, room_id):
             if (not isinstance(prompt, dict) or prompt.get('request_id') != action.get('request_id')
                     or info.get('task_id') != action['task_id'] or info.get('execution_generation') != action['execution_generation']):
                 continue
+            from gateway.session_group_rules import operation_metadata
+            operation = operation_metadata(prompt)
             result.append({key: action[key] for key in ('member_id', 'task_id', 'execution_generation', 'request_id')} | {
                 'room_id': room_id, 'authority_gateway_id': gateway, 'authority_epoch': epoch,
                 'command': str(prompt.get('command') or '')[:512],
-                'description': str(prompt.get('description') or '')[:512], 'choices': ['once', 'deny']})
+                'description': str(prompt.get('description') or '')[:512], 'choices': ['once', 'deny'],
+                **({'profile': task['payload']['target_profile'], **operation} if operation else {})})
         except (KeyError, ValueError, RuntimeStoreError):
             continue
     if service._owned_authority(room_id) != (gateway, epoch):
