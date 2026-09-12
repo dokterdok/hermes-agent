@@ -20,6 +20,18 @@ approval:
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
 
 gateway:
+  group_compose:
+    send: Stuur boodskap
+    title: Boodskap aan {group}
+    prompt: Tik jou boodskap en stuur dit.
+    placeholder: Tik jou boodskap
+    unavailable: Kon nie die boodskapveld oopmaak nie. Geen boodskap is na die groepklets gestuur nie.
+    cancel: Kanselleer
+    view_group: Bekyk groep
+    cancelled: Boodskap gekanselleer.
+    closed: Hierdie boodskapveld is gesluit of nie meer beskikbaar nie. Maak die groepklets oop om 'n nuwe boodskap te stuur.
+    unknown: Aflewering kon nie bevestig word nie. Gaan die groepklets na voordat jy weer stuur.
+    text_only: Stuur een teksboodskap (tot 4096 karakters), sonder aanhegsels.
   approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
   draining:         "⏳ Wag vir {count} aktiewe agent(e) voor herbegin..."
   goal_cleared:     "✓ Doelwit verwyder."

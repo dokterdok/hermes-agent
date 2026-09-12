@@ -24,6 +24,18 @@ approval:
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
 
 gateway:
+  group_compose:
+    send: Seol teachtaireacht
+    title: Teachtaireacht chuig {group}
+    prompt: Clóscríobh do theachtaireacht agus seol í.
+    placeholder: Clóscríobh do theachtaireacht
+    unavailable: Níorbh fhéidir an bosca ionchuir a oscailt. Níor seoladh teachtaireacht chuig an ngrúpa.
+    cancel: Cealaigh
+    view_group: Féach ar an ngrúpa
+    cancelled: Teachtaireacht curtha ar ceal.
+    closed: Tá an bosca seo dúnta nó níl sé ar fáil a thuilleadh. Oscail an grúpa chun teachtaireacht nua a sheoladh.
+    unknown: Níorbh fhéidir an seachadadh a dheimhniú. Seiceáil an grúpa sula seolann tú arís.
+    text_only: Seol teachtaireacht téacs amháin (suas le 4096 carachtar), gan iatáin.
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining:         "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
   goal_cleared:     "✓ Sprioc glanta."

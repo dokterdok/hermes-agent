@@ -30,6 +30,18 @@ approval:
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
 
 gateway:
+  group_compose:
+    send: Send message
+    title: Message to {group}
+    prompt: Type your message and send.
+    placeholder: Write your message
+    unavailable: Couldn't open message input. No Group Chat message was sent.
+    cancel: Cancel
+    view_group: View group
+    cancelled: Message cancelled.
+    closed: This message prompt is closed or no longer available. Open the Group Chat to send a new message.
+    unknown: Delivery could not be confirmed. Check the Group Chat before sending again.
+    text_only: Send one text message (up to 4096 characters), without attachments.
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "⏳ Draining {count} active agent(s) before restart..."

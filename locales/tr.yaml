@@ -20,6 +20,18 @@ approval:
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
 
 gateway:
+  group_compose:
+    send: Mesaj gönder
+    title: '{group} grubuna mesaj'
+    prompt: Mesajınızı yazıp gönderin.
+    placeholder: Mesajınızı yazın
+    unavailable: Mesaj girişi açılamadı. Grup Sohbetine mesaj gönderilmedi.
+    cancel: İptal
+    view_group: Grubu görüntüle
+    cancelled: Mesaj iptal edildi.
+    closed: Bu mesaj girişi kapalı veya artık kullanılamıyor. Yeni mesaj göndermek için Grup Sohbetini açın.
+    unknown: Teslimat doğrulanamadı. Yeniden göndermeden önce Grup Sohbetini kontrol edin.
+    text_only: Ek olmadan tek bir metin mesajı gönderin (en fazla 4096 karakter).
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
   goal_cleared:     "✓ Hedef temizlendi."

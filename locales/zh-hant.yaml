@@ -20,6 +20,18 @@ approval:
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
 
 gateway:
+  group_compose:
+    send: 傳送訊息
+    title: 傳給 {group} 的訊息
+    prompt: 輸入訊息並傳送。
+    placeholder: 輸入訊息
+    unavailable: 無法開啟輸入框。未向群組聊天傳送任何訊息。
+    cancel: 取消
+    view_group: 查看群組
+    cancelled: 訊息已取消。
+    closed: 此輸入框已關閉或無法使用。請開啟群組聊天傳送新訊息。
+    unknown: 無法確認是否送達。再次傳送前請檢查群組聊天。
+    text_only: 請傳送一則純文字訊息（最多4096個字元），不含附件。
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
   draining:         "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."
   goal_cleared:     "✓ 目標已清除。"

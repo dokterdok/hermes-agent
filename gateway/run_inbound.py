@@ -1191,6 +1191,7 @@ class GatewayInboundMixin:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        native_input = getattr(event, "_native_reply_submission", None)
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1207,6 +1208,11 @@ class GatewayInboundMixin:
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:
             return _paused_notice
+
+        from gateway.native_reply_input import handle_native_reply
+        native_reply = await handle_native_reply(self, event, native_input)
+        if native_reply is not None:
+            return native_reply
 
         _quick_key = self._session_key_for_source(source)
         _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)

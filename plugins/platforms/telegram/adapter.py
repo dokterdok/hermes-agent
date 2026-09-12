@@ -3118,6 +3118,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
+        from .choice_picker import cancel_choice_pages
+        cancel_choice_pages(self)
         # Mark disconnected first so the drop guard short-circuits any flush that wins the race.
         self._mark_disconnected()
         self._polling_teardown_started = True
@@ -3890,29 +3892,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
     _PROVIDER_PAGE_SIZE = 10
 
+    supports_choice_pages = True
+    choice_pages_edit_in_place = True
+    supports_reply_input = True
+
+    async def send_reply_input(self, event, title, on_reply):
+        from .reply_input import send_reply_input
+        return await send_reply_input(self, event, title, on_reply)
+
     async def send_choice_picker(
         self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Flat inline-keyboard picker (one tap → one value) for /reasoning, /fast, etc. Each choice dict:
         ``{"value": str, "label": str, "is_current": bool}``."""
-        def build():
-            buttons = []
-            for i, choice in enumerate(choices):
-                label = str(choice.get("label") or choice.get("value") or "")
-                if choice.get("is_current"):
-                    label = f"✓ {label}"
-                buttons.append(InlineKeyboardButton(label, callback_data=f"cp:{i}"))
-            if not buttons:
-                return SendResult(success=False, error="No choices")
-            keyboard = InlineKeyboardMarkup(self._rows_of_two(buttons))
-
-            def _remember(msg):
-                self._choice_picker_state[str(chat_id)] = {
-                    "msg_id": msg.message_id, "choices": choices, "session_key": session_key, "on_choice_selected": on_choice_selected}
-            return self.format_message(title), keyboard, _remember
-        return await self._send_prompt(
-            "send_choice_picker", chat_id, metadata, build, thread_id=metadata.get("thread_id") if metadata else None,
-            reply_to_mode=self._reply_to_mode)
+        from .choice_picker import send_choice_picker
+        return await send_choice_picker(
+            self, chat_id, title, choices, session_key, on_choice_selected, metadata,
+            inline_keyboard_button=InlineKeyboardButton, inline_keyboard_markup=InlineKeyboardMarkup,
+            parse_mode=ParseMode, normalize_chat_id=normalize_telegram_chat_id,
+            redact_error=_redact_telegram_error_text, logger=logger)
 
     async def _edit_result_text(self, query, result_text: str) -> None:
         """Replace a picker message with ``result_text`` (MarkdownV2, then plain, then give up), keyboard removed."""
@@ -3924,30 +3922,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_choice_picker_callback(self, query, data: str, chat_id: str) -> None:
         """Handle choice picker button taps (cp:<index>)."""
-        state = self._choice_picker_state.get(chat_id)
-        if not state:
-            await query.answer(text="Picker expired — run the command again.")
-            return
-        # Same auth gate as approval buttons: strangers in a shared group must not flip session state.
-        if not await self._callback_authorized(query, self._callback_ctx(query), "⛔ You are not authorized to change this setting."):
-            return
-        try:
-            choice = state["choices"][int(data[3:])]
-        except (ValueError, IndexError):
-            await query.answer(text="Invalid selection.")
-            return
-        callback = state.get("on_choice_selected")
-        if not callback:
-            await query.answer(text="Picker expired.")
-            return
-        try:
-            result_text = await callback(chat_id, str(choice.get("value") or ""))
-        except Exception as exc:
-            logger.error("Choice picker selection failed: %s", exc)
-            result_text = f"Error applying selection: {exc}"
-        await self._edit_result_text(query, result_text)
-        await query.answer()
-        self._choice_picker_state.pop(chat_id, None)
+        from .choice_picker import handle_choice_picker_callback
+        await handle_choice_picker_callback(
+            self, query, data, chat_id, parse_mode=ParseMode, logger=logger,
+            inline_keyboard_button=InlineKeyboardButton, inline_keyboard_markup=InlineKeyboardMarkup)
 
     _MODEL_PAGE_SIZE = 8
 
@@ -5736,6 +5714,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
+        from .reply_input import dispatch_reply_input
+        if await dispatch_reply_input(self, msg, update.update_id):
+            return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
         await self._ensure_forum_commands(update.message)
@@ -5750,6 +5731,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
+            return
+        from .reply_input import dispatch_reply_input
+        if await dispatch_reply_input(self, msg, update.update_id):
             return
         await self._ensure_forum_commands(msg)
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
@@ -5767,6 +5751,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
+            return
+        from .reply_input import dispatch_reply_input
+        if await dispatch_reply_input(self, msg, update.update_id):
             return
         if not self._gate_or_observe(msg, update, MessageType.LOCATION):
             return
@@ -6037,6 +6024,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
+            return
+        from .reply_input import dispatch_reply_input
+        if await dispatch_reply_input(self, msg, update.update_id):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):

@@ -20,6 +20,18 @@ approval:
   blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
 
 gateway:
+  group_compose:
+    send: Nachricht senden
+    title: Nachricht an {group}
+    prompt: Nachricht eingeben und senden.
+    placeholder: Nachricht eingeben
+    unavailable: Nachrichteneingabe konnte nicht geöffnet werden. Es wurde keine Nachricht an den Gruppenchat gesendet.
+    cancel: Abbrechen
+    view_group: Gruppe anzeigen
+    cancelled: Nachricht abgebrochen.
+    closed: Diese Nachrichteneingabe ist geschlossen oder nicht mehr verfügbar. Öffne den Gruppenchat für eine neue Nachricht.
+    unknown: Zustellung konnte nicht bestätigt werden. Prüfe den Gruppenchat vor erneutem Senden.
+    text_only: Sende eine Textnachricht (bis zu 4096 Zeichen) ohne Anhänge.
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
   draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
   goal_cleared:     "✓ Ziel gelöscht."

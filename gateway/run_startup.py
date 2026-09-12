@@ -72,12 +72,19 @@ class GatewayStartupMixin:
 
     async def _drain_startup_restore_queue(self) -> int:
         """Replay inbound messages queued while startup auto-resume ran."""
+        from gateway.native_reply_input import NativeReplySubmission
         drained = 0
         queue = getattr(self, "_startup_restore_queue", None) or []
         while queue:
             event = queue.pop(0)
             source = getattr(event, "source", None)
-            adapter = self._adapter_for_source(source)
+            native = isinstance(getattr(event, "_native_reply_submission", None), NativeReplySubmission)
+            if native:
+                from gateway.group_chat_policy import receiving_group_context
+                receiver = receiving_group_context(self, source)
+                adapter = receiver.adapter if receiver is not None else None
+            else:
+                adapter = self._adapter_for_source(source)
             if adapter is None:
                 logger.debug(
                     "Dropping startup-restore queued message: adapter unavailable for %s",
@@ -87,7 +94,10 @@ class GatewayStartupMixin:
             # Mark the replay so _handle_message does not re-queue it while the restore gate is closed.
             with suppress(Exception):
                 setattr(event, "_hermes_startup_restore_replay", True)
-            await adapter.handle_message(event)
+            if native:
+                await adapter._dispatch_inline_reply(event)
+            else:
+                await adapter.handle_message(event)
             drained += 1
         return drained
 

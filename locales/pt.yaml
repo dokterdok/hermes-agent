@@ -20,6 +20,18 @@ approval:
   blocklist_message: "Este comando está na lista de bloqueio incondicional e não pode ser aprovado."
 
 gateway:
+  group_compose:
+    send: Enviar mensagem
+    title: Mensagem para {group}
+    prompt: Escreva a mensagem e envie.
+    placeholder: Escreva sua mensagem
+    unavailable: Não foi possível abrir a entrada. Nenhuma mensagem foi enviada ao grupo.
+    cancel: Cancelar
+    view_group: Ver grupo
+    cancelled: Mensagem cancelada.
+    closed: Esta entrada está fechada ou indisponível. Abra o grupo para enviar uma nova mensagem.
+    unknown: Não foi possível confirmar a entrega. Confira o grupo antes de enviar novamente.
+    text_only: Envie uma única mensagem de texto (até 4096 caracteres), sem anexos.
   approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
   draining:         "⏳ A aguardar que {count} agente(s) ativo(s) terminem antes de reiniciar..."
   goal_cleared:     "✓ Objetivo removido."
