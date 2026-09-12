@@ -58,3 +58,20 @@ async def test_slack_resolved_sender_class_survives_message_construction(bot, mo
     assert private_event(event)
     assert event.source.is_bot is bot
     assert trusted_person(event) is (not bot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('from_me,from_owner,edited', [
+    (False, False, False), (True, True, False), (True, False, False), (False, False, True)
+])
+async def test_whatsapp_message_anchor_keeps_sender_and_privacy_facts(from_me, from_owner, edited, monkeypatch):
+    from tests.gateway.test_whatsapp_from_owner import _make_adapter, _dm_payload
+    monkeypatch.setenv('WHATSAPP_ALLOW_ALL_USERS', 'true')
+    adapter = _make_adapter()
+    payload = _dm_payload(messageId='original-message', fromMe=from_me, fromOwner=from_owner, isEdited=edited)
+    event = await adapter._build_message_event(payload)
+    assert event is not None
+    assert event.message_id == event.source.message_id == payload['messageId']
+    assert event.source.is_one_to_one is True
+    assert event.source.is_bot is (from_me and not from_owner)
+    assert event.source.message_is_edit is edited
