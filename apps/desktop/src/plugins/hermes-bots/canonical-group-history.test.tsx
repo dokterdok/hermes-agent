@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
+
 const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
@@ -22,9 +24,10 @@ import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 const binding = { connectionId: 'original-owner', profile: 'reviewer', roomId: 'room-one' }
 const manifest = { attachment_id: 'att_00000000000000000000000000000001', kind: 'file', name: 'notes.txt', mime: 'text/plain', size: 1 }
 const originalDesktop = window.hermesDesktop
-afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
+afterEach(() => { cleanup(); request.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); window.hermesDesktop = originalDesktop })
 
 it('keeps a committed file downloadable in history after Send clears the composer (F31)', async () => {
+  const observed = observeDownloads()
   const save = vi.fn().mockResolvedValue(undefined)
   window.hermesDesktop = { saveImageBuffer: save } as unknown as typeof window.hermesDesktop
   let sent = false
@@ -56,7 +59,9 @@ it('keeps a committed file downloadable in history after Send clears the compose
   expect(history.queryByRole('button', { name: 'Remove attachment' })).toBeNull()
   expect(view.container.querySelector('form')?.textContent).not.toContain(manifest.name)
   fireEvent.click(history.getByRole('button', { name: 'Download' }))
-  await waitFor(() => expect(save).toHaveBeenCalledWith(new Uint8Array([65]), '.txt', manifest.name))
+  await waitFor(() => expect(observed.downloads).toHaveLength(1))
+  await expectDownloaded(observed, new Uint8Array([65]), manifest.name, manifest.mime)
+  expect(save).not.toHaveBeenCalled()
   const call = request.mock.calls.find(call => call[1] === 'groups.attachment.download')!
   expect(call[0]).toMatchObject({ connectionId: binding.connectionId, targetProfile: binding.profile })
   expect(call[2]).toEqual({ profile: binding.profile, room_id: binding.roomId,
@@ -65,6 +70,7 @@ it('keeps a committed file downloadable in history after Send clears the compose
 })
 
 it('binds user/member history downloads to their real event and refuses missing or foreign room identity', async () => {
+  const observed = observeDownloads()
   const save = vi.fn().mockResolvedValue(undefined)
   window.hermesDesktop = { saveImageBuffer: save } as unknown as typeof window.hermesDesktop
 
@@ -89,9 +95,10 @@ it('binds user/member history downloads to their real event and refuses missing 
   const buttons = history.getAllByRole('button', { name: 'Download' }) as HTMLButtonElement[]
   expect(buttons.map(button => button.disabled)).toEqual([false, false, true, true])
   fireEvent.click(buttons[0])
-  await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+  await waitFor(() => expect(observed.downloads).toHaveLength(1))
   fireEvent.click(buttons[1])
-  await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(observed.downloads).toHaveLength(2))
+  expect(save).not.toHaveBeenCalled()
   const reads = request.mock.calls.filter(call => call[1] === 'groups.attachment.download')
   expect(reads.map(call => call[2].event_id)).toEqual(['user-event', 'member-event'])
   expect(reads.every(call => call[2].room_id === binding.roomId && call[2].profile === binding.profile)).toBe(true)

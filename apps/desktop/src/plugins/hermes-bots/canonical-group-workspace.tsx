@@ -165,7 +165,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     {error && <div role="alert">{error}</div>}
     {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
     <div className="min-h-0 flex-1 overflow-auto" role="log">
-      <CanonicalGroupHistory binding={binding} events={events} />
+      <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} />
     </div>
     {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
       <span>{action.member_id}</span>

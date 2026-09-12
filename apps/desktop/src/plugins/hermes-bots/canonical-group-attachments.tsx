@@ -1,6 +1,7 @@
 import { Button } from '@hermes/plugin-sdk'
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 
+import { downloadCanonicalAttachment } from './canonical-attachment-download'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { type CanonicalGroupBinding, canonicalGroupRequest } from './canonical-groups'
 
@@ -16,14 +17,6 @@ function kindFor(file: File): string {
   return 'file'
 }
 
-function extension(mime: string, name: string): string {
-  const dot = name.lastIndexOf('.')
-
-  if (dot > 0) {return name.slice(dot)}
-
-  return mime === 'application/pdf' ? '.pdf' : mime.split('/')[1] ? `.${mime.split('/')[1]}` : '.bin'
-}
-
 export function CanonicalGroupAttachments({ binding, attachments, onChange, disabled, readOnly = false }: {
   binding: CanonicalGroupBinding
   attachments: Attachment[]
@@ -33,6 +26,17 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
   const input = useRef<HTMLInputElement>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const lifetime = useRef<AbortController | null>(null)
+
+  useLayoutEffect(() => {
+    const controller = new AbortController()
+    lifetime.current = controller
+
+    if (disabled) {controller.abort()}
+    setBusy(false)
+
+    return () => controller.abort()
+  }, [binding.connectionId, binding.profile, binding.roomId, disabled, readOnly])
 
   async function upload(file: File) {
     if (readOnly) {return}
@@ -59,7 +63,9 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
   }
 
   async function download(attachment: Attachment) {
-    if (!attachment.attachment_id || !attachment.event_id || !window.hermesDesktop?.saveImageBuffer) {return}
+    const signal = lifetime.current?.signal
+
+    if (!signal || signal.aborted || !attachment.attachment_id || !attachment.event_id) {return}
     setBusy(true); setError('')
 
     try {
@@ -67,10 +73,11 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
         room_id: binding.roomId, event_id: attachment.event_id, attachment_id: attachment.attachment_id
       })
 
+      if (signal.aborted) {return}
       const bytes = Uint8Array.from(atob(result.data_base64), char => char.charCodeAt(0))
-      await window.hermesDesktop.saveImageBuffer(bytes, extension(result.mime, result.name), result.name)
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-    finally { setBusy(false) }
+      downloadCanonicalAttachment(bytes, result.name, result.mime, signal)
+    } catch (e) { if (!signal.aborted) {setError(e instanceof Error ? e.message : String(e))} }
+    finally { if (!signal.aborted) {setBusy(false)} }
   }
 
   return <div className="flex flex-wrap items-center gap-2">
