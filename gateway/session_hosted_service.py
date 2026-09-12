@@ -204,12 +204,13 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
 
 async def ensure_hosted_service(runner):
-    """The ordinary startup/watcher owns every served profile's coordinator."""
+    """Prepare every transport before readiness can release any coordinator."""
     active = active_authority(runner)
     if active is None:
         raise RuntimeStoreError('profile_mismatch')
     for authority in all_authorities(runner):
         await _ensure_hosted_service(runner, authority)
+    start_ready_hosted_services(runner)
     return active.hosted_room_service
 
 
@@ -225,7 +226,19 @@ async def _ensure_hosted_service(runner, authority):
             install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
                                      attest=service.attest)
             service._transport_installed = True
-        await asyncio.to_thread(service.start)
+
+
+def start_ready_hosted_services(runner):
+    """Start only a fully prepared served set behind the published ready gate."""
+    if (getattr(runner, 'session_runtime_descriptor', {}).get('state') != 'ready'
+            or getattr(runner, '_draining', False)):
+        return
+    services = [getattr(authority, 'hosted_room_service', None) for authority in all_authorities(runner)]
+    if any(service is None or not getattr(service, '_transport_installed', False) for service in services):
+        return
+    for service in services:
+        # start() only releases its thread; preparation and disk access happened above.
+        service.start()
 
 
 async def stop_hosted_service(runner, timeout=5):

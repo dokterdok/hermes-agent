@@ -12,7 +12,7 @@ from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _ru
 
 
 @pytest.fixture
-def mux(tmp_path, monkeypatch):
+def mux(tmp_path, monkeypatch, request):
     from gateway.control_socket import GatewayControlServer
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
@@ -34,9 +34,10 @@ def mux(tmp_path, monkeypatch):
         for authority in runner.session_authorities:
             # This suite checks creation/admission, not model execution.
             monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-        descriptor = {**runner.session_runtime_descriptor, 'state': 'ready',
-                      'capabilities': ['session-authority-v1'], 'api_origin': 'http://127.0.0.1:1',
-                      'supervisor': 'none'}
+        descriptor = runner.session_runtime_descriptor
+        descriptor.update(state=getattr(request, 'param', 'ready'),
+                          capabilities=['session-authority-v1'], api_origin='http://127.0.0.1:1',
+                          supervisor='none')
         server = runner.session_control_server = GatewayControlServer(
             root, verb_handlers={'identify': lambda: descriptor})
         assert call(server.start())
@@ -218,3 +219,69 @@ def test_room_coordinator_submits_once_to_destination_authority(mux, monkeypatch
     assert row['status'] == 'terminal'
     assert not source.sessions and not runner.session_authority.sessions
     assert sum(event['kind'] == 'message.member' for event in events) == 1
+
+
+@pytest.mark.parametrize('mux', ['starting'], indirect=True)
+def test_startup_preserves_queued_work_until_ready(mux, monkeypatch):
+    from types import SimpleNamespace
+    from gateway import hosted_room_driver as tasks, session_finite
+    from gateway.run_runtime import publish_gateway_runtime_ready
+    from gateway.session_authorities import owner_scope
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_hosted_service import CanonicalHostedRoomService, ensure_hosted_service
+    from hermes_state_runtime import list_session_admissions
+
+    runner, homes, loop, call = mux
+    source = runner.session_authorities.require(homes['alpha'])
+    target = runner.session_authorities.require(homes['beta'])
+    executed = []
+    async def execute(authority, ref, row):
+        executed.append(row['admission_id'])
+        return 'member reply'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    for authority in runner.session_authorities:
+        monkeypatch.setattr(authority, '_schedule', SessionAuthority._schedule.__get__(authority))
+    with owner_scope(source):
+        service = CanonicalHostedRoomService(source, loop)
+        source.hosted_room_service = service
+        service.authorize_room('alice', 'startup-room', create=True)
+        service.create_room(room_id='startup-room', name='Startup', members=[
+            {'member_id': 'host', 'profile': 'alpha', 'handle': 'host'},
+            {'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
+        service.send(room_id='startup-room', event_id='input',
+                     payload={'text': '@helper hello', 'thread_id': 'thread'})
+    queued, = tasks.list_tasks(source.db.db_path, room_id='startup-room')
+    assert queued['status'] == 'queued'
+    call(ensure_hosted_service(runner))
+    # If startup released a worker, let its real pre-submit path finish. No
+    # exception is injected: the live private descriptor still says starting.
+    deadline = time.monotonic() + 3
+    while service.runtime.status()['running'] and time.monotonic() < deadline:
+        current = tasks.get_task(source.db.db_path, queued['identity'])
+        if current['status'] in tasks.TERMINAL_STATUSES:
+            break
+        time.sleep(0.02)
+    current = tasks.get_task(source.db.db_path, queued['identity'])
+    assert current['status'] == 'queued', current
+    assert current['execution_generation'] == 0
+    assert not executed and not target.sessions
+    assert all(getattr(a, 'hosted_room_service', None) is not None for a in runner.session_authorities)
+    assert all(not a.hosted_room_service.runtime.status()['running'] for a in runner.session_authorities)
+
+    async def ready():
+        runner._running = True
+        # Only listener-liveness metadata is needed; the private socket is real.
+        runner.session_api = SimpleNamespace(task=loop.create_future())
+        publish_gateway_runtime_ready(runner)
+    call(ready())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        current = tasks.get_task(source.db.db_path, queued['identity'])
+        if current['status'] == 'settled':
+            break
+        time.sleep(0.02)
+    assert current['status'] == 'settled', current
+    assert len(executed) == 1
+    sid, = target.sessions
+    admission, = list_session_admissions(target.db, session_id=sid, pending_only=False)
+    assert admission['admission_id'] == executed[0] and admission['status'] == 'terminal'
