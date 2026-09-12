@@ -146,3 +146,29 @@ async def test_cancel_closes_native_navigation_and_the_reply_specific_compose(vi
     assert not view.receiving.db._read_all("SELECT * FROM hosted_room_events WHERE kind='message.user'")
     stale = await adapter.picker['on_choice_selected']('42', choice(current, 'View Bots'))
     assert isinstance(stale, str) and 'expired' in stale.lower()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_choices_use_the_receiving_thread_not_parent_channel(view):
+    from gateway.config import Platform
+    from gateway.group_home_identity import acknowledgement
+    from gateway.group_home_consent import disclosure_stamp
+    adapter = native(view)
+    view.runner._profile_adapters['home'] = {Platform.DISCORD: adapter}
+    home = adapter.config.home_channel
+    home.platform, home.chat_id, home.thread_id = Platform.DISCORD, 'parent', 'thread'
+    home.selection_id = 'explicit-selection'
+    home.group_audience_ack = acknowledgement(home)
+    adapter.config.extra['group_allow_admin_from'] = ['42']
+    source = replace(view.event.source, platform=Platform.DISCORD, chat_id='parent', thread_id='thread', chat_type='group')
+    source._transport_adapter_ref = weakref.ref(adapter)
+    event = replace(view.event, source=source, text='/group', message_id='open-thread')
+    assert disclosure_stamp(view.runner, event) is not None
+    assert await view.runner._handle_group_command(event) is None
+    assert adapter.picker['metadata']['thread_id'] == 'thread'
+    assert adapter.picker['metadata']['hermes_profile'] == 'home'
+    callback = adapter.picker['on_choice_selected']
+    value = adapter.picker['choices'][0]['value']
+    assert isinstance(await callback('parent', value), str)
+    room = await callback('thread', value)
+    assert isinstance(room, ChoicePage) and 'home secret' in room.title

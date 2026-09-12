@@ -9,7 +9,7 @@ import secrets
 
 from gateway.config import HomeChannel, PlatformConfig
 from gateway.group_chat_policy import group_command_prefix, group_policy_for_source, receiving_group_context
-from gateway.group_home_identity import home_identity, home_thread_from_source, trusted_person
+from gateway.group_home_identity import home_identity, logical_home_source, trusted_person
 from gateway.group_chat_messages import text
 from gateway.session_authorities import owner_scope
 from gateway.slash_access import policy_from_extra
@@ -52,10 +52,10 @@ def _selection_stamp(runner, event):
         if not policy.can_run(event.source.user_id, 'sethome'):
             raise PermissionError('Home selection is not authorized')
         home = context.config.home_channel
-        source = event.source
+        source = logical_home_source(event)
         return (str(context.home), id(context.adapter), id(context.config), id(context.authority),
                 context.authority.epoch, home_identity(home) if home else None,
-                source.platform.value, str(source.chat_id), str(home_thread_from_source(source) or ''),
+                source.platform.value, str(source.chat_id), str(source.thread_id or ''),
                 str(source.user_id), str(source.scope_id or ''))
 
 
@@ -105,9 +105,9 @@ def _replace_home(runner, event, context, expected):
     from gateway.run import _home_target_env_var, _home_thread_env_var
     from hermes_cli.config import _CONFIG_LOCK, _env_write_blocked, load_config, save_config
 
-    source = event.source
+    source = logical_home_source(event)
     home = HomeChannel(platform=source.platform, chat_id=str(source.chat_id),
-        name=source.chat_name or str(source.chat_id), thread_id=home_thread_from_source(source),
+        name=source.chat_name or str(source.chat_id), thread_id=source.thread_id,
         user_id=str(source.user_id), scope_id=str(source.scope_id) if source.scope_id else None,
         selection_id=secrets.token_hex(16))
     with receiving_config_scope(context), _CONFIG_LOCK:

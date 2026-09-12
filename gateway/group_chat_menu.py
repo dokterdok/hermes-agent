@@ -14,6 +14,10 @@ from gateway.hosted_room_messaging_presentation import (
 )
 
 
+def callback_destination(source):
+    return str(source.thread_id if source.platform.value == 'discord' and source.thread_id else source.chat_id)
+
+
 class GroupMenu:
     def __init__(self, runner, event, backend, command, stamp):
         context = receiving_group_context(runner, event.source)
@@ -216,7 +220,7 @@ class GroupMenu:
     async def choose(self, chat_id, value):
         try:
             self.check()
-            if str(chat_id) != str(self.event.source.chat_id) or value not in self.actions:
+            if str(chat_id) != callback_destination(self.event.source) or value not in self.actions:
                 return text('group_files', 'expired')
             kind, payload = self.actions[value]
             self.actions = {}
@@ -264,6 +268,7 @@ async def show_group_menu(runner, event, backend, command, stamp, *, room=None, 
     result = await context.adapter.send_choice_picker(chat_id=event.source.chat_id, title=page.title,
         choices=list(page.choices), session_key='group-menu', on_choice_selected=menu.choose,
         metadata={**(_thread_metadata_for_event(event) or {}), 'choice_pages': True,
+                  'hermes_profile': context.profile,
                   'requester_user_id': str(event.source.user_id)})
     menu.check()
     return getattr(result, 'success', False) is True
@@ -274,7 +279,9 @@ async def cancel_navigation(runner, event):
     context = receiving_group_context(runner, event.source)
     if context is None:
         return
-    location = (str(event.source.user_id), str(event.source.chat_id), str(event.source.thread_id or ''), str(event.source.scope_id or ''))
+    from gateway.group_home_identity import logical_home_source
+    source = logical_home_source(event)
+    location = (str(source.user_id), str(source.chat_id), str(source.thread_id or ''), str(source.scope_id or ''))
     active = getattr(runner, '_canonical_group_menus', {})
     for key, menu in list(active.items()):
         if key[0] != str(context.home) or key[5:9] != location:

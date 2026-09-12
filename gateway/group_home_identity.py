@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
+from copy import copy
 
 
 NATIVE_DISTINCT_DM_PLATFORMS = frozenset({
@@ -20,6 +22,25 @@ NATIVE_DISTINCT_DM_PLATFORMS = frozenset({
     "whatsapp_cloud",
     "yuanbao",
 })
+
+
+def logical_home_source(event):
+    """Normalize Slack's session-only thread without changing message routing."""
+    source = event.source
+    if getattr(source.platform, 'value', '') != 'slack':
+        return source
+    raw = getattr(event, 'raw_message', None)
+    if isinstance(raw, Mapping) and raw.get('thread_ts'):
+        logical = copy(source)
+        # An explicit root-of-thread event can have thread_ts == ts.
+        logical.message_id = None
+        return logical
+    message_id = getattr(event, 'message_id', None) or getattr(source, 'message_id', None)
+    if source.thread_id and message_id and str(source.thread_id) == str(message_id):
+        logical = copy(source)
+        logical.thread_id = None
+        return logical
+    return source
 
 
 def home_thread_from_source(source):

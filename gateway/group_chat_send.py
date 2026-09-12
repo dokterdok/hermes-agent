@@ -12,7 +12,8 @@ def message_command_id(event, room, profile_id):
     message_id = getattr(event, 'message_id', None)
     if not isinstance(message_id, str) or not message_id:
         raise ValueError('The message has no delivery identity. Send a new message to try again.')
-    source = event.source
+    from gateway.group_home_identity import logical_home_source
+    source = logical_home_source(event)
     parts = [profile_id, source.platform.value, source.chat_id, source.thread_id,
              source.scope_id, source.user_id, message_id, room['room_id'],
              room['authority_gateway_id'], room['authority_epoch']]

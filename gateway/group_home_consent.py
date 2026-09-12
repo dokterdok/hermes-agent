@@ -60,9 +60,11 @@ def disclosure_stamp(runner, event, *, require_audience=True):
         return None
     try:
         with owner_scope(context.authority):
+            from gateway.group_home_identity import logical_home_source
+            logical = logical_home_source(event)
             config = home_config(context)
             home = config.get_home_channel(event.source.platform)
-            if home is None or not is_home_control_source(config, event.source):
+            if home is None or not is_home_control_source(config, logical):
                 return None
             home_before = home_identity(home)
             authorize = getattr(runner, '_is_user_authorized_for_source', None)
@@ -71,7 +73,7 @@ def disclosure_stamp(runner, event, *, require_audience=True):
             policy = group_policy_for_source(runner, event.source)
             private = private_event(event)
             if policy.enabled:
-                if not policy.is_admin(event.source.user_id) or not is_home_control_source(config, event.source, require_owner_identity=True):
+                if not policy.is_admin(event.source.user_id) or not is_home_control_source(config, logical, require_owner_identity=True):
                     return None
             elif not private or not _single_operator(runner, event, context):
                 return None
@@ -87,7 +89,7 @@ def disclosure_stamp(runner, event, *, require_audience=True):
                 return None
             source = event.source
             return (str(context.home), id(context.adapter), id(context.authority), context.authority.epoch,
-                    home_before, str(source.user_id), str(source.chat_id), str(source.thread_id or ''),
+                    home_before, str(source.user_id), str(source.chat_id), str(logical.thread_id or ''),
                     str(source.scope_id or ''), private)
     except Exception:
         return None
@@ -188,18 +190,19 @@ def _text(runner, event, key):
 
 
 def _key(runner, event):
-    from gateway.group_home_identity import home_thread_from_source
+    from gateway.group_home_identity import logical_home_source
 
     context = receiving_group_context(runner, event.source)
     if context is None:
         return None
-    source = event.source
+    source = logical_home_source(event)
     return (str(context.home), source.platform.value, str(source.chat_id),
-            str(home_thread_from_source(source) or ''), str(source.user_id or ''),
+            str(source.thread_id or ''), str(source.user_id or ''),
             str(source.scope_id or ''))
 
 
 def _cancel(runner, event, pending=None):
+    from gateway.group_home_identity import logical_home_source
     if pending is None:
         pending = _pending(runner).get(_key(runner, event))
     if pending is not None:
@@ -207,7 +210,7 @@ def _cancel(runner, event, pending=None):
     context = receiving_group_context(runner, event.source)
     home = getattr(context.config, 'home_channel', None) if context else None
     accepted = (home is not None and not private_event(event)
-                and is_home_control_source(home_config(context), event.source, require_owner_identity=True)
+                and is_home_control_source(home_config(context), logical_home_source(event), require_owner_identity=True)
                 and home.group_audience_ack == acknowledgement(home))
     return _text(runner, event, 'cancel_late' if accepted else 'cancel')
 
@@ -352,7 +355,8 @@ async def prepare_group_access(runner, event):
         # read that could block cancellation behind the in-flight writer.
         context = receiving_group_context(runner, event.source)
         tokens = getattr(runner, '_group_read_choice_tokens', {})
-        source = event.source
+        from gateway.group_home_identity import logical_home_source
+        source = logical_home_source(event)
         location = (str(source.user_id), str(source.chat_id), str(source.thread_id or ''), str(source.scope_id or ''))
         for stamp in list(tokens):
             if isinstance(stamp, tuple) and len(stamp) == 10 and context is not None:

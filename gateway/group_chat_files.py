@@ -26,7 +26,8 @@ def room_key(room):
 
 
 def source_key(backend, event, stamp):
-    source = event.source
+    from gateway.group_home_identity import logical_home_source
+    source = logical_home_source(event)
     values = [backend.authority.profile_id, source.platform.value, source.user_id, source.chat_id,
               source.thread_id, source.scope_id, stamp[4]]
     return hashlib.sha256(json.dumps(values, separators=(',', ':')).encode()).hexdigest()
