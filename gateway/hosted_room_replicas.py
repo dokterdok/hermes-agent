@@ -131,10 +131,12 @@ def _initialize_replica_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
-    """Quarantine lineage written by the pre-fix replica implementation."""
+def _audit_existing_replicas_locked(conn: sqlite3.Connection, *, selected_room_id=None, read_only=False) -> dict[str, str]:
+    """Persist quarantine, or classify the selected read-only recovery snapshot."""
+    observed = {}
     for row in conn.execute(
-        """SELECT * FROM hosted_room_replicas"""
+        'SELECT * FROM hosted_room_replicas WHERE (? IS NULL OR room_id=?)',
+        (selected_room_id, selected_room_id),
     ).fetchall():
         room_id = str(row["room_id"])
         events = conn.execute(
@@ -212,6 +214,10 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
             + len(str(event["payload_json"]).encode("utf-8"))
             for event in events
         )
+        if read_only:
+            if (reasons and row['quarantine_reason'] is None) or recomputed_bytes != int(row['event_bytes']):
+                observed[room_id] = reasons[0] if reasons else 'history_size_unverified'
+            continue
         if recomputed_bytes != int(row["event_bytes"]):
             conn.execute(
                 "UPDATE hosted_room_replicas SET event_bytes=? WHERE room_id=?",
@@ -224,6 +230,7 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
                     WHERE room_id=?""",
                 (time.time(), reasons[0], room_id),
             )
+    return observed
 
 
 @contextmanager
@@ -532,32 +539,35 @@ def ingest_page(
 
 def replica_state(db_path: Path | str, *, room_id: Any) -> dict[str, Any]:
     """Return the stored replica's coverage and authority lineage."""
-    room_id = _validate_identifier(
-        room_id, label="room_id", max_chars=MAX_ROOM_ID_CHARS
-    )
+    room_id = _validate_identifier(room_id, label="room_id", max_chars=MAX_ROOM_ID_CHARS)
     with _replica_transaction(db_path) as conn:
-        from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
-        from gateway.hosted_rooms_common import table_exists
-        retired = conn.execute(f"SELECT retired_at FROM {RETIREMENT_TABLE} WHERE room_id=?", (room_id,)).fetchone() if table_exists(conn, RETIREMENT_TABLE) else None
-        row = conn.execute(
-            """SELECT * FROM hosted_room_replicas WHERE room_id=?""",
+        return _replica_state_locked(conn, room_id)
+
+
+def _replica_state_locked(conn: sqlite3.Connection, room_id: str, *, read_only=False) -> dict[str, Any]:
+    """Share the lower audited, lineage-aware view with recovery."""
+    from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
+    from gateway.hosted_rooms_common import table_exists
+    retired = conn.execute(f"SELECT retired_at FROM {RETIREMENT_TABLE} WHERE room_id=?", (room_id,)).fetchone() if table_exists(conn, RETIREMENT_TABLE) else None
+    row = conn.execute(
+        """SELECT * FROM hosted_room_replicas WHERE room_id=?""",
+        (room_id,),
+    ).fetchone()
+    lineage_fields = lineage.state_fields_locked(conn, row) if row is not None else {}
+    reservation = (
+        conn.execute(
+            """SELECT owner_kind FROM hosted_room_id_reservations
+                WHERE room_id=?""",
             (room_id,),
         ).fetchone()
-        lineage_fields = lineage.state_fields_locked(conn, row) if row is not None else {}
-        reservation = (
-            conn.execute(
-                """SELECT owner_kind FROM hosted_room_id_reservations
-                    WHERE room_id=?""",
-                (room_id,),
-            ).fetchone()
-            if row is None
-            else None
-        )
-        from gateway.hosted_room_work_records import audit_replica_locked, summary_locked
-        if row is not None:
-            audit_replica_locked(conn, room_id)
-        work_records = summary_locked(conn, room_id) if row is not None and row["quarantine_reason"] is None else {
-            "availability": "unavailable", "source_loss_safe": False}
+        if row is None
+        else None
+    )
+    from gateway.hosted_room_work_records import audit_replica_locked, summary_locked
+    if row is not None and not read_only:
+        audit_replica_locked(conn, room_id)
+    work_records = summary_locked(conn, room_id, read_only=read_only) if row is not None and row["quarantine_reason"] is None else {
+        "availability": "unavailable", "source_loss_safe": False}
     if row is None:
         if reservation is not None and reservation["owner_kind"] == "replica":
             raise ReplicaHistoryExpiredError(

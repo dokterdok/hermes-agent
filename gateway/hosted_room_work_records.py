@@ -557,11 +557,12 @@ def audit_replica_locked(conn, room_id):
             continue  # The caller commits this exact row's classification.
 
 
-def summary_locked(conn, room_id):
+def summary_locked(conn, room_id, *, read_only=False):
     missing = {"availability": "not_retained", "source_loss_safe": False, "incompleteness": ["work_evidence_unknown"]}
     if not table_exists(conn, TARGET_TABLE):
         return missing
-    initialize(conn)
+    if not read_only:
+        initialize(conn)
     from gateway.hosted_room_passive_lineage import current_locked, enrolled_history
     enrolled = current_locked(conn, room_id)
     head = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_room_replicas WHERE room_id=?", (room_id,)).fetchone()
