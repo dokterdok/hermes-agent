@@ -73,6 +73,7 @@ import {
 import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
+import { GroupExecutionGate } from './group-execution-gate'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
@@ -98,7 +99,6 @@ import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify } from './labels'
-import { RetainedGroupWorkspace } from './retained-group-workspace'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
@@ -464,7 +464,9 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
 
   if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
 
-  return <RetainedGroupWorkspace group={props.group} onBack={props.onBack} visible={props.visible} />
+  return <GroupExecutionGate {...props} key={props.group}>
+    <LegacyGroupChatWorkspace {...props} />
+  </GroupExecutionGate>
 }
 
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {

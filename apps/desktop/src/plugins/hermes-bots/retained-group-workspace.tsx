@@ -9,20 +9,22 @@ import {
   retainedEntries,
   retainedFileItem,
   type RetainedRoom,
+  type RetainedRoomBinding,
   retainedSpeaker
 } from './retained-group-files'
 import { RetainedFileRow, RetainedFilesControl } from './retained-group-files-view'
 import { useRetainedGroupLabels } from './retained-group-labels'
 
 interface Props {
+  binding?: RetainedRoomBinding | null
   group: string
   visible?: boolean
   onBack?: () => void
 }
 
-function RetainedRoomView({ group, room: initialRoom, visible = true, onBack }: Props & { room: RetainedRoom }) {
+function RetainedRoomView({ group, room: initialRoom, binding: captured, visible = true, onBack }: Props & { room: RetainedRoom }) {
   const labels = useRetainedGroupLabels()
-  const [binding] = useState(() => captureRetainedRoom(group, initialRoom))
+  const [binding] = useState(() => captured ?? captureRetainedRoom(group, initialRoom))
   const [intent, setIntent] = useState(() => new AbortController())
   const room = currentRetainedRoom(binding)
   const available = room !== null
@@ -105,7 +107,7 @@ function RetainedRoomView({ group, room: initialRoom, visible = true, onBack }: 
 export function RetainedGroupWorkspace(props: Props) {
   const rooms = useValue($groupChats)
   const labels = useRetainedGroupLabels()
-  const room = rooms[props.group]
+  const room = props.binding === undefined ? rooms[props.group] : props.binding && currentRetainedRoom(props.binding)
 
   if (!room || room.tombstone) {
     return (
