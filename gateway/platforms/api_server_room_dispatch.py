@@ -113,12 +113,21 @@ async def _normalize_room_dispatch(
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
         session_id = await self._ensure_hosted_member_session(dispatch)
-        return {
+        normalized = {
             "input": dispatch.prompt,
             "session_id": session_id,
             "hosted_room_dispatch": dispatch.as_mapping(),
             "_room_execution_policy": policy.as_mapping(),
             **({"_room_artifact_publication": True} if artifact_publication else {}),
-        }, None
+        }
+        from gateway.session_peer_input import retain_peer_input, peer_input_available
+        if dispatch.attachment_manifest_digest is not None:
+            if not peer_input_available(self):
+                raise ValueError('Canonical Group Chat file admission is unavailable')
+            verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission='attachment.stage')
+            from gateway.platforms.api_server_room_attachments import _default_spool
+            normalized['_room_input_media'] = await asyncio.to_thread(retain_peer_input, _default_spool(), dispatch)
+            self._room_grant_claims(request, permission='dispatch')
+        return normalized, None
     except Exception as exc:
         return body, _room_dispatch_error(exc, _openai_error=_openai_error)

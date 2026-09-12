@@ -1564,6 +1564,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
+        from gateway.platforms import api_server_room_attachments
+        routes.extend(api_server_room_attachments._http_routes(self))
         from gateway.platforms import api_server_room_controls
         routes.extend(api_server_room_controls._http_routes(self))
         from gateway.platforms import (

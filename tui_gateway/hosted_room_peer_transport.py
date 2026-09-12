@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from gateway.hosted_room_driver import TaskIdentity
-from gateway.hosted_room_peer import HostedMemberDispatch, PROTOCOL_VERSION
+from gateway.hosted_room_peer import HostedMemberDispatch, PROTOCOL_VERSION, attachment_manifest_digest
 from tui_gateway.hosted_room_driver import (
     ROOM_SESSION_SOURCE, HostedRoomBinding, InternalSessionRPC, room_session_title)
 
@@ -24,6 +24,8 @@ class HostedRoomPeerClient(Protocol):
     def prepare(self, *, room_id: str, profile: str, source: str, grant: str, create: bool,
                 expected_session_id: str | None = None) -> Mapping[str, Any] | None: ...
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]: ...
+    def stage_attachments(self, *, dispatch: Mapping[str, Any],
+                          attachments: Sequence[Mapping[str, Any]], grant: str) -> Mapping[str, Any]: ...
     def history(self, *, room_id: str, profile: str, session_id: str, grant: str
                 ) -> Sequence[Mapping[str, Any]]: ...
     def status(self, *, room_id: str, profile: str, session_id: str, grant: str, fresh: bool = False
@@ -93,6 +95,7 @@ class FailoverHostedRoomPeerClient:
         return call
 
     prepare, dispatch, history, status, stop = map(_delegate, ("prepare", "dispatch", "history", "status", "stop"))
+    stage_attachments, discard_attachments = map(_delegate, ("stage_attachments", "discard_attachments"))
     del _delegate
 
     def bind_room_scope(self, **kwargs):
@@ -114,12 +117,13 @@ class PeerMemberRoute:
     trace_id: str
     grant: str
     execution_policy_digest: str = ""
+    attachments: bool = False
 
 
 def build_member_dispatch(
     *, binding: HostedRoomBinding, route: PeerMemberRoute, room_id: str, task_id: str,
     target_profile: str, execution_generation: int, source_event_seq: int, prompt: str,
-    trace_id: str) -> HostedMemberDispatch:
+    trace_id: str, attachment_digest: str | None = None) -> HostedMemberDispatch:
     """Build the fully fenced member dispatch shared by submit and recovery."""
     return HostedMemberDispatch.from_mapping({
         "protocol_version": PROTOCOL_VERSION, "room_id": room_id,
@@ -130,7 +134,8 @@ def build_member_dispatch(
         "source_event_seq": source_event_seq, "cancellation_scope_id": route.cancellation_scope_id,
         "prompt": prompt, "prompt_digest": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "capability_digest": route.capability_digest,
-        "execution_policy_digest": route.execution_policy_digest, "trace_id": trace_id})
+        "execution_policy_digest": route.execution_policy_digest, "trace_id": trace_id,
+        **({"attachment_manifest_digest": attachment_digest} if attachment_digest is not None else {})})
 
 
 class PeerHostedRoomTransport(InternalSessionRPC):
@@ -139,7 +144,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
     def __init__(
         self, *, binding: HostedRoomBinding, route: PeerMemberRoute,
         client: HostedRoomPeerClient, source_event_seq: int = 1, task_id: str | None = None,
-        execution_generation: int | None = None) -> None:
+        execution_generation: int | None = None, attachment_store=None) -> None:
         self.binding = binding
         self.route = route
         self.client = client
@@ -148,6 +153,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         self.source_event_seq = int(source_event_seq)
         self.task_id = task_id
         self.execution_generation = execution_generation
+        self.attachment_store = attachment_store
         self._session_id: str | None = None
         self._dispatch: HostedMemberDispatch | None = None
         if callable(bind_scope := getattr(self.client, "bind_room_scope", None)):
@@ -194,18 +200,37 @@ class PeerHostedRoomTransport(InternalSessionRPC):
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: TaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str = "",
+        attachments=None,
     ) -> Mapping[str, Any]:
         del member_id  # the signed route already names the member
         self._validate_coordinates(profile=profile, source=source)
         if self._session_id not in {None, session_id}:
             raise ValueError("peer room session changed during admission")
+        from tui_gateway.hosted_room_peer_attachments import bound_attachment_payloads
+        pending = bound_attachment_payloads(self.attachment_store, self.binding.room_id,
+                                           self.route.member_id, attachments)
+        if pending and not self.route.attachments:
+            raise ValueError("This gateway does not support Group Chat files")
+        manifest = [{key: value for key, value in item.items() if key != 'data'} for item in pending]
         dispatch = build_member_dispatch(
             binding=self.binding, route=self.route, room_id=task.room_id, task_id=task.task_id,
             target_profile=profile, execution_generation=execution_generation,
             source_event_seq=self.source_event_seq, prompt=prompt,
-            trace_id=self.route.trace_id or f"trace-{uuid.uuid4().hex}")
+            trace_id=self.route.trace_id or f"trace-{uuid.uuid4().hex}",
+            attachment_digest=attachment_manifest_digest(manifest) if manifest else None)
         self._dispatch = dispatch
         self._session_id = session_id
+        if pending:
+            try:
+                self.client.stage_attachments(dispatch=dispatch.as_mapping(), attachments=pending, grant=self.route.grant)
+            except Exception as exc:
+                from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+                failure = PeerRunsHTTPError('Group Chat files could not be transferred',
+                    retryable=bool(getattr(exc, 'retryable', False)), not_admitted=False,
+                    status_code=getattr(exc, 'status_code', None), error_code=getattr(exc, 'error_code', None))
+                # Phase evidence only: an earlier call may have admitted this identity.
+                failure.dispatch_not_attempted = True
+                raise failure from exc
         result = self.client.dispatch(dispatch=dispatch.as_mapping(), grant=self.route.grant)
         if result.get("status") in {"settled", "failed", "cancelled"}:
             on_terminal(result)

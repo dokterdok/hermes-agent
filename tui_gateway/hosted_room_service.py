@@ -126,7 +126,7 @@ class HostedRoomService:
                 target_profile=stored.target_profile, capability_digest=catalog.catalog_digest,
                 execution_policy_digest=catalog.execution_policy.policy_digest,
                 cancellation_scope_id=stored.cancellation_scope_id, trace_id=stored.trace_id,
-                grant=stored.grant)
+                grant=stored.grant, attachments=catalog.attachments)
             self.peer_clients[key] = PeerRunsHTTPClient(
                 base_url=stored.target_url, api_key="", target_profile=stored.target_profile, receipt_db_path=self.db_path)
             self._peer_route_status[key] = stored.status
@@ -387,6 +387,7 @@ class HostedRoomService:
             )
         tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route, binding=binding)
         self._recover_peer_admission(binding, task, route, tracked_client)
+        from gateway.hosted_room_attachments import HostedRoomAttachmentStore
         return PeerHostedRoomTransport(
             binding=binding,
             route=route,
@@ -394,6 +395,7 @@ class HostedRoomService:
             source_event_seq=int(payload.get("source_event_seq") or 0),
             task_id=getattr(task.get("identity"), "task_id", None),
             execution_generation=int(task.get("execution_generation") or 0),
+            attachment_store=HostedRoomAttachmentStore(self.db_path),
         )
 
     def _recover_peer_admission(
@@ -414,10 +416,17 @@ class HostedRoomService:
         source_event_seq = int(payload.get("source_event_seq") or 0)
         if not isinstance(prompt, str) or source_event_seq < 1 or not route.trace_id:
             raise RuntimeError("peer room admission identity is unavailable for recovery")
+        from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+        from gateway.hosted_room_peer import attachment_manifest_digest
+        from tui_gateway.hosted_room_peer_attachments import bound_attachment_payloads
+        pending = bound_attachment_payloads(HostedRoomAttachmentStore(self.db_path), binding.room_id,
+                                           route.member_id, payload.get('attachments'))
+        manifest = [{key: value for key, value in item.items() if key != 'data'} for item in pending]
         dispatch = build_member_dispatch(
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
-            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id)
+            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id,
+            attachment_digest=attachment_manifest_digest(manifest) if manifest else None)
         recover(dispatch=dispatch.as_mapping(), grant=route.grant, **({"receipt_only": True} if receipt_only else {}))
 
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:
@@ -513,6 +522,7 @@ class HostedRoomService:
             rotated_route = replace(
                 route,
                 grant=grant,
+                attachments=effective_catalog.attachments,
                 capability_digest=(
                     catalog.catalog_digest
                     if catalog is not None
@@ -908,6 +918,7 @@ class HostedRoomService:
                 cancellation_scope_id=stored.cancellation_scope_id,
                 trace_id=stored.trace_id,
                 grant=stored.grant,
+                attachments=stored.catalog.attachments,
             )
             self.peer_routes[key] = route
             self.peer_clients[key] = client

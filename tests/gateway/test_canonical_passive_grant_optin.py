@@ -14,6 +14,9 @@ from gateway.hosted_room_peer import (
     (True, True, True, {'status', 'replicate', 'work_records'}),
 ])
 def test_explicit_optins_share_signed_observation_horizon(replication, work, passive, expected):
+    file_permissions = {'attachment.stage', 'artifact.read', 'artifact.ack'}
+    if not passive:
+        expected = expected | file_permissions
     permissions = invitation_permissions(replication, work, passive_only=passive)
     assert set(permissions) == expected
     secret = b'passive-test-key-not-a-real-secret'
@@ -21,7 +24,7 @@ def test_explicit_optins_share_signed_observation_horizon(replication, work, pas
         authority_gateway_id='home', authority_epoch=1, member_id='member', target_install_id='target',
         target_profile='default', execution_policy_digest='a' * 64, permissions=permissions,
         issued_at=100, ttl_seconds=60, status_ttl_seconds=600)
-    for permission in ('replicate', 'work_records', 'status'):
+    for permission in ('replicate', 'work_records', 'status', 'artifact.read', 'artifact.ack'):
         if permission in expected:
             assert decode_room_grant(secret, token, permission=permission, now=200)['status_expires_at'] == 700
             with pytest.raises(HostedRoomGrantError):
@@ -31,8 +34,10 @@ def test_explicit_optins_share_signed_observation_horizon(replication, work, pas
                 decode_room_grant(secret, token, permission=permission, now=110)
     with pytest.raises(HostedRoomGrantError):
         decode_room_grant(secret, token, permission='dispatch', now=200)
+    with pytest.raises(HostedRoomGrantError):
+        decode_room_grant(secret, token, permission='attachment.stage', now=200)
     if passive:
-        for permission in ('dispatch', 'stop', 'approve'):
+        for permission in {'dispatch', 'stop', 'approve'} | file_permissions:
             with pytest.raises(HostedRoomGrantError):
                 decode_room_grant(secret, token, permission=permission, now=110)
 

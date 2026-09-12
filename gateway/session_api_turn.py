@@ -15,7 +15,7 @@ _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
-                 'session_history_delivery', 'room_artifact_publication')
+                 'session_history_delivery', 'room_artifact_publication', 'room_input_media')
 
 
 def api_settings(authority, ref):
@@ -46,6 +46,8 @@ def check_api_turn(authority, ref, payload):
 
 
 def check_api_settings(adapter, settings):
+    from gateway.session_peer_input import check_peer_input
+    check_peer_input(settings)
     publication = settings.get('room_artifact_publication')
     if publication is not None and type(publication) is not bool:
         raise RuntimeStoreError('invalid_params')
@@ -96,6 +98,8 @@ def admit_api_turn(adapter, **kwargs):
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
     if kwargs.get('room_artifact_publication') is None:
         settings.pop('room_artifact_publication')
+    if kwargs.get('room_input_media') is None:
+        settings.pop('room_input_media')
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):
@@ -203,8 +207,10 @@ def prepare_api_execution(authority, ref, payload):
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (_SETTINGS_PREFIX + ref.session_id, _json(settings)))
         authority.db._execute_write(write)
+    from gateway.session_peer_input import peer_input_content
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
-            'content': payload['text'], 'turn_author': data.get('turn_author') if data else None}
+            'content': peer_input_content(payload['text'], settings),
+            'turn_author': data.get('turn_author') if data else None}
 
 
 def publish_api_event(authority, session_id, event_type, payload):

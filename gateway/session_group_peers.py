@@ -152,7 +152,8 @@ def _register(authority, actor, service, params):
         target_install_id=catalog.installation_id, target_profile=profile,
         capability_digest=catalog.catalog_digest, execution_policy_digest=catalog.execution_policy.policy_digest,
         cancellation_scope_id=params.get('cancellation_scope_id') or f'cancel-{room_id}',
-        trace_id=params.get('trace_id') or 'trace-' + secrets.token_hex(16), grant=grant)
+        trace_id=params.get('trace_id') or 'trace-' + secrets.token_hex(16), grant=grant,
+        attachments=catalog.attachments)
     service.register_peer_route(room_id=room_id, member_id=member, route=route, client=client,
         target_url=url, catalog=catalog,
         **({'expected_grant_sha256': fingerprint} if fingerprint is not None else {}))

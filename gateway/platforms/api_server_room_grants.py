@@ -72,11 +72,13 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
     """Return ``(execution_policy, catalog)`` for this gateway's *profile*."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, catalog_mapping
     from gateway.hosted_room_execution_policy import execution_policy_mapping
+    from gateway.session_peer_input import peer_input_available
     with self._profile_scope(profile):
         execution_policy = execution_policy_mapping(target_profile=profile)
+        attachments = peer_input_available(self)
     catalog = catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,), link_modes=("direct",),
-        persistent_process=True, text=True, attachments=False, target_profile=profile,
+        persistent_process=True, text=True, attachments=attachments, target_profile=profile,
         execution_policy=execution_policy)
     return execution_policy, catalog
 
@@ -200,13 +202,15 @@ async def _handle_room_member_invitation(
             )
         with self._profile_scope(profile):
             execution_policy = execution_policy_mapping(target_profile=profile)
+            from gateway.session_peer_input import peer_input_available
+            attachments = peer_input_available(self)
         catalog = catalog_mapping(
             installation_id=target_install_id,
             protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
             link_modes=("direct",),
             persistent_process=True,
             text=True,
-            attachments=False,
+            attachments=attachments,
             target_profile=profile,
             execution_policy=execution_policy,
         )

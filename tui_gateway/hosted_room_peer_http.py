@@ -492,6 +492,14 @@ class PeerRunsHTTPClient:
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
         return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
 
+    def stage_attachments(self, **kwargs):
+        from tui_gateway.hosted_room_peer_attachments import stage_attachments
+        return stage_attachments(self, **kwargs)
+
+    def discard_attachments(self, **kwargs):
+        from tui_gateway.hosted_room_peer_attachments import discard_attachments
+        return discard_attachments(self, **kwargs)
+
     def recover_dispatch(
         self, *, dispatch: Mapping[str, Any], grant: str, receipt_only: bool = False,
     ) -> Mapping[str, Any]:
