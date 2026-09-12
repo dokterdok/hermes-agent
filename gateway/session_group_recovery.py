@@ -127,13 +127,11 @@ def _status(authority, params, gateway):
         if not table_exists(conn, custody.TABLE) and not table_exists(conn, schema.MARKER):
             return {**view, 'status': 'not_recorded'}
         conn.row_factory = sqlite3.Row
-        schema.validate_schema(conn)
-        row = conn.execute(f'SELECT * FROM {custody.TABLE} WHERE room_id=? AND member_id=?',
-                           (params['room_id'], params['member_id'])).fetchone()
-        if row is None:
+        verified = custody.verify_locked(conn, room_id=params['room_id'], member_id=params['member_id'],
+                                          gateway_id=gateway, profile='default', missing_ok=True)
+        if verified is None:
             return {**view, 'status': 'not_recorded'}
-    digest = custody.verify(authority.db.db_path, room_id=params['room_id'], member_id=params['member_id'],
-                            gateway_id=gateway, profile='default')
+        row, digest = verified
     return {**view, 'status': 'verified', 'custody_sha256': digest,
             'session_id': row['session_id'], 'last_session_id': row['last_session_id']}
 

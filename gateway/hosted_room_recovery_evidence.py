@@ -151,4 +151,3 @@ def validate_decision(row):
         return value
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise RuntimeError("The Group Chat recovery record evidence is missing or changed.") from exc
-

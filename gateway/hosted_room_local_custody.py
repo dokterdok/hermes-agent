@@ -101,22 +101,34 @@ def save(conn, row, chain):
                      (*row.values(), encoded))
 
 
+def verify_locked(conn, *, room_id, member_id, gateway_id, profile, missing_ok=False):
+    """Return the verified row and digest from the caller's pinned transaction."""
+    if profile != 'default' or not conn.in_transaction:
+        raise fail()
+    from gateway.hosted_room_custody_schema import validate_schema
+    validate_schema(conn)
+    row = conn.execute(f'SELECT * FROM {TABLE} WHERE room_id=? AND member_id=?',
+                       (room_id, member_id)).fetchone()
+    if row is None and missing_ok:
+        return None
+    if row is None or row['profile'] != profile or row['gateway_id'] != gateway_id:
+        raise fail()
+    chain = metadata_chain(conn, row['session_id'])
+    old = json.loads(row['chain_json'])
+    validate_row(row, old)
+    if (not old or chain[:len(old)] != old or old[0] != [row['session_id'], row['session_started_at']]
+            or old[-1] != [row['last_session_id'], row['last_session_started_at']]):
+        raise fail()
+    import hashlib
+    verified = dict(row)
+    digest = hashlib.sha256(compact_json({'custody': verified, 'chain': chain}).encode()).hexdigest()
+    return verified, digest
+
+
 def verify(path, *, room_id, member_id, gateway_id, profile):
     if profile != 'default':
         raise fail()
     with readonly(path) as conn:
         conn.row_factory = sqlite3.Row
-        from gateway.hosted_room_custody_schema import validate_schema
-        validate_schema(conn)
-        row = conn.execute(f'SELECT * FROM {TABLE} WHERE room_id=? AND member_id=?',
-                           (room_id, member_id)).fetchone()
-        if row is None or row['profile'] != profile or row['gateway_id'] != gateway_id:
-            raise fail()
-        chain = metadata_chain(conn, row['session_id'])
-        old = json.loads(row['chain_json'])
-        validate_row(row, old)
-        if (not old or chain[:len(old)] != old or old[0] != [row['session_id'], row['session_started_at']]
-                or old[-1] != [row['last_session_id'], row['last_session_started_at']]):
-            raise fail()
-        import hashlib
-        return hashlib.sha256(compact_json({'custody': dict(row), 'chain': chain}).encode()).hexdigest()
+        return verify_locked(conn, room_id=room_id, member_id=member_id,
+                             gateway_id=gateway_id, profile=profile)[1]
