@@ -117,3 +117,36 @@ async def test_remembered_permission_never_follows_changed_authority_or_work(cha
         authority.db._execute_write(mutate)
         await asyncio.to_thread(report, authority, service, task, row, live, answers, 'next-prompt')
         assert len(answers) == 1 and 'next-prompt' in live.controls.pending
+
+
+@pytest.mark.asyncio
+async def test_retained_rule_budget_keeps_recent_revocations_and_once_decisions_available(tmp_path, monkeypatch):
+    from hermes_state_runtime import RuntimeStoreError
+    async with owner(tmp_path, monkeypatch) as (authority, service, runner):
+        monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+        monkeypatch.setattr(rules, 'MAX_RETAINED_RULES', 2)
+        service.runtime.process_generation = 'decision-test'
+        task, row, live, answers = await pending(authority, service)
+        actor = Principal('alice', authority.profile_id, frozenset({'session:control'}), 'owner')
+        dispatch_home_access(authority, actor, 'groups.control.home.set', {'room_id': 'room', 'enabled': True})
+        proof = _capture(authority, service._room('room'), guard=lambda: None)
+        for number, letter in enumerate('abc'):
+            prompt_id = 'first-prompt' if number == 0 else f'prompt-{number}'
+            await asyncio.to_thread(report, authority, service, task, row, live, answers, prompt_id, operation=letter * 64)
+            params = dict(member_id='writer', task_id=task['identity'].task_id, execution_generation=1,
+                          request_id=prompt_id, choice='remember', remember_key=letter * 64)
+            args = dict(room=service._room('room'), guard=lambda: None, command_id=f'remember-{number}', params=params)
+            if number == 2:
+                with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+                    await asyncio.to_thread(decide, authority, **args)
+                assert len(answers) == 2
+                once = {key: value for key, value in params.items() if key != 'remember_key'} | {'choice': 'once'}
+                result = await asyncio.to_thread(decide, authority, **{**args, 'command_id': 'once', 'params': once})
+                assert result['status'] == 'resolved'
+                break
+            assert (await asyncio.to_thread(decide, authority, **args))['remembered'] is True
+            rule, = rules.list_rules(service, 'room')
+            assert rules.revoke(service, proof, rule['rule_id'], rule['generation']) == 1
+        with authority.db._read_ctx() as conn:
+            retained = conn.execute('SELECT state FROM canonical_group_approval_rules').fetchall()
+        assert len(retained) == 2 and all(row['state'] == 'revoked' for row in retained)

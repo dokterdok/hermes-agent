@@ -233,7 +233,8 @@ class HostedRoomAuthorityRPC:
         if prompt is None:
             raise RuntimeStoreError('stale_generation')
         return await self.authority.respond(self.principal, self.ref,
-            snapshot.handle.execution_generation, params['request_id'], {'choice': params['choice']})
+            snapshot.handle.execution_generation, params['request_id'], {'choice': params['choice']},
+            **({'expected_operation_key': params['expected_operation_key']} if 'expected_operation_key' in params else {}))
 
     def resolve_exact(self, *, profile, title, source):
         return self._call('resolve_exact', profile=profile, title=title, source=source)
@@ -262,5 +263,6 @@ class HostedRoomAuthorityRPC:
         return self._call('discard', profile=profile, session_id=session_id, source=source,
                           expected_task_id=expected_task_id, execution_generation=execution_generation)
 
-    def approve(self, *, session_id, request_id, choice):
-        return self._call('approve', session_id=session_id, request_id=request_id, choice=choice)
+    def approve(self, *, session_id, request_id, choice, expected_operation_key=None):
+        expected = {'expected_operation_key': expected_operation_key} if expected_operation_key is not None else {}
+        return self._call('approve', session_id=session_id, request_id=request_id, choice=choice, **expected)

@@ -14,6 +14,7 @@ from tools.approval_operation import valid_operation_context, valid_operation_ke
 
 MAX_RULES_PER_MEMBER = 32
 MAX_RULES_TOTAL = 1024
+MAX_RETAINED_RULES = 4096
 AUTO_PREFIX = 'approval-rule:'
 
 
@@ -74,17 +75,28 @@ def _scope(service, conn, owner, pending, *, require_task=True):
     return hashlib.sha256(encoded.encode()).hexdigest(), encoded
 
 
+def _retire_obsolete(service, conn, now):
+    rows = conn.execute("SELECT * FROM canonical_group_approval_rules WHERE state!='revoked' LIMIT ?",
+                        (MAX_RULES_TOTAL + 1,)).fetchall()
+    if len(rows) > MAX_RULES_TOTAL:
+        raise RuntimeStoreError('storage_unavailable')
+    for row in rows:
+        scope = json.loads(row['scope_json'])
+        old = {**scope, 'remember_key': row['operation_key'], 'remember_context': row['context_text']}
+        try:
+            current = _scope(service, conn, row['owner_subject'], old, require_task=False)
+        except RuntimeStoreError:
+            current = None
+        if current != (row['rule_id'], row['scope_json']):
+            conn.execute("UPDATE canonical_group_approval_rules SET state='revoked',generation=generation+1,updated_at=? WHERE rule_id=?",
+                         (now, row['rule_id']))
+
+
 def stage(service, conn, owner, pending, command_id):
     rule_id, encoded = _scope(service, conn, owner, pending)
     _ensure(conn)
     now = time.time()
-    conn.execute("""UPDATE canonical_group_approval_rules SET state='revoked',generation=generation+1,updated_at=?
-        WHERE state!='revoked' AND NOT EXISTS (
-            SELECT 1 FROM hosted_rooms r JOIN state_meta o ON o.key=? || r.room_id
-            WHERE r.room_id=canonical_group_approval_rules.room_id AND r.disbanded_at IS NULL
-              AND r.authority_gateway_id=json_extract(canonical_group_approval_rules.scope_json, '$.authority_gateway_id')
-              AND r.authority_epoch=json_extract(canonical_group_approval_rules.scope_json, '$.authority_epoch')
-              AND o.value=canonical_group_approval_rules.owner_subject)""", (now, _OWNER))
+    _retire_obsolete(service, conn, now)
     conn.execute("DELETE FROM canonical_group_approval_rules WHERE state='revoked' AND updated_at<?", (now - 7 * 86400,))
     old = conn.execute('SELECT * FROM canonical_group_approval_rules WHERE rule_id=?', (rule_id,)).fetchone()
     if old is not None:
@@ -92,6 +104,9 @@ def stage(service, conn, owner, pending, command_id):
             raise RuntimeStoreError('permission_denied')
         if old['state'] == 'active' or old['grant_command_id'] == command_id:
             return dict(old)
+    if old is None and conn.execute('SELECT COUNT(*) FROM canonical_group_approval_rules').fetchone()[0] >= MAX_RETAINED_RULES:
+        # Keep recent revocations intact; refuse a new record instead of losing its fence.
+        raise RuntimeStoreError('storage_unavailable')
     if conn.execute("SELECT COUNT(*) FROM canonical_group_approval_rules WHERE state!='revoked'").fetchone()[0] >= MAX_RULES_TOTAL:
         raise RuntimeStoreError('storage_unavailable')
     if conn.execute("SELECT COUNT(*) FROM canonical_group_approval_rules WHERE room_id=? AND member_id=? AND state!='revoked'",

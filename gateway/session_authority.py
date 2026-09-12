@@ -310,7 +310,7 @@ class SessionAuthority:
             self.check_approval_generation(session_id, generation)
             live.controls.register_clarify(session_id, generation, entry)
 
-    async def respond(self, actor, ref, generation, prompt_id, response, *, kind="approval"):
+    async def respond(self, actor, ref, generation, prompt_id, response, *, kind="approval", expected_operation_key=None):
         capability = {"approval": "session:approve", "clarify": "session:respond"}.get(kind)
         if capability is None:
             raise RuntimeStoreError("invalid_params")
@@ -324,7 +324,8 @@ class SessionAuthority:
             self.check_approval_generation(ref.session_id, generation)
             if not isinstance(prompt_id, str) or not prompt_id:
                 raise RuntimeStoreError("invalid_params")
-            return live.controls.respond(ref.session_id, generation, prompt_id, response, kind=kind)
+            expected = {'expected_operation_key': expected_operation_key} if expected_operation_key is not None else {}
+            return live.controls.respond(ref.session_id, generation, prompt_id, response, kind=kind, **expected)
 
     async def _drain(self, ref):
         from gateway.session_finite import execute_finite_admission

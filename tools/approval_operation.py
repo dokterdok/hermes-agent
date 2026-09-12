@@ -44,6 +44,14 @@ def valid_operation_context(value: Any) -> bool:
             and bool(value.strip()) and all(ord(char) >= 32 for char in value))
 
 
+def matches_approval_operation(data: Mapping[str, Any], expected_key: str) -> bool:
+    """An operation-scoped decision must still match the eligible live request."""
+    return (valid_operation_key(expected_key) and data.get('remember_key') == expected_key
+            and valid_operation_context(data.get('remember_context'))
+            and data.get('allow_session') is True and data.get('allow_permanent') is True
+            and data.get('smart_denied', False) is False and 'edit' not in data)
+
+
 def approval_environment_config(environment: Any, backend: str) -> dict[str, Any] | None:
     """Read the acquired terminal, which can predate the currently loaded config."""
     from tools.environments.local import LocalEnvironment

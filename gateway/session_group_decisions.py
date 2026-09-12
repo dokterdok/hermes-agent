@@ -114,6 +114,8 @@ def _apply(proof, command_id, params, *, pending=None, remembered_rule=None):
     service = _service(authority)
     effect = {key: value for key, value in params.items() if key != 'remember_key'}
     effect['choice'] = 'once' if effect['choice'] == 'remember' else effect['choice']
+    if params['choice'] == 'remember' or remembered_rule is not None:
+        effect['expected_operation_key'] = params.get('remember_key') or pending['remember_key']
     result = service.approve_room_task(proof.room_id, **effect)
     if result.get('status') not in {'resolved', 'already_resolved'}:
         raise RuntimeStoreError('unknown_execution')
@@ -132,7 +134,7 @@ def _apply(proof, command_id, params, *, pending=None, remembered_rule=None):
     return result
 
 
-def approve_task(service, room_id, *, member_id, task_id, execution_generation, request_id, choice):
+def approve_task(service, room_id, *, member_id, task_id, execution_generation, request_id, choice, expected_operation_key=None):
     if choice not in {'once', 'deny'}:
         raise RuntimeStoreError('invalid_params')
     task, binding = service._control_task(room_id, member_id, task_id, execution_generation)
@@ -151,14 +153,20 @@ def approve_task(service, room_id, *, member_id, task_id, execution_generation, 
     if (info.get('task_id') != task_id or info.get('execution_generation') != execution_generation
             or not isinstance(prompt, dict) or prompt.get('request_id') != request_id):
         raise RuntimeStoreError('stale_generation')
+    expected = {}
+    if expected_operation_key is not None:
+        from tools.approval_operation import matches_approval_operation
+        if choice != 'once' or not matches_approval_operation(prompt, expected_operation_key):
+            raise RuntimeStoreError('approval_operation_changed')
+        expected['expected_operation_key'] = expected_operation_key
     if peer:
         result = rpc.client.approve_receipt(task_id=task_id, execution_generation=execution_generation,
-            request_id=request_id, choice=choice, grant=rpc.route.grant)
+            request_id=request_id, choice=choice, grant=rpc.route.grant, **expected)
         if (not isinstance(result, dict) or result.get('run_id') != info.get('run_id')
                 or result.get('prompt_id') != request_id):
             raise RuntimeStoreError('unknown_execution')
     else:
-        result = rpc.approve(session_id=session['session_id'], request_id=request_id, choice=choice)
+        result = rpc.approve(session_id=session['session_id'], request_id=request_id, choice=choice, **expected)
     if not isinstance(result, dict) or result.get('status') not in {'resolved', 'already_resolved'}:
         raise RuntimeStoreError('unknown_execution')
     with service._policy_lock:

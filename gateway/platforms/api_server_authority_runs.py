@@ -67,8 +67,16 @@ async def respond_run(adapter, run_id, body, *, kind):
     generation = body.get('execution_generation')
     prompt_id = body.get('request_id')
     field = 'choice' if kind == 'approval' else 'answer'
-    if set(body) != {'request_id', 'execution_generation', field}:
+    fields = {'request_id', 'execution_generation', field}
+    allowed = fields | ({'expected_operation_key'} if kind == 'approval' else set())
+    if not fields <= set(body) <= allowed:
         raise RuntimeStoreError('invalid_params')
+    expected = {}
+    if 'expected_operation_key' in body:
+        from tools.approval_operation import valid_operation_key
+        if body[field] != 'once' or not valid_operation_key(body['expected_operation_key']):
+            raise RuntimeStoreError('invalid_params')
+        expected['expected_operation_key'] = body['expected_operation_key']
     if row['status'] != 'started' or type(generation) is not int or generation != row['generation']:
         raise RuntimeStoreError('stale_generation')
     ref = SessionRef(authority.profile_id, row['target_session_id'])
@@ -78,7 +86,7 @@ async def respond_run(adapter, run_id, body, *, kind):
     try:
         if not any(p['prompt_id'] == prompt_id and p['kind'] == kind for p in snapshot.prompts):
             raise RuntimeStoreError('approval_not_pending')
-        return await authority.respond(actor, ref, generation, prompt_id, {field: body[field]}, kind=kind)
+        return await authority.respond(actor, ref, generation, prompt_id, {field: body[field]}, kind=kind, **expected)
     finally:
         await authority.detach(actor, snapshot.subscription_id)
 

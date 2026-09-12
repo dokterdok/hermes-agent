@@ -691,7 +691,8 @@ class PeerRunsHTTPClient:
                if 'pending_controls' in status else {})}
 
     def approve_receipt(
-        self, *, task_id: str, execution_generation: int, request_id: str, choice: str, grant: str
+        self, *, task_id: str, execution_generation: int, request_id: str, choice: str, grant: str,
+        expected_operation_key: str | None = None
     ) -> Mapping[str, Any] | None:
         """Resolve approval for the exact durable remote run."""
         if (not isinstance(task_id, str) or not task_id
@@ -711,9 +712,16 @@ class PeerRunsHTTPClient:
         if approval is None or choice not in approval['choices']:
             raise PeerRunsHTTPError('peer canonical approval is no longer pending',
                                     status_code=409, error_code='approval_not_pending')
+        expected = {}
+        if expected_operation_key is not None:
+            from tools.approval_operation import matches_approval_operation
+            if choice != 'once' or not matches_approval_operation(approval, expected_operation_key):
+                raise PeerRunsHTTPError('peer approval operation changed', status_code=409,
+                                        error_code='approval_operation_changed')
+            expected['expected_operation_key'] = expected_operation_key
         return self._post_run_action(
             record, "approval", body={"choice": choice, "request_id": request_id,
-                                      'execution_generation': approval['execution_generation']}, grant=grant)
+                                      'execution_generation': approval['execution_generation'], **expected}, grant=grant)
 
     def _post_run_action(
         self, record: Mapping[str, Any], action: str, *, body: dict[str, Any], grant: str

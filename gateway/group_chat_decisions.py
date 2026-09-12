@@ -51,16 +51,18 @@ async def decide_from_chat(runner, event, backend, room, code, choice, stamp):
         value = await run_group_command_work(runner, 'deny' if choice == 'deny' else 'approve',
             lambda: backend.decide(room=room, command_id=command_id, decision=decision))
         require_current(runner, event, stamp)
+        if value['status'] == 'already_resolved':
+            return 'Already handled. Check the Group Chat for the outcome.'
         if choice == 'remember':
             return 'Allowed. This exact operation is now allowed in this Group Chat.' if value.get('remembered') is True else 'Allowed once. The saved permission could not be confirmed.'
-        return 'Already handled.' if value['status'] == 'already_resolved' else 'Allowed once.' if choice == 'once' else 'Denied.'
+        return 'Allowed once.' if choice == 'once' else 'Denied.'
     except Exception:
         return 'This decision could not be confirmed. Check the request before trying again.'
 
 
 def remember_warning(item):
     return '\n\n'.join(['Always allow in this chat?',
-        'This Bot may repeat this exact command in this folder without asking again. Other commands still require approval.',
+        'This Bot may repeat this exact command in this folder without asking again. Other commands are not covered by this permission.',
         _plain_display_label(item['member_id']), _plain_preview_text(item['command'], limit=512),
         _plain_preview_text(item.get('remember_context', ''), limit=384),
         'Remove this permission at any time from Manage permissions. Commands already approved may still finish.'])

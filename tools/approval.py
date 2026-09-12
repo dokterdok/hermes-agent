@@ -139,7 +139,8 @@ def unregister_gateway_notify(session_key: str) -> None:
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None,
+                             expected_operation_key: Optional[str] = None) -> int:
     """Unblock waiting agent thread(s) from the gateway's /approve or /deny handler.
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
@@ -147,6 +148,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
     relayed to the agent in the BLOCKED message. Returns the number resolved.
     """
     with _lock:
+        if expected_operation_key is not None and (not request_id or resolve_all or choice != 'once'):
+            raise ValueError('An operation-scoped decision requires one exact request')
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
@@ -154,6 +157,10 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
             if not targets:
                 return 0
+            if expected_operation_key is not None:
+                from tools.approval_operation import matches_approval_operation
+                if len(targets) != 1 or not matches_approval_operation(targets[0].data, expected_operation_key):
+                    raise ValueError('Approval operation changed')
             queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
             targets = list(queue)

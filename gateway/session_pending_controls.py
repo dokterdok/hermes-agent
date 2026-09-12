@@ -70,7 +70,7 @@ class PendingControls:
                         'execution_generation': prompt['execution_generation']}, event_type=prompt['kind'] + '.settled')
             return tuple(deepcopy(prompt) for _, prompt in self.pending.values())
 
-    def respond(self, session_id, generation, prompt_id, response, *, kind="approval"):
+    def respond(self, session_id, generation, prompt_id, response, *, kind="approval", expected_operation_key=None):
         with self.events.lock:
             self.snapshot(session_id, generation)
             entry = self.pending.get(prompt_id)
@@ -79,6 +79,11 @@ class PendingControls:
             route, prompt = entry
             if prompt['kind'] != kind:
                 raise RuntimeStoreError('invalid_params')
+            if expected_operation_key is not None:
+                from tools.approval_operation import matches_approval_operation
+                if (kind != 'approval' or response != {'choice': 'once'}
+                        or not matches_approval_operation(prompt, expected_operation_key)):
+                    raise RuntimeStoreError('approval_operation_changed')
             if prompt_id in self.remote_responders:
                 field = 'answer' if kind == 'clarify' else 'choice'
                 if (not isinstance(response, dict) or set(response) != {field}
@@ -103,6 +108,10 @@ class PendingControls:
                 raise RuntimeStoreError('invalid_params')
             # The tools lock arbitrates native taps versus attached responders;
             # an exact request ID can never consume the next FIFO approval.
-            resolved = resolve_gateway_approval(route, response['choice'], request_id=prompt_id)
+            expected = {'expected_operation_key': expected_operation_key} if expected_operation_key is not None else {}
+            try:
+                resolved = resolve_gateway_approval(route, response['choice'], request_id=prompt_id, **expected)
+            except ValueError as exc:
+                raise RuntimeStoreError('approval_operation_changed') from exc
             self.snapshot(session_id, generation)
             return {'status': 'resolved' if resolved else 'already_resolved', 'prompt_id': prompt_id}
