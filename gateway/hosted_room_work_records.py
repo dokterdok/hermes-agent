@@ -322,6 +322,24 @@ def _validate_roster(record, members):
             raise WorkRecordError("work record receipt target conflicts")
 
 
+def pending_delivery_is_anchored_locked(conn, *, room_id, target_install_id, through_seq):
+    """Routing hint only; transmission still revalidates the exact pending record."""
+    if not table_exists(conn, PENDING_TABLE):
+        return False
+    initialize(conn)
+    row = conn.execute(f"""SELECT p.* FROM {PENDING_TABLE} p JOIN hosted_rooms r ON r.room_id=p.room_id
+        AND r.authority_gateway_id=p.producer_gateway_id AND r.authority_epoch=p.producer_epoch
+        WHERE p.room_id=? AND p.target_install_id=? AND p.disposition='current'""",
+        (room_id, target_install_id)).fetchone()
+    if row is None:
+        return False
+    try:
+        record = storage.validate_stored_locked(conn, PENDING_TABLE, row)
+    except InvalidStoredWorkRecord:
+        return False
+    return row["status"] != "acked" and record["history"]["seq"] <= through_seq
+
+
 def prepare_delivery_locked(conn, *, room_id, target_install_id, route_generation, local_gateway_id, through_seq):
     """Freeze a source view now; expose it only after its history is acknowledged."""
     initialize(conn)
