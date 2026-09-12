@@ -1,11 +1,36 @@
 """Read-only page snapshots used by the passive publisher."""
 
 import pytest
+import sqlite3
 
 from gateway import hosted_room_passive_lineage as lineage
 from gateway import hosted_room_replica_source as source
 from gateway import hosted_rooms as rooms
 from tests.gateway.passive_ingress_fixtures import pair  # noqa: F401
+
+
+def test_v1_page_cannot_mix_header_with_a_later_committed_append(pair, monkeypatch):
+    original = source._room_row
+    def append_after_header(conn, *args):
+        row = original(conn, *args)
+        try:
+            with rooms._transaction(pair.source, immediate=True) as writer:
+                writer.execute('PRAGMA busy_timeout=0')
+                writer.execute("INSERT INTO hosted_room_events VALUES ('room',3,'concurrent','message.user',?,1,?,12)",
+                               ('{"kind":"user","id":"alice"}', '{"text":"new input"}'))
+                writer.execute("UPDATE hosted_rooms SET next_seq=4 WHERE room_id='room'")
+        except sqlite3.OperationalError as exc:
+            # DELETE-journal readers can defer this ordinary writer's commit.
+            assert 'locked' in str(exc).lower(), str(exc)
+        return row
+    monkeypatch.setattr(source, '_room_row', append_after_header)
+    page = source.read_replica_page(pair.source, room_id='room')
+    assert page['cursor'] <= page['latest_seq'], page
+    assert all(event['seq'] <= page['latest_seq'] for event in page['events'])
+    # The page reader releases its snapshot before returning to the publisher.
+    rooms.append_event(pair.source, room_id='room', event_id='after-read', kind='message.user',
+        actor={'kind': 'user', 'id': 'alice'}, payload={'text': 'later'},
+        authority_gateway_id=pair.gateway, authority_epoch=pair.epoch)
 
 
 def test_v2_descriptor_and_page_share_a_pinned_sqlite_view(pair, monkeypatch):

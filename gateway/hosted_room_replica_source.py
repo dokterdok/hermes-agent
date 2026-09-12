@@ -24,10 +24,8 @@ def read_replica_page(
     since_seq = _non_negative(since_seq, "since_seq")
     limit = _bounded_limit(limit, MAX_LOG_LIMIT)
     with _transaction(db_path) as conn:
-        if replica_version == 2:
-            # The default read transaction helper does not BEGIN for SELECTs.
-            # Pin the head, descriptor and events before another writer claims.
-            conn.execute("BEGIN")
+        # SELECT alone does not BEGIN: both versions need one head/event view.
+        conn.execute("BEGIN")
         room = _room_row(
             conn, """SELECT next_seq, authority_gateway_id, authority_epoch FROM hosted_rooms
                 WHERE room_id=? AND (disbanded_at IS NULL OR ?)""", (room_id, int(include_disbanded)), room_id)
