@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 
 from gateway.hosted_room_peer import canonical_attachment_manifest, attachment_manifest_digest
-from gateway.session_ingress_media import capture_native_media, restore_native_media
+from gateway.session_ingress_media import capture_native_media, restore_native_media, validate_media_batch_size
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -19,6 +19,7 @@ def retain_peer_input(spool, dispatch):
     items = spool.materialize(dispatch)
     manifest = canonical_attachment_manifest([
         {key: value for key, value in item.items() if key != 'path'} for item in items])
+    validate_media_batch_size(item['size'] for item in manifest)
     references = []
     for item in items:
         data = spool._read_verified(Path(item['path']), size=item['size'], digest=item['sha256'])

@@ -73,8 +73,9 @@ def submission_payload(rpc, prompt, attachments=None):
     if not attachments:
         return {'text': prompt}
     from gateway.hosted_room_driver import validate_bound_task_manifest
-    from gateway.session_ingress_media import capture_native_media, restore_native_media
+    from gateway.session_ingress_media import capture_native_media, restore_native_media, validate_media_batch_size
     manifest = validate_bound_task_manifest(attachments)
+    validate_media_batch_size(item['size'] for item in manifest)
     store = HostedRoomAttachmentStore(rpc.authority.db.db_path)
     references = []
     transferred = getattr(rpc, 'hosted_attachment_data', None)

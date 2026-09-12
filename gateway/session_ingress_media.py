@@ -3,7 +3,7 @@
 The existing managed document cache supplies profile routing, delivery eligibility
 and upload limits. Its flat age-based cleanup skips this retained subdirectory:
 native bytes are released by ``release_admission_media`` once their row is
-terminal and no live native input or retained API image context still holds them.
+terminal and no live native input or retained API/peer input context still holds them.
 """
 import hashlib
 import json
@@ -127,6 +127,15 @@ def capture_native_media(paths):
     return references
 
 
+def validate_media_batch_size(sizes):
+    """Preflight validated manifest sizes before materializing any batch member."""
+    from gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
+    try:
+        validate_inbound_media_size(sum(sizes), max_bytes=max(0, get_inbound_media_max_bytes()))
+    except ValueError as exc:
+        raise RuntimeStoreError('invalid_params') from exc
+
+
 def admission_media_references(payload):
     """Native references eligible as deletion candidates after terminal settlement."""
     return list(payload.get('attachments_v1', {}).get('media', ())) + list(
@@ -137,14 +146,16 @@ def _held_media_digests(db):
     # Project only references, not potentially large inline-image/history payloads.
     with db._read_ctx() as conn:
         rows = conn.execute('''SELECT status, json_extract(payload_json,
-            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media')
+            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media',
+            '$.api_turn_v1.settings.room_input_media.media')
             FROM session_admissions WHERE status!='terminal'
-            OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL''').fetchall()
+            OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL
+            OR json_type(payload_json, '$.api_turn_v1.settings.room_input_media.media') IS NOT NULL''').fetchall()
     held = set()
     for status, encoded in rows:
-        attachments, native, api = json.loads(encoded)
-        # API images remain canonical history context after the turn completes.
-        references = list(api or ())
+        attachments, native, api, peer = json.loads(encoded)
+        # API/peer input remains usable context while its admission is retained.
+        references = list(api or ()) + list(peer or ())
         if status != 'terminal':
             references.extend(attachments or ())
             references.extend(native or ())
@@ -156,7 +167,7 @@ def release_admission_media(db, admission_id):
     """Delete eligible terminal native bytes unless another retained input holds them.
 
     Native terminal rows retain digest-only receipt evidence. Live native rows
-    may still execute, while API images can remain history context even after
+    may still execute, while API/peer input can remain context even after
     settlement; those are holders, never additional deletion candidates.
     """
     from hermes_state_runtime import get_session_admission
