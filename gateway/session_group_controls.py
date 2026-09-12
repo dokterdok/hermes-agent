@@ -153,6 +153,7 @@ def _group(authority, actor, home, method, params):
 
     def disband():
         from gateway.hosted_room_driver import list_tasks
+        from gateway.hosted_room_link_records import room_link_retirement_required
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
         if service is not None and state.get('disbanded_at') is None:
             service.begin_room_disband(params.get('room_id'))
@@ -160,9 +161,10 @@ def _group(authority, actor, home, method, params):
                               cancel_id=params.get('cancel_id') or 'room-disbanded',
                               require_acknowledged=True)
             service.revoke_room_routes(params.get('room_id'))
-        # Metadata control must not destroy an active execution or bypass Stop.
-        if service is None and any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
-               for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
+        # An empty task list does not prove that target grants were revoked.
+        if service is None and (room_link_retirement_required(db_path, room_id=params.get('room_id'))
+                or any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
+                    for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred'))):
             raise RuntimeStoreError('runtime_coordination_required')
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
         return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
