@@ -21,7 +21,7 @@ gateway revisions when evaluating it.
 | Close and reopen Desktop | Accepted work belongs to the gateway. Desktop reads the same ordered history when it reconnects. This is not automatic takeover if the gateway itself fails. |
 | Share and retrieve files | Shared inputs, version-aware catalogs, search and scoped downloads are carried over. Output publication supports local default/named producers and default-profile peers. Named peer outputs remain a parity gap. |
 | Check in from messaging | Explicitly authorized chats can view groups, send input, retrieve outputs and handle scoped approvals. Telegram has a reply-based compose flow; native choices depend on adapter support. This supplements Desktop rather than replacing its full group experience. |
-| Reopen retained classic history | Old transcripts and locally retained file bytes remain readable. They are not converted into new rooms by matching names or executed by an unavailable owner's fallback path. |
+| Reopen retained classic history | Old history and local file copies stay readable. Already-published file references can also be fetched from their authorized original producer; missing or unbound sources remain unavailable. No replacement session is created for a download. |
 | Preserve evidence on another host | Opted-in participant gateways can retain authenticated history and work records. Recovery preview and custody checks remain non-executing; promotion, takeover and automatic continuation are not enabled. |
 
 Each Bot retains its own working context, tools and credentials. Files enter the
@@ -50,6 +50,10 @@ finished by this checkpoint. Existing authored implementations and evidence are
 retained while their canonical-runtime contracts are adapted; an inactive port
 is not presented as a working feature.
 
+Older producer-held files require an already-authorized original session and
+storage owned by that same default-profile gateway. Deleted or unbound sessions,
+ambiguous history and named-profile files held by another owner remain unavailable.
+
 ## Source Ownership
 
 - [#99107](https://github.com/NousResearch/hermes-agent/pull/99107), [#99960](https://github.com/NousResearch/hermes-agent/pull/99960) and [#100016](https://github.com/NousResearch/hermes-agent/pull/100016): authority, admission and connection reliability.
@@ -69,15 +73,22 @@ The branch also includes unsupportedpastels' authored
 [#109403](https://github.com/NousResearch/hermes-agent/pull/109403), which refreshes
 active Desktop conversations and mounted tiles when missed events require a
 fresh snapshot. Its original commit is retained, rather than reimplemented.
+It also carries the authored viewer-detach work in
+[#109404](https://github.com/NousResearch/hermes-agent/pull/109404), plus a
+[small ordering repair](https://github.com/dokterdok/hermes-agent/commit/e30c00250bb64ecdf34dbae6de5a312103d770f0)
+so a stale reply cannot disconnect the winning terminal view.
 
 ## Verification Boundary
 
-The current code checkpoint passed 334 Desktop tests across 24 files and the renderer
-and Electron typechecks. Its focused Python selection passed 1,075 tests across 132 files,
+The current code checkpoint passed 383 Desktop tests across 25 files and the renderer
+and Electron typechecks. Its focused Python selection passed 1,110 tests across 133 files,
 with two Linux-only skips and no automatic retries. Independent reviews covered
 the consequential ports and their repairs, including actual native/HTTP setup,
 real SDK/creation-helper interactions, and document custody during cleanup and
 admission. Review and test counts overlap and are not summed as unique cases.
+Separate checks cover terminal subscription ordering and the actual serialized
+response for an old export after explicit native adoption, through the Files
+consumer to download initiation. No hidden adoption is part of that read path.
 
 These are focused integration and component results, not a green full repository
 suite or new signed-installation, physical-host failure or live-client acceptance.
