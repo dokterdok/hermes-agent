@@ -1,5 +1,5 @@
 import { atom, Button, host, useValue } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
@@ -18,25 +18,35 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
   const labels = useCanonicalGroupLabels()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
   const [rooms, setRooms] = useState<Array<{ key: string; name: string }>>([])
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
+  const scope = useRef('')
   useEffect(() => {
     let cancelled = false
-    setRooms([])
-    setError('')
+    const identity = JSON.stringify([connectionId, profile])
+    if (scope.current !== identity) {
+      scope.current = identity
+      setRooms([])
+      setError('')
+    }
+    if (gateway !== 'open') {return}
     void (async () => {
       const route = captureCanonicalGroupRoute()
       const result = await discoverCanonicalGroups(route)
 
-      if (!cancelled) {setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))}
+      if (!cancelled) {
+        setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))
+        setError('')
+      }
     })().catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
 
     return () => { cancelled = true }
-  }, [connectionId, profile, refresh])
+  }, [connectionId, profile, gateway, refresh])
 
   return <div className="grid gap-1 px-2">
-    <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
+    <Button disabled={gateway !== 'open'} onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
     {error && <p role="alert">{error}</p>}
     {rooms.map(room => <Button key={room.key} onClick={() => onOpen(room.key)} variant="ghost">{room.name}</Button>)}
   </div>
