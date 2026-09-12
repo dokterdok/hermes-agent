@@ -31,7 +31,8 @@ it.each([32, 1_048_576])('uploads all %i bytes using the canonical owner method'
     const decoded = Uint8Array.from(atob(params.data_base64), value => value.charCodeAt(0))
     expect(Buffer.from(decoded).equals(Buffer.from(bytes))).toBe(true)
 
-    return uploaded
+    return { ...uploaded, sha256: 'receipt-digest', state: 'uploaded', created_at: 123,
+      idempotent: false, room_id: binding.roomId, authority: { gateway_id: 'owner', epoch: 1 } }
   })
   const changed = vi.fn()
   const submit = vi.fn(event => event.preventDefault())

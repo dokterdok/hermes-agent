@@ -50,7 +50,9 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
         mime: file.type || 'application/octet-stream', data_base64: data
       })
 
-      onChange([...attachments, result])
+      // Upload receipts include storage metadata; Send accepts only the manifest.
+      const { attachment_id, kind, name, mime, size } = result
+      onChange([...attachments, { attachment_id, kind, name, mime, size }])
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
     finally { setBusy(false) }
   }
