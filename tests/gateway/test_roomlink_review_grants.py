@@ -5,14 +5,17 @@ import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway import hosted_room_grant_state, hosted_room_links, hosted_rooms
-from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, PlatformConfig
+from gateway.session import SessionStore
+from gateway.session_authority import SessionAuthority
+from hermes_state import SessionDB
+from hermes_state_runtime import begin_runtime_epoch, list_session_admissions
 from gateway.hosted_room_peer import GatewayRoomCatalog, decode_room_grant, issue_room_grant
 from gateway.platforms import api_server_room_grants
 from gateway.platforms.api_server import APIServerAdapter
@@ -29,13 +32,27 @@ def target(tmp_path, monkeypatch, request):
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "test-key"}))
-    adapter.gateway_runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False))
+    db = SessionDB(home / 'state.db')
+    runner = SimpleNamespace(config=GatewayConfig(multiplex_profiles=False), _draining=False,
+        session_store=SessionStore(config=GatewayConfig(), sessions_dir=home / 'sessions'),
+        _adapter_for_source=lambda source: adapter)
+    authority = SessionAuthority(runner, profile_id=str(home), instance_id='test', db=db,
+        epoch=begin_runtime_epoch(db, instance_id='test'))
+    runner.session_authority = authority
+    adapter.gateway_runner = runner
+    # This fixture verifies durable acceptance, not model execution. Observers
+    # cannot select the retired adapter-owned executor to make it pass.
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
     for method, path, handler in api_server_room_grants._http_routes(adapter):
         app.router.add_route(method, "/p/{profile}" + path, handler)
     app.router.add_post("/p/{profile}/v1/runs", adapter._handle_runs)
     stores = hosted_room_grant_state.grant_state_db_paths()
-    return SimpleNamespace(app=app, adapter=adapter, stores=stores, home=home, profile=profile)
+    try:
+        yield SimpleNamespace(app=app, adapter=adapter, stores=stores, home=home,
+            profile=profile, authority=authority)
+    finally:
+        db.close()
 
 
 def grant(target, *, issued_at=None):
@@ -54,15 +71,11 @@ def claims(target, token):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target", ["reviewer", "custom"], indirect=True)
-async def test_named_single_profile_invitation_through_admission_and_revocation(target, monkeypatch):
+async def test_named_single_profile_invitation_through_admission_and_revocation(target):
     from gateway.hosted_room_driver import TaskIdentity
     from tui_gateway.hosted_room_driver import HostedRoomBinding
     from tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
-    agent = MagicMock()
-    agent.run_conversation.return_value = {"final_response": "Reviewed."}
-    agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
-    monkeypatch.setattr(target.adapter, "_create_agent", lambda **kwargs: agent)
     async with TestClient(TestServer(target.app)) as http:
         prefix = f"/p/{target.profile}/v1/room-members"
         invitation = await http.post(prefix + "/invitations", headers={"Authorization": "Bearer test-key"}, json={
@@ -97,10 +110,24 @@ async def test_named_single_profile_invitation_through_admission_and_revocation(
             "input": "Review.", "hosted_room_dispatch": dispatch.as_mapping(),
         }, headers={"Authorization": f"HermesRoom {renewed}", "Idempotency-Key": "room:task-1:1"})
         assert started.status == 202, await started.text()
+        accepted = await started.json()
         pending = list(target.adapter._active_run_tasks.values())
-        if pending:
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
-        assert agent.run_conversation.called
+        try:
+            from gateway.platforms.api_server_authority_runs import run_admission
+            authority, row = run_admission(target.adapter, accepted['run_id'])
+            assert authority is target.authority
+            assert row['request_id'] == accepted['run_id'] and row['status'] == 'queued'
+            assert row['payload']['api_turn_v1']['settings']['room_dispatch'] == dispatch.as_mapping()
+            session_id = row['target_session_id']
+            saved = target.authority.db.get_session(session_id)
+            assert saved['source'] == 'bot_room' and saved['hidden']
+        finally:
+            for observer in pending:
+                observer.cancel()
+            if pending:
+                await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=10)
+        # Cancelling the HTTP observer does not erase accepted canonical work.
+        assert list_session_admissions(target.authority.db, session_id=session_id)[0]['status'] == 'queued'
         assert (await http.post(prefix + "/grants/revoke-exact", headers=auth, json={})).status == 200
         renewed_auth = {"Authorization": f"HermesRoom {renewed}"}
         assert (await http.get(prefix + "/capabilities", headers=renewed_auth)).status == 200

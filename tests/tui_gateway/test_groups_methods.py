@@ -86,6 +86,7 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
 
 
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
+    (home / "profiles" / "reviewer").mkdir()
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
     result = _result(srv._methods["groups.capabilities"](1, {}))
@@ -271,7 +272,7 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
     )
     assert claims["target_profile"] == "reviewer"
     assert hosted_rooms.peer_room_is_reserved(
-        home / "state.db",
+        hosted_rooms.default_db_path(),
         room_id="room-1",
         target_profile="reviewer",
     )
@@ -299,7 +300,7 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
         claims=claims,
     )
     assert hosted_rooms.room_grant_is_revoked(
-        home / "state.db",
+        hosted_rooms.default_db_path(),
         claims=claims,
     )
 

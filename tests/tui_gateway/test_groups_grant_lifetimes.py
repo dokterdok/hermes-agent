@@ -39,7 +39,7 @@ def test_rpc_invitation_reports_only_bounded_signed_lifetimes(home, lifetime):
     valid = status_ttl is not None and 60 <= ttl <= 86400 and ttl <= status_ttl <= 2592000
     if not valid:
         assert result["error"]["code"] == 4120
-        assert not hosted_rooms.peer_room_is_reserved(home / "state.db", room_id="renewal-room", target_profile="ops")
+        assert not hosted_rooms.peer_room_is_reserved(hosted_rooms.default_db_path(), room_id="renewal-room", target_profile="ops")
         return
     result = _result(result)
     claims = decode_room_grant(gateway_room_grant_secret(home), result["grant"], permission="dispatch")
@@ -48,7 +48,7 @@ def test_rpc_invitation_reports_only_bounded_signed_lifetimes(home, lifetime):
     assert result["expires_at"] == claims["expires_at"]
     assert result["status_expires_at"] == claims["status_expires_at"]
     assert "peer_grant_renewal" in _result(server._methods["groups.capabilities"](0, {}))["features"]
-    for db in (home / "state.db", home / "profiles" / "ops" / "state.db"):
+    for db in (hosted_rooms.default_db_path(), home / "profiles" / "ops" / "state.db"):
         assert hosted_rooms.peer_room_is_reserved(db, room_id="renewal-room", target_profile="ops",
                                                   now=claims["status_expires_at"] - 1)
 
