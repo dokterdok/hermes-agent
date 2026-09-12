@@ -20,11 +20,12 @@ def http_routes(adapter):
 
     async def respond(request):
         from gateway.platforms.api_server import _reserve_pending_api_work
+        from gateway.platforms.api_server_owned_work import run_owned_work
         try:
             _authorize(adapter, request)
             if request.query:
                 raise ValueError('Unexpected query')
-            with _reserve_pending_api_work(adapter):
+            with _reserve_pending_api_work(adapter) as reservation:
                 body, error = await adapter._read_json_body(request)
                 if error is not None:
                     return error
@@ -34,7 +35,7 @@ def http_routes(adapter):
                 # fence, not the new-message maintenance gate, owns admission.
                 authority, _actor, room_id, member_id, token = _authorize(adapter, request)
                 room = authority.hosted_room_service._room(room_id)
-                result = await asyncio.to_thread(decide, authority, room=room,
+                result = await run_owned_work(adapter, reservation, decide, authority, room=room,
                     command_id=body['command_id'], params=body['decision'], member_id=member_id, token=token)
                 return _response({'room_id': room_id, 'decision': body['decision'], 'result': result})
         except Exception:

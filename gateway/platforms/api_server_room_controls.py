@@ -125,13 +125,14 @@ def _http_routes(adapter):
     async def send(request):
         import asyncio
         from gateway.platforms.api_server import _reserve_pending_api_work
+        from gateway.platforms.api_server_owned_work import run_owned_work
         from gateway.session_group_messaging_send import send_from_peer
         try:
             _authorize(adapter, request)
             draining = adapter._draining_response()
             if draining is not None:
                 return draining
-            with _reserve_pending_api_work(adapter):
+            with _reserve_pending_api_work(adapter) as reservation:
                 if request.query:
                     raise ValueError('unexpected query')
                 body, error = await adapter._read_json_body(request)
@@ -146,7 +147,7 @@ def _http_routes(adapter):
                     return draining
                 authority, _actor, room_id, member_id, token = _authorize(adapter, request)
                 room = authority.hosted_room_service._room(room_id)
-                event = await asyncio.to_thread(send_from_peer, authority, room=room, member_id=member_id,
+                event = await run_owned_work(adapter, reservation, send_from_peer, authority, room=room, member_id=member_id,
                     token=token, command_id=body['command_id'], text=body['text'],
                     actor_display_name=body.get('actor_display_name'))
                 # Acceptance is durable even if later observation becomes unavailable.
