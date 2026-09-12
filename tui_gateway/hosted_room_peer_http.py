@@ -46,7 +46,7 @@ _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancell
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES | {"unknown"}
 _RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event",
-                    "pending_controls", "execution_generation", "admission_id")
+                    "pending_controls", "execution_generation", "admission_id", "artifacts", "room_artifact_scope")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -671,7 +671,9 @@ class PeerRunsHTTPClient:
             "execution_generation": receipt["execution_generation"],
             "status": "settled" if state == "completed" else "failed",
             "message_id": f"peer-run:{status.get('run_id')}",
-            "content": status.get("output") or status.get("error") or ""}]
+            "content": status.get("output") or status.get("error") or "",
+            **({'artifacts': status['artifacts'], 'artifact_scope': status.get('room_artifact_scope'),
+                'peer_run_id': status['run_id']} if state == 'completed' and status.get('artifacts') else {})}]
 
     def status(
         self, *, room_id: str, profile: str, session_id: str, grant: str,

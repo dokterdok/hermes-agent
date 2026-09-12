@@ -1,4 +1,4 @@
-"""Owner-local explicit Group Chat sharing, ported from #99159."""
+"""Explicit Group Chat sharing from a live canonical admission, from #99159."""
 
 from __future__ import annotations
 
@@ -142,7 +142,7 @@ def share_group_file(
     if scope is None:
         return json.dumps({
             "ok": False,
-            "error": "File sharing requires an active owner-local Group Chat turn; this execution scope is unsupported.",
+            "error": "File sharing requires an active Group Chat turn with Files enabled.",
         })
     try:
         from gateway.platforms.base import validate_media_delivery_path

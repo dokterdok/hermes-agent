@@ -16,8 +16,15 @@ def require_output_task(conn, scope: RoomArtifactScope, cancel_generation, *, st
             or room["authority_gateway_id"] != scope.authority_gateway_id
             or room["authority_epoch"] != scope.authority_epoch):
         raise RoomArtifactError("Group Chat output authority changed")
-    if not any(m["member_id"] == scope.member_id and m["profile"] == scope.target_profile
-               and m.get("target", {}).get("kind", "local") == "local" for m in json.loads(room["members_json"])):
+    def matches(member):
+        if member['member_id'] != scope.member_id or member['profile'] != scope.target_profile:
+            return False
+        target = member.get('target', {})
+        if scope.target_install_id == scope.home_install_id:
+            return target.get('kind', 'local') == 'local'
+        return (target.get('kind') == 'peer' and target.get('installation_id') == scope.target_install_id
+                and target.get('profile') == scope.target_profile)
+    if not any(matches(member) for member in json.loads(room['members_json'])):
         raise RoomArtifactError("Group Chat output participant changed")
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     HostedRoomAttachmentStore._require_viewer_room(conn, room_id=scope.room_id,
@@ -33,6 +40,18 @@ def require_output_task(conn, scope: RoomArtifactScope, cancel_generation, *, st
     return task
 
 
+def require_peer_output_receipt(conn, scope, result):
+    from gateway.hosted_rooms import _REMOTE_RUN_IDENTITY_COLUMNS, _SELECT_REMOTE_RUN
+    run_id = result.get('peer_run_id')
+    if not isinstance(run_id, str) or not run_id:
+        raise RoomArtifactError('Group Chat output Run is unavailable')
+    receipt = conn.execute(_SELECT_REMOTE_RUN,
+        tuple(getattr(scope, key) for key in _REMOTE_RUN_IDENTITY_COLUMNS)).fetchone()
+    if receipt is None or receipt['run_id'] != run_id or result.get('message_id') != 'peer-run:' + run_id:
+        raise RoomArtifactError('Group Chat output Run changed')
+    return dict(receipt)
+
+
 def require_output_publication(conn, room_id, expected, *, kind, actor, payload):
     scope = RoomArtifactScope.from_mapping(expected["scope"])
     if scope.room_id != room_id:
@@ -42,6 +61,8 @@ def require_output_publication(conn, room_id, expected, *, kind, actor, payload)
             or payload.get("thread_id") != task["thread_id"] or payload.get("turn_id") != task["turn_id"]):
         raise RoomArtifactError("Group Chat output event coordinates changed")
     result = json.loads(task["result_json"])
+    if scope.target_install_id != scope.home_install_id:
+        require_peer_output_receipt(conn, scope, result)
     if result.get("artifact_scope") != scope.as_mapping() or result.get("artifacts") != expected["manifest"]:
         raise RoomArtifactError("Group Chat output receipt changed")
     if kind == "message.member":

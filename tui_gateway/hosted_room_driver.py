@@ -985,7 +985,8 @@ def _find_terminal_receipt(
             status=cast(state.TerminalStatus, status), settlement_id=receipt_id,
             result=_bounded_terminal_result(
                 {"message_id": receipt_id, "text": message.get("content", ""),
-                 "artifacts": message.get("artifacts"), "artifact_scope": message.get("artifact_scope")}))
+                 "artifacts": message.get("artifacts"), "artifact_scope": message.get("artifact_scope"),
+                 "peer_run_id": message.get("peer_run_id")}))
     return None
 
 

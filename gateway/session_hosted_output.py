@@ -1,4 +1,4 @@
-"""Files bindings reconstructed from local or named canonical admissions."""
+"""Files bindings reconstructed from local, named or scoped peer admissions."""
 
 from __future__ import annotations
 
@@ -90,6 +90,9 @@ def _is_owner_transport_admission(authority, ref, row):
 
 
 def _binding(authority, ref, row):
+    if row.get('principal_id') == 'api':
+        from gateway.session_peer_output import peer_output_binding
+        return peer_output_binding(authority, ref, row)
     if not row.get("request_id", "").startswith("hosted:"):
         return None
     service = getattr(authority, "hosted_room_service", None)
@@ -174,4 +177,8 @@ def output_receipt_fields(value):
     from gateway.hosted_room_artifacts import validate_terminal_artifact_manifest
     validate_terminal_artifact_manifest(value["artifacts"])
     scope = RoomArtifactScope.from_mapping(value.get("artifact_scope") or {})
-    return {"artifacts": value["artifacts"], "artifact_scope": scope.as_mapping()}
+    fields = {"artifacts": value["artifacts"], "artifact_scope": scope.as_mapping()}
+    if value.get('peer_run_id') is not None:
+        from gateway.hosted_rooms_common import identifier
+        fields['peer_run_id'] = identifier(value['peer_run_id'], label='peer Run', error=ValueError, max_chars=256)
+    return fields

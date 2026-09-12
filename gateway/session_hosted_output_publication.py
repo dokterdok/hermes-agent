@@ -24,6 +24,13 @@ class CanonicalHostedOutputPublisher:
         if not isinstance(result, Mapping) or not result.get("artifacts"):
             return None
         scope = RoomArtifactScope.from_mapping(result.get("artifact_scope") or {})
+        if scope.target_install_id != scope.home_install_id:
+            from gateway.session_peer_output_custody import PeerOutputCustody
+            if scope.home_install_id != room['authority_gateway_id']:
+                raise RuntimeStoreError('unsupported_output_route')
+            source = PeerOutputCustody(self, scope, result['artifacts'], result, task['cancel_generation'])
+            source._route(scope)
+            return scope, result['artifacts'], source
         from gateway.session_hosted_output_transport import root_named_route
         target = self.profile_homes().get(scope.target_profile)
         if (scope.home_install_id != room["authority_gateway_id"]
