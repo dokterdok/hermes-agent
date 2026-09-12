@@ -80,7 +80,7 @@ export async function peerCapability(route: CanonicalGroupRoute): Promise<Canoni
   return checkedPeerCapability(route, record(await canonicalGroupRequest(route, 'groups.capabilities')))
 }
 
-export async function planCrossGatewayMembers(home: CanonicalGroupRoute, selected: GroupMember[]): Promise<{ members: CanonicalRoomMember[]; peers: CanonicalPeerPlan[] }> {
+export async function planCrossGatewayMembers(home: CanonicalGroupRoute, selected: GroupMember[]): Promise<{ authorityId: string; members: CanonicalRoomMember[]; peers: CanonicalPeerPlan[] }> {
   home = { ...home }
 
   if (home.profile !== 'default') {throw new Error('Open the host gateway\'s default profile to create a group across gateways.')}
@@ -136,7 +136,7 @@ export async function planCrossGatewayMembers(home: CanonicalGroupRoute, selecte
 
   if (peers.length) {checkedPeerCapability(home, homeCapabilities)}
 
-  return { members, peers }
+  return { authorityId: homeCapabilities.authority_gateway_id, members, peers }
 }
 
 async function currentPeerSetup(home: CanonicalGroupRoute, roomId: string, authorityId: string, peers: CanonicalPeerPlan[]) {

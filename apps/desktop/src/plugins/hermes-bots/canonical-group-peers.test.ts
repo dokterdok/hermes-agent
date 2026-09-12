@@ -153,3 +153,39 @@ it('never doubles a profile prefix or accepts credential-bearing endpoints', () 
     expect(() => profileEndpoint({ available: true, url }, 'reviewer')).toThrow()
   }
 })
+
+it('refuses a changed Home between alias planning and the durable claim', async () => {
+  peerId = 'install:home'
+  const original = rpc.getMockImplementation()!
+  let homeReads = 0
+  rpc.mockImplementation(async (route, method, params) => {
+    if (method === 'groups.capabilities' && route.connectionId === 'home' && ++homeReads > 1) {
+      return { ...capabilities('home'), authority_gateway_id: 'install:replacement' }
+    }
+    return original(route, method, params)
+  })
+  await expect(createCanonicalGroup(home, 'Same host aliases', [members[0], { ...members[1], name: 'reviewer', handle: 'reviewer' }]))
+    .rejects.toThrow('selected gateway changed')
+  expect(entries).toEqual({})
+  expect(rpc.mock.calls.every(call => call[1] === 'groups.capabilities')).toBe(true)
+})
+
+it('retains the authority selected before planning and never claims against its replacement', async () => {
+  await expect(createCanonicalGroup(home, 'Two hosts', members, 'install:original')).rejects.toThrow('selected gateway changed')
+  expect(entries).toEqual({})
+  expect(rpc.mock.calls.every(call => call[1] === 'groups.capabilities')).toBe(true)
+})
+
+it('keeps the captured Home route when the caller changes its route during planning', async () => {
+  const route = { ...home }
+  const original = rpc.getMockImplementation()!
+  rpc.mockImplementation(async (captured, method, params) => {
+    const result = await original(captured, method, params)
+    route.connectionId = 'unrelated'
+    route.profile = 'other'
+    return result
+  })
+  const result = await createCanonicalGroup(route, 'Two hosts', members)
+  expect(result.binding).toMatchObject(home)
+  expect(rpc.mock.calls.every(call => call[0].connectionId !== 'unrelated')).toBe(true)
+})

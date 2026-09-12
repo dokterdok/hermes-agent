@@ -101,8 +101,10 @@ export async function discoverCanonicalGroups(
 export async function createCanonicalGroup(
   route: CanonicalGroupRoute,
   name: string,
-  members: GroupMember[]
+  members: GroupMember[],
+  expectedAuthorityId?: string
 ): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
+  route = { connectionId: route.connectionId, profile: route.profile }
   requireRoute(route)
 
   if (!name.trim() || members.length < 2 || members.length > 6) {
@@ -111,7 +113,12 @@ export async function createCanonicalGroup(
   const crossGateway = members.some(member => (member.route?.connectionId ?? member.connectionId ?? route.connectionId) !== route.connectionId)
   if (crossGateway) {
     const plan = await planCrossGatewayMembers(route, members)
-    const prepared = await prepareCanonicalGroupCreate(route, name, plan.members, plan.peers)
+
+    if (expectedAuthorityId !== undefined && plan.authorityId !== expectedAuthorityId) {
+      throw new Error('The selected gateway changed. Reconnect the original gateway before creating this group.')
+    }
+
+    const prepared = await prepareCanonicalGroupCreate(route, name, plan.members, plan.peers, plan.authorityId)
     return resumeCanonicalGroupCreate(prepared.binding, prepared.binding.roomId)
   }
 
@@ -144,7 +151,7 @@ export async function createCanonicalGroup(
     }
   })
 
-  const prepared = await prepareCanonicalGroupCreate(route, name, roster)
+  const prepared = await prepareCanonicalGroupCreate(route, name, roster, [], expectedAuthorityId)
   return resumeCanonicalGroupCreate(prepared.binding, prepared.binding.roomId)
 }
 

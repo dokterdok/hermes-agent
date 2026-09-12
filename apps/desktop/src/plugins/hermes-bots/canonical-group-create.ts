@@ -132,14 +132,19 @@ async function authority(route: CanonicalGroupRoute): Promise<string> {
   return value.authority_gateway_id
 }
 
-export async function prepareCanonicalGroupCreate(route: CanonicalGroupRoute, name: string, members: CanonicalRoomMember[], peers: CanonicalPeerPlan[] = []): Promise<PreparedCanonicalGroupCreate> {
+export async function prepareCanonicalGroupCreate(route: CanonicalGroupRoute, name: string, members: CanonicalRoomMember[], peers: CanonicalPeerPlan[] = [], expectedAuthorityId?: string): Promise<PreparedCanonicalGroupCreate> {
   requireSetupStorage()
   name = normalizeCanonicalGroupName(name)
   const bindingRoute = { connectionId: route.connectionId, profile: route.profile }
   key(bindingRoute)
-  const authorityId = await authority(bindingRoute)
   const params = JSON.parse(JSON.stringify({ name, members })) as { name: string; members: CanonicalRoomMember[] }
   const frozenPeers = JSON.parse(JSON.stringify(peers)) as CanonicalPeerPlan[]
+  const authorityId = await authority(bindingRoute)
+
+  if (expectedAuthorityId !== undefined && authorityId !== expectedAuthorityId) {
+    throw new Error('The selected gateway changed. Reconnect the original gateway before creating this group.')
+  }
+
   const existing = await readCanonicalGroupCreate(bindingRoute)
 
   const assertSameIntent = (entry: PreparedCanonicalGroupCreate) => {

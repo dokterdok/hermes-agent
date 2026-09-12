@@ -108,3 +108,19 @@ it('checks native journal capabilities before new or saved creation without fall
   await expect(prepareCanonicalGroupCreate(route, 'Another', members)).rejects.toThrow('Update Hermes Desktop')
   expect(request).not.toHaveBeenCalled()
 })
+
+it('refuses a changed selected authority before any durable claim', async () => {
+  await expect(prepareCanonicalGroupCreate(route, 'Team', members, [], 'install:original')).rejects.toThrow('selected gateway changed')
+  expect(compare).not.toHaveBeenCalled()
+  expect(entries).toEqual({})
+  expect(request.mock.calls.every(call => call[1] === 'groups.capabilities')).toBe(true)
+})
+
+it('freezes the roster before waiting for gateway capabilities', async () => {
+  const selected = structuredClone(members)
+  const pending = prepareCanonicalGroupCreate(route, 'Team', selected, [], 'install:source')
+  selected[0].profile = 'replacement'
+  selected[0].target.profile = 'replacement'
+  const entry = await pending
+  expect(entry.params.members).toEqual(members)
+})
