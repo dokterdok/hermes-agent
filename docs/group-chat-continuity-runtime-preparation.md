@@ -8,7 +8,7 @@ It keeps the gateway responsible for execution instead of adding another
 session runner in Desktop or the messaging adapters.
 
 **This is a development checkpoint, not a release build.** It is based on
-runtime `280cf2df2f0` and main `21bc1d37754`. The original source PRs remain
+runtime `8488b3a4161` and main `1c671beab291`. The original source PRs remain
 separate review units; this branch does not change their readiness or the
 maintainer's review schedule. Use disposable profiles and matching client and
 gateway revisions when evaluating it.
@@ -63,10 +63,10 @@ the runtime changed, not claims that entire source PRs have been absorbed.
 
 ## Verification Boundary
 
-The published preparation checkpoint passed 189 Desktop tests across 17 files
-and the renderer typecheck. Its unchanged backend bytes have 1,004 passing
-focused Python tests across 118 files, with one Linux-only skip and no automatic
-retries. Independent reviews covered the consequential ports and their repairs,
+This preparation passed 189 Desktop tests across 17 files and the renderer
+typecheck. Its focused Python selection passed 1,025 tests across 126 files,
+with two Linux-only skips and no automatic retries. Independent reviews covered
+the consequential ports and their repairs,
 including actual native/HTTP setup and real SDK/creation-helper interactions.
 
 These are focused integration and component results, not a green full repository
