@@ -1195,7 +1195,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
     const route = { ...creationRoute }
     const frozenMembers = durableGroupChatMembers(selected)
-    const capabilities = await canonicalGroupRequest<{ driver: boolean; features?: string[] }>(route, 'groups.capabilities')
+    const capabilities = await canonicalGroupRequest<{ driver: boolean; persistent_process?: boolean; features?: string[] }>(route, 'groups.capabilities')
     if (generation !== openGeneration.current) {return}
 
     if (capabilities.driver) {
@@ -1208,7 +1208,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       return
     }
 
-    if (capabilities.driver !== false || capabilities.features?.includes('canonical_session_owner')) {
+    if (capabilities.driver !== false || capabilities.persistent_process !== false
+      || capabilities.features?.includes('canonical_session_owner')) {
       throw new Error('This gateway is not ready to create a group. Reconnect it and try again.')
     }
 

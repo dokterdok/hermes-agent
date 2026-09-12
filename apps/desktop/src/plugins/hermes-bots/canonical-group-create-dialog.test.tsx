@@ -78,7 +78,9 @@ it('offers the saved setup after failure and reopening, without new selections o
   expect(await readCanonicalGroupCreate(route)).toBeUndefined()
 })
 
-it.each([{ driver: false, features: ['canonical_session_owner'] }, {}])('never starts a legacy room from canonical unavailability or an invalid capability reply: %j', async capabilities => {
+it.each([{ driver: false, features: ['canonical_session_owner'] }, {},
+  { driver: false, persistent_process: true, features: ['room_identity', 'monotonic_log'] }
+])('never starts a legacy room from canonical unavailability or an invalid capability reply: %j', async capabilities => {
   const before = $groupChats.get()
   request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? capabilities : {})
   const created = vi.fn()
