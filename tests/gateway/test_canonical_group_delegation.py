@@ -43,7 +43,8 @@ async def test_grant_survives_restart_but_not_owner_change_or_other_room(room):
     assert (await read())['room']['name'] == 'Shared'
     with pytest.raises(RuntimeStoreError):
         await read(room_id='another-room')
-    for method in ('session.list', 'groups.send', 'groups.approve', 'groups.control.invite'):
+    for method in ('session.list', 'groups.send', 'groups.approve', 'groups.control.invite',
+                   'groups.attachment.list', 'groups.attachment.download'):
         with pytest.raises(RuntimeStoreError):
             await dispatch_delegated_group_control(authority, room_id='room', member_id='home',
                 token=issued['control_token'], method=method, params={'room_id': 'room'})

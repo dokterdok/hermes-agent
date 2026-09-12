@@ -18,7 +18,7 @@ _OWNER_FIELDS = {
     'revoke': {'room_id', 'member_id'},
 }
 _DELEGATED = {method: 'session:read' for method in (
-    'groups.state', 'groups.log', 'groups.attachment.list', 'groups.attachment.download')}
+    'groups.state', 'groups.log')}
 
 
 def _service(authority):
@@ -128,7 +128,9 @@ async def dispatch_delegated_group_control(authority, *, room_id, member_id, tok
     """Translate a valid room capability, never a messaging-admin assertion.
 
     The caller supplies the authenticated endpoint's room/member coordinates.
-    This first port exposes observation only. Mutations must retain their grant
+    This first port exposes conversation observation only. File reads must use
+    the recipient-filtered file access contract, not the native owner's broader
+    attachment methods. Mutations must retain their grant
     scope through the eventual write, not just authorize before queueing work.
     """
     from gateway.session_group_controls import dispatch_group_control
