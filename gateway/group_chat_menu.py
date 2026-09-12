@@ -24,6 +24,18 @@ class GroupMenu:
         self.actions = {}
         self.revision = 0
         self.files_query = ''
+        active = getattr(runner, '_canonical_group_menus', None)
+        if active is None:
+            active = runner._canonical_group_menus = {}
+        for key in list(active):
+            if active[key].deadline <= time.monotonic():
+                active.pop(key)
+        previous = active.pop(stamp, None)
+        if previous is not None:
+            previous.deadline = 0
+        active[stamp] = self
+        while len(active) > 128:
+            active.pop(next(iter(active))).deadline = 0
 
     def check(self):
         require_current(self.runner, self.event, self.stamp)
@@ -255,3 +267,23 @@ async def show_group_menu(runner, event, backend, command, stamp, *, room=None, 
                   'requester_user_id': str(event.source.user_id)})
     menu.check()
     return getattr(result, 'success', False) is True
+
+
+async def cancel_navigation(runner, event):
+    import asyncio
+    context = receiving_group_context(runner, event.source)
+    if context is None:
+        return
+    location = (str(event.source.user_id), str(event.source.chat_id), str(event.source.thread_id or ''), str(event.source.scope_id or ''))
+    active = getattr(runner, '_canonical_group_menus', {})
+    for key, menu in list(active.items()):
+        if key[0] != str(context.home) or key[5:9] != location:
+            continue
+        menu.deadline = 0
+        menu.actions.clear()
+        active.pop(key, None)
+        request = getattr(menu, 'compose_request', None)
+        if request is not None:
+            request.deadline = 0
+            request.pending = False
+            await asyncio.to_thread(request.cancel)

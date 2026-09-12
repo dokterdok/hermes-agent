@@ -128,3 +128,21 @@ async def test_full_reply_action_keeps_the_selected_reply_when_a_new_one_arrives
     completed = await progress.complete()
     assert isinstance(completed, ChoicePage) and completed.title == 'File sent.'
     assert adapter.document == ('42', full.encode())
+
+
+@pytest.mark.asyncio
+async def test_cancel_closes_native_navigation_and_the_reply_specific_compose(view):
+    adapter = native(view)
+    event = replace(view.event, text='/group 1', message_id='open')
+    assert await view.runner._handle_group_command(event) is None
+    page = ChoicePage(adapter.picker['title'], adapter.picker['choices'])
+    current = await adapter.picker['on_choice_selected']('42', choice(page, 'Send message'))
+    result = await view.runner._handle_group_command(replace(event, text='/group cancel', message_id='cancel'))
+    assert 'cancelled' in result
+    assert not adapter.request.pending and adapter.request.deadline == 0
+    reply = replace(event, text='@pm This must not be sent', message_id='late', reply_to_message_id='prompt-123')
+    response = await handle_native_reply(view.runner, reply, NativeReplySubmission(adapter, adapter.request.token, True))
+    assert response != 'Sent to home secret.'
+    assert not view.receiving.db._read_all("SELECT * FROM hosted_room_events WHERE kind='message.user'")
+    stale = await adapter.picker['on_choice_selected']('42', choice(current, 'View Bots'))
+    assert isinstance(stale, str) and 'expired' in stale.lower()

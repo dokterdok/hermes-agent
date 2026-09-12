@@ -260,6 +260,10 @@ async def test_native_confirmation_supplies_requester_topic_and_receiving_profil
     wrong.from_user.id = '42'
     await adapter._handle_choice_picker_callback(wrong, action, '42')
     assert saved(home).get('group_audience_ack')
+    current = adapter._choice_picker_state['42']
+    assert any('home secret' in item['label'] for item in current['choices'])
+    action = wrong.edit_message_text.await_args.kwargs['reply_markup'].inline_keyboard[0][0].callback_data
+    await adapter._handle_choice_picker_callback(wrong, action, '42')
     assert 'home secret' in wrong.edit_message_text.await_args.kwargs['text']
 
 

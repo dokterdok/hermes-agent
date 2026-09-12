@@ -287,7 +287,7 @@ def _persist_locked(runner, event, pending):
             pending.state = 'committed'
 
 
-async def _confirm(runner, event, pending):
+async def _confirm(runner, event, pending, *, native=False):
     with pending.lock:
         if not _current(runner, pending) or pending.state != 'pending':
             return _text(runner, event, 'expired')
@@ -301,18 +301,27 @@ async def _confirm(runner, event, pending):
         _check(runner, event, pending)
         if disclosure_stamp(runner, event) is None:
             return _text(runner, event, 'expired')
-        # Finish the confirmation picker with text; menu ownership stays with
-        # the separate native Group chooser, never a nested replacement picker.
         followup = replace(event, text=group_command_prefix(runner, event.source) + 'group list')
         token = _active_confirmation.set((runner, pending))
+        menu = None
         try:
-            result = await runner._handle_rooms_command(followup)
+            if native:
+                from gateway.hosted_room_messaging import current_room_backend
+                from gateway.group_chat_menu import GroupMenu
+                stamp = disclosure_stamp(runner, event)
+                backend = current_room_backend(runner, event, stamp)
+                menu = GroupMenu(runner, event, backend, group_command_prefix(runner, event.source) + 'group', stamp)
+                result = await menu.groups()
+            else:
+                result = await runner._handle_rooms_command(followup)
         finally:
             _active_confirmation.reset(token)
         with pending.lock:
             if (not _current(runner, pending) or not pending.disclose
                     or pending.deadline <= time.monotonic()):
                 return _text(runner, event, 'cancel_late')
+            if menu is not None:
+                pending.menu = menu
         return result or _text(runner, event, 'chooser')
     except asyncio.CancelledError:
         _retire(runner, pending)
@@ -337,6 +346,8 @@ async def prepare_group_access(runner, event):
     if query in {'help', 'usage', '?'}:
         return runner._group_chat_help(group_command_prefix(runner, event.source) + 'group')
     if query == 'cancel':
+        from gateway.group_chat_menu import cancel_navigation
+        await cancel_navigation(runner, event)
         # Retire only this requester's existing read chooser, without a config
         # read that could block cancellation behind the in-flight writer.
         context = receiving_group_context(runner, event.source)
@@ -399,12 +410,15 @@ async def prepare_group_access(runner, event):
             destination = event.source.chat_id
             if event.source.platform.value == 'discord' and event.source.thread_id:
                 destination = event.source.thread_id
+            menu = getattr(pending, 'menu', None)
+            if menu is not None and str(chat_id) == str(destination):
+                return await menu.choose(chat_id, value)
             if (str(chat_id) != str(destination) or _pending(runner).get(key) is not pending
                     or value not in {pending.token + ':yes', pending.token + ':no'}):
                 return _text(runner, event, 'expired')
             if value.endswith(':no'):
                 return _cancel(runner, event, pending)
-            return await _confirm(runner, event, pending)
+            return await _confirm(runner, event, pending, native=True)
         return await asyncio.create_task(apply(), context=pending.context.copy())
 
     from gateway.platforms.base import _thread_metadata_for_event
