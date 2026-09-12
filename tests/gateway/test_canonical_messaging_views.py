@@ -159,7 +159,7 @@ async def test_revocation_during_read_and_picker_selection_does_not_disclose_or_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('action', ['stop', 'retry', 'approve', 'deny', 'discard'])
+@pytest.mark.parametrize('action', ['stop', 'retry', 'discard'])
 async def test_other_mutations_are_not_activated(view, action):
     view.consent()
     before = view.receiving.db._read_all('SELECT * FROM hosted_room_events')

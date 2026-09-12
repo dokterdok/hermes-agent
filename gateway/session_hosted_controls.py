@@ -5,6 +5,10 @@ from tui_gateway.hosted_room_driver import HostedRoomBinding
 
 
 class HostedControls:
+    def approve_room_task(self, room_id, **params):
+        from gateway.session_group_decisions import approve_task
+        return approve_task(self, room_id, **params)
+
     def _control_task(self, room_id, member_id, task_id, execution_generation):
         if (type(execution_generation) is not int or execution_generation < 1
                 or not isinstance(member_id, str) or not member_id

@@ -26,7 +26,7 @@ export const CANONICAL_GROUP_LOCALES = {
   en: {
     messagingAccess: 'Messaging access',
     allowMessagingAccess: 'Allow access from my messaging apps',
-    messagingAccessScope: 'Your authorized Home chats can view this group, send messages and get shared files. Everyone in a shared Home chat can see what is posted there.',
+    messagingAccessScope: 'Your authorized Home chats can view this group, send messages, respond to approval requests and get shared files. Everyone in a shared Home chat can see what is posted there.',
     messagingAccessUnconfirmed: 'The permission could not be confirmed. Refresh before making another change.',
     refreshGroups: 'Refresh gateway groups',
     loadingGroup: 'Loading group…',
@@ -49,7 +49,7 @@ export const CANONICAL_GROUP_LOCALES = {
   ja: {
     messagingAccess: 'メッセージアプリからのアクセス',
     allowMessagingAccess: '自分のメッセージアプリからのアクセスを許可',
-    messagingAccessScope: '許可されたホームチャットで、このグループの閲覧、メッセージ送信、共有ファイルの取得ができます。共有ホームチャットへの投稿は参加者全員に表示されます。',
+    messagingAccessScope: '許可されたホームチャットで、このグループの閲覧、メッセージ送信、承認リクエストへの応答、共有ファイルの取得ができます。共有ホームチャットへの投稿は参加者全員に表示されます。',
     messagingAccessUnconfirmed: '権限を確認できませんでした。変更する前に更新してください。',
     refreshGroups: 'ゲートウェイのグループを更新',
     loadingGroup: 'グループを読み込み中…',
@@ -72,7 +72,7 @@ export const CANONICAL_GROUP_LOCALES = {
   zh: {
     messagingAccess: '消息应用访问',
     allowMessagingAccess: '允许从我的消息应用访问',
-    messagingAccessScope: '已授权的主页聊天可以查看此群组、发送消息并获取共享文件。共享主页聊天中的所有人都能看到发布的内容。',
+    messagingAccessScope: '已授权的主页聊天可以查看此群组、发送消息、处理审批请求并获取共享文件。共享主页聊天中的所有人都能看到发布的内容。',
     messagingAccessUnconfirmed: '无法确认权限。请刷新后再更改。',
     refreshGroups: '刷新网关群组',
     loadingGroup: '正在加载群组…',
@@ -95,7 +95,7 @@ export const CANONICAL_GROUP_LOCALES = {
   'zh-hant': {
     messagingAccess: '訊息應用程式存取',
     allowMessagingAccess: '允許從我的訊息應用程式存取',
-    messagingAccessScope: '已授權的首頁聊天可以檢視此群組、傳送訊息和取得共享檔案。共享首頁聊天中的所有人都能看到發布的內容。',
+    messagingAccessScope: '已授權的首頁聊天可以檢視此群組、傳送訊息、處理核准請求和取得共享檔案。共享首頁聊天中的所有人都能看到發布的內容。',
     messagingAccessUnconfirmed: '無法確認權限。請重新整理後再變更。',
     refreshGroups: '重新整理閘道群組',
     loadingGroup: '正在載入群組…',
@@ -118,7 +118,7 @@ export const CANONICAL_GROUP_LOCALES = {
   ar: {
     messagingAccess: 'الوصول من تطبيقات المراسلة',
     allowMessagingAccess: 'السماح بالوصول من تطبيقات المراسلة الخاصة بي',
-    messagingAccessScope: 'يمكن لمحادثاتك الرئيسية المصرح لها عرض هذه المجموعة وإرسال الرسائل والحصول على الملفات المشتركة. يستطيع جميع أعضاء المحادثة الرئيسية المشتركة رؤية ما يُنشر فيها.',
+    messagingAccessScope: 'يمكن لمحادثاتك الرئيسية المصرح لها عرض هذه المجموعة وإرسال الرسائل والرد على طلبات الموافقة والحصول على الملفات المشتركة. يستطيع جميع أعضاء المحادثة الرئيسية المشتركة رؤية ما يُنشر فيها.',
     messagingAccessUnconfirmed: 'تعذر تأكيد الإذن. حدّث الحالة قبل إجراء تغيير آخر.',
     refreshGroups: 'تحديث مجموعات البوابة',
     loadingGroup: 'جارٍ تحميل المجموعة…',
@@ -141,7 +141,7 @@ export const CANONICAL_GROUP_LOCALES = {
   ru: {
     messagingAccess: 'Доступ из мессенджеров',
     allowMessagingAccess: 'Разрешить доступ из моих мессенджеров',
-    messagingAccessScope: 'Авторизованные домашние чаты могут просматривать эту группу, отправлять сообщения и получать общие файлы. Все участники общего домашнего чата видят опубликованные в нём данные.',
+    messagingAccessScope: 'Авторизованные домашние чаты могут просматривать эту группу, отправлять сообщения, отвечать на запросы разрешений и получать общие файлы. Все участники общего домашнего чата видят опубликованные в нём данные.',
     messagingAccessUnconfirmed: 'Не удалось подтвердить разрешение. Обновите состояние перед следующим изменением.',
     refreshGroups: 'Обновить группы шлюза',
     loadingGroup: 'Загрузка группы…',

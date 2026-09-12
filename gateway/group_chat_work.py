@@ -36,9 +36,10 @@ def require_command_open(runner):
 
 async def run_group_command_work(runner, action, operation):
     """Keep #98073 workers visible to drain, including a timed-out caller's work."""
-    if action != 'send':
+    if action not in {'send', 'approve', 'deny'}:
         raise ValueError('This Group Chat action is not enabled')
-    require_command_open(runner)
+    if action == 'send':
+        require_command_open(runner)
     track = getattr(runner, '_track_deferred_agent_worker', None)
     if not callable(track):
         raise GroupChatMaintenanceError('Group Chat messaging is unavailable. Try again shortly.')
@@ -55,7 +56,10 @@ async def run_group_command_work(runner, action, operation):
     _cancelled.reset(token)
 
     def invoke():
-        require_command_open(runner)
+        if action == 'send':
+            require_command_open(runner)
+        else:
+            require_read_active()
         return operation()
 
     def completed(done):

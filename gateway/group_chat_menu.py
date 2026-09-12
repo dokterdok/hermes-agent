@@ -73,6 +73,12 @@ class GroupMenu:
         if (kind == 'room' and 'send' in summary.get('control_actions', [])
                 and getattr(type(self.adapter), 'supports_reply_input', False) is True):
             actions.append((text('group_presentation', 'send_message'), ('compose', None)))
+        try:
+            pending = await run_group_read(lambda: self.backend.approvals(room))
+        except Exception:
+            pending = []
+        if pending:
+            actions.append((text('group_files', 'approvals'), ('approvals', 0)))
         if kind == 'room':
             title = format_room_detail(self.backend, room, self.command, native=True, snapshot=summary)
         else:
@@ -167,6 +173,34 @@ class GroupMenu:
                 return error_message(exc)
         return ChoiceProgress(text('group_files', 'getting'), complete)
 
+    async def approvals(self, index=0):
+        from gateway.group_chat_decisions import decision_code
+        from gateway.hosted_room_messaging_presentation import _plain_preview_text
+        room = await self.current_room()
+        pending = await run_group_read(lambda: self.backend.approvals(room))
+        if not pending:
+            return self.page(text('group_files', 'no_approvals'), [(text('group_files', 'view_group'), ('room', room_key(room)))])
+        index = min(max(0, index), len(pending) - 1)
+        item = pending[index]
+        code = decision_code(item)
+        title = '\n\n'.join([text('group_files', 'approval_position', current=index + 1, total=len(pending)),
+            '**' + _plain_display_label(item['member_id']) + '**',
+            _plain_preview_text(item['description'], limit=512), _plain_preview_text(item['command'], limit=512)])
+        actions = [('Allow once', ('decide', (code, 'once'))), ('Deny', ('decide', (code, 'deny')))]
+        if index:
+            actions.append((text('group_files', 'approval_previous'), ('approvals', index - 1)))
+        if index + 1 < len(pending):
+            actions.append((text('group_files', 'approval_next'), ('approvals', index + 1)))
+        actions.append((text('group_files', 'view_group'), ('room', room_key(room))))
+        return self.page(title, actions)
+
+    async def decide(self, code, choice):
+        from gateway.group_chat_decisions import decide_from_chat
+        room = await self.current_room()
+        result = await decide_from_chat(self.runner, self.event, self.backend, room, code, choice, self.stamp)
+        return self.page(result, [(text('group_files', 'approvals'), ('approvals', 0)),
+                                  (text('group_files', 'view_group'), ('room', room_key(room)))])
+
     async def choose(self, chat_id, value):
         try:
             self.check()
@@ -187,6 +221,7 @@ class GroupMenu:
                 'files': lambda: self.files(payload), 'file': lambda: self.download(payload),
                 'file_confirm': lambda: self.download(payload, confirmed=True),
                 'reply': lambda: self.reply(payload),
+                'approvals': lambda: self.approvals(payload), 'decide': lambda: self.decide(*payload),
                 'compose': lambda: begin_compose(self), 'cancel_compose': cancel_compose}
             return await handlers[kind]()
         except (PermissionError, TimeoutError):
@@ -204,7 +239,12 @@ async def show_group_menu(runner, event, backend, command, stamp, *, room=None, 
         page = await menu.groups(rooms=rooms)
     else:
         menu.room = room
-        page = await menu.files(selected or '') if view == 'files' else await menu.room_page(view, selected)
+        if view == 'files':
+            page = await menu.files(selected or '')
+        elif view == 'approvals':
+            page = await menu.approvals()
+        else:
+            page = await menu.room_page(view, selected)
     if not isinstance(page, ChoicePage):
         return False
     from gateway.platforms.base import _thread_metadata_for_event

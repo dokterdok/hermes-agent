@@ -12,10 +12,10 @@ from gateway.hosted_room_file_contract import FileAccessError
 from gateway.hosted_room_messaging import current_room_backend
 from gateway.hosted_room_messaging_presentation import (
     RoomControlError, _plain_display_label, format_room_bots, format_room_detail,
-    format_room_list, resolve_room,
+    format_room_list, resolve_room, room_reference,
 )
 
-_MUTATIONS = frozenset({'stop', 'retry', 'approve', 'deny', 'discard', 'remember', 'forget', 'confirm'})
+_MUTATIONS = frozenset({'stop', 'retry', 'discard', 'remember', 'forget', 'confirm'})
 
 
 def _picker_value(room):
@@ -39,6 +39,7 @@ class GroupChatSlashCommandsMixin:
             f'`{command} files [query]` - Find files across your Group Chats.', '',
             text('group_files', 'help_get', command=f'`{command} 7 file <file-id>`'), '',
             text('group_files', 'help_reply', command=f'`{command} 7 reply`'), '',
+            f'`{command} 7 approvals` - Review requests waiting for your decision.', '',
             f'`{command} 7 send <message>` - Send a message to the group.', '',
             "Replace 7 with the Group Chat's number from the list.",
             'Only rooms shared with this Home are visible. Stop and Retry are not enabled here yet.'])
@@ -101,6 +102,16 @@ class GroupChatSlashCommandsMixin:
                 if kind == 'send':
                     from gateway.group_chat_send import send_group_message
                     return await send_group_message(self, event, backend, room, argument, stamp)
+                if kind in {'approvals', 'approve', 'deny'}:
+                    from gateway.group_chat_decisions import approvals_text, decide_from_chat
+                    if kind == 'approvals':
+                        if argument:
+                            return f'Use `{command} {room_reference(room)} approvals` to review requests.'
+                        if await show_group_menu(self, event, backend, command, stamp, room=room, view='approvals'):
+                            return None
+                        return await approvals_text(self, event, backend, room, command, stamp)
+                    return await decide_from_chat(self, event, backend, room, argument,
+                                                  'deny' if kind == 'deny' else 'once', stamp)
                 if kind in {'files', 'file', 'reply'}:
                     from gateway.group_chat_files import browse_files, get_file, error_message
                     try:

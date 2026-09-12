@@ -156,6 +156,41 @@ class MessagingRoomBackend:
             self.check(room)
             return result
 
+    def approvals(self, room):
+        from gateway.session_group_decisions import pending_decisions
+        with owner_scope(self.authority):
+            selected = self.check(room)
+            if room.get('_room_mode') == 'remote':
+                result = RoomControlHTTPClient(selected).approvals()
+                if result.get('room_id') != room['room_id']:
+                    raise RoomControlClientError('Mismatched approval response')
+                values = result.get('approvals')
+            else:
+                values = pending_decisions(self.service, room['room_id'])
+            if not isinstance(values, list) or len(values) > 8:
+                raise RoomControlClientError('Invalid approval response')
+            from gateway.session_group_decisions import validate_pending_decision
+            result = [validate_pending_decision(item, room) for item in values]
+            self.check(room)
+            return result
+
+    def decide(self, *, room, command_id, decision):
+        from gateway.session_group_decisions import decide
+        with owner_scope(self.authority):
+            selected = self.check(room)
+            if room.get('_room_mode') == 'remote':
+                result = RoomControlHTTPClient(selected).decide(command_id=command_id, decision=decision)
+                if result.get('room_id') != room['room_id'] or result.get('decision') != decision:
+                    raise RoomControlClientError('The decision could not be confirmed')
+                value = result.get('result')
+            else:
+                value = decide(self.authority, room=room, command_id=command_id, params=decision, guard=self.guard)
+            if (not isinstance(value, dict) or value.get('prompt_id') != decision['request_id']
+                    or value.get('status') not in {'resolved', 'already_resolved'}):
+                raise RoomControlClientError('The decision could not be confirmed')
+            self.check(room)
+            return value
+
     def send(self, *, room, command_id, text, actor, write_guard):
         with owner_scope(self.authority):
             self.check(room)

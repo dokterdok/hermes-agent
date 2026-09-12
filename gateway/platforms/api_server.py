@@ -1570,6 +1570,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         routes.extend(api_server_room_artifacts._http_routes(self))
         from gateway.platforms import api_server_room_controls
         routes.extend(api_server_room_controls._http_routes(self))
+        from gateway.platforms import api_server_room_decisions
+        routes.extend(api_server_room_decisions.http_routes(self))
         from gateway.platforms import (
             api_server_room_replicas, api_server_room_work_records, api_server_replica_retirement,
         )

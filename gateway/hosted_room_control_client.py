@@ -47,10 +47,11 @@ class RoomControlHTTPClient:
         *,
         method: str,
         body: Mapping[str, Any] | None = None,
+        route_suffix: str = '',
     ) -> dict[str, Any]:
         room_id = urllib.parse.quote(self.link.room_id, safe="")
         request = urllib.request.Request(
-            f"{self.link.home_url.rstrip('/')}/v1/room-controls/{room_id}",
+            f"{self.link.home_url.rstrip('/')}/v1/room-controls/{room_id}{route_suffix}",
             data=(
                 json.dumps(body, ensure_ascii=True, separators=(",", ":")).encode(
                     "utf-8"
@@ -116,6 +117,12 @@ class RoomControlHTTPClient:
 
     def summary(self) -> dict[str, Any]:
         return self._request(method="GET")
+
+    def approvals(self):
+        return self._request(method='GET', route_suffix='/approvals')
+
+    def decide(self, *, command_id, decision):
+        return self._request(method='POST', route_suffix='/approvals', body={'command_id': command_id, 'decision': decision})
 
     def list_files(self, *, target_profile: str, **options):
         from gateway.hosted_room_control_files_client import list_files
