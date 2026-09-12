@@ -6,6 +6,7 @@ const STORAGE_KEY = 'hermes.desktop.canonicalGroupCreates.v1'
 
 export function normalizeCanonicalGroupName(name: string): string {
   // Match Python str.strip, including its four information-separator characters.
+  // eslint-disable-next-line no-control-regex -- Persisted names follow the server's whitespace rules.
   return name.replace(/^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu, '')
 }
 
