@@ -1,4 +1,4 @@
-import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@hermes/plugin-sdk'
+import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, gatewayActivationEpoch, host } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { resumeCanonicalGroupCreate } from './canonical-group-create'
@@ -14,6 +14,7 @@ export function CanonicalGroupCreateRecovery({ entry, open, onClose, onCreated }
   const [error, setError] = useState('')
   const current = useRef(0)
   const running = useRef<symbol | null>(null)
+  // eslint-disable-next-line no-restricted-syntax -- Invalidate closed/replaced dialog attempts, not a mirror of reactive store values.
   useEffect(() => {
     current.current++
     running.current = null
@@ -23,7 +24,12 @@ export function CanonicalGroupCreateRecovery({ entry, open, onClose, onCreated }
   }, [entry, open])
 
   const resume = async () => {
-    if (running.current) {return}
+    const activationEpoch = gatewayActivationEpoch()
+    const sourceCurrent = () => gatewayActivationEpoch() === activationEpoch
+      && entry.binding.connectionId === host.state.connectionId.get()
+      && entry.binding.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
+
+    if (!open || running.current || !sourceCurrent()) {return}
     const attempt = Symbol('group-create')
     running.current = attempt
     const version = current.current
@@ -31,19 +37,19 @@ export function CanonicalGroupCreateRecovery({ entry, open, onClose, onCreated }
     setError('')
     try {
       const created = await resumeCanonicalGroupCreate(entry.binding, entry.binding.roomId)
-      if (current.current !== version || !open) {return}
+      if (current.current !== version || !open || !sourceCurrent()) {return}
       const key = registerCanonicalGroup(created.binding, created.room)
       onClose()
       onCreated?.(key)
     } catch (cause) {
-      if (current.current === version) {setError(cause instanceof Error ? cause.message : String(cause))}
+      if (current.current === version && sourceCurrent()) {setError(cause instanceof Error ? cause.message : String(cause))}
     } finally {
       if (running.current === attempt) {running.current = null}
       if (current.current === version) {setBusy(false)}
     }
   }
 
-  return <Dialog open={open} onOpenChange={value => { if (!value) {onClose()} }}>
+  return <Dialog onOpenChange={value => { if (!value) {onClose()} }} open={open}>
     <DialogContent className="max-w-md">
       <DialogHeader>
         <DialogTitle>{labels.savedSetup}</DialogTitle>
