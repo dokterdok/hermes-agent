@@ -20,6 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
   DisclosureCaret,
+  gatewayActivationEpoch,
   GlyphSpinner,
   host,
   Input,
@@ -43,6 +44,7 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
+import { groupExecutionMode } from './canonical-group-capabilities'
 import { normalizeCanonicalGroupName, readCanonicalGroupCreate } from './canonical-group-create'
 import type { PreparedCanonicalGroupCreate } from './canonical-group-create'
 import { CanonicalGroupCreateRecovery } from './canonical-group-create-recovery'
@@ -1174,6 +1176,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       } catch (error) {setSetupReadError(error instanceof Error ? error.message : String(error))}
     }
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- This intent counter must advance its latest value to invalidate pending callbacks.
     return () => { openGeneration.current++ }
   }, [open])
 
@@ -1198,7 +1201,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     creating.current = true
     const generation = openGeneration.current
     const route = { ...creationRoute }
-    const sourceCurrent = () => generation === openGeneration.current && groupCreationSourceIsCurrent(route)
+    const activationEpoch = gatewayActivationEpoch()
+
+    const sourceCurrent = () => generation === openGeneration.current && gatewayActivationEpoch() === activationEpoch
+      && groupCreationSourceIsCurrent(route)
 
     try {
     const base = normalizeCanonicalGroupName((name.trim() || placeholder).slice(0, 64))
@@ -1212,12 +1218,14 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
     if (!sourceCurrent()) {return}
 
-    if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) {
+    const mode = groupExecutionMode(capabilities)
+
+    if (mode === 'unavailable') {
       throw new Error(b.canonical.driverUnavailable)
     }
 
-    if (capabilities.driver === true) {
-      const authorityId = capabilities.authority_gateway_id
+    if (mode === 'canonical') {
+      const authorityId = capabilities?.authority_gateway_id
 
       if (typeof authorityId !== 'string' || !authorityId.trim() || authorityId.length > 512) {
         throw new Error(b.canonical.driverUnavailable)
@@ -1233,14 +1241,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       onCreated?.(key)
 
       return
-    }
-
-    const features = capabilities.features
-
-    if (capabilities.driver !== false || capabilities.persistent_process !== false
-      || (features !== undefined && (!Array.isArray(features) || features.some(feature => typeof feature !== 'string')
-        || features.includes('canonical_session_owner')))) {
-      throw new Error('This gateway is not ready to create a group. Reconnect it and try again.')
     }
 
     // Creating a group is always a FRESH room. Without this, re-creating a

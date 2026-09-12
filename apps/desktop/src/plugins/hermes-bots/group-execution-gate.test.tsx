@@ -1,6 +1,6 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { host } from '@hermes/plugin-sdk'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -11,12 +11,14 @@ import { translateBots } from './i18n-test-helper'
 import type { GroupChat } from './types'
 
 const request = vi.hoisted(() => vi.fn())
+const activation = vi.hoisted(() => ({ epoch: 1 }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
   const { en } = await import('@/i18n/en')
 
   return {
     ...sdk,
+    gatewayActivationEpoch: () => activation.epoch,
     host: {
       ...sdk.host,
       requestProfile: request,
@@ -55,6 +57,7 @@ function readOnly() {
 }
 
 beforeEach(() => {
+  activation.epoch = 1
   state.connectionId.set('local')
   state.profile.set('default')
   state.gateway.set('open')
@@ -71,6 +74,10 @@ afterEach(() => {
 })
 
 it.each([
+  { driver: false, persistent_process: false, protocol_version: 1 },
+  { driver: false, persistent_process: false, authority_gateway_id: 'install:hosted' },
+  { driver: false, persistent_process: false, methods: ['groups.create'] },
+  { driver: false, persistent_process: false, protocol_version: 1, authority_gateway_id: 'install:hosted', methods: ['groups.create'] },
   { driver: false, persistent_process: false, features: ['canonical_session_owner'] },
   { driver: true, persistent_process: false, features: ['canonical_session_owner'] },
   { driver: true, persistent_process: false },
@@ -104,7 +111,7 @@ it.each([
   { driver: false, persistent_process: false, features: [] },
   { driver: false, persistent_process: false, features: ['legacy_files'] }
 ])(
-  'preserves the real old legacy workspace for literal false: %j', async capabilities => {
+  'preserves the existing legacy workspace for an explicit minimal nonpersistent reply: %j', async capabilities => {
     request.mockResolvedValue(capabilities)
     await act(async () => { render(<GroupChatWorkspace group="Workshop" members={fixture().members!} />) })
     expect(screen.getByRole('textbox')).toBeTruthy()
@@ -175,4 +182,32 @@ it('does not bind replacement retained history after leaving a legacy workspace'
   expect(screen.getByText('This retained room is no longer available.')).toBeTruthy()
   expect(screen.queryByText('Saved text')).toBeNull()
   expect(screen.queryByRole('textbox')).toBeNull()
+})
+
+it.each(['aba', 'same-route'] as const)('keeps a pre-%s legacy capability read-only after reactivation', async kind => {
+  let finish!: (value: unknown) => void
+  request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    .mockResolvedValue({ driver: false, persistent_process: false, protocol_version: 1 })
+  render(<GroupChatWorkspace group="Workshop" members={fixture().members!} />)
+  await waitFor(() => expect(request).toHaveBeenCalledOnce())
+  await act(async () => {
+    if (kind === 'aba') {activation.epoch++; state.profile.set('other')}
+    activation.epoch++
+    state.profile.set('default')
+    finish({ driver: false, persistent_process: false })
+  })
+  readOnly()
+})
+
+it('keeps retained Files browsable for an unavailable app-managed hosted owner', async () => {
+  const room = fixture()
+  room.log[0].images = [{ kind: 'file', name: 'report.txt', data: 'data:text/plain;base64,eA==' }]
+  $groupChats.set({ Workshop: room })
+  request.mockResolvedValue({ driver: false, persistent_process: false, protocol_version: 1,
+    authority_gateway_id: 'install:hosted', methods: ['groups.create'] })
+  await act(async () => { render(<GroupChatWorkspace group="Workshop" members={room.members!} />) })
+  readOnly()
+  fireEvent.click(screen.getByRole('button', { name: 'Files' }))
+  expect((within(screen.getByRole('dialog')).getByRole('button', { name: 'Download: report.txt' }) as HTMLButtonElement).disabled).toBe(false)
+  expect(request.mock.calls.every(call => call[1] === 'groups.capabilities')).toBe(true)
 })

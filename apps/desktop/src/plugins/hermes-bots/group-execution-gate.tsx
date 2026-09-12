@@ -1,7 +1,8 @@
-import { host, useValue } from '@hermes/plugin-sdk'
+import { gatewayActivationEpoch, host, useValue } from '@hermes/plugin-sdk'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
 
+import { groupExecutionMode } from './canonical-group-capabilities'
 import { canonicalGroupRequest } from './canonical-groups'
 import { $groupChats } from './group-chat'
 import { captureRetainedRoom, currentRetainedRoom } from './retained-group-files'
@@ -10,19 +11,7 @@ import { RetainedGroupWorkspace } from './retained-group-workspace'
 import type { GroupMember } from './types'
 
 export function hasLegacyGroupDriver(value: unknown): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return false
-  }
-
-  const { driver, features, persistent_process } = value as {
-    driver?: unknown; features?: unknown; persistent_process?: unknown
-  }
-
-  // A canonical owner without a ready driver is unavailable, not a legacy owner.
-  return driver === false && persistent_process === false && (features === undefined || (
-    Array.isArray(features) && features.every(feature => typeof feature === 'string') &&
-    !features.includes('canonical_session_owner')
-  ))
+  return groupExecutionMode(value) === 'legacy'
 }
 
 function matchesLegacySource(room: RetainedRoom, members: GroupMember[], connectionId: string): boolean {
@@ -55,10 +44,11 @@ export function GroupExecutionGate({ group, members, onBack, visible = true, chi
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
+  const activationEpoch = gatewayActivationEpoch()
   const [binding] = useState(() => rooms[group] ? captureRetainedRoom(group, rooms[group]) : null)
   const room = binding && currentRetainedRoom(binding)
   const eligible = !!room && !!connectionId && matchesLegacySource(room, members, connectionId)
-  const routeKey = JSON.stringify([connectionId, profile, gateway, visible, eligible])
+  const routeKey = JSON.stringify([connectionId, profile, gateway, visible, eligible, activationEpoch])
   const [legacyRoute, setLegacyRoute] = useState<string | null>(null)
 
   useEffect(() => {
@@ -68,7 +58,7 @@ export function GroupExecutionGate({ group, members, onBack, visible = true, chi
     if (eligible && visible && gateway === 'open' && connectionId && profile) {
       void canonicalGroupRequest<unknown>({ connectionId, profile }, 'groups.capabilities')
         .then(result => {
-          if (!cancelled && hasLegacyGroupDriver(result)) {
+          if (!cancelled && gatewayActivationEpoch() === activationEpoch && hasLegacyGroupDriver(result)) {
             setLegacyRoute(routeKey)
           }
         })
@@ -76,7 +66,7 @@ export function GroupExecutionGate({ group, members, onBack, visible = true, chi
     }
 
     return () => { cancelled = true }
-  }, [connectionId, eligible, gateway, profile, routeKey, visible])
+  }, [activationEpoch, connectionId, eligible, gateway, profile, routeKey, visible])
 
   if (eligible && visible && gateway === 'open' && legacyRoute === routeKey) {
     return children

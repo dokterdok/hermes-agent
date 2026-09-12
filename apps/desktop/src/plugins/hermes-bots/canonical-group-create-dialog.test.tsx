@@ -7,10 +7,11 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { translateBots } from './i18n-test-helper'
 const request = vi.hoisted(() => vi.fn())
 const notify = vi.hoisted(() => vi.fn())
+const activation = vi.hoisted(() => ({ epoch: 1 }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const original = await importOriginal<typeof HermesSdk>()
 
-  return { ...original, usePluginI18n: () => translateBots, host: { ...original.host,
+  return { ...original, gatewayActivationEpoch: () => activation.epoch, usePluginI18n: () => translateBots, host: { ...original.host,
     state: { ...original.host.state, connectionId: original.atom('local'), profile: original.atom('default'), gateway: original.atom('open') },
     connections: vi.fn(async () => []), notify, notifyError: vi.fn(),
     request: vi.fn(async () => ({})), requestProfile: request } }
@@ -51,6 +52,7 @@ const state = {
 
 let entries: Record<string, unknown>
 beforeEach(() => {
+  activation.epoch = 1
   entries = {}
   state.connectionId.set('local')
   state.profile.set('default')
@@ -122,6 +124,10 @@ it('offers the saved setup after failure and reopening, without new selections o
 })
 
 it.each([{ driver: false, features: ['canonical_session_owner'] }, {},
+  { driver: false, persistent_process: false, protocol_version: 1 },
+  { driver: false, persistent_process: false, authority_gateway_id: 'install:hosted' },
+  { driver: false, persistent_process: false, methods: ['groups.create'] },
+  { driver: false, persistent_process: false, protocol_version: 1, authority_gateway_id: 'install:hosted', methods: ['groups.create'] },
   { driver: 'true', authority_gateway_id: 'install:home' },
   { driver: false, persistent_process: true, features: ['room_identity', 'monotonic_log'] }
 ])('never starts a legacy room from canonical unavailability or an invalid capability reply: %j', async capabilities => {
@@ -336,4 +342,43 @@ it('retains offline journal hydration and reveals recovery only after its source
   expect(screen.getByRole('button', { name: 'Continue setup' })).toBeTruthy()
   expect(await readCanonicalGroupCreate(route)).toEqual(saved)
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
+})
+
+function reactivate(kind: 'aba' | 'same-route') {
+  if (kind === 'aba') {activation.epoch++; state.profile.set('other')}
+  activation.epoch++
+  state.profile.set('default')
+}
+
+it.each(['aba', 'same-route'] as const)('does not prepare a journal from a pre-%s capability', async kind => {
+  let finish!: (value: unknown) => void
+  request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    .mockResolvedValue({ driver: true, authority_gateway_id: 'install:home' })
+  render(<CreateGroupChatDialog onClose={() => {}} open roster={roster} />)
+  await chooseGroup()
+  await waitFor(() => expect(request).toHaveBeenCalledOnce())
+  await act(async () => { reactivate(kind); finish({ driver: true, authority_gateway_id: 'install:home' }) })
+  expect(createCanonicalGroup).not.toHaveBeenCalled()
+  expect(entries).toEqual({})
+})
+
+it.each(['aba', 'same-route'] as const)('declines a journaled result after %s reactivation without resubmitting', async kind => {
+  let finish!: () => void
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {return { driver: true, authority_gateway_id: 'install:home' }}
+
+    if (method === 'groups.create') {return new Promise(resolve => { finish = () => resolve({ room: { ...params, authority_gateway_id: 'install:home' } }) })}
+
+    return {}
+  })
+  const created = vi.fn(), closed = vi.fn()
+  render(<CreateGroupChatDialog onClose={closed} onCreated={created} open roster={roster} />)
+  await chooseGroup()
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1))
+  const saved = await readCanonicalGroupCreate(route)
+  await act(async () => { reactivate(kind); finish() })
+  expect(created).not.toHaveBeenCalled()
+  expect(closed).not.toHaveBeenCalled()
+  expect($canonicalGroupBindings.get()).toEqual({})
+  expect(request.mock.calls.filter(call => call[1] === 'groups.create').map(call => call[2].room_id)).toEqual([saved?.binding.roomId])
 })
