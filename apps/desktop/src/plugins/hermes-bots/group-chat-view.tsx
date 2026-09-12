@@ -38,9 +38,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
-import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -99,6 +98,7 @@ import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify } from './labels'
+import { RetainedGroupWorkspace } from './retained-group-workspace'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
@@ -464,39 +464,7 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
 
   if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
 
-  return <GroupExecutionGate {...props} />
-}
-
-function GroupExecutionGate(props: GroupChatWorkspaceProps) {
-  const connectionId = useValue(host.state.connectionId)
-  const profile = useValue(host.state.profile)
-  const [driver, setDriver] = useState<boolean | null>(null)
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    let cancelled = false
-    setDriver(null)
-    void canonicalGroupRequest<{ driver: boolean }>(captureCanonicalGroupRoute(), 'groups.capabilities')
-      .then(result => { if (!cancelled) {setDriver(result.driver === true)} })
-      .catch(e => { if (!cancelled) {setError(String(e))} })
-
-    return () => { cancelled = true }
-  }, [connectionId, profile])
-
-  if (driver === false) {return <LegacyGroupChatWorkspace {...props} />}
-
-  return <div className="grid gap-3 p-3">
-    <h2>{props.group}</h2>
-    <p>{driver ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.' : 'Checking group driver…'}</p>
-    {error && <p role="alert">{error}</p>}
-    <Button disabled={!driver || busy} onClick={() => {
-      setBusy(true)
-      const route = captureCanonicalGroupRoute()
-      void createCanonicalGroup(route, props.group, props.members)
-        .then(({ room }) => openGroupChat(registerCanonicalGroup(route, room)))
-        .catch(e => setError(String(e))).finally(() => setBusy(false))
-    }}>Start gateway group</Button>
-  </div>
+  return <RetainedGroupWorkspace group={props.group} onBack={props.onBack} visible={props.visible} />
 }
 
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
