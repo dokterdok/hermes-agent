@@ -102,6 +102,8 @@ async def test_peer_tool_run_history_and_home_copy_precede_ack(api, owner, tmp_p
                 bindings.append(binding)
                 shared = json.loads(await asyncio.to_thread(registry.dispatch, 'share_group_file', {'path': str(output)}))
                 assert shared.get('ok'), shared
+                from gateway.session_results import execution_result
+                execution_result.get()['result'] = {'final_response': 'Report attached.', 'completed': True}
                 return 'Report attached.'
             owner.runner._handle_message = handle
             ref = SessionRef(owner.profile_id, row['target_session_id'])
