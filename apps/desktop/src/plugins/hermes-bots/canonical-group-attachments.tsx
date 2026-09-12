@@ -86,7 +86,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
  if (file) {void upload(file);} e.currentTarget.value = '' }} ref={input} type="file" />
     <Button disabled={disabled || busy} onClick={() => input.current?.click()} type="button">{labels.attachFiles}</Button></>}
     {attachments.map(a => <span className="flex items-center gap-1" key={a.attachment_id ?? a.name}>
-      <span>{a.name}</span><Button disabled={disabled || busy} onClick={() => void download(a)} type="button">{labels.download}</Button>
+      <span>{a.name}</span><Button disabled={disabled || busy || !a.attachment_id || !a.event_id} onClick={() => void download(a)} type="button">{labels.download}</Button>
       {!readOnly && <Button disabled={disabled || busy} onClick={() => onChange?.(attachments.filter(item => item !== a))} type="button">{labels.removeAttachment}</Button>}
     </span>)}
     {error && <span role="alert">{labels.uploadFailed}: {error}</span>}
