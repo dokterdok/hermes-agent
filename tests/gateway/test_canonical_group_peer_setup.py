@@ -52,6 +52,8 @@ async def test_native_invite_and_exact_revoke_preserve_profile_and_signed_horizo
     params = dict(room_id='remote-room', home_install_id='remote-home', authority_gateway_id='remote-home',
                   authority_epoch=1, member_id='member', ttl_seconds=3600, status_ttl_seconds=7200)
     capabilities = await dispatch_group_control(connection, 'groups.capabilities', {})
+    assert 'canonical_session_owner' in capabilities['features']
+    assert capabilities['driver'] is False
     assert capabilities['room_link']['profile'] == profile
     assert not capabilities['room_link']['enabled']
     first = await dispatch_group_control(connection, 'groups.peer.invite', {**params, 'grant_id': 'first'})

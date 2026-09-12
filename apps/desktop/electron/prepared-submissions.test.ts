@@ -23,3 +23,20 @@ test('acknowledged journal mutations survive reopening with exact payload and or
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('separate windows cannot replace or retire each other\'s prepared creation', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prepared-claim-'))
+  try {
+    const first = preparedJournal(dir, 'http://same-origin')
+    const second = preparedJournal(dir, 'http://same-origin')
+    expect(first.compareAndSet('group', null, { id: 'first' })).toBe(true)
+    expect(second.compareAndSet('group', null, { id: 'second' })).toBe(false)
+    expect(second.read().group).toEqual({ id: 'first' })
+    expect(first.compareAndSet('group', { id: 'first' }, null)).toBe(true)
+    expect(second.compareAndSet('group', null, { id: 'second' })).toBe(true)
+    expect(first.compareAndSet('group', { id: 'first' }, null)).toBe(false)
+    expect(first.read().group).toEqual({ id: 'second' })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

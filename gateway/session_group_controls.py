@@ -137,7 +137,7 @@ def _group(authority, actor, home, method, params):
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
                 'room_link': peer_capabilities(authority),
-                'features': ['room_identity', 'monotonic_log', 'replayable_disband',
+                'features': ['canonical_session_owner', 'room_identity', 'monotonic_log', 'replayable_disband',
                              'peer_route_grant_fingerprint', 'peer_grant_renewal'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT}
 

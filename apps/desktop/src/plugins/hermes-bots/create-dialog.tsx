@@ -44,6 +44,10 @@ import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { registerCanonicalGroup } from './canonical-group-registry'
+import { readCanonicalGroupCreate } from './canonical-group-create'
+import type { PreparedCanonicalGroupCreate } from './canonical-group-create'
+import { CanonicalGroupCreateRecovery } from './canonical-group-create-recovery'
+import type { CanonicalGroupRoute } from './canonical-groups'
 import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
@@ -1134,15 +1138,32 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
   const [image, setImage] = useState<null | string>(null)
+  const [creationRoute, setCreationRoute] = useState<CanonicalGroupRoute | null>(null)
+  const [savedCreate, setSavedCreate] = useState<PreparedCanonicalGroupCreate | null | undefined>(undefined)
+  const [setupReadError, setSetupReadError] = useState('')
+  const openGeneration = useRef(0)
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
   useEffect(() => {
+    const generation = ++openGeneration.current
     if (open) {
       setQuery('')
       setChecked({})
       setName('')
       setImage(null)
+      setSavedCreate(undefined)
+      setSetupReadError('')
+      try {
+        const route = captureCanonicalGroupRoute()
+        setCreationRoute(route)
+        void readCanonicalGroupCreate(route).then(entry => {
+          if (generation === openGeneration.current) {setSavedCreate(entry ?? null)}
+        }).catch(error => {
+          if (generation === openGeneration.current) {setSetupReadError(error instanceof Error ? error.message : String(error))}
+        })
+      } catch (error) {setSetupReadError(error instanceof Error ? error.message : String(error))}
     }
+    return () => { openGeneration.current++ }
   }, [open])
 
   // An outage placeholder preserves one selected owner's identity in the
@@ -1156,13 +1177,14 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : b.group.nameLabel
 
-  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
+  const canCreate = savedCreate === null && !setupReadError && selected.length >= 2 && Boolean(name.trim() || selected.length)
 
   const creating = useRef(false)
 
   const create = async () => {
-    if (creating.current) {return}
+    if (creating.current || !canCreate || !creationRoute) {return}
     creating.current = true
+    const generation = openGeneration.current
 
     try {
     const base = (name.trim() || placeholder).slice(0, 64)
@@ -1171,16 +1193,23 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       return
     }
 
-    const route = captureCanonicalGroupRoute()
-    const capabilities = await canonicalGroupRequest<{ driver: boolean }>(route, 'groups.capabilities')
+    const route = { ...creationRoute }
+    const frozenMembers = durableGroupChatMembers(selected)
+    const capabilities = await canonicalGroupRequest<{ driver: boolean; features?: string[] }>(route, 'groups.capabilities')
+    if (generation !== openGeneration.current) {return}
 
     if (capabilities.driver) {
-      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+      const created = await createCanonicalGroup(route, base, frozenMembers)
+      if (generation !== openGeneration.current) {return}
       const key = registerCanonicalGroup(route, created.room)
       onClose()
       onCreated?.(key)
 
       return
+    }
+
+    if (capabilities.driver !== false || capabilities.features?.includes('canonical_session_owner')) {
+      throw new Error('This gateway is not ready to create a group. Reconnect it and try again.')
     }
 
     // Creating a group is always a FRESH room. Without this, re-creating a
@@ -1209,7 +1238,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     // Persist every machine identity, including today's active source. That
     // member becomes remote after a source switch and cannot rely on the new
     // gateway's name-keyed bot metadata to remain seated in this room.
-    const roomMembers = durableGroupChatMembers(selected)
+    const roomMembers = frozenMembers
     updateGroupChat(groupName, (room: GroupChatRoom) => {
       room.members = roomMembers
       room.roomId = roomId
@@ -1228,8 +1257,18 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     onCreated?.(groupName)
     } catch (error) {
       host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+      if (creationRoute && generation === openGeneration.current) {
+        try {
+          const saved = await readCanonicalGroupCreate(creationRoute)
+          if (generation === openGeneration.current) {setSavedCreate(saved ?? null)}
+        } catch (readError) {
+          if (generation === openGeneration.current) {setSetupReadError(readError instanceof Error ? readError.message : String(readError))}
+        }
+      }
     } finally { creating.current = false }
   }
+
+  if (savedCreate) {return <CanonicalGroupCreateRecovery entry={savedCreate} open={open} onClose={onClose} onCreated={onCreated} />}
 
   return (
     <Dialog
@@ -1245,6 +1284,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogTitle>{b.group.newTitle}</DialogTitle>
           <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
+        {setupReadError && <p role="alert">{setupReadError}</p>}
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}

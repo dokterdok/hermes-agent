@@ -1,4 +1,7 @@
 export interface CanonicalGroupMessages {
+  continueSetup: string
+  savedSetup: string
+  savedSetupDetail: string
   messagingAccess: string
   allowMessagingAccess: string
   messagingAccessScope: string
@@ -24,6 +27,9 @@ export interface CanonicalGroupMessages {
 
 export const CANONICAL_GROUP_LOCALES = {
   en: {
+    continueSetup: 'Continue setup',
+    savedSetup: 'Finish setting up this Group Chat',
+    savedSetupDetail: 'The previous setup is not confirmed. Continue with the same Bots and group ID; no second group will be created. Closing this dialog keeps the saved setup.',
     messagingAccess: 'Messaging access',
     allowMessagingAccess: 'Allow access from my messaging apps',
     messagingAccessScope: 'Your authorized Home chats can view this group, send messages, respond to approval requests and get shared files. Everyone in a shared Home chat can see what is posted there.',
@@ -47,6 +53,9 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Upload failed'
   },
   ja: {
+    continueSetup: '設定を続ける',
+    savedSetup: 'このグループチャットの設定を完了',
+    savedSetupDetail: '前回の設定は未確認です。同じボットとグループIDで続行します。別のグループは作成しません。この画面を閉じても設定は保持されます。',
     messagingAccess: 'メッセージアプリからのアクセス',
     allowMessagingAccess: '自分のメッセージアプリからのアクセスを許可',
     messagingAccessScope: '許可されたホームチャットで、このグループの閲覧、メッセージ送信、承認リクエストへの応答、共有ファイルの取得ができます。共有ホームチャットへの投稿は参加者全員に表示されます。',
@@ -70,6 +79,9 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'アップロードに失敗しました'
   },
   zh: {
+    continueSetup: '继续设置',
+    savedSetup: '完成此群聊的设置',
+    savedSetupDetail: '上次设置尚未确认。将使用相同的机器人和群组ID继续，不会再创建一个群组。关闭此窗口仍会保留已保存的设置。',
     messagingAccess: '消息应用访问',
     allowMessagingAccess: '允许从我的消息应用访问',
     messagingAccessScope: '已授权的主页聊天可以查看此群组、发送消息、处理审批请求并获取共享文件。共享主页聊天中的所有人都能看到发布的内容。',
@@ -93,6 +105,9 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上传失败'
   },
   'zh-hant': {
+    continueSetup: '繼續設定',
+    savedSetup: '完成此群組聊天的設定',
+    savedSetupDetail: '上次設定尚未確認。將使用相同的機器人和群組ID繼續，不會另外建立群組。關閉此視窗仍會保留已儲存的設定。',
     messagingAccess: '訊息應用程式存取',
     allowMessagingAccess: '允許從我的訊息應用程式存取',
     messagingAccessScope: '已授權的首頁聊天可以檢視此群組、傳送訊息、處理核准請求和取得共享檔案。共享首頁聊天中的所有人都能看到發布的內容。',
@@ -116,6 +131,9 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上傳失敗'
   },
   ar: {
+    continueSetup: 'متابعة الإعداد',
+    savedSetup: 'إكمال إعداد محادثة المجموعة هذه',
+    savedSetupDetail: 'لم يتم تأكيد الإعداد السابق. ستتم المتابعة بالبوتات ومعرّف المجموعة نفسها دون إنشاء مجموعة ثانية. إغلاق هذه النافذة يحتفظ بالإعداد المحفوظ.',
     messagingAccess: 'الوصول من تطبيقات المراسلة',
     allowMessagingAccess: 'السماح بالوصول من تطبيقات المراسلة الخاصة بي',
     messagingAccessScope: 'يمكن لمحادثاتك الرئيسية المصرح لها عرض هذه المجموعة وإرسال الرسائل والرد على طلبات الموافقة والحصول على الملفات المشتركة. يستطيع جميع أعضاء المحادثة الرئيسية المشتركة رؤية ما يُنشر فيها.',
@@ -139,6 +157,9 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'فشل الرفع'
   },
   ru: {
+    continueSetup: 'Продолжить настройку',
+    savedSetup: 'Завершить настройку этой группы',
+    savedSetupDetail: 'Предыдущая настройка не подтверждена. Продолжим с теми же ботами и идентификатором группы, не создавая вторую группу. Закрытие окна сохраняет настройку.',
     messagingAccess: 'Доступ из мессенджеров',
     allowMessagingAccess: 'Разрешить доступ из моих мессенджеров',
     messagingAccessScope: 'Авторизованные домашние чаты могут просматривать эту группу, отправлять сообщения, отвечать на запросы разрешений и получать общие файлы. Все участники общего домашнего чата видят опубликованные в нём данные.',

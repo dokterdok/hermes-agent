@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const host = vi.hoisted(() => ({
   requestProfile: vi.fn(),
@@ -9,11 +9,22 @@ const host = vi.hoisted(() => ({
 vi.mock('@hermes/plugin-sdk', () => ({ host }))
 
 import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
+const originalDesktop = window.hermesDesktop
+afterEach(() => { window.hermesDesktop = originalDesktop })
 
 beforeEach(() => {
   vi.resetAllMocks()
   host.state.connectionId.get.mockReturnValue('source-a')
   host.state.profile.get.mockReturnValue('default')
+  const journal: Record<string, unknown> = {}
+  window.hermesDesktop = { preparedSubmissions: {
+    read: async () => JSON.stringify(journal), update: async () => {},
+    compareAndSet: async (key: string, expected: string | null, entry: string | null) => {
+      if (JSON.stringify(journal[key] ?? null) !== (expected ?? 'null')) {return false}
+      if (entry === null) {delete journal[key]} else {journal[key] = JSON.parse(entry)}
+      return true
+    }
+  } } as unknown as typeof window.hermesDesktop
 })
 
 it('pins discovery and every subsequent request to its captured authority, including empty filtered pages', async () => {
@@ -53,7 +64,8 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
   ]
 
   host.requestProfile.mockImplementation(async (_route, method, params) => method === 'groups.create'
-    ? { room: { room_id: params.room_id, name: params.name, members: params.members } } : { accepted: true })
+    ? { room: { room_id: params.room_id, authority_gateway_id: 'install:home', name: params.name, members: params.members } }
+    : { driver: true, authority_gateway_id: 'install:home' })
   const { binding, room } = await createCanonicalGroup(route, 'Team', members)
   expect(binding).toEqual({ ...route, roomId: room.room_id })
   expect(room.room_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
@@ -69,7 +81,7 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
     [members[0]], [members[0], members[0]]
   ]) {await expect(createCanonicalGroup(route, 'Team', invalid)).rejects.toThrow()}
 
-  expect(host.requestProfile).toHaveBeenCalledTimes(1)
+  expect(host.requestProfile.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
   host.requestProfile.mockClear()
   const identity = { member_id: 'alice', task_id: 'task:original', execution_generation: 7 }
 

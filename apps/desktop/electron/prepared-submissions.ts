@@ -13,11 +13,19 @@ export function preparedJournal(userData: string, origin: string) {
 
   const read = (): Record<string, unknown> => {
     try {
-      return JSON.parse(fs.readFileSync(file, 'utf8'))
+      const value: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {throw new Error('Invalid prepared submission journal')}
+      return value as Record<string, unknown>
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {return {}}
       throw error
     }
+  }
+
+  const write = (journal: Record<string, unknown>) => {
+    fs.mkdirSync(userData, { recursive: true })
+    // Atomic replacement is process-crash durable, not a power-loss guarantee.
+    writeSecretFileAtomic(file, JSON.stringify(journal), { encoding: 'utf8' })
   }
 
   return {
@@ -28,11 +36,16 @@ export function preparedJournal(userData: string, origin: string) {
       if (entry === null) {delete journal[key]}
       else {Object.defineProperty(journal, key, { value: entry, enumerable: true, configurable: true })}
 
-      fs.mkdirSync(userData, { recursive: true })
-      // Same private atomic replacement used for native connection settings.
-      // Return only after write+rename: process termination cannot lose an ACKed
-      // entry to Chromium's deferred localStorage commit. Not a power-loss promise.
-      writeSecretFileAtomic(file, JSON.stringify(journal), { encoding: 'utf8' })
+      write(journal)
+    },
+    compareAndSet(key: string, expected: unknown | null, entry: unknown | null): boolean {
+      const journal = read()
+      const current = Object.hasOwn(journal, key) ? journal[key] : null
+      if (JSON.stringify(current) !== JSON.stringify(expected)) {return false}
+      if (entry === null) {delete journal[key]}
+      else {Object.defineProperty(journal, key, { value: entry, enumerable: true, configurable: true })}
+      write(journal)
+      return true
     }
   }
 }
@@ -48,5 +61,11 @@ export function registerPreparedSubmissions() {
     }
 
     store(event).update(key, entry === null ? null : JSON.parse(entry))
+  })
+  ipcMain.handle('hermes:prepared-submissions:compare-and-set', (event, key: string, expected: string | null, entry: string | null) => {
+    if (typeof key !== 'string' || key.length > 2048 || [expected, entry].some(value => value !== null && (typeof value !== 'string' || value.length > 1024 * 1024))) {
+      throw new Error('Invalid prepared submission comparison')
+    }
+    return store(event).compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
   })
 }
