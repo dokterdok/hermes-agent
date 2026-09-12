@@ -1,5 +1,6 @@
-/** #104199's bounded, window-local classic snapshot, without producer RPCs. */
+/** #104199's bounded classic snapshot; explicit reference reads use the original owner. */
 import { downloadCanonicalAttachment } from './canonical-attachment-download'
+import { classicReference, ClassicReferenceError, saveClassicReference } from './classic-reference-read'
 import { $groupChats, GROUP_CHAT_HISTORY_LIMIT } from './group-chat'
 import { GROUP_FILES_MAX_PAGE_SIZE, GROUP_FILES_MAX_QUERY_LENGTH, GROUP_FILES_PAGE_SIZE } from './group-files-parser'
 import type { AttachmentKind, GroupChat, GroupMessage, GroupMessageAuthor } from './types'
@@ -218,7 +219,7 @@ export function retainedFileItem(
     at: entry.at,
     mime: data?.mime ?? attachment.mime ?? null,
     size: data?.size ?? attachment.size ?? null,
-    available: data !== null && scopeMatches,
+    available: scopeMatches && (data !== null || classicReference(attachment) !== null),
     current: () => {
       const room = currentRetainedRoom(binding)
 
@@ -328,6 +329,17 @@ export async function saveRetainedFile(item: RetainedFileItem, signal: AbortSign
   const data = localData(item.attachment)
 
   if (!data) {
+    if (classicReference(item.attachment)) {
+      try {
+        await saveClassicReference(item.attachment, item.current, signal)
+      } catch (error) {
+        if (error instanceof ClassicReferenceError) {throw new RetainedFileError(error.kind)}
+        throw error
+      }
+
+      return
+    }
+
     throw new RetainedFileError('unavailable')
   }
 

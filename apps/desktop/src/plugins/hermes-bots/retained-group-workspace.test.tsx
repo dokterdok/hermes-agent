@@ -208,3 +208,71 @@ it('opens a retained transcript and Files with a valid 5 MB attachment', () => {
   expect((download as HTMLButtonElement).disabled).toBe(false)
   expect(request).not.toHaveBeenCalled()
 })
+
+function referenceFixture() {
+  const room = fixture()
+
+  const ref = {
+    group: room.roomId!, exportId: `ce_${'1'.repeat(64)}`, artifactId: `rart_${'2'.repeat(32)}`,
+    generation: 3, installation: 'install:original', session: 'original-session',
+    source: { name: 'default', connectionId: 'original-source' },
+    sha256: 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
+    recipients: [{ installation: 'install:original', profile: 'default' }]
+  }
+
+  room.log[0].images = [{ name: 'exported.txt', kind: 'file', mime: 'text/plain', size: 1, classicExport: ref }]
+
+  const response = {
+    session_id: ref.session, installation: ref.installation, export_id: ref.exportId, group_id: ref.group,
+    generation: ref.generation, state: 'published', recipients: ref.recipients,
+    item: { artifact_id: ref.artifactId, name: 'exported.txt', kind: 'file', mime: 'text/plain', size: 1, sha256: ref.sha256 },
+    content_base64: 'YQ=='
+  }
+
+  return { room, response }
+}
+
+it('downloads a producer reference from the actual retained Files row without any session lifecycle call', async () => {
+  const { room, response } = referenceFixture()
+  install(room)
+  request.mockResolvedValue(response)
+  render(<GroupChatWorkspace group="Workshop" members={[]} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Files' }))
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Download: exported.txt' }))
+  await waitFor(() => expect(observed.downloads).toHaveLength(1))
+  await expectDownloaded(observed, new Uint8Array([97]), 'exported.txt', 'text/plain')
+  expect(request).toHaveBeenCalledOnce()
+  expect(request.mock.calls[0][0].connectionId).toBe('original-source')
+  expect(request.mock.calls[0][1]).toBe('session.export.read')
+  expect(room.log[0].images![0]).not.toHaveProperty('data')
+  expect(screen.queryByRole('textbox', { name: /message/i })).toBeNull()
+})
+
+it('shows a clear unavailable result when the original producer cannot authorize the reference', async () => {
+  const { room } = referenceFixture()
+  install(room)
+  request.mockRejectedValue(new Error('classic_export_unavailable'))
+  render(<GroupChatWorkspace group="Workshop" members={[]} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Files' }))
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Download: exported.txt' }))
+  await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('alert').textContent).toBe('This file is no longer available.'))
+  expect(observed.downloads).toHaveLength(0)
+  expect(request).toHaveBeenCalledOnce()
+})
+
+it.each(['unmount', 'hidden'] as const)('does not initiate a reference download after %s', async change => {
+  const { room, response } = referenceFixture()
+  install(room)
+  let resolve!: (value: unknown) => void
+  request.mockImplementation(() => new Promise(done => { resolve = done }))
+  const view = render(<GroupChatWorkspace group="Workshop" members={[]} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Files' }))
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Download: exported.txt' }))
+  await waitFor(() => expect(request).toHaveBeenCalledOnce())
+
+  if (change === 'unmount') {view.unmount()}
+  else {view.rerender(<GroupChatWorkspace group="Workshop" members={[]} visible={false} />)}
+
+  await act(async () => { resolve(response) })
+  expect(observed.downloads).toHaveLength(0)
+})

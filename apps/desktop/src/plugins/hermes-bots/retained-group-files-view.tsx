@@ -1,4 +1,4 @@
-/** Local-only counterpart to the existing canonical Files dialog. */
+/** Retained history and exact original-producer references share one Files dialog. */
 import {
   Button,
   Codicon,
@@ -16,6 +16,7 @@ import { useCanonicalFilesLabels } from './canonical-files-labels'
 import { GROUP_FILES_MAX_QUERY_LENGTH } from './group-files-parser'
 import {
   createRetainedFilesLoader,
+  RetainedFileError,
   type RetainedFileItem,
   type RetainedRoomBinding,
   saveRetainedFile
@@ -30,7 +31,7 @@ export function RetainedFileRow({ item, signal }: { item: RetainedFileItem; sign
   const b = useCanonicalFilesLabels()
   const retained = useRetainedGroupLabels()
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(false)
+  const [error, setError] = useState<'unavailable' | 'verification' | null>(null)
   const pending = useRef(false)
   const available = item.available && item.current() && !signal.aborted
 
@@ -41,13 +42,13 @@ export function RetainedFileRow({ item, signal }: { item: RetainedFileItem; sign
 
     pending.current = true
     setBusy(true)
-    setError(false)
+    setError(null)
 
     try {
       await saveRetainedFile(item, signal)
-    } catch {
+    } catch (cause) {
       if (!signal.aborted) {
-        setError(true)
+        setError(cause instanceof RetainedFileError && cause.kind !== 'verification' ? 'unavailable' : 'verification')
       }
     } finally {
       pending.current = false
@@ -92,7 +93,7 @@ export function RetainedFileRow({ item, signal }: { item: RetainedFileItem; sign
       {item.available && !item.current() && <p className="text-xs text-(--ui-text-tertiary)">{b.fileGone}</p>}
       {error && (
         <p className="text-xs text-(--ui-text-secondary)" role="alert">
-          {b.fileVerificationFailed}
+          {error === 'unavailable' ? b.fileGone : b.fileVerificationFailed}
         </p>
       )}
     </div>
