@@ -1,6 +1,6 @@
 """Strict passive replay-page decoding; callers still own admission and storage.
 
-Extracted from #104601 without installing its replica writer. A valid page is
+Extracted from #104601 and consumed by the passive replica writer. A valid page is
 not proof of enrolled lineage, authorized ingress, complete history or safety.
 """
 

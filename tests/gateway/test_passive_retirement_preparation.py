@@ -8,7 +8,7 @@ import pytest
 
 from gateway import hosted_room_passive_lineage as lineage
 from gateway import hosted_room_passive_protocol as protocol
-from gateway import hosted_room_passive_retirement as retirement
+from gateway import hosted_room_replica_retirement as retirement
 
 
 def enrollment():

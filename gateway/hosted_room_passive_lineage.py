@@ -171,7 +171,7 @@ def ensure_descriptor_capacity(conn, encoded):
         count += row[0]
         size += row[1]
     if count >= MAX_STORED_DESCRIPTORS or size + len(encoded.encode("utf-8")) > MAX_STORED_DESCRIPTOR_BYTES:
-        from gateway.hosted_room_passive_retirement import RetirementCapacityError
+        from gateway.hosted_room_replica_retirement import RetirementCapacityError
         raise RetirementCapacityError("retained lineage descriptor capacity exhausted")
 
 

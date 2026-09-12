@@ -10,7 +10,7 @@ from gateway import hosted_room_passive_lineage as lineage
 from gateway import hosted_room_work_lineage as provenance
 from gateway import hosted_room_work_records as work
 from gateway import hosted_rooms as rooms
-from gateway.hosted_room_passive_retirement import RetirementCapacityError
+from gateway.hosted_room_replica_retirement import RetirementCapacityError
 
 
 def source(path):
