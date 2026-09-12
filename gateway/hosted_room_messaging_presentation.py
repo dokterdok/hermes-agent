@@ -285,7 +285,7 @@ def recent_heading(events, *, desktop, now):
 
 def format_room_list(backend, rooms, command='/group', page=1):
     if not rooms:
-        return '👥 **No shared Group Chats**\n\nOpen Hermes Desktop to check your groups.'
+        return text('empty_groups')
     count = (len(rooms) + MAX_ROOM_CHOICES - 1) // MAX_ROOM_CHOICES
     if not 1 <= page <= count:
         raise RoomControlError(f'There are only {count} Group Chat pages.')

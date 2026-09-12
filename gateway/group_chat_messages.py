@@ -3,6 +3,7 @@ from agent.i18n import t
 
 _MESSAGES = {
     "group_presentation": {
+        "empty_groups": "No Group Chats are available here.\n\nIn Hermes Desktop, create or open a group and allow Messaging access.",
         "action": "{label}: {command}",
         "actions": "Actions",
         "help": "Help",

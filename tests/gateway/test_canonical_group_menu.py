@@ -53,6 +53,23 @@ def choice(page, label):
 
 
 @pytest.mark.asyncio
+async def test_empty_group_navigation_matches_typed_access_guidance_without_disclosure(view):
+    adapter = native(view)
+    event = replace(view.event, text='/group', message_id='open-empty-after-access-change')
+    assert await view.runner._handle_group_command(event) is None
+    callback = adapter.picker['on_choice_selected']
+    room = await callback('42', adapter.picker['choices'][0]['value'])
+    view.consent(False)
+    native_empty = await callback('42', choice(room, '‹ Group Chats'))
+    typed_empty = await view.runner._handle_group_command(replace(event, text='/group list'))
+    assert isinstance(native_empty, str) and native_empty == typed_empty
+    assert 'Group Chats' in native_empty and 'Messaging access' in native_empty
+    assert 'files' not in native_empty.casefold()
+    assert 'home secret' not in native_empty and 'worker secret' not in native_empty
+    assert view.receiving.db._read_all('SELECT * FROM session_admissions') == []
+
+
+@pytest.mark.asyncio
 async def test_menu_back_navigation_and_native_reply_need_no_reentered_command(view):
     adapter = native(view)
     event = replace(view.event, text='/group', message_id='open')

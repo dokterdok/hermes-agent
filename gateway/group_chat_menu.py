@@ -81,7 +81,7 @@ class GroupMenu:
         if rooms is None:
             rooms = await self.current_room()
         if not rooms:
-            return text('group_files', 'all_empty')
+            return text('group_presentation', 'empty_groups')
         count = (len(rooms) + 7) // 8
         if not 0 <= index < count:
             return text('group_files', 'expired')
