@@ -10,6 +10,7 @@ from gateway.session_group_peers import (
     GROUP_PEER_FIELDS, GROUP_PEER_METHODS, dispatch_group_peer, peer_capabilities,
 )
 from gateway.session_group_replication import REPLICATION_FIELDS, REPLICATION_METHODS, dispatch_replication
+from gateway.session_group_recovery import RECOVERY_FIELDS, RECOVERY_METHODS, dispatch_recovery
 
 
 GROUP_METHODS = {
@@ -26,6 +27,7 @@ GROUP_METHODS = {
     **CONTROL_SETUP_METHODS,
     **GROUP_PEER_METHODS,
     **REPLICATION_METHODS,
+    **RECOVERY_METHODS,
     'groups.stop': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
@@ -45,6 +47,7 @@ _FIELDS = {
     **CONTROL_SETUP_FIELDS,
     **GROUP_PEER_FIELDS,
     **REPLICATION_FIELDS,
+    **RECOVERY_FIELDS,
     'groups.stop': {'room_id', 'cancel_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
@@ -78,6 +81,8 @@ async def dispatch_group_control(connection, method, params):
         from gateway.run import _profile_runtime_scope
         from gateway.hosted_rooms import HostedRoomError
         with _profile_runtime_scope(home):
+            if method in RECOVERY_METHODS:
+                return dispatch_recovery(connection, method, supplied)
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
