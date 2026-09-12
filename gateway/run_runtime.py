@@ -92,6 +92,8 @@ async def recover_gateway_native_sessions(runner):
         return {}
     from gateway.session_hosted_service import ensure_hosted_service
     await ensure_hosted_service(runner)
+    from gateway.session_passive_replication import prepare_passive_publishers
+    await prepare_passive_publishers(runner)
     from gateway.session_local_recovery import recover_local_sessions
     logger = logging.getLogger(__name__)
     results = {}
@@ -118,6 +120,8 @@ def publish_gateway_runtime_ready(runner):
         'session-authority-v1', 'durable-admission-v1', 'event-replay-v1'])
     from gateway.session_hosted_service import start_ready_hosted_services
     start_ready_hosted_services(runner)
+    from gateway.session_passive_replication import start_passive_publishers
+    start_passive_publishers(runner)
 
 
 async def wait_gateway_runtime(runner):
@@ -145,6 +149,9 @@ async def drain_gateway_runtime(runner):
         return
     runner._draining = True
     descriptor.update(state='draining', capabilities=[])
+    from gateway.session_passive_replication import stop_passive_publishers
+    if not await stop_passive_publishers(runner):
+        raise RuntimeError('passive publishers have not drained')
     from gateway.session_hosted_service import stop_hosted_service
     await stop_hosted_service(runner)
     # Withdraw the public ingress callback without disconnecting egress needed

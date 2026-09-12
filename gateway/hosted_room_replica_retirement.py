@@ -200,7 +200,11 @@ def _initialize(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _transaction(db_path: Path | str):
+def _transaction(db_path: Path | str, *, _conn=None):
+    if _conn is not None:
+        _initialize(_conn)
+        yield _conn
+        return
     with rooms._transaction(db_path, immediate=True) as conn:
         _initialize(conn)
         yield conn
@@ -216,6 +220,7 @@ def prepare_home_enrollment(
     secret: bytes,
     enrollment_id: str | None = None,
     replace_enrollment_id: str | None = None,
+    _conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Reserve a cleanup obligation before owner-authorized target enrollment."""
     room_id = _identifier(room_id, "room_id")
@@ -230,7 +235,7 @@ def prepare_home_enrollment(
         enrollment_id = _identifier(enrollment_id, "enrollment_id")
     if replace_enrollment_id is not None and enrollment_id is None:
         raise RetirementError("replacement requires a new idempotent enrollment_id")
-    with _transaction(db_path) as conn:
+    with _transaction(db_path, _conn=_conn) as conn:
         room = conn.execute(
             "SELECT * FROM hosted_rooms WHERE room_id=?", (room_id,)
         ).fetchone()
