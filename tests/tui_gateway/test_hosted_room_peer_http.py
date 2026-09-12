@@ -835,6 +835,9 @@ def test_peer_approval_sends_the_exact_request_id(peer_server, tmp_path):
         receipt_db_path=tmp_path / "state.db",
     )
     client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    FakePeer.runs['run-1'].update(execution_generation=11, pending_controls=[{
+        'kind': 'approval', 'prompt_id': 'approval-exact-1',
+        'execution_generation': 11, 'choices': ['once', 'deny']}])
 
     result = client.approve_receipt(
         task_id="task-1",
@@ -846,7 +849,7 @@ def test_peer_approval_sends_the_exact_request_id(peer_server, tmp_path):
 
     assert result["resolved"] == 1
     assert FakePeer.approvals == [
-        {"choice": "once", "request_id": "approval-exact-1"}
+        {"choice": "once", "request_id": "approval-exact-1", "execution_generation": 11}
     ]
 
 

@@ -26,7 +26,7 @@ class HostedRoomPeerClient(Protocol):
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]: ...
     def history(self, *, room_id: str, profile: str, session_id: str, grant: str
                 ) -> Sequence[Mapping[str, Any]]: ...
-    def status(self, *, room_id: str, profile: str, session_id: str, grant: str
+    def status(self, *, room_id: str, profile: str, session_id: str, grant: str, fresh: bool = False
                ) -> Mapping[str, Any]: ...
     def stop(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any] | None: ...
     def stop_receipt(self, *, task_id: str, execution_generation: int, grant: str
@@ -215,9 +215,10 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         self._validate_coordinates(profile=profile, source=source)
         return self.client.history(**self._scoped(profile=profile, session_id=session_id))
 
-    def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
+    def info(self, *, profile: str, session_id: str, source: str, fresh: bool = False) -> Mapping[str, Any]:
         self._validate_coordinates(profile=profile, source=source)
-        return self.client.status(**self._scoped(profile=profile, session_id=session_id))
+        return self.client.status(**self._scoped(profile=profile, session_id=session_id),
+                                  **({'fresh': True} if fresh else {}))
 
     def interrupt(
         self, *, profile: str, session_id: str, source: str, expected_task_id: str

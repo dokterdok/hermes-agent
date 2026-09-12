@@ -20,13 +20,13 @@ class HostedControls:
                    and m.get('profile') == task['payload']['target_profile']
                    for m in self._room(room_id)['members']):
             raise RuntimeStoreError('permission_denied')
-        if self._member_is_peer(room_id, member_id):
-            raise RuntimeStoreError('unsupported_operation')
         return task, HostedRoomBinding(room_id, gateway, epoch)
 
     def discard_room_task(self, room_id, *, member_id, task_id, execution_generation):
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
+            if self._member_is_peer(room_id, member_id):
+                raise RuntimeStoreError('unsupported_operation')
             cancel_id = f'discard:{execution_generation}'
             if task['status'] == 'cancelled' and task.get('cancel_id') == cancel_id:
                 return task
@@ -48,6 +48,7 @@ class HostedControls:
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
+            self._require_work_open(room_id)
             # Unknown is not non-admission. Never advance its hosted generation
             # while leaving the canonical unknown head behind it.
             if task['status'] == 'indeterminate':
@@ -55,12 +56,29 @@ class HostedControls:
             if task['status'] != 'deferred':
                 raise RuntimeStoreError('stale_generation')
             rpc = self._resolve_member_transport(binding, task)
-            info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
-                            session_id=rpc.ref.session_id)
+            peer = self._member_is_peer(room_id, member_id)
+            coords = {'profile': task['payload']['target_profile'], 'source': 'bot_room'}
+            if peer:
+                session = rpc.resolve_exact(**coords, title=f'Group: {room_id}')
+                if session is None:
+                    raise RuntimeStoreError('unknown_execution')
+                info = rpc.info(**coords, session_id=session['session_id'], fresh=True)
+            else:
+                info = rpc.info(**coords, session_id=rpc.ref.session_id)
             if info.get('status') == 'unknown':
                 raise RuntimeStoreError('unknown_execution')
             if info.get('active'):
                 raise RuntimeStoreError('session_busy')
+            if peer:
+                generation = info.get('canonical_execution_generation')
+                known_generation = type(generation) is int and generation > 0
+                if (info.get('task_id') != task_id or info.get('execution_generation') != execution_generation
+                        or info.get('active') is not False or not info.get('run_id')
+                        or 'canonical_execution_generation' not in info
+                        or info.get('status') not in {'completed', 'failed', 'cancelled'}
+                        or not (known_generation or (generation is None and info['status'] == 'cancelled'))):
+                    # Receipt absence and ambiguous/unknown work are not evidence of idle.
+                    raise RuntimeStoreError('unknown_execution')
             lease = self.runtime._ensure_lease(binding)
             return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
 
@@ -73,7 +91,7 @@ class HostedControls:
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue
             member = task['payload'].get('target_member_id') or task['payload']['target_profile']
-            if self._member_is_peer(room_id, member):
+            if self._member_is_peer(room_id, member) and task['status'] == 'indeterminate':
                 continue
             actions.append({'kind': 'discard' if task['status'] == 'indeterminate' else 'retry',
                             'member_id': member, 'task_id': task['identity'].task_id,
