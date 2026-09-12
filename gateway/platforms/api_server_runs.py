@@ -179,6 +179,10 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
 
 
 def _room_permission_for(request: "web.Request") -> str:
+    if request.path.endswith("/artifacts/ack"):
+        return "artifact.ack"
+    if "/artifacts/" in request.path:
+        return "artifact.read"
     if request.path.endswith("/stop"):
         return "stop"
     if request.path.endswith("/approval"):
@@ -508,6 +512,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             with self._profile_scope(launch.request_profile):
                 launch.admission = admit_api_turn(self, user_message=launch.user_message,
                     conversation_history=launch.conversation_history, active_run_id=run_id,
+                    room_artifact_publication=True if body.get('_room_artifact_publication') is True else None,
                     turn_author=launch.turn_author,
                     history_from_session=session_history_delivery,
                     session_history_delivery='1' if session_history_delivery else '',

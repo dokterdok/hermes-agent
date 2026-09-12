@@ -38,9 +38,11 @@ def run_projection(adapter, run_id):
     live = authority.sessions.get(row['target_session_id'])
     if live is not None and row['status'] == 'started':
         pending = list(live.controls.snapshot(row['target_session_id'], row['generation']))
+    from gateway.session_peer_output import canonical_peer_artifact_fields
+    artifacts = canonical_peer_artifact_fields(authority, row, result)
     return {'pending_controls': pending, 'run_id': run_id, 'status': status, 'session_id': row['target_session_id'],
             'admission_id': row['admission_id'], 'execution_generation': row['generation'],
-            'output': result.get('final_response', ''), 'usage': saved.get('usage', {}) if saved else {}}
+            'output': result.get('final_response', ''), 'usage': saved.get('usage', {}) if saved else {}, **artifacts}
 
 
 async def send_clarify(adapter, *, chat_id, **kwargs):
