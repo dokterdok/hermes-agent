@@ -1,10 +1,25 @@
-"""Read-only Home/audience disclosure fences; never enroll a room or persist consent."""
+"""Requester-bound Home audience consent; never grants native room permission.
+
+Confirmation state/persistence fencing is forwardported from accepted 5ee4a941.
+"""
+import asyncio
+import contextvars
+import secrets
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
 from functools import wraps
+from threading import RLock
 
 from gateway.group_chat_messages import text
 from gateway.group_chat_policy import group_command_prefix, group_policy_for_source, home_config, receiving_group_context
 from gateway.group_home_identity import acknowledgement, home_identity, is_home_control_source, private_event, trusted_person
 from gateway.session_authorities import owner_scope
+
+PROCEED = object()
+PROMPT_SECONDS = 120
+MAX_PENDING = 128
+_active_confirmation = contextvars.ContextVar('group_home_confirmation', default=None)
 
 
 class DisclosureChanged(PermissionError):
@@ -37,8 +52,8 @@ def _single_operator(runner, event, context):
     return candidates == {str(source.user_id)}
 
 
-def disclosure_stamp(runner, event):
-    if not trusted_person(event):
+def disclosure_stamp(runner, event, *, require_audience=True):
+    if not trusted_person(event) or not _confirmation_allows_output(runner):
         return None
     context = receiving_group_context(runner, event.source)
     if context is None:
@@ -60,8 +75,11 @@ def disclosure_stamp(runner, event):
                     return None
             elif not private or not _single_operator(runner, event, context):
                 return None
-            if not private and getattr(home, 'group_audience_ack', None) != acknowledgement(home):
-                return None
+            if not private:
+                if not getattr(home, 'selection_id', None):
+                    return None
+                if require_audience and getattr(home, 'group_audience_ack', None) != acknowledgement(home):
+                    return None
             current = receiving_group_context(runner, event.source)
             if current is None or current.adapter is not context.adapter or current.authority is not context.authority:
                 return None
@@ -91,6 +109,9 @@ def denial(runner, event):
 def protect_group_result(function):
     @wraps(function)
     async def guarded(runner, event, *args, **kwargs):
+        prepared = await prepare_group_access(runner, event)
+        if prepared is not PROCEED:
+            return prepared
         stamp = disclosure_stamp(runner, event)
         if stamp is None:
             return denial(runner, event)
@@ -101,3 +122,309 @@ def protect_group_result(function):
         except DisclosureChanged:
             return denial(runner, event)
     return guarded
+
+
+def _pending(runner):
+    pending = getattr(runner, "_group_home_confirmations", None)
+    if not isinstance(pending, OrderedDict):
+        pending = runner._group_home_confirmations = OrderedDict()
+    for key, value in list(pending.items()):
+        if value.deadline <= time.monotonic():
+            _retire(runner, value)
+    return pending
+
+
+@dataclass
+class Confirmation:
+    key: tuple
+    home: tuple
+    stamp: tuple
+    token: str
+    deadline: float
+    adapter: object
+    context: contextvars.Context
+    state: str = "pending"
+    disclose: bool = True
+    commit_started: bool = False
+    lock: object = field(default_factory=RLock, repr=False)
+
+
+def _current(runner, pending):
+    return getattr(runner, "_group_home_confirmations", {}).get(pending.key) is pending
+
+
+def _confirmation_allows_output(runner):
+    active = _active_confirmation.get()
+    if active is None or active[0] is not runner:
+        return True
+    pending = active[1]
+    with pending.lock:
+        return (
+            _current(runner, pending)
+            and pending.disclose
+            and pending.deadline > time.monotonic()
+        )
+
+
+def _discard(runner, pending):
+    if _current(runner, pending):
+        runner._group_home_confirmations.pop(pending.key)
+
+
+def _retire(runner, pending):
+    # Never hold this short state lock across config reads/writes or an await.
+    with pending.lock:
+        pending.disclose = False
+        if pending.state == "committing":
+            return True
+        if pending.state in {"pending", "claimed"}:
+            pending.state = "cancelled"
+        _discard(runner, pending)
+        return pending.commit_started
+
+
+def _text(runner, event, key):
+    return text('group_home', key, command_prefix=group_command_prefix(runner, event.source))
+
+
+def _key(runner, event):
+    from gateway.group_home_identity import home_thread_from_source
+
+    context = receiving_group_context(runner, event.source)
+    if context is None:
+        return None
+    source = event.source
+    return (str(context.home), source.platform.value, str(source.chat_id),
+            str(home_thread_from_source(source) or ''), str(source.user_id or ''),
+            str(source.scope_id or ''))
+
+
+def _cancel(runner, event, pending=None):
+    if pending is None:
+        pending = _pending(runner).get(_key(runner, event))
+    if pending is not None:
+        return _text(runner, event, 'cancel_late' if _retire(runner, pending) else 'cancel')
+    context = receiving_group_context(runner, event.source)
+    home = getattr(context.config, 'home_channel', None) if context else None
+    accepted = (home is not None and not private_event(event)
+                and is_home_control_source(home_config(context), event.source, require_owner_identity=True)
+                and home.group_audience_ack == acknowledgement(home))
+    return _text(runner, event, 'cancel_late' if accepted else 'cancel')
+
+
+def _check(runner, event, pending):
+    with pending.lock:
+        if not _current(runner, pending) or pending.state in {'cancelled', 'failed'}:
+            raise PermissionError
+    if (pending.deadline <= time.monotonic() or _key(runner, event) != pending.key
+            or disclosure_stamp(runner, event, require_audience=False) != pending.stamp):
+        raise PermissionError
+    context = receiving_group_context(runner, event.source)
+    if context is None or context.adapter is not pending.adapter:
+        raise PermissionError
+    from hermes_state_runtime import _epoch
+    with context.authority.db._read_ctx() as conn:
+        _epoch(conn, context.authority.epoch)
+    home = context.config.home_channel
+    if home is None or home_identity(home) != pending.home:
+        raise PermissionError
+    return home
+
+
+def _persist(runner, event, pending):
+    from gateway.group_home_selection import receiving_config_scope
+
+    try:
+        context = receiving_group_context(runner, event.source)
+        if context is None:
+            raise PermissionError
+        with receiving_config_scope(context):
+            return _persist_locked(runner, event, pending)
+    except BaseException:
+        with pending.lock:
+            if pending.state in {'claimed', 'committing'}:
+                pending.state = 'failed'
+        raise
+    finally:
+        with pending.lock:
+            if not pending.disclose and pending.state != 'committing':
+                _discard(runner, pending)
+
+
+def _persist_locked(runner, event, pending):
+    from gateway.config import HomeChannel
+    from gateway.group_home_selection import require_saved_policy
+    from hermes_cli.config import _CONFIG_LOCK, load_config, save_config
+
+    with _CONFIG_LOCK:
+        live = _check(runner, event, pending)
+        config = load_config()
+        platform = config.get('platforms', {}).get(event.source.platform.value, {})
+        raw = platform.get('home_channel')
+        if not isinstance(raw, dict) or home_identity(HomeChannel.from_dict(raw)) != pending.home:
+            raise PermissionError
+        require_saved_policy(platform, event, audience=True)
+        ack = acknowledgement(live)
+        _check(runner, event, pending)
+        with pending.lock:
+            if not _current(runner, pending) or pending.state != 'claimed':
+                raise PermissionError
+            # Cancellation cannot undo I/O once it starts. Keep the lock free
+            # during disk work so cancellation can suppress the continuation.
+            pending.state = 'committing'
+            pending.commit_started = True
+        platform['home_channel'] = {**raw, 'group_audience_ack': ack}
+        save_config(config)
+        saved_platform = load_config().get('platforms', {}).get(event.source.platform.value, {})
+        saved = saved_platform.get('home_channel', {})
+        if (saved.get('group_audience_ack') != ack
+                or home_identity(HomeChannel.from_dict(saved)) != pending.home):
+            raise RuntimeError('save not confirmed')
+        require_saved_policy(saved_platform, event, audience=True)
+        current = _check(runner, event, pending)
+        current.group_audience_ack = ack
+        with pending.lock:
+            pending.state = 'committed'
+
+
+async def _confirm(runner, event, pending):
+    with pending.lock:
+        if not _current(runner, pending) or pending.state != 'pending':
+            return _text(runner, event, 'expired')
+        pending.state = 'claimed'
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_persist, runner, event, pending),
+                               timeout=max(0, pending.deadline - time.monotonic()))
+        with pending.lock:
+            if not _current(runner, pending) or not pending.disclose:
+                return _text(runner, event, 'cancel_late' if pending.commit_started else 'expired')
+        _check(runner, event, pending)
+        if disclosure_stamp(runner, event) is None:
+            return _text(runner, event, 'expired')
+        # Finish the confirmation picker with text; menu ownership stays with
+        # the separate native Group chooser, never a nested replacement picker.
+        followup = replace(event, text=group_command_prefix(runner, event.source) + 'group list')
+        token = _active_confirmation.set((runner, pending))
+        try:
+            result = await runner._handle_rooms_command(followup)
+        finally:
+            _active_confirmation.reset(token)
+        with pending.lock:
+            if (not _current(runner, pending) or not pending.disclose
+                    or pending.deadline <= time.monotonic()):
+                return _text(runner, event, 'cancel_late')
+        return result or _text(runner, event, 'chooser')
+    except asyncio.CancelledError:
+        _retire(runner, pending)
+        raise
+    except (PermissionError, asyncio.TimeoutError):
+        _retire(runner, pending)
+        return _text(runner, event, 'expired')
+    except Exception:
+        return _text(runner, event, 'failed')
+    finally:
+        with pending.lock:
+            if pending.state != 'committing':
+                _discard(runner, pending)
+
+
+async def prepare_group_access(runner, event):
+    if not _confirmation_allows_output(runner):
+        return _text(runner, event, 'expired')
+    if not trusted_person(event):
+        return denial(runner, event)
+    query = runner._group_chat_command_args(event).strip().casefold()
+    if query in {'help', 'usage', '?'}:
+        return runner._group_chat_help(group_command_prefix(runner, event.source) + 'group')
+    if query == 'cancel':
+        # Retire only this requester's existing read chooser, without a config
+        # read that could block cancellation behind the in-flight writer.
+        context = receiving_group_context(runner, event.source)
+        tokens = getattr(runner, '_group_read_choice_tokens', {})
+        source = event.source
+        location = (str(source.user_id), str(source.chat_id), str(source.thread_id or ''), str(source.scope_id or ''))
+        for stamp in list(tokens):
+            if isinstance(stamp, tuple) and len(stamp) == 10 and context is not None:
+                if stamp[0] == str(context.home) and stamp[5:9] == location:
+                    tokens.pop(stamp, None)
+        return _cancel(runner, event)
+    key = _key(runner, event)
+    if key is None:
+        return denial(runner, event)
+    words = query.split()
+    if words and words[0] == 'confirm':
+        pending = _pending(runner).get(key)
+        if (pending is None or len(words) != 2
+                or len(words[1]) != 32 or not words[1].isascii()
+                or not secrets.compare_digest(words[1], pending.token)):
+            return _text(runner, event, 'expired')
+        return await _confirm(runner, event, pending)
+    previous = _pending(runner).get(key)
+    active = _active_confirmation.get()
+    same_confirmation = active is not None and active[0] is runner and active[1] is previous
+    if previous is not None and not same_confirmation:
+        with previous.lock:
+            committing = previous.state == 'committing'
+            _retire(runner, previous)
+            if committing:
+                return _text(runner, event, 'saving')
+    stamp = await asyncio.to_thread(disclosure_stamp, runner, event, require_audience=False)
+    if stamp is None:
+        return denial(runner, event)
+    if disclosure_stamp(runner, event) is not None:
+        return PROCEED
+    context = receiving_group_context(runner, event.source)
+    if context is None:
+        return denial(runner, event)
+    pending = Confirmation(key, home_identity(context.config.home_channel), stamp,
+        secrets.token_hex(16), time.monotonic() + PROMPT_SECONDS, context.adapter, contextvars.copy_context())
+    prompts = _pending(runner)
+    prompts[key] = pending
+    while len(prompts) > MAX_PENDING:
+        oldest = next(iter(prompts.values()))
+        _retire(runner, oldest)
+        if _current(runner, oldest):
+            _retire(runner, pending)
+            return _text(runner, event, 'saving')
+    command = group_command_prefix(runner, event.source) + 'group'
+    fallback = (_text(runner, event, 'warning')
+                + f"\n{_text(runner, event, 'continue')}: {command} confirm {pending.token}"
+                + f"\n{_text(runner, event, 'private')}: {command} cancel")
+    picker = getattr(type(context.adapter), 'send_choice_picker', None)
+    if not callable(picker) or getattr(type(context.adapter), 'supports_choice_pages', False) is not True:
+        return fallback
+
+    async def selected(chat_id, value):
+        async def apply():
+            destination = event.source.chat_id
+            if event.source.platform.value == 'discord' and event.source.thread_id:
+                destination = event.source.thread_id
+            if (str(chat_id) != str(destination) or _pending(runner).get(key) is not pending
+                    or value not in {pending.token + ':yes', pending.token + ':no'}):
+                return _text(runner, event, 'expired')
+            if value.endswith(':no'):
+                return _cancel(runner, event, pending)
+            return await _confirm(runner, event, pending)
+        return await asyncio.create_task(apply(), context=pending.context.copy())
+
+    from gateway.platforms.base import _thread_metadata_for_event
+    metadata = {**(_thread_metadata_for_event(event) or {}),
+                'hermes_profile': context.profile, 'requester_user_id': str(event.source.user_id),
+                'choice_pages': True}
+    try:
+        _check(runner, event, pending)
+        sent = await picker(context.adapter, chat_id=event.source.chat_id,
+            title=_text(runner, event, 'warning'),
+            choices=[{'label': _text(runner, event, 'continue'), 'value': pending.token + ':yes'},
+                     {'label': _text(runner, event, 'private'), 'value': pending.token + ':no'}],
+            session_key='group-home:' + pending.token, on_choice_selected=selected, metadata=metadata)
+        _check(runner, event, pending)
+        return None if getattr(sent, 'success', False) is True else fallback
+    except asyncio.CancelledError:
+        _retire(runner, pending)
+        raise
+    except PermissionError:
+        _retire(runner, pending)
+        return _text(runner, event, 'expired')
+    except Exception:
+        return fallback

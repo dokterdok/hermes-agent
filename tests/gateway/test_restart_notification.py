@@ -99,70 +99,32 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_sethome_updates_running_config_for_same_process_restart(tmp_path, monkeypatch):
-    """/sethome persists to env and updates in-memory config before restart."""
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+@pytest.mark.parametrize("thread_id", [None, "topic-7"])
+async def test_sethome_updates_receiving_config_for_same_process_restart(view, thread_id):
+    """The receiving adapter owns the live destination, not the worker route."""
+    from dataclasses import replace
+    from pathlib import Path
+    from gateway.session_authorities import owner_scope
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+    from hermes_cli.config import save_config
 
-    saved = {}
-
-    def _fake_save_env_value(key, value):
-        saved[key] = value
-
-    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
-    monkeypatch.setattr("gateway.slash_commands.persist_home_channel", lambda home, **kwargs: None)
-
-    runner, _adapter = make_restart_runner()
-    source = make_restart_source(chat_id="home-42")
-    source.chat_name = "Ops Home"
-    event = MessageEvent(
-        text="/sethome",
-        message_type=MessageType.TEXT,
-        source=source,
-        message_id="m-home",
-    )
-
-    result = await runner._handle_set_home_command(event)
-
-    home = runner.config.get_home_channel(Platform.TELEGRAM)
-    assert "Home channel set" in result
-    assert saved["TELEGRAM_HOME_CHANNEL"] == "home-42"
-    assert home is not None
-    assert home.chat_id == "home-42"
-    assert home.name == "Ops Home"
+    with owner_scope(view.receiving):
+        save_config({"platforms": {"telegram": view.adapter.config.to_dict()}})
+    source = view.event.source
+    source.chat_id, source.chat_name, source.thread_id = "home-42", "Ops Home", thread_id
+    event = replace(view.event, text="/sethome", source=source)
+    result = await GatewaySlashCommandsMixin._handle_set_home_command(view.runner, event)
+    home = view.adapter.config.home_channel
+    assert "now your Home chat" in result
+    assert home.chat_id == "home-42" and home.name == "Ops Home"
+    assert home.thread_id == thread_id and home.selection_id and not home.group_audience_ack
+    values = Path(view.receiving.profile_id, ".env").read_text()
+    assert "TELEGRAM_HOME_CHANNEL=home-42" in values
+    assert f"TELEGRAM_HOME_CHANNEL_THREAD_ID={thread_id or ''}" in values
+    assert view.runner.config.get_home_channel(Platform.TELEGRAM) is None
 
 
-@pytest.mark.asyncio
-async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path, monkeypatch):
-    """/sethome from a topic/thread stores the thread-aware home target."""
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    saved = {}
-
-    def _fake_save_env_value(key, value):
-        saved[key] = value
-
-    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
-    monkeypatch.setattr("gateway.slash_commands.persist_home_channel", lambda home, **kwargs: None)
-
-    runner, _adapter = make_restart_runner()
-    source = make_restart_source(chat_id="parent-42", thread_id="topic-7")
-    source.chat_name = "Ops Topic"
-    event = MessageEvent(
-        text="/sethome",
-        message_type=MessageType.TEXT,
-        source=source,
-        message_id="m-home-thread",
-    )
-
-    result = await runner._handle_set_home_command(event)
-
-    home = runner.config.get_home_channel(Platform.TELEGRAM)
-    assert "Home channel set" in result
-    assert saved["TELEGRAM_HOME_CHANNEL"] == "parent-42"
-    assert saved["TELEGRAM_HOME_CHANNEL_THREAD_ID"] == "topic-7"
-    assert home is not None
-    assert home.chat_id == "parent-42"
-    assert home.thread_id == "topic-7"
+from tests.gateway.test_canonical_messaging_views import view  # noqa: E402,F401
 
 
 # ── home-channel startup notifications ─────────────────────────────────────
@@ -411,5 +373,3 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     await runner._notify_active_sessions_of_shutdown()
 
     adapter.send.assert_not_awaited()
-
-
