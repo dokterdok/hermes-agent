@@ -4,7 +4,8 @@ import { useRef, useState } from 'react'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { type CanonicalGroupBinding, canonicalGroupRequest } from './canonical-groups'
 
-interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
+export interface CanonicalGroupAttachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
+type Attachment = CanonicalGroupAttachment
 interface DownloadedAttachment extends Attachment { data_base64: string }
 
 function kindFor(file: File): string {
@@ -23,18 +24,18 @@ function extension(mime: string, name: string): string {
   return mime === 'application/pdf' ? '.pdf' : mime.split('/')[1] ? `.${mime.split('/')[1]}` : '.bin'
 }
 
-export function CanonicalGroupAttachments({ binding, attachments, onChange, disabled }: {
+export function CanonicalGroupAttachments({ binding, attachments, onChange, disabled, readOnly = false }: {
   binding: CanonicalGroupBinding
   attachments: Attachment[]
-  onChange: (attachments: Attachment[]) => void
   disabled: boolean
-}) {
+} & ({ readOnly: true; onChange?: never } | { readOnly?: false; onChange: (attachments: Attachment[]) => void })) {
   const labels = useCanonicalGroupLabels()
   const input = useRef<HTMLInputElement>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function upload(file: File) {
+    if (readOnly) {return}
     setBusy(true); setError('')
 
     try {
@@ -52,7 +53,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
 
       // Upload receipts include storage metadata; Send accepts only the manifest.
       const { attachment_id, kind, name, mime, size } = result
-      onChange([...attachments, { attachment_id, kind, name, mime, size }])
+      onChange?.([...attachments, { attachment_id, kind, name, mime, size }])
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
     finally { setBusy(false) }
   }
@@ -73,13 +74,13 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
   }
 
   return <div className="flex flex-wrap items-center gap-2">
-    <input hidden onChange={e => { const file = e.target.files?.[0];
+    {!readOnly && <><input hidden onChange={e => { const file = e.target.files?.[0];
 
  if (file) {void upload(file);} e.currentTarget.value = '' }} ref={input} type="file" />
-    <Button disabled={disabled || busy} onClick={() => input.current?.click()} type="button">{labels.attachFiles}</Button>
+    <Button disabled={disabled || busy} onClick={() => input.current?.click()} type="button">{labels.attachFiles}</Button></>}
     {attachments.map(a => <span className="flex items-center gap-1" key={a.attachment_id ?? a.name}>
       <span>{a.name}</span><Button disabled={disabled || busy} onClick={() => void download(a)} type="button">{labels.download}</Button>
-      <Button disabled={disabled || busy} onClick={() => onChange(attachments.filter(item => item !== a))} type="button">{labels.removeAttachment}</Button>
+      {!readOnly && <Button disabled={disabled || busy} onClick={() => onChange?.(attachments.filter(item => item !== a))} type="button">{labels.removeAttachment}</Button>}
     </span>)}
     {error && <span role="alert">{labels.uploadFailed}: {error}</span>}
   </div>
