@@ -17,6 +17,7 @@ class PendingControls:
 
     def register(self, session_id, route, generation, data):
         from gateway.run import _redact_approval_command
+        from tools.approval_operation import valid_operation_context, valid_operation_key
         with self.events.lock:
             prompt_id = data['request_id']
             choices = ['once', 'deny']
@@ -29,6 +30,16 @@ class PendingControls:
                       'command': _redact_approval_command(data.get('command', '')),
                       'description': _redact_approval_command(data.get('description', '')),
                       'choices': choices}
+            for name in ('allow_permanent', 'allow_session', 'smart_denied'):
+                if type(data.get(name)) is bool:
+                    prompt[name] = data[name]
+            key, context = data.get('remember_key'), data.get('remember_context')
+            if (data.get('allow_permanent') is True and data.get('allow_session') is True
+                    and data.get('smart_denied', False) is False and 'edit' not in data
+                    and valid_operation_key(key) and valid_operation_context(context)):
+                context = _redact_approval_command(context)
+                if valid_operation_context(context):
+                    prompt.update(remember_key=key, remember_context=context)
             if 'edit' in data:
                 prompt['edit'] = deepcopy(data['edit'])
                 prompt['choices'] = ['once', 'deny']
