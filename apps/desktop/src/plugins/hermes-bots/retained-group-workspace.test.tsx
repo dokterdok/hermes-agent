@@ -193,3 +193,18 @@ it('does not rebind an older hosted cache to the same name after source replacem
   expect(screen.getByText('This retained room is no longer available.')).toBeTruthy()
   expect(request).not.toHaveBeenCalled()
 })
+
+it('opens a retained transcript and Files with a valid 5 MB attachment', () => {
+  const room = fixture()
+  room.log[0].images = [{
+    kind: 'file', name: 'large.bin',
+    data: `data:application/octet-stream;base64,${btoa('x'.repeat(5_000_000))}`
+  }]
+  install(room)
+  render(<GroupChatWorkspace group="Workshop" members={[]} />)
+  expect(screen.getByText('Retained message 0')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Files' }))
+  const download = within(screen.getByRole('dialog')).getByRole('button', { name: 'Download: large.bin' })
+  expect((download as HTMLButtonElement).disabled).toBe(false)
+  expect(request).not.toHaveBeenCalled()
+})

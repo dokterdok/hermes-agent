@@ -164,3 +164,44 @@ it('does not borrow another declared room even when its bytes occur in the retai
 
   expect(request).not.toHaveBeenCalled()
 })
+
+it.each([5_000_000, 15_000_000])('loads canonical base64 at %i bytes without reducing the retained limit', size => {
+  const message = entry(1, 'large.bin')
+  const data = `data:application/octet-stream;base64,${btoa('x'.repeat(size))}`
+  message.images = [{ kind: 'file', name: 'large.bin', data, size }]
+  const item = createRetainedFilesLoader(install(room([message])))().items[0]
+  expect(item.available).toBe(true)
+  expect(item.size).toBe(size)
+  expect(item.attachment.data === data).toBe(true)
+  expect(item.current()).toBe(true)
+  expect(request).not.toHaveBeenCalled()
+})
+
+it('still refuses bytes above the retained 15 MB limit', () => {
+  const message = entry(1, 'oversized.bin')
+  message.images = [{
+    kind: 'file', name: 'oversized.bin',
+    data: `data:application/octet-stream;base64,${btoa('x'.repeat(15_000_001))}`
+  }]
+  expect(createRetainedFilesLoader(install(room([message])))().items[0].available).toBe(false)
+  expect(request).not.toHaveBeenCalled()
+})
+
+it.each(['AA==', 'AAA=', 'AAAA', '+/8=', '////'])('accepts canonical alphabet and padding: %s', encoded => {
+  const message = entry(1)
+  message.images![0].data = `data:application/octet-stream;base64,${encoded}`
+  const item = createRetainedFilesLoader(install(room([message])))().items[0]
+  expect(item.available).toBe(true)
+  expect(item.size).toBe(atob(encoded).length)
+})
+
+it.each(['A', 'AAA', 'A===', '=AAA', 'AA=A', 'AAAA====', 'AAAA\n', 'AA-_', 'AA A', 'AA\u00e9=', 'AB==', 'AAB='])(
+  'refuses invalid alphabet, padding or nonzero padding bits: %s', async encoded => {
+    const message = entry(1)
+    message.images![0].data = `data:application/octet-stream;base64,${encoded}`
+    const item = createRetainedFilesLoader(install(room([message])))().items[0]
+    expect(item.available).toBe(false)
+    await expect(saveRetainedFile(item, new AbortController().signal)).rejects.toThrow('unavailable')
+    expect(request).not.toHaveBeenCalled()
+  }
+)

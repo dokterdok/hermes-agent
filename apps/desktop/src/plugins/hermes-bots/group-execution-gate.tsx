@@ -14,10 +14,12 @@ export function hasLegacyGroupDriver(value: unknown): boolean {
     return false
   }
 
-  const { driver, features } = value as { driver?: unknown; features?: unknown }
+  const { driver, features, persistent_process } = value as {
+    driver?: unknown; features?: unknown; persistent_process?: unknown
+  }
 
   // A canonical owner without a ready driver is unavailable, not a legacy owner.
-  return driver === false && (features === undefined || (
+  return driver === false && persistent_process === false && (features === undefined || (
     Array.isArray(features) && features.every(feature => typeof feature === 'string') &&
     !features.includes('canonical_session_owner')
   ))

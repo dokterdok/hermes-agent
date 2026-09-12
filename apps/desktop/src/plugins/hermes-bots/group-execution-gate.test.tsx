@@ -71,17 +71,23 @@ afterEach(() => {
 })
 
 it.each([
-  { driver: false, features: ['canonical_session_owner'] },
-  { driver: true, features: ['canonical_session_owner'] },
-  { driver: true },
-  {},
-  { driver: null },
-  { driver: 0 },
-  { driver: '' },
-  { driver: 'false' },
-  { driver: false, features: 'canonical_session_owner' },
-  { driver: false, features: null },
-  { driver: false, features: [null] },
+  { driver: false, persistent_process: false, features: ['canonical_session_owner'] },
+  { driver: true, persistent_process: false, features: ['canonical_session_owner'] },
+  { driver: true, persistent_process: false },
+  { persistent_process: false },
+  { driver: null, persistent_process: false },
+  { driver: 0, persistent_process: false },
+  { driver: '', persistent_process: false },
+  { driver: 'false', persistent_process: false },
+  { driver: false, persistent_process: false, features: 'canonical_session_owner' },
+  { driver: false, persistent_process: false, features: null },
+  { driver: false, persistent_process: false, features: [null] },
+  { driver: false, persistent_process: true, features: ['room_identity', 'monotonic_log', 'replayable_disband'] },
+  { driver: false },
+  { driver: false, persistent_process: null },
+  { driver: false, persistent_process: 0 },
+  { driver: false, persistent_process: '' },
+  { driver: false, persistent_process: 'false' },
   null
 ])('never starts a legacy executor from unavailable/unknown capabilities: %j', async capabilities => {
   request.mockResolvedValue(capabilities)
@@ -93,7 +99,11 @@ it.each([
   )
 })
 
-it.each([{ driver: false }, { driver: false, features: [] }, { driver: false, features: ['legacy_files'] }])(
+it.each([
+  { driver: false, persistent_process: false },
+  { driver: false, persistent_process: false, features: [] },
+  { driver: false, persistent_process: false, features: ['legacy_files'] }
+])(
   'preserves the real old legacy workspace for literal false: %j', async capabilities => {
     request.mockResolvedValue(capabilities)
     await act(async () => { render(<GroupChatWorkspace group="Workshop" members={fixture().members!} />) })
@@ -118,7 +128,7 @@ it.each([
 ])('does not promote a hosted or different-source retained cache: %j', async extra => {
   const room = { ...fixture(), ...extra }
   $groupChats.set({ Workshop: room })
-  request.mockResolvedValue({ driver: false })
+  request.mockResolvedValue({ driver: false, persistent_process: false })
   await act(async () => { render(<GroupChatWorkspace group="Workshop" members={room.members!} />) })
   readOnly()
   expect(request).not.toHaveBeenCalled()
@@ -127,17 +137,17 @@ it.each([
 it('ignores a late old-profile receipt after selecting a canonical authority', async () => {
   let resolve!: (result: unknown) => void
   request.mockImplementationOnce(() => new Promise(done => { resolve = done }))
-    .mockResolvedValue({ driver: false, features: ['canonical_session_owner'] })
+    .mockResolvedValue({ driver: false, persistent_process: true, features: ['canonical_session_owner'] })
   render(<GroupChatWorkspace group="Workshop" members={fixture().members!} />)
   await waitFor(() => expect(request).toHaveBeenCalledOnce())
   await act(async () => { state.profile.set('named') })
-  await act(async () => { resolve({ driver: false }) })
+  await act(async () => { resolve({ driver: false, persistent_process: false }) })
   readOnly()
   expect(request.mock.calls[1][0]).toMatchObject({ connectionId: 'local', profile: 'named' })
 })
 
 it('does not use one old server receipt to enable a different displayed member source', async () => {
-  request.mockResolvedValue({ driver: false })
+  request.mockResolvedValue({ driver: false, persistent_process: false })
   await act(async () => {
     render(<GroupChatWorkspace group="Workshop" members={[{ name: 'writer', connectionId: 'other-source' }]} />)
   })
@@ -146,8 +156,8 @@ it('does not use one old server receipt to enable a different displayed member s
 })
 
 it('retires the legacy receipt on reconnect and checks the now-canonical owner again', async () => {
-  request.mockResolvedValueOnce({ driver: false })
-    .mockResolvedValue({ driver: false, features: ['canonical_session_owner'] })
+  request.mockResolvedValueOnce({ driver: false, persistent_process: false })
+    .mockResolvedValue({ driver: false, persistent_process: true, features: ['canonical_session_owner'] })
   await act(async () => { render(<GroupChatWorkspace group="Workshop" members={fixture().members!} />) })
   expect(screen.getByRole('textbox')).toBeTruthy()
   await act(async () => { state.gateway.set('closed') })
@@ -158,7 +168,7 @@ it('retires the legacy receipt on reconnect and checks the now-canonical owner a
 })
 
 it('does not bind replacement retained history after leaving a legacy workspace', async () => {
-  request.mockResolvedValue({ driver: false })
+  request.mockResolvedValue({ driver: false, persistent_process: false })
   await act(async () => { render(<GroupChatWorkspace group="Workshop" members={fixture().members!} />) })
   expect(screen.getByRole('textbox')).toBeTruthy()
   await act(async () => { $groupChats.set({ Workshop: { ...fixture(), roomId: 'replacement' } }) })

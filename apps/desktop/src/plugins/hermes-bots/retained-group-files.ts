@@ -6,7 +6,6 @@ import type { AttachmentKind, GroupChat, GroupMessage, GroupMessageAuthor } from
 
 const MAX_BYTES = 15_000_000
 const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
 export interface RetainedAttachment {
   name: string
@@ -105,6 +104,29 @@ export function foldRetainedFileSearch(value: string): string {
     .replace(/\p{M}/gu, '')
 }
 
+function canonicalBase64(encoded: string): boolean {
+  if (!encoded.length || encoded.length % 4 !== 0) {
+    return false
+  }
+
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
+  const end = encoded.length - padding
+
+  // Keep stack usage constant for retained files up to the full byte limit.
+  for (let index = 0; index < end; index++) {
+    const code = encoded.charCodeAt(index)
+
+    if (!(code >= 65 && code <= 90) && !(code >= 97 && code <= 122) &&
+        !(code >= 48 && code <= 57) && code !== 43 && code !== 47) {
+      return false
+    }
+  }
+
+  const last = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.indexOf(encoded[end - 1])
+
+  return padding === 0 || (last & (padding === 2 ? 15 : 3)) === 0
+}
+
 function localData(file: RetainedAttachment): { mime: string; size: number; encoded: string } | null {
   if (typeof file.data !== 'string' || !file.data.startsWith('data:')) {
     return null
@@ -125,9 +147,9 @@ function localData(file: RetainedAttachment): { mime: string; size: number; enco
 
   if (
     !encoded ||
-    !BASE64.test(encoded) ||
     size < 1 ||
     size > MAX_BYTES ||
+    !canonicalBase64(encoded) ||
     !['file', 'pdf', 'image'].includes(file.kind) ||
     typeof file.name !== 'string' ||
     !file.name.trim() ||
