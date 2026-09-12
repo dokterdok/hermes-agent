@@ -179,14 +179,26 @@ def install_hosted_transport(server, authority, loop, *, attest):
         selected, params = select(envelope)
         if set(params) != {'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
-        if params['operation'] not in _OPERATIONS | {'execute', 'attachment'}:
+        from gateway.session_hosted_output_transport import OUTPUT_OPERATIONS, source_output
+        if params['operation'] not in _OPERATIONS | {'execute', 'attachment'} | OUTPUT_OPERATIONS:
             raise RuntimeStoreError('invalid_params')
         callback = attest if selected is authority else getattr(
             getattr(selected, 'hosted_room_service', None), 'attest', None)
         if callback is None:
             raise RuntimeStoreError('runtime_draining')
         with owner_scope(selected):
+            if params['operation'] in OUTPUT_OPERATIONS:
+                service = getattr(selected, 'hosted_room_service', None)
+                if service is None:
+                    raise RuntimeStoreError('runtime_draining')
+                return source_output(service, params['selector'], params['operation'], params['params'])
             return callback(params['selector'], params['operation'], params['params'])
+
+    def output_source(envelope, peer):
+        from gateway.session_hosted_output_transport import read_output_source
+        selected, params = select(envelope)
+        with owner_scope(selected):
+            return read_output_source(selected, params)
 
     def target(envelope, peer):
         selected, params = select(envelope)
@@ -228,7 +240,8 @@ def install_hosted_transport(server, authority, loop, *, attest):
         result = rpc._call(operation, **params)
         return result
 
-    server.private_handlers.update({'hosted-attest': source, 'hosted-producer': target})
+    server.private_handlers.update({'hosted-attest': source, 'hosted-producer': target,
+                                    'hosted-output-source': output_source})
 
 
 def check_remote_hosted_admission(authority, ref, row):

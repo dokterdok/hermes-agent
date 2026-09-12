@@ -1,7 +1,7 @@
 """Canonical terminal publication with explicit Files custody and final fences.
 
 Port of the #99159 publication order, keeping the canonical planner/append path
-and limiting byte transport to the coordinator's own store for this increment.
+and root custody for local and same-installation named-profile producers.
 """
 
 from collections.abc import Mapping
@@ -24,9 +24,12 @@ class CanonicalHostedOutputPublisher:
         if not isinstance(result, Mapping) or not result.get("artifacts"):
             return None
         scope = RoomArtifactScope.from_mapping(result.get("artifact_scope") or {})
+        from gateway.session_hosted_output_transport import root_named_route
+        target = self.profile_homes().get(scope.target_profile)
         if (scope.home_install_id != room["authority_gateway_id"]
                 or scope.target_install_id != scope.home_install_id
-                or self.profile_homes().get(scope.target_profile) != self.root):
+                or target is None
+                or (target != self.root and not root_named_route(self.root, target))):
             raise RuntimeStoreError("unsupported_output_route")
         outbox = RoomArtifactOutbox(self.db_path)
         return scope, result["artifacts"], outbox

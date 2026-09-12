@@ -1,8 +1,9 @@
-"""Owner-local Files binding reconstructed from a real canonical admission."""
+"""Files bindings reconstructed from local or named canonical admissions."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+import asyncio
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
@@ -54,6 +55,10 @@ class HostedOutputBinding:
         self.used = True
         return RoomArtifactOutbox(self.authority.db.db_path, authorize_write=self.check_write)
 
+    def manifest(self):
+        from gateway.hosted_room_artifacts import terminal_artifact_manifest
+        return terminal_artifact_manifest(self.authority.db.db_path, self.scope)
+
 
 def current_output_binding():
     binding = _OUTPUT.get()
@@ -93,10 +98,6 @@ def _binding(authority, ref, row):
     home = Path(authority.profile_id)
     if not home.is_absolute() or Path(authority.db.db_path).resolve().parent != home.resolve():
         return None
-    # The existing outbox shares a gateway root. Do not let a served named
-    # profile write another authority's state.db; its owner-RPC bridge is later.
-    if home.parent.name == "profiles":
-        return None
     from gateway.session_managed_worker import managed_policy
     if managed_policy(authority, ref) is not None:
         return None
@@ -107,6 +108,10 @@ def _binding(authority, ref, row):
     # Retained owner transports have their own preclaim authorizer. Classify
     # that namespace before consulting a colliding local coordinator room.
     if _is_owner_transport_admission(authority, ref, row):
+        from gateway.session_hosted_output_transport import named_output_binding
+        return named_output_binding(authority, ref, row)
+    # A named coordinator has no root-custody bridge in this increment.
+    if home.parent.name == "profiles":
         return None
     # Remote hosted bindings live on the target and lack the coordinator task.
     # They must not infer local authority merely from a hosted request-id prefix.
@@ -135,13 +140,15 @@ def _binding(authority, ref, row):
     return binding
 
 
-@contextmanager
-def hosted_output_scope(authority, ref, row):
-    """Bind only owner-local execution; copied tool contexts expire on return."""
-    binding = _binding(authority, ref, row)
+@asynccontextmanager
+async def hosted_output_scope(authority, ref, row):
+    """Owner RPC may route back to this loop under multiplex; never block it."""
+    binding = await asyncio.to_thread(_binding, authority, ref, row)
     token = _OUTPUT.set(binding)
     try:
-        yield binding
+        registration = getattr(binding, "registered", nullcontext)
+        with registration():
+            yield binding
     finally:
         if binding is not None:
             binding.active = False
@@ -151,8 +158,7 @@ def hosted_output_scope(authority, ref, row):
 def capture_output_result(authority, row, binding):
     if binding is None or not binding.used:
         return
-    from gateway.hosted_room_artifacts import terminal_artifact_manifest
-    manifest = terminal_artifact_manifest(authority.db.db_path, binding.scope)
+    manifest = binding.manifest()
     if manifest is None:
         return
     saved = authority.pending_results.get(row["admission_id"])
