@@ -395,7 +395,27 @@ _GRANT_SCOPE = (
 _GRANT_FIELDS = frozenset({
     "version", *_GRANT_SCOPE, "execution_policy_digest", "permissions", "issued_at", "expires_at"})
 _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
-_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop"}
+_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop", "replicate", "work_records"}
+
+
+def invitation_permissions(
+    replication: Any = False, work_records: Any = False, *, passive_only: Any = False,
+) -> tuple[str, ...]:
+    """Keep #104601 opt-in semantics identical on native and HTTP invitations."""
+    if type(replication) is not bool:
+        raise HostedRoomGrantError("replication must be a boolean")
+    if type(passive_only) is not bool:
+        raise HostedRoomGrantError("passive_only must be a boolean")
+    if type(work_records) is not bool or (work_records and not replication):
+        raise HostedRoomGrantError("work_records requires an explicit replication opt-in")
+    if passive_only:
+        if not replication:
+            raise HostedRoomGrantError("passive_only requires explicit replication")
+        return ("status", "replicate", "work_records") if work_records else ("status", "replicate")
+    normal = ("approve", "dispatch", "status", "stop")
+    return (*normal, "replicate", "work_records") if work_records else (*normal, "replicate") if replication else normal
+
+
 MAX_DISPATCH_GRANT_TTL_SECONDS = 24 * 60 * 60
 MAX_STATUS_GRANT_TTL_SECONDS = 30 * 24 * 60 * 60
 
@@ -498,7 +518,7 @@ def decode_room_grant(
         raise HostedRoomGrantError("room grant lifetime is invalid")
     operation_expires_at = (
         status_expires_at
-        if permission in {"approve", "status", "stop"}
+        if permission in {"approve", "status", "stop", "replicate", "work_records"}
         else expires_at
     )
     if (

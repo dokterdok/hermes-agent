@@ -958,10 +958,12 @@ def _truncate_utf8(value: Any, *, max_bytes: int) -> tuple[str, bool]:
 
 
 def _bounded_terminal_result(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    from gateway.session_hosted_output import output_receipt_fields
     text, truncated = _truncate_utf8(receipt.get("text", ""), max_bytes=MAX_TERMINAL_TEXT_BYTES)
     error, error_truncated = _truncate_utf8(receipt.get("error", ""), max_bytes=4096)
     return {
         "message_id": receipt.get("message_id"), "text": text,
+        **output_receipt_fields(dict(receipt)),
         **({"error": error} if error else {}),
         **({"truncated": True} if truncated or error_truncated else {})}
 
@@ -982,7 +984,8 @@ def _find_terminal_receipt(
         return _TerminalReceipt(
             status=cast(state.TerminalStatus, status), settlement_id=receipt_id,
             result=_bounded_terminal_result(
-                {"message_id": receipt_id, "text": message.get("content", "")}))
+                {"message_id": receipt_id, "text": message.get("content", ""),
+                 "artifacts": message.get("artifacts"), "artifact_scope": message.get("artifact_scope")}))
     return None
 
 

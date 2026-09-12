@@ -65,13 +65,19 @@ async def test_native_invite_and_exact_revoke_preserve_profile_and_signed_horizo
         assert hosted_rooms.room_grant_is_revoked(db, claims=first_claims)
         assert not hosted_rooms.room_grant_is_revoked(db, claims=second_claims)
     for bad in ({**params, 'profile': 'foreign'}, {**params, 'authority_epoch': True},
-                {**params, 'ttl_seconds': float('nan')}, {**params, 'target_profile': 'foreign'}):
+                {**params, 'ttl_seconds': float('nan')}, {**params, 'target_profile': 'foreign'},
+                {**params, 'replication': 'true'}, {**params, 'work_records': True}):
         with pytest.raises(RuntimeStoreError):
             await dispatch_group_control(connection, 'groups.peer.invite', bad)
     reader = replace(connection.actor, capabilities=frozenset({'session:read'}))
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         await dispatch_group_control(SimpleNamespace(authority=connection.authority, actor=reader),
                                      'groups.peer.invite', params)
+    copied = await dispatch_group_control(connection, 'groups.peer.invite',
+        {**params, 'grant_id': 'copy-only', 'replication': True, 'work_records': True, 'passive_only': True})
+    copied_claims = decode_room_grant(secret, copied['grant'], permission='replicate')
+    assert set(copied_claims['permissions']) == {'status', 'replicate', 'work_records'}
+    assert copied_claims['status_expires_at'] - copied_claims['issued_at'] == 7200
 
 
 @pytest.mark.asyncio

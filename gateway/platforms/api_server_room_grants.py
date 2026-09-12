@@ -168,7 +168,7 @@ async def _handle_room_member_invitation(
         "authority_epoch",
         "member_id",
     }
-    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds"}
+    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication", "work_records", "passive_only"}
     if set(body) - allowed or not required <= set(body):
         return web.json_response(
             _openai_error(
@@ -184,6 +184,7 @@ async def _handle_room_member_invitation(
             catalog_mapping,
             decode_room_grant,
             issue_room_grant,
+            invitation_permissions,
         )
         from gateway.hosted_room_execution_policy import execution_policy_mapping
 
@@ -223,6 +224,8 @@ async def _handle_room_member_invitation(
             issued_at=time.time(),
             ttl_seconds=ttl,
             status_ttl_seconds=status_ttl,
+            permissions=invitation_permissions(body.get("replication", False), body.get("work_records", False),
+                                               passive_only=body.get("passive_only", False)),
         )
         claims = decode_room_grant(
             self._room_grant_secret(), token, permission="status"
@@ -262,11 +265,18 @@ async def _handle_room_member_capabilities(
         claims = self._room_grant_claims(request, permission="status")
         profile, installation_id = _local_target(claims, _api_request_profile)
         _, catalog = _local_room_catalog(self, profile, installation_id)
+        from gateway import hosted_rooms
+        from gateway.hosted_room_passive_protocol import passive_capabilities
+        from gateway.hosted_room_replica_retirement import current_target_enrollment
+        enrollment = current_target_enrollment(hosted_rooms.default_db_path(),
+            room_id=claims['room_id'], authority_gateway_id=claims['authority_gateway_id'],
+            authority_epoch=claims['authority_epoch'])
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response({
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
-        "target_profile": profile, "catalog": catalog})
+        "target_profile": profile, "catalog": catalog,
+        "passive_replication": passive_capabilities(), "retirement_enrollment": enrollment})
 
 
 async def _handle_room_member_grant_refresh(

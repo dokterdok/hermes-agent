@@ -1,8 +1,5 @@
 """Disposable source/receiver fixtures. No runtime, model, or source Stop flow."""
 
-import base64
-import hashlib
-import hmac
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,17 +27,9 @@ MEMBERS = [
 
 
 def signed_grant(secret, *, gateway=HOME, epoch=1, permissions=("replicate", "work_records"), grant_id="fixture"):
-    # Parent issuer opt-in is not registered yet. These are donor-format signed
-    # fixtures, verified by the real shared decoder; no auth bypass is patched.
-    token = peer.issue_room_grant(secret, grant_id=grant_id, room_id="room", home_install_id=gateway,
+    return peer.issue_room_grant(secret, grant_id=grant_id, room_id="room", home_install_id=gateway,
         authority_gateway_id=gateway, authority_epoch=epoch, member_id="reviewer",
-        target_install_id=TARGET, target_profile="default", permissions=("status",))
-    payload = json.loads(peer._split_token(token)[0])
-    payload["permissions"] = list(permissions)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
-    def b64(value):
-        return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
-    return b64(encoded) + "." + b64(hmac.new(secret, encoded, hashlib.sha256).digest())
+        target_install_id=TARGET, target_profile="default", permissions=permissions)
 
 
 @dataclass

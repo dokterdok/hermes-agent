@@ -14,7 +14,8 @@ GROUP_PEER_METHODS = {name: 'session:control' for name in (
     'groups.peer.invite', 'groups.peer.revoke', 'groups.peer.revoke_exact', 'groups.peer.register')}
 GROUP_PEER_FIELDS = {
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
-                         'member_id', 'grant_id', 'ttl_seconds', 'status_ttl_seconds'},
+                         'member_id', 'grant_id', 'ttl_seconds', 'status_ttl_seconds',
+                         'replication', 'work_records', 'passive_only'},
     'groups.peer.revoke': {'grant'},
     'groups.peer.revoke_exact': {'grant'},
     'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'catalog',
@@ -59,7 +60,7 @@ def peer_capabilities(authority):
 
 def _invite(authority, actor, service, params):
     from gateway.hosted_room_grant_state import grant_state_db_paths, reserve_grant_state
-    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret, issue_room_grant
+    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret, issue_room_grant, invitation_permissions
     from gateway.hosted_rooms import local_authority_gateway_id
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     adapter = _api_adapter(authority)
@@ -81,7 +82,9 @@ def _invite(authority, actor, service, params):
         room_id=params['room_id'], home_install_id=params['home_install_id'],
         authority_gateway_id=params['authority_gateway_id'], authority_epoch=params['authority_epoch'],
         member_id=params['member_id'], target_install_id=install, target_profile=profile,
-        execution_policy_digest=policy['policy_digest'], ttl_seconds=ttl, status_ttl_seconds=status_ttl)
+        execution_policy_digest=policy['policy_digest'], ttl_seconds=ttl, status_ttl_seconds=status_ttl,
+        permissions=invitation_permissions(params.get('replication', False), params.get('work_records', False),
+                                           passive_only=params.get('passive_only', False)))
     claims = decode_room_grant(secret, token, permission='status')
     reserve_grant_state(grant_state_db_paths(authority.profile_id), claims=claims,
                         expires_at=claims['status_expires_at'])
