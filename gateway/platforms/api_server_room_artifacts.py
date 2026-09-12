@@ -148,6 +148,9 @@ async def _handle_room_run_artifact_ack(
             permission="artifact.ack",
         )
         body = await request.json()
+        # Body I/O yields: none of the pre-read authorization is a write grant.
+        _run_id, scope, status, manifest = _load_scope_and_status(
+            self, request, permission="artifact.ack")
         if not isinstance(body, dict) or set(body) != {
             "artifact_ids",
             "manifest_digest",
@@ -168,7 +171,25 @@ async def _handle_room_run_artifact_ack(
         from gateway.hosted_room_artifacts import RoomArtifactOutbox
         from gateway.platforms.api_server_authority_runs import run_admission
         authority, _ = run_admission(self, _run_id)
-        outbox = RoomArtifactOutbox(authority.db.db_path)
+        expected = (_run_id, scope, status["artifacts"], manifest)
+
+        def authorize_ack(conn, checked_scope):
+            from gateway import hosted_rooms
+            from hermes_state_runtime import _epoch
+            _epoch(conn, authority.epoch)
+            current_id, current_scope, current_status, current_manifest = _load_scope_and_status(
+                self, request, permission="artifact.ack")
+            if (checked_scope != scope or run_admission(self, current_id)[0] is not authority
+                    or (current_id, current_scope, current_status["artifacts"], current_manifest) != expected):
+                raise ValueError("artifact acknowledgement binding changed")
+            # Refresh signature/permission/expiry and shared grant state, then
+            # check the profile's enforcing copy under the actual ACK write lock.
+            claims = self._room_grant_claims(request, permission="artifact.ack")
+            if (hosted_rooms.room_grant_is_revoked(authority.db.db_path, claims=claims, _conn=conn)
+                    or not hosted_rooms.peer_room_grant_is_current(authority.db.db_path, claims=claims, _conn=conn)):
+                raise ValueError("artifact acknowledgement grant changed")
+
+        outbox = RoomArtifactOutbox(authority.db.db_path, authorize_write=authorize_ack)
         # Exact Run/grant/manifest/event checks above remain mandatory after the
         # short ACK receipt expires. Durable completed retirement is positive evidence.
         changed = 0 if outbox.retirement_complete(scope) else outbox.acknowledge(

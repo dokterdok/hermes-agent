@@ -65,7 +65,8 @@ def accepted_source_grant(api, dispatch, *, permissions=('status', 'artifact.rea
     payload['permissions'] = sorted(permissions)
     encoded = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('ascii')
     token = _b64encode(encoded) + '.' + _b64encode(hmac.new(secret, encoded, hashlib.sha256).digest())
-    hosted_rooms.reserve_peer_room(hosted_rooms.default_db_path(), claims=payload, expires_at=payload['expires_at'])
+    from gateway.hosted_room_grant_state import grant_state_db_paths, reserve_grant_state
+    reserve_grant_state(grant_state_db_paths(), claims=payload, expires_at=payload['expires_at'])
     namespace = hashlib.sha256('\0'.join(str(payload[k]) for k in fields[:-1]).encode()).hexdigest()
     for run_id in ('earlier-run', 'file-run'):
         api._run_idempotency_store.reserve(namespace, run_id, 'a' * 64, run_id, {'status': 'completed'})

@@ -1087,6 +1087,9 @@ class RoomArtifactOutbox:
         """Prove exact generation retirement after short-lived ACK rows expire."""
 
         with self._lock, self._connect() as conn:
+            if self.authorize_write is not None:
+                conn.execute("BEGIN IMMEDIATE")
+                self.authorize_write(conn, scope)
             fence = conn.execute(
                 """SELECT retired_generation FROM hosted_room_output_generation_fences
                    WHERE lineage_identity=?""",
@@ -1140,6 +1143,8 @@ class RoomArtifactOutbox:
                     "room artifact acknowledgement commitment changed"
                 )
             acknowledged_at = time.time()
+            if self.authorize_write is not None:
+                self.authorize_write(conn, scope)
             changed = conn.execute(
                 f"""UPDATE hosted_room_output_artifacts
                        SET acknowledged_at=?, ack_message_event_id=?,
