@@ -9,6 +9,7 @@ from gateway.session_group_control_setup import CONTROL_SETUP_FIELDS, CONTROL_SE
 from gateway.session_group_peers import (
     GROUP_PEER_FIELDS, GROUP_PEER_METHODS, dispatch_group_peer, peer_capabilities,
 )
+from gateway.session_group_replication import REPLICATION_FIELDS, REPLICATION_METHODS, dispatch_replication
 
 
 GROUP_METHODS = {
@@ -24,6 +25,7 @@ GROUP_METHODS = {
     **HOME_ACCESS_METHODS,
     **CONTROL_SETUP_METHODS,
     **GROUP_PEER_METHODS,
+    **REPLICATION_METHODS,
     'groups.stop': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
@@ -42,6 +44,7 @@ _FIELDS = {
     **{method: fields | {'expected_authority'} for method, fields in HOME_ACCESS_FIELDS.items()},
     **CONTROL_SETUP_FIELDS,
     **GROUP_PEER_FIELDS,
+    **REPLICATION_FIELDS,
     'groups.stop': {'room_id', 'cancel_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
@@ -108,6 +111,8 @@ def _group(authority, actor, home, method, params):
         return dispatch_control_setup(authority, actor, method, params)
     if method in GROUP_PEER_METHODS:
         return dispatch_group_peer(authority, actor, service, method, params)
+    if method in REPLICATION_METHODS:
+        return dispatch_replication(authority, actor, method, params)
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
