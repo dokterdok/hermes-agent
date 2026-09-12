@@ -120,14 +120,28 @@ async def _normalize_room_dispatch(
             "_room_execution_policy": policy.as_mapping(),
             **({"_room_artifact_publication": True} if artifact_publication else {}),
         }
-        from gateway.session_peer_input import retain_peer_input, peer_input_available
+        from gateway.session_peer_input import peer_input_available
         if dispatch.attachment_manifest_digest is not None:
             if not peer_input_available(self):
                 raise ValueError('Canonical Group Chat file admission is unavailable')
             verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission='attachment.stage')
-            from gateway.platforms.api_server_room_attachments import _default_spool
-            normalized['_room_input_media'] = await asyncio.to_thread(retain_peer_input, _default_spool(), dispatch)
-            self._room_grant_claims(request, permission='dispatch')
         return normalized, None
     except Exception as exc:
         return body, _room_dispatch_error(exc, _openai_error=_openai_error)
+
+
+async def prepare_new_room_input(adapter, request, body, *, _openai_error):
+    """Only new admission needs staging; an exact accepted receipt is independent."""
+    raw = body.get('hosted_room_dispatch')
+    if not isinstance(raw, dict) or raw.get('attachment_manifest_digest') is None:
+        return body, None
+    from gateway.hosted_room_peer import HostedMemberDispatch
+    from gateway.platforms.api_server_room_attachments import _default_spool
+    from gateway.session_peer_input import retain_peer_input
+    try:
+        media = await asyncio.to_thread(retain_peer_input, _default_spool(), HostedMemberDispatch.from_mapping(raw))
+        adapter._room_grant_claims(request, permission='attachment.stage')
+        return {**body, '_room_input_media': media}, None
+    except Exception:
+        return body, _json_error(_openai_error, 'The Group Chat files could not be prepared.',
+                                 code='room_attachments_unavailable', status=409)
