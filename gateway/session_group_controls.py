@@ -134,11 +134,13 @@ def _group(authority, actor, home, method, params):
         return _execution_control(service, method, params)
 
     def capabilities():
+        peer = peer_capabilities(authority)
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
-                'room_link': peer_capabilities(authority),
+                'room_link': peer,
                 'features': ['canonical_session_owner', 'room_identity', 'monotonic_log', 'replayable_disband',
-                             'peer_route_grant_fingerprint', 'peer_grant_renewal'],
+                             'peer_route_grant_fingerprint', 'peer_grant_renewal',
+                             'peer_invitation_request_id', 'reciprocal_room_control_setup'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT}
 
     def listing():

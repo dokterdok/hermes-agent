@@ -41,13 +41,17 @@ def _api_adapter(authority):
 
 def peer_capabilities(authority):
     from gateway.hosted_rooms import local_authority_gateway_id
+    from gateway.hosted_room_peer import PROTOCOL_VERSION
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     try:
         adapter = _api_adapter(authority)
         profile = served_profile_name(Path(authority.profile_id))
         _, catalog = _local_room_catalog(adapter, profile, local_authority_gateway_id())
-        # Setup can be prepared, but native peer controls are a separate port.
-        return {'enabled': False, 'reason': 'canonical_peer_controls_required',
+        endpoint = catalog.get('endpoint') or {}
+        enabled = (catalog.get('persistent_process') is True and catalog.get('text') is True
+                   and PROTOCOL_VERSION in catalog.get('protocol_versions', []) and 'direct' in catalog.get('link_modes', [])
+                   and endpoint.get('available') is True)
+        return {'enabled': enabled, 'reason': None if enabled else 'room_link_endpoint_unavailable',
                 'profile': profile, 'catalog': catalog, 'endpoint': catalog['endpoint']}
     except RuntimeStoreError as exc:
         return {'enabled': False, 'reason': exc.reason}

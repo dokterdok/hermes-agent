@@ -55,7 +55,7 @@ it('pins discovery and every subsequent request to its captured authority, inclu
   expect(host.request).not.toHaveBeenCalled()
 })
 
-it('creates only same-authority rosters and dispatches exact advertised attempt identities without inference', async () => {
+it('creates verified local rosters and dispatches exact advertised attempt identities without inference', async () => {
   const route = captureCanonicalGroupRoute()
 
   const members = [
@@ -63,9 +63,9 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
     { name: 'desktop-bob', handle: 'bob', connectionId: 'source-a', targetProfile: 'bob' }
   ]
 
-  host.requestProfile.mockImplementation(async (_route, method, params) => method === 'groups.create'
+  host.requestProfile.mockImplementation(async (selected, method, params) => method === 'groups.create'
     ? { room: { room_id: params.room_id, authority_gateway_id: 'install:home', name: params.name, members: params.members } }
-    : { driver: true, authority_gateway_id: 'install:home' })
+    : { driver: true, authority_gateway_id: selected.connectionId === route.connectionId ? 'install:home' : 'install:unsupported' })
   const { binding, room } = await createCanonicalGroup(route, 'Team', members)
   expect(binding).toEqual({ ...route, roomId: room.room_id })
   expect(room.room_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)

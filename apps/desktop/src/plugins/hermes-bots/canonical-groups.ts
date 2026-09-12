@@ -1,6 +1,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { prepareCanonicalGroupCreate, resumeCanonicalGroupCreate } from './canonical-group-create'
+import { planCrossGatewayMembers } from './canonical-group-peers'
 import type { GroupMember } from './types'
 
 export interface CanonicalGroupRoute {
@@ -106,6 +107,12 @@ export async function createCanonicalGroup(
 
   if (!name.trim() || members.length < 2 || members.length > 6) {
     throw new Error('A canonical group needs a name and two to six members')
+  }
+  const crossGateway = members.some(member => (member.route?.connectionId ?? member.connectionId ?? route.connectionId) !== route.connectionId)
+  if (crossGateway) {
+    const plan = await planCrossGatewayMembers(route, members)
+    const prepared = await prepareCanonicalGroupCreate(route, name, plan.members, plan.peers)
+    return resumeCanonicalGroupCreate(prepared.binding, prepared.binding.roomId)
   }
 
   const profiles = new Set<string>()

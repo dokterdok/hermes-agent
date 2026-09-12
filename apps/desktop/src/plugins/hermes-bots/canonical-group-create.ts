@@ -1,3 +1,5 @@
+import { connectCanonicalGroupPeers } from './canonical-group-peers'
+import type { CanonicalPeerPlan } from './canonical-group-peers'
 import { canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
 
@@ -13,9 +15,11 @@ export function normalizeCanonicalGroupName(name: string): string {
 function nativeJournal(writable = false) {
   if (window.hermesDesktop === undefined) {return undefined}
   const native = window.hermesDesktop?.preparedSubmissions
+
   if (typeof native?.read !== 'function' || (writable && typeof native.compareAndSet !== 'function')) {
     throw new Error('Update Hermes Desktop before continuing this Group Chat setup.')
   }
+
   return native
 }
 
@@ -26,39 +30,49 @@ function requireSetupStorage() {
 }
 
 export interface PreparedCanonicalGroupCreate {
-  version: 1
+  version: 1 | 2
   binding: CanonicalGroupBinding
   authorityId: string
   params: { room_id: string; name: string; members: CanonicalRoomMember[] }
+  peers?: CanonicalPeerPlan[]
 }
 
 function key(route: CanonicalGroupRoute): string {
   if (![route.connectionId, route.profile].every(value => typeof value === 'string' && value.trim() && value.length <= 512)) {
     throw new Error('Group setup needs its original connection and profile.')
   }
+
   return JSON.stringify([PREFIX, route.connectionId, route.profile])
 }
 
 async function journal(): Promise<Record<string, unknown>> {
   const native = nativeJournal()
   const value: unknown = JSON.parse(native ? await native.read() : localStorage.getItem(STORAGE_KEY) || '{}')
+
   if (!value || typeof value !== 'object' || Array.isArray(value)) {throw new Error('Could not read saved Group Chat setup.')}
+
   return value as Record<string, unknown>
 }
 
 async function compareAndSet(route: CanonicalGroupRoute, expected: PreparedCanonicalGroupCreate | null, entry: PreparedCanonicalGroupCreate | null): Promise<boolean> {
   const entryKey = key(route)
   const native = nativeJournal(true)
+
   if (native) {
     return native.compareAndSet!(entryKey, expected === null ? null : JSON.stringify(expected), entry === null ? null : JSON.stringify(entry))
   }
+
   if (!navigator.locks?.request) {throw new Error('This browser cannot safely retain Group Chat setup. Use Hermes Desktop.')}
+
   // Browser mode retains reload recovery, not the native journal's process-crash guarantee.
   return navigator.locks.request(STORAGE_KEY, async () => {
     const values = await journal()
+
     if (JSON.stringify(values[entryKey] ?? null) !== JSON.stringify(expected)) {return false}
+
     if (entry === null) {delete values[entryKey]} else {values[entryKey] = entry}
     localStorage.setItem(STORAGE_KEY, JSON.stringify(values))
+
     return true
   })
 }
@@ -66,6 +80,7 @@ async function compareAndSet(route: CanonicalGroupRoute, expected: PreparedCanon
 function validMember(value: unknown): value is CanonicalRoomMember {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {return false}
   const member = value as CanonicalRoomMember
+
   return [member.member_id, member.profile, member.handle].every(part => typeof part === 'string' && part.trim() && part.length <= 512)
     && !!member.target && typeof member.target === 'object' && !Array.isArray(member.target)
 }
@@ -73,9 +88,16 @@ function validMember(value: unknown): value is CanonicalRoomMember {
 export async function readCanonicalGroupCreate(route: CanonicalGroupRoute): Promise<PreparedCanonicalGroupCreate | undefined> {
   const entryKey = key(route)
   const saved = (await journal())[entryKey]
+
   if (saved === undefined) {return undefined}
+
+  return validateEntry(saved, entryKey)
+}
+
+function validateEntry(saved: unknown, entryKey: string): PreparedCanonicalGroupCreate {
   const entry = saved as PreparedCanonicalGroupCreate
-  if (!entry || entry.version !== 1 || !entry.binding || key(entry.binding) !== entryKey
+
+  if (!entry || ![1, 2].includes(entry.version) || !entry.binding || key(entry.binding) !== entryKey
     || typeof entry.binding.roomId !== 'string' || !entry.binding.roomId || entry.binding.roomId.length > 128
     || typeof entry.authorityId !== 'string' || !entry.authorityId || entry.authorityId.length > 512
     || !entry.params || entry.params.room_id !== entry.binding.roomId || typeof entry.params.name !== 'string'
@@ -84,65 +106,103 @@ export async function readCanonicalGroupCreate(route: CanonicalGroupRoute): Prom
     || JSON.stringify(entry).length > 128 * 1024) {
     throw new Error('Saved Group Chat setup is invalid. It has been kept for recovery.')
   }
+
+  if ((entry.version === 1 && entry.peers !== undefined) || (entry.version === 2 && (!Array.isArray(entry.peers) || !entry.peers.length))) {
+    throw new Error('Saved Bot connections need a compatible Desktop version.')
+  }
+
+  if (entry.peers !== undefined && (!Array.isArray(entry.peers) || entry.peers.length > 6 || entry.peers.some(peer =>
+    !peer || !peer.route || !key(peer.route) || typeof peer.memberId !== 'string' || typeof peer.installationId !== 'string'
+    || typeof peer.targetUrl !== 'string' || peer.targetUrl.length > 2048 || !peer.catalog
+    || !entry.params.members.some(member => member.member_id === peer.memberId && member.target?.kind === 'peer'
+      && member.target.installation_id === peer.installationId && member.target.profile === peer.route.profile)))) {
+    throw new Error('Saved Bot connections are invalid. The original setup has been kept.')
+  }
+
   return entry
 }
 
 async function authority(route: CanonicalGroupRoute): Promise<string> {
   const value = await canonicalGroupRequest<{ driver?: boolean; authority_gateway_id?: string }>(route, 'groups.capabilities')
+
   if (value.driver !== true || typeof value.authority_gateway_id !== 'string' || !value.authority_gateway_id || value.authority_gateway_id.length > 512) {
     throw new Error('The group gateway is not ready. Reconnect it and continue setup.')
   }
+
   return value.authority_gateway_id
 }
 
-export async function prepareCanonicalGroupCreate(route: CanonicalGroupRoute, name: string, members: CanonicalRoomMember[]): Promise<PreparedCanonicalGroupCreate> {
+export async function prepareCanonicalGroupCreate(route: CanonicalGroupRoute, name: string, members: CanonicalRoomMember[], peers: CanonicalPeerPlan[] = []): Promise<PreparedCanonicalGroupCreate> {
   requireSetupStorage()
   name = normalizeCanonicalGroupName(name)
   const bindingRoute = { connectionId: route.connectionId, profile: route.profile }
   key(bindingRoute)
   const authorityId = await authority(bindingRoute)
   const params = JSON.parse(JSON.stringify({ name, members })) as { name: string; members: CanonicalRoomMember[] }
+  const frozenPeers = JSON.parse(JSON.stringify(peers)) as CanonicalPeerPlan[]
   const existing = await readCanonicalGroupCreate(bindingRoute)
+
   const assertSameIntent = (entry: PreparedCanonicalGroupCreate) => {
     if (entry.authorityId !== authorityId || JSON.stringify({ name: normalizeCanonicalGroupName(entry.params.name), members: entry.params.members }) !== JSON.stringify(params)) {
       throw new Error(`Finish setting up "${entry.params.name}" before creating another group on this gateway.`)
     }
+
+    if (JSON.stringify(entry.peers ?? []) !== JSON.stringify(frozenPeers)) {throw new Error('Continue the saved Bot connections before changing this group.')}
+
     return entry
   }
+
   if (existing) {return assertSameIntent(existing)}
+
   if (Object.keys(await journal()).filter(value => value.startsWith('["' + PREFIX + '"')).length >= 32) {
     throw new Error('Finish an existing Group Chat setup before creating another.')
   }
+
   const roomId = crypto.randomUUID()
-  const entry: PreparedCanonicalGroupCreate = { version: 1, binding: { ...bindingRoute, roomId }, authorityId,
-    params: { room_id: roomId, ...params } }
+
+  const entry: PreparedCanonicalGroupCreate = { version: frozenPeers.length ? 2 : 1, binding: { ...bindingRoute, roomId }, authorityId,
+    params: { room_id: roomId, ...params }, ...(frozenPeers.length ? { peers: frozenPeers } : {}) }
+
+  validateEntry(entry, key(bindingRoute))
+
   if (await compareAndSet(bindingRoute, null, entry)) {return entry}
   const winner = await readCanonicalGroupCreate(bindingRoute)
+
   if (!winner) {throw new Error('Group Chat setup changed in another window. Try again.')}
+
   return assertSameIntent(winner)
 }
 
 export async function resumeCanonicalGroupCreate(route: CanonicalGroupRoute, expectedRoomId: string): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
   requireSetupStorage()
   const entry = await readCanonicalGroupCreate(route)
+
   if (!entry) {throw new Error('No unfinished Group Chat setup remains on this gateway.')}
+
   if (entry.binding.roomId !== expectedRoomId) {throw new Error('Group Chat setup changed in another window. Refresh before continuing.')}
+
   if (await authority(entry.binding) !== entry.authorityId) {throw new Error('This gateway has changed. Reconnect the original gateway to continue setup.')}
   const result = await canonicalGroupRequest<{ room: CanonicalRoom & { authority_gateway_id?: string } }>(entry.binding, 'groups.create', entry.params)
   const room = result?.room
+
   if (!room || room.room_id !== entry.params.room_id || room.authority_gateway_id !== entry.authorityId
     || room.name !== normalizeCanonicalGroupName(entry.params.name) || room.disbanded_at != null || !Array.isArray(room.members)
     || room.members.length !== entry.params.members.length || !room.members.every(validMember)) {
     throw new Error('Group creation could not be confirmed. Continue the saved setup before creating another group.')
   }
+
   for (const member of entry.params.members) {
     const current = room.members.find(value => value.member_id === member.member_id)
+
     if (!current || current.profile !== member.profile || current.handle !== member.handle
       || JSON.stringify(Object.entries(current.target!).sort()) !== JSON.stringify(Object.entries(member.target!).sort())) {
       throw new Error('The created group does not match the selected Bots. Its saved setup has been kept.')
     }
   }
+
+  await connectCanonicalGroupPeers(entry.binding, entry.binding.roomId, entry.authorityId, entry.peers ?? [])
   // Another window may already have cleared this exact intent; never erase its replacement.
   await compareAndSet(entry.binding, entry, null)
+
   return { binding: entry.binding, room }
 }
