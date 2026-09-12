@@ -29,7 +29,6 @@ class CanonicalHostedOutputPublisher:
             if scope.home_install_id != room['authority_gateway_id']:
                 raise RuntimeStoreError('unsupported_output_route')
             source = PeerOutputCustody(self, scope, result['artifacts'], result, task['cancel_generation'])
-            source._route(scope)
             return scope, result['artifacts'], source
         from gateway.session_hosted_output_transport import root_named_route
         target = self.profile_homes().get(scope.target_profile)
