@@ -830,6 +830,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             msg_type = self._classify_bridge_message(data)
             source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
                                        user_id=data.get("senderId"), user_name=data.get("senderName"),
+                                       message_id=data.get("messageId"),
                                        is_bot=data.get("fromMe") is True and data.get("fromOwner") is not True)
             source.is_one_to_one = data.get("isGroup") is False
             source.message_is_edit = bool(data.get("isEdited") is True or

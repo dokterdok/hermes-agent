@@ -34,7 +34,9 @@ async def execute_finite_admission(authority, ref, row):
     import asyncio
     from gateway.session_ingress import execute_admission
     from gateway.session_hosted_output import hosted_output_scope, capture_output_result
-    with finite_turn_scope(row['payload'].get('finite', False)):
+    from gateway.session_surface import surface_turn_scope
+    with finite_turn_scope(row['payload'].get('finite', False)), \
+            surface_turn_scope(row['payload'].get('surface_v1')):
         async with hosted_output_scope(authority, ref, row) as output:
             response = await execute_admission(authority, ref, row)
             await asyncio.to_thread(capture_output_result, authority, row, output)
