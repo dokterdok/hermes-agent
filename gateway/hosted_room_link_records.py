@@ -120,6 +120,17 @@ def room_link_retirement_started(db_path: Path | str, *, room_id: str) -> bool:
     return row is not None
 
 
+def room_link_retirement_required(db_path: Path | str, *, room_id: str) -> bool:
+    """Deletion still owes revocation or removal of retained routes."""
+    with _transaction(db_path) as conn:
+        return conn.execute(
+            "SELECT 1 FROM hosted_room_links WHERE room_id=? "
+            "UNION ALL SELECT 1 FROM hosted_room_disband_fences "
+            "WHERE room_id=? AND revocation_complete_at IS NULL LIMIT 1",
+            (room_id, room_id),
+        ).fetchone() is not None
+
+
 def complete_room_link_retirement(
     db_path: Path | str,
     *,
