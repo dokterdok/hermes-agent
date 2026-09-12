@@ -62,6 +62,28 @@ def current_output_binding():
     return binding
 
 
+def _is_owner_transport_admission(authority, ref, row):
+    from gateway.session_hosted_transport import _BINDING, _principal
+
+    with authority.db._read_ctx() as conn:
+        retained = conn.execute("SELECT value FROM state_meta WHERE key=?", (_BINDING + ref.session_id,)).fetchone()
+    if retained is None:
+        return False
+    try:
+        transport = json.loads(retained[0])
+        if (not isinstance(transport, dict)
+                or not isinstance(transport.get("source_home"), str) or not Path(transport["source_home"]).is_absolute()
+                or not isinstance(transport.get("owner"), str) or not transport["owner"]
+                or transport.get("target_home") != authority.profile_id
+                or ref.profile_id != authority.profile_id
+                or row.get("target_session_id") != ref.session_id
+                or row.get("principal_id") != _principal(authority, transport).subject):
+            raise ValueError("transport binding mismatch")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeStoreError("permission_denied") from exc
+    return True
+
+
 def _binding(authority, ref, row):
     if not row.get("request_id", "").startswith("hosted:"):
         return None
@@ -81,6 +103,10 @@ def _binding(authority, ref, row):
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None or policy.source != "bot_room" or "bot_room" not in policy.toolsets:
+        return None
+    # Retained owner transports have their own preclaim authorizer. Classify
+    # that namespace before consulting a colliding local coordinator room.
+    if _is_owner_transport_admission(authority, ref, row):
         return None
     # Remote hosted bindings live on the target and lack the coordinator task.
     # They must not infer local authority merely from a hosted request-id prefix.

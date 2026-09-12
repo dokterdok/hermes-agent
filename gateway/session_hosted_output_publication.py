@@ -31,6 +31,18 @@ class CanonicalHostedOutputPublisher:
         outbox = RoomArtifactOutbox(self.db_path)
         return scope, result["artifacts"], outbox
 
+    def _acknowledge_output(self, scope, manifest, outbox):
+        def acknowledge_or_retired(scope, artifact_ids, *, message_event_id):
+            # Called only after exact canonical event and byte verification.
+            # A durable fence with no pending reclamation survives ACK expiry;
+            # missing receipt rows without that evidence still require ACK.
+            if outbox.retirement_complete(scope):
+                return 0
+            return outbox.acknowledge(scope, artifact_ids, message_event_id=message_event_id)
+
+        return acknowledge_published(self.output_attachments, scope=scope, manifest=manifest,
+                                      acknowledge=acknowledge_or_retired)
+
     def _publish_terminal_tasks(self, room: Mapping) -> bool:
         changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
         cursor = int(room["latest_seq"])
@@ -45,8 +57,7 @@ class CanonicalHostedOutputPublisher:
                     # cancelled/silent old reply has no visible file to ACK.
                     event_id = "dmessage:" + scope.task_id.removeprefix("dtask:")
                     if any(e["event_id"] == event_id for e in self._events(room_id)):
-                        acknowledge_published(self.output_attachments, scope=scope, manifest=manifest,
-                                              acknowledge=outbox.acknowledge)
+                        self._acknowledge_output(scope, manifest, outbox)
                     else:
                         outbox.discard_durably(scope)
                 continue
@@ -81,8 +92,7 @@ class CanonicalHostedOutputPublisher:
                 cursor = max(cursor, int(appended["seq"]))
             if output is not None:
                 if any(e.kind == "message.member" for e in publication.events):
-                    acknowledge_published(self.output_attachments, scope=scope, manifest=manifest,
-                                          acknowledge=outbox.acknowledge)
+                    self._acknowledge_output(scope, manifest, outbox)
                 else:
                     self.output_attachments.abort_unpublished_event(room_id=room_id, event_id=message_id)
                     outbox.discard_durably(scope)
