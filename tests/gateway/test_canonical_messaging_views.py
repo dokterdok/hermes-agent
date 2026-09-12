@@ -108,7 +108,8 @@ async def test_actual_receiving_home_not_execution_profile_and_no_implicit_conse
         result = await view.runner._handle_group_command(replace(view.event, text=command))
         assert 'couldn’t' not in result.lower() and 'could not' not in result.lower()
         assert 'home secret' in result
-        assert 'send <' not in result
+        if command == '/group 1':
+            assert '!group 1 send <message>' in result
     assert not view.receiving.sessions
     assert view.receiving.db._read_all('SELECT * FROM session_admissions') == []
 
@@ -158,8 +159,8 @@ async def test_revocation_during_read_and_picker_selection_does_not_disclose_or_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('action', ['send hello', 'stop', 'retry', 'approve', 'deny', 'discard'])
-async def test_mutations_are_not_activated(view, action):
+@pytest.mark.parametrize('action', ['stop', 'retry', 'approve', 'deny', 'discard'])
+async def test_other_mutations_are_not_activated(view, action):
     view.consent()
     before = view.receiving.db._read_all('SELECT * FROM hosted_room_events')
     result = await view.runner._handle_group_command(replace(view.event, text='/group 1 ' + action))

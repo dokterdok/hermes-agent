@@ -70,14 +70,18 @@ def _capture(authority, room, *, guard=None, member_id=None, token=None):
     return proof
 
 
-def _send(proof, command_id, text, actor):
+def control_message_event_id(member_id, command_id):
     command_id = controls._identifier(command_id, label='command_id')
+    material = json.dumps([member_id or 'home', command_id], separators=(',', ':')).encode()
+    return hosted_rooms.user_event_id('control:' + hashlib.sha256(material).hexdigest())
+
+
+def _send(proof, command_id, text, actor):
+    event_id = control_message_event_id(proof.member_id, command_id)
     if not isinstance(text, str) or not text.strip() or len(text) > 64 * 1024:
         raise RuntimeStoreError('invalid_params')
     if not isinstance(actor, dict) or actor.get('kind') != 'user':
         raise RuntimeStoreError('invalid_params')
-    material = json.dumps([proof.member_id or 'home', command_id], separators=(',', ':')).encode()
-    event_id = hosted_rooms.user_event_id('control:' + hashlib.sha256(material).hexdigest())
     return _service(proof.authority).send(room_id=proof.room_id, event_id=event_id,
         payload={'text': text, 'thread_id': event_id}, actor=actor, authorize_write=proof.check)
 

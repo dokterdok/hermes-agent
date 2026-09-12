@@ -114,7 +114,7 @@ class MessagingRoomBackend:
             events = hosted_rooms.read_events(self.db_path, room_id=room['room_id'], since_seq=max(0, latest - 80), limit=80)['events']
             status = self.service.status(room['room_id'])
             self.check(room)
-            return {'room': selected, 'status': status, 'events': events, 'control_actions': []}
+            return {'room': selected, 'status': status, 'events': events, 'control_actions': ['send']}
 
     def list_files(self, *, room, **options):
         from gateway.hosted_room_file_access import list_room_files
@@ -131,6 +131,34 @@ class MessagingRoomBackend:
             result = read_room_file(self, room=room, profile=self.profile, **selection)
             self.check(room)
             return result
+
+    def send(self, *, room, command_id, text, actor, write_guard):
+        with owner_scope(self.authority):
+            self.check(room)
+            write_guard()
+            if room.get('_room_mode') == 'remote':
+                link = _remote_control_link(self, room)
+                if self.check(room) != link:
+                    raise DisclosureChanged('Peer grant changed before sending')
+                write_guard()
+                result = RoomControlHTTPClient(link).mutate(action='send', command_id=command_id,
+                    text=text, actor_display_name=actor['display_name'])
+                event = result.get('event')
+                from gateway.session_group_messaging_send import control_message_event_id
+                if (result.get('accepted') is not True or result.get('action') != 'send'
+                        or not isinstance(event, dict) or event.get('room_id') != room['room_id']
+                        or event.get('event_id') != control_message_event_id(link.member_id, command_id)
+                        or event.get('authority_epoch') != room['authority_epoch']
+                        or event.get('kind') != 'message.user' or event.get('payload', {}).get('text') != text):
+                    raise RoomControlClientError('Message acceptance could not be confirmed.')
+                self.check(room)
+                return event
+            from gateway.session_group_messaging_send import send_from_home
+            def guard():
+                self.guard()
+                write_guard()
+            return send_from_home(self.authority, room=room, guard=guard,
+                                  command_id=command_id, text=text, actor=actor)
 
 
 def _reservation(backend, link):

@@ -220,9 +220,11 @@ def action(key, command):
     return text('action', label=text(key), command=f'`{command}`')
 
 
-def read_actions(command, reference=None):
+def read_actions(command, reference=None, *, can_send=False):
     result = ['', text('actions')]
     if reference is not None:
+        if can_send:
+            result += [action('send_message', f'{command} {reference} send <message>')]
         result += [action('view_group', f'{command} {reference}'), action('view_bots', f'{command} {reference} bots'),
                    message('group_files', 'command_hint', caption=message('group_files', 'files'), command=f'`{command} {reference} files`')]
     return result + [action('help', f'{command} help')]
@@ -270,7 +272,7 @@ def format_room_detail(backend, room, command='/group'):
         lines += [f"• **{_plain_display_label(_event_label(event, names))}**", _plain_preview_text(event.get('payload', {}).get('text'))]
     if not visible:
         lines += ['No messages yet.']
-    return '\n'.join(lines + read_actions(command, room_reference(room)))
+    return '\n'.join(lines + read_actions(command, room_reference(room), can_send='send' in snapshot.get('control_actions', [])))
 
 
 def format_room_bots(backend, room, command='/group', selected=None):

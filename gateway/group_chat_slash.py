@@ -15,7 +15,7 @@ from gateway.hosted_room_messaging_presentation import (
     format_room_files, format_room_list, resolve_room,
 )
 
-_MUTATIONS = frozenset({'send', 'stop', 'retry', 'approve', 'deny', 'discard', 'remember', 'forget', 'confirm'})
+_MUTATIONS = frozenset({'stop', 'retry', 'approve', 'deny', 'discard', 'remember', 'forget', 'confirm'})
 
 
 def _picker_value(room):
@@ -36,8 +36,9 @@ class GroupChatSlashCommandsMixin:
             f'`{command} 7` - Check recent activity.', f"`{command} 7 bots` - See who's in the group.",
             f'`{command} 7 bot <number>` - View a Bot.',
             text('group_files', 'help_find', command=f'`{command} 7 files [query]`'), '',
+            f'`{command} 7 send <message>` - Send a message to the group.', '',
             "Replace 7 with the Group Chat's number from the list.",
-            'Only rooms shared with this Home are visible. Send, Stop, Retry and file delivery are not enabled here yet.'])
+            'Only rooms shared with this Home are visible. Stop, Retry and file delivery are not enabled here yet.'])
 
     def _group_chat_rate_limit_denial(self, event):
         stamp = disclosure_stamp(self, event)
@@ -88,6 +89,9 @@ class GroupChatSlashCommandsMixin:
                 room = resolve_room(rooms, words[0])
                 kind = words[1].casefold()
                 argument = words[2] if len(words) == 3 else ''
+                if kind == 'send':
+                    from gateway.group_chat_send import send_group_message
+                    return await send_group_message(self, event, backend, room, argument, stamp)
                 handlers = {
                     'bots': lambda: format_room_bots(backend, room, command),
                     'bot': lambda: format_room_bots(backend, room, command, selected=argument),

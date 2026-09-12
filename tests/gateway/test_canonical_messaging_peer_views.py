@@ -72,6 +72,17 @@ async def test_named_peer_summary_and_files_never_use_ungranted_owner_view_or_gl
             with pytest.raises(FileAccessError):
                 await asyncio.to_thread(backend.read_file, room=rooms[0],
                     event_id=private['event_id'], attachment_id=private['attachment_id'])
+            # Typed Send follows the same return-control route, not local owner access.
+            service.local_profiles = lambda: ('private',)
+            view.runner._track_deferred_agent_worker = lambda future, _: None
+            sent = replace(view.event, message_id='remote-send', text='/group 1 send @peer Keep this line.\nAnd this one.')
+            assert await view.runner._handle_group_command(sent) == 'Sent to Remote secret.'
+            assert await view.runner._handle_group_command(sent) == 'Sent to Remote secret.'
+            messages = [event for event in service._events('remote-room')
+                        if event['kind'] == 'message.user' and event['payload']['text'].startswith('@peer Keep')]
+            assert len(messages) == 1
+            assert messages[0]['payload']['text'] == '@peer Keep this line.\nAnd this one.'
+            assert messages[0]['actor']['id'] == 'peer:peer'
             # Inaccessible/missing summary is not a working registered peer view.
             with owner_scope(authority):
                 dispatch_owner_delegation(authority, actor, 'revoke', {'room_id': 'remote-room', 'member_id': 'peer'})
