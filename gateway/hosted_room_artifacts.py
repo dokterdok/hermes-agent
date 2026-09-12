@@ -307,7 +307,8 @@ def current_room_artifact_scope() -> RoomArtifactScope | None:
 class RoomArtifactOutbox:
     """Durable private bytes awaiting canonical import by the room home."""
 
-    def __init__(self, db_path: Path | str, *, root: Path | str | None = None) -> None:
+    def __init__(self, db_path: Path | str, *, root: Path | str | None = None, authorize_write=None) -> None:
+        self.authorize_write = authorize_write
         requested_db_path = Path(db_path)
         self.db_path = (
             requested_db_path
@@ -962,6 +963,8 @@ class RoomArtifactOutbox:
                    WHERE scope_key=? AND sha256=? AND name=?""",
                 (scope.key, digest, safe_name),
             ).fetchone()
+            if self.authorize_write is not None:
+                self.authorize_write(conn, scope)
             if existing is not None:
                 return self._manifest(existing)
             if scope.as_mapping().get("kind") == "classic":
@@ -995,6 +998,8 @@ class RoomArtifactOutbox:
                     os.fsync(handle.fileno())
                 os.replace(temp, target)
                 os.chmod(target, 0o600)
+                if self.authorize_write is not None:
+                    self.authorize_write(conn, scope)
                 conn.execute(
                     """INSERT INTO hosted_room_output_artifacts
                        (artifact_id, scope_key, scope_json, name, kind, mime, size,
@@ -1287,6 +1292,8 @@ class RoomArtifactOutbox:
         with self._lock, self._connect() as conn:
             self._initialize(conn)
             conn.execute("BEGIN IMMEDIATE")
+            if self.authorize_write is not None:
+                self.authorize_write(conn, scope)
             self._admit_generation(conn, scope)
             rows = conn.execute(
                 "SELECT * FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL"

@@ -812,11 +812,14 @@ def _settled_effects(
     text = _truncate_utf8_text(
         _terminal_text(result, field="text", fallback=""), max_bytes=MAX_MEMBER_TEXT_BYTES,
         suffix=_TRUNCATED_REPLY_NOTICE)
-    if is_pass_text(text):
+    attachments = _message_manifest(result.get("attachments", [])) if isinstance(result, Mapping) else []
+    if attachments and (not text or is_pass_text(text)):
+        text = "Shared " + ", ".join(attachment["name"] for attachment in attachments) + "."
+    if is_pass_text(text) and not attachments:
         return {"message_event_id": None, "passed": True}, []
     return {"message_event_id": message_event_id, "passed": False}, [EventPlan(
         event_id=message_event_id, kind="message.member", actor=_member_actor(task.member),
-        payload={**_turn_coordinates(task), "text": text}, authority_gateway_id=room.gateway_id,
+        payload={**_turn_coordinates(task), "text": text, **({"attachments": attachments} if attachments else {})}, authority_gateway_id=room.gateway_id,
         authority_epoch=room.authority_epoch)]
 
 

@@ -32,5 +32,8 @@ def admit_finite(params):
 
 async def execute_finite_admission(authority, ref, row):
     from gateway.session_ingress import execute_admission
-    with finite_turn_scope(row['payload'].get('finite', False)):
-        return await execute_admission(authority, ref, row)
+    from gateway.session_hosted_output import hosted_output_scope, capture_output_result
+    with finite_turn_scope(row['payload'].get('finite', False)), hosted_output_scope(authority, ref, row) as output:
+        response = await execute_admission(authority, ref, row)
+        capture_output_result(authority, row, output)
+        return response
