@@ -51,6 +51,13 @@ def _authorize(adapter, request):
     return authority, actor, room_id, member_id, token
 
 
+def _backend(adapter):
+    from types import SimpleNamespace
+    authority = _authority(adapter)
+    service = _service(authority)
+    return SimpleNamespace(service=service, db_path=authority.db.db_path)
+
+
 def _visible_events(delta):
     visible = []
     for event in delta.get('events', []):
