@@ -4228,6 +4228,11 @@ class SlackAdapter(BasePlatformAdapter):
         if accepted is None:
             return
         event, dedup_team_id, channel_id = accepted
+        sender_is_bot = self._event_declares_bot_sender(event)
+        if not sender_is_bot and event.get("user") and not event.get("client_msg_id"):
+            sender_is_bot = await self._resolve_user_is_bot(
+                event["user"], chat_id=event.get("channel", ""),
+                team_id=str(event.get("team") or event.get("team_id") or ""))
         original_text = event.get("text", "")
         # Slack rejects slash commands inside threads, so a leading ``!`` is rewritten to ``/``
         # — only for known gateway commands, so "!nice work" passes through.
@@ -4323,6 +4328,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types, channel_context=channel_context)
         msg_event.source.is_one_to_one = is_one_to_one_dm
         msg_event.source.message_is_edit = is_message_edit
+        msg_event.source.is_bot = sender_is_bot
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
