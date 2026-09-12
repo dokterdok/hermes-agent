@@ -11,13 +11,12 @@ from tests.gateway.test_roomlink_review_grants import target  # noqa: F401
 
 
 @pytest_asyncio.fixture
-async def peer_run(target, tmp_path):
+async def peer_target(target, tmp_path):
     from gateway import hosted_rooms
     from gateway.hosted_room_peer import GatewayRoomCatalog
-    from gateway.platforms.api_server_authority_runs import run_admission
     from tui_gateway.hosted_room_driver import HostedRoomBinding
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
-    from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, build_member_dispatch
+    from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 
     target.app.router.add_get('/p/{profile}/v1/runs/{run_id}', target.adapter._handle_get_run)
     target.app.router.add_post('/p/{profile}/v1/runs/{run_id}/approval', target.adapter._handle_run_approval)
@@ -36,22 +35,30 @@ async def peer_run(target, tmp_path):
             execution_policy_digest=catalog.execution_policy.policy_digest,
             cancellation_scope_id='cancel', trace_id='trace', grant=invitation['grant'])
         binding = HostedRoomBinding('room', gateway, 1)
-        dispatch = build_member_dispatch(binding=binding, route=route, room_id='room', task_id='task',
-            target_profile=target.profile, execution_generation=7, source_event_seq=1,
-            prompt='Inspect fixture', trace_id='trace')
         peer = PeerRunsHTTPClient(base_url=str(http.make_url('')), api_key='',
             target_profile=target.profile, receipt_db_path=tmp_path / 'source.db')
-        receipt = await asyncio.to_thread(peer.dispatch, dispatch=dispatch.as_mapping(), grant=route.grant)
-        authority, row = run_admission(target.adapter, receipt['run_id'])
         try:
-            yield SimpleNamespace(target=target, http=http, peer=peer, receipt=receipt, row=row,
-                authority=authority, route=route, binding=binding, catalog=catalog, dispatch=dispatch)
+            yield SimpleNamespace(target=target, http=http, peer=peer,
+                authority=target.authority, route=route, binding=binding, catalog=catalog)
         finally:
             observers = list(target.adapter._active_run_tasks.values())
             for observer in observers:
                 observer.cancel()
             if observers:
                 await asyncio.gather(*observers, return_exceptions=True)
+
+
+@pytest_asyncio.fixture
+async def peer_run(peer_target):
+    from gateway.platforms.api_server_authority_runs import run_admission
+    from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+    p = peer_target
+    p.dispatch = build_member_dispatch(binding=p.binding, route=p.route, room_id='room', task_id='task',
+        target_profile=p.target.profile, execution_generation=7, source_event_seq=1,
+        prompt='Inspect fixture', trace_id='trace')
+    p.receipt = await asyncio.to_thread(p.peer.dispatch, dispatch=p.dispatch.as_mapping(), grant=p.route.grant)
+    p.authority, p.row = run_admission(p.target.adapter, p.receipt['run_id'])
+    return p
 
 
 @pytest.mark.asyncio
@@ -111,8 +118,8 @@ async def test_canonical_unknown_is_not_a_terminal_peer_receipt(peer_run):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('remote_state', ['cancelled', 'completed', 'failed', 'queued', 'unknown', 'missing', 'closing'])
-async def test_peer_deferred_retry_requires_exact_idle_receipt(peer_run, remote_state):
+@pytest.mark.parametrize('remote_state', ['cancelled', 'failed', 'queued', 'unknown', 'missing', 'closing'])
+async def test_peer_deferred_controls_refuse_unproven_retry(peer_run, remote_state):
     from gateway import hosted_room_driver as tasks
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_state import SessionDB
@@ -166,12 +173,9 @@ async def test_peer_deferred_retry_requires_exact_idle_receipt(peer_run, remote_
             with pytest.raises(tasks.RoomUnavailableError, match='being disbanded'):
                 await asyncio.to_thread(service.retry_room_task, **args)
             assert tasks.get_task(db.db_path, identity) == before
-        elif remote_state in {'cancelled', 'completed', 'failed'}:
-            retried = await asyncio.to_thread(service.retry_room_task, **args)
-            assert retried['status'] == 'queued' and retried['execution_generation'] == 7
-            assert p.peer._receipt('task', 7)['run_id'] == p.receipt['run_id']
         else:
-            reason = 'session_busy' if remote_state == 'queued' else 'unknown_execution'
+            reason = ('session_busy' if remote_state == 'queued' else
+                      'unsupported_operation' if remote_state in {'cancelled', 'failed'} else 'unknown_execution')
             with pytest.raises(RuntimeStoreError, match=reason):
                 await asyncio.to_thread(service.retry_room_task, **args)
             assert tasks.get_task(db.db_path, identity) == before

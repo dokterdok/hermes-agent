@@ -49,14 +49,14 @@ class HostedControls:
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
             self._require_work_open(room_id)
+            peer = self._member_is_peer(room_id, member_id)
             # Unknown is not non-admission. Never advance its hosted generation
             # while leaving the canonical unknown head behind it.
             if task['status'] == 'indeterminate':
                 raise RuntimeStoreError('unknown_execution')
-            if task['status'] != 'deferred':
+            if task['status'] not in ({'deferred', 'settled'} if peer else {'deferred'}):
                 raise RuntimeStoreError('stale_generation')
             rpc = self._resolve_member_transport(binding, task)
-            peer = self._member_is_peer(room_id, member_id)
             coords = {'profile': task['payload']['target_profile'], 'source': 'bot_room'}
             if peer:
                 session = rpc.resolve_exact(**coords, title=f'Group: {room_id}')
@@ -70,15 +70,27 @@ class HostedControls:
             if info.get('active'):
                 raise RuntimeStoreError('session_busy')
             if peer:
+                if info.get('status') in {'failed', 'cancelled'}:
+                    raise RuntimeStoreError('unsupported_operation')
                 generation = info.get('canonical_execution_generation')
                 known_generation = type(generation) is int and generation > 0
                 if (info.get('task_id') != task_id or info.get('execution_generation') != execution_generation
                         or info.get('active') is not False or not info.get('run_id')
                         or 'canonical_execution_generation' not in info
-                        or info.get('status') not in {'completed', 'failed', 'cancelled'}
-                        or not (known_generation or (generation is None and info['status'] == 'cancelled'))):
-                    # Receipt absence and ambiguous/unknown work are not evidence of idle.
+                        or info.get('status') != 'completed' or not known_generation):
                     raise RuntimeStoreError('unknown_execution')
+                terminal = self.runtime._terminal_from_history(
+                    rpc, coords['profile'], session['session_id'], task)
+                if (terminal is None or terminal.status != 'settled'
+                        or terminal.settlement_id != 'peer-run:' + info['run_id']):
+                    raise RuntimeStoreError('unknown_execution')
+                lease = self.runtime._ensure_lease(binding)
+                # Completion is receipt reconciliation, not permission to rerun.
+                result = self.runtime._fenced(tasks.resolve_deferred_completion, binding, task, lease,
+                    settlement_id=terminal.settlement_id, result=terminal.result)
+                self.runtime._set_blocked(room_id, False)
+                self.runtime.wakeup()
+                return result
             lease = self.runtime._ensure_lease(binding)
             return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
 
