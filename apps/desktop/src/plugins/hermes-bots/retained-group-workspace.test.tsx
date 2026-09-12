@@ -248,14 +248,16 @@ it('downloads a producer reference from the actual retained Files row without an
   expect(screen.queryByRole('textbox', { name: /message/i })).toBeNull()
 })
 
-it('shows a clear unavailable result when the original producer cannot authorize the reference', async () => {
+it.each(['classic_export_unavailable', 'Failed to fetch'])(
+  'does not claim a file is gone when its source rejects the read: %s', async failure => {
   const { room } = referenceFixture()
   install(room)
-  request.mockRejectedValue(new Error('classic_export_unavailable'))
+  request.mockRejectedValue(new Error(failure))
   render(<GroupChatWorkspace group="Workshop" members={[]} />)
   fireEvent.click(screen.getByRole('button', { name: 'Files' }))
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Download: exported.txt' }))
-  await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('alert').textContent).toBe('This file is no longer available.'))
+  await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('alert').textContent).toBe('This attachment could not be downloaded.'))
+  expect(screen.queryByText('This file is no longer available.')).toBeNull()
   expect(observed.downloads).toHaveLength(0)
   expect(request).toHaveBeenCalledOnce()
 })

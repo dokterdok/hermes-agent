@@ -93,7 +93,7 @@ export function RetainedFileRow({ item, signal }: { item: RetainedFileItem; sign
       {item.available && !item.current() && <p className="text-xs text-(--ui-text-tertiary)">{b.fileGone}</p>}
       {error && (
         <p className="text-xs text-(--ui-text-secondary)" role="alert">
-          {error === 'unavailable' ? b.fileGone : b.fileVerificationFailed}
+          {error === 'unavailable' ? b.attachmentDownloadFailed : b.fileVerificationFailed}
         </p>
       )}
     </div>
