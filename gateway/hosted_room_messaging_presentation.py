@@ -240,7 +240,7 @@ def status_text(status):
 
 def format_room_list(backend, rooms, command='/group', page=1):
     if not rooms:
-        return '👥 **No Group Chats shared with this Home**\\nAsk the room owner to enable Home access.'
+        return '👥 **No shared Group Chats**\n\nOpen Hermes Desktop to check your groups.'
     count = (len(rooms) + MAX_ROOM_CHOICES - 1) // MAX_ROOM_CHOICES
     if not 1 <= page <= count:
         raise RoomControlError(f'There are only {count} Group Chat pages.')
@@ -252,10 +252,10 @@ def format_room_list(backend, rooms, command='/group', page=1):
         members = len(snapshot['room']['members'])
         lines += ['', f"{_room_status_icon(state)} **{room_reference(room)}. {name}** · {state} · {members} Bot{'s' if members != 1 else ''}"]
     if page > 1:
-        lines += [text('action', label=text('go_to_page', page=page-1), command=f'`{command} list {page-1}`')]
+        lines += ['', text('action', label=text('go_to_page', page=page-1), command=f'`{command} list {page-1}`')]
     if page < count:
-        lines += [text('action', label=text('go_to_page', page=page+1), command=f'`{command} list {page+1}`')]
-    return '\\n'.join(lines + read_actions(command))
+        lines += ['', text('action', label=text('go_to_page', page=page+1), command=f'`{command} list {page+1}`')]
+    return '\n'.join(lines + read_actions(command))
 
 
 def format_room_detail(backend, room, command='/group'):
@@ -270,7 +270,7 @@ def format_room_detail(backend, room, command='/group'):
         lines += [f"• **{_plain_display_label(_event_label(event, names))}**", _plain_preview_text(event.get('payload', {}).get('text'))]
     if not visible:
         lines += ['No messages yet.']
-    return '\\n'.join(lines + read_actions(command, room_reference(room)))
+    return '\n'.join(lines + read_actions(command, room_reference(room)))
 
 
 def format_room_bots(backend, room, command='/group', selected=None):
@@ -285,13 +285,13 @@ def format_room_bots(backend, room, command='/group', selected=None):
     for index, member in enumerate(members, 1):
         name, handle = _plain_display_label(_room_member_name(member)), _room_member_handle(member)
         lines += ['', f"{index}. **{name}**" + (f' · `@{handle}`' if handle else '')]
-    return '\\n'.join(lines + read_actions(command, room_reference(room)))
+    return '\n'.join(lines + read_actions(command, room_reference(room)))
 
 
 def format_room_files(backend, room, command='/group', query=''):
     from gateway.hosted_room_file_lookup import selection_digest
     page = backend.list_files(room=room, query=query, limit=8)
-    lines = [message('group_files', 'title', name=_plain_display_label(room['name']))]
+    lines = [message('group_files', 'title', name=_plain_display_label(room['name'])), '']
     for item in page['items']:
         name = _plain_display_label(item['name'], limit=80)
         producer = _plain_display_label(item['producer']['label'], limit=48)
@@ -300,4 +300,4 @@ def format_room_files(backend, room, command='/group', query=''):
         lines += [message('group_files', 'no_match' if query else 'empty')]
     if page['has_more']:
         lines += [message('group_files', 'search_with', command=f'`{command} {room_reference(room)} files <query>`')]
-    return '\\n'.join(lines + read_actions(command, room_reference(room)))
+    return '\n'.join(lines + read_actions(command, room_reference(room)))

@@ -10,7 +10,7 @@ import pytest
 from gateway import hosted_room_controls as controls, hosted_rooms
 from gateway.config import PlatformConfig
 from gateway.group_home_consent import disclosure_stamp
-from gateway.hosted_room_file_contract import FileAccessError, scope
+from gateway.hosted_room_file_contract import FileAccessError
 from gateway.hosted_room_messaging import current_room_backend
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.platforms import api_server_room_controls as http_controls
@@ -30,33 +30,25 @@ async def test_named_peer_summary_and_files_never_use_ungranted_owner_view_or_gl
         service.authorize_room(actor.subject, 'remote-room', create=True)
         gateway = hosted_rooms.local_authority_gateway_id()
         hosted_rooms.create_room(authority.db.db_path, room_id='remote-room', name='Remote secret', authority_gateway_id=gateway,
-            members=[{'member_id': 'peer', 'profile': 'home', 'handle': 'peer'}, {'member_id': 'private', 'profile': 'private', 'handle': 'private'}])
+            members=[{'member_id': 'peer', 'profile': 'home', 'handle': 'peer', 'target': {
+                'kind': 'peer', 'profile': 'home', 'installation_id': 'receiving-install',
+                'peer_id': 'receiving-peer', 'capability_digest': 'a' * 64}},
+                {'member_id': 'private', 'profile': 'private', 'handle': 'private'}])
         grant = dispatch_owner_delegation(authority, actor, 'issue', {'room_id': 'remote-room', 'member_id': 'peer', 'request_id': 'test'})
     allowed = publish(authority, 'remote-room', 1, ['peer'], name='peer-allowed.txt')
-    publish(authority, 'remote-room', 2, ['private'], name='private-only.txt')
+    private = publish(authority, 'remote-room', 2, ['private'], name='private-only.txt')
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={'key': 'unused'}))
     adapter.gateway_runner = view.runner
-    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
     paths = []
+    @web.middleware
+    async def record_path(request, handler):
+        if request.path.endswith('/files'):
+            paths.append(request.path)
+        return await handler(request)
+    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware(), record_path])
     for method, path, handler in http_controls._http_routes(adapter):
         app.router.add_route(method, '/p/{profile}' + path, handler)
 
-    # Files registration is parent-owned. Mount this explicit contract fixture,
-    # using the actual parent authorizer and actual recipient-filtered store.
-    async def catalog(request):
-        from gateway.hosted_room_file_access import list_local_files
-        from types import SimpleNamespace
-        owner, principal, room_id, member_id, token = http_controls._authorize(adapter, request)
-        room = hosted_rooms.room_state(owner.db.db_path, room_id=room_id)
-        expected = scope(room, member_id, 'home')
-        assert request.headers['X-Hermes-Room-Profile'] == 'home'
-        assert request.headers['X-Hermes-Room-Authority'] == gateway
-        assert request.headers['X-Hermes-Room-Epoch'] == '1'
-        paths.append(request.path)
-        page = list_local_files(SimpleNamespace(service=owner.hosted_room_service, db_path=owner.db.db_path),
-                                room=room, member_id=member_id, limit=int(request.query.get('limit', 8)))
-        return web.json_response({**page, 'scope': expected})
-    app.router.add_get('/p/{profile}/v1/room-controls/{room_id}/files', catalog)
     try:
         async with TestClient(TestServer(app)) as client:
             with owner_scope(view.receiving):
@@ -74,6 +66,12 @@ async def test_named_peer_summary_and_files_never_use_ungranted_owner_view_or_gl
             result = await view.runner._handle_group_command(replace(view.event, text='/group 1 files'))
             assert 'peer-allowed.txt' in result and 'private-only.txt' not in result
             assert paths == ['/p/worker/v1/room-controls/remote-room/files']
+            downloaded = await asyncio.to_thread(backend.read_file, room=rooms[0],
+                event_id=allowed['event_id'], attachment_id=allowed['attachment_id'])
+            assert downloaded.data == b'published bytes'
+            with pytest.raises(FileAccessError):
+                await asyncio.to_thread(backend.read_file, room=rooms[0],
+                    event_id=private['event_id'], attachment_id=private['attachment_id'])
             # Inaccessible/missing summary is not a working registered peer view.
             with owner_scope(authority):
                 dispatch_owner_delegation(authority, actor, 'revoke', {'room_id': 'remote-room', 'member_id': 'peer'})

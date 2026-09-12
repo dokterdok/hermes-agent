@@ -121,6 +121,7 @@ def _response(result, *, status=200):
 
 
 def _http_routes(adapter):
+    from gateway.platforms import api_server_room_control_files
     async def send(request):
         import asyncio
         from gateway.platforms.api_server import _reserve_pending_api_work
@@ -178,4 +179,4 @@ def _http_routes(adapter):
                 'message': 'Group Chat status could not be loaded.'}}, status=409)
     return [('GET', '/v1/room-controls/{room_id}', handle),
             ('POST', '/v1/room-controls/{room_id}', send),
-            ('DELETE', '/v1/room-controls/{room_id}', handle)]
+            ('DELETE', '/v1/room-controls/{room_id}', handle)] + api_server_room_control_files._http_routes(adapter)
