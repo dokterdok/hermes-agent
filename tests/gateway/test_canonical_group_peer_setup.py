@@ -33,6 +33,7 @@ def owner(tmp_path, monkeypatch, request):
         authority = SimpleNamespace(runner=runner, db=db, profile_id=str(home),
             epoch=begin_runtime_epoch(db, instance_id='test'))
         runner.session_authority = authority
+        runner.adapters = {Platform.API_SERVER: adapter}
         runner._adapters_for_profile = lambda selected: {Platform.API_SERVER: adapter}
         adapter.gateway_runner = runner
         adapter._profile_scope = lambda selected: _profile_runtime_scope(home)

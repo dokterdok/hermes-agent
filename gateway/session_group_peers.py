@@ -25,15 +25,12 @@ GROUP_PEER_FIELDS = {
 
 def _api_adapter(authority):
     from gateway.config import Platform
+    from gateway.session_authorities import authority_for_profile_id
     runner = getattr(authority, 'runner', None)
-    if runner is None:
+    if runner is None or authority_for_profile_id(runner, authority.profile_id) is not authority:
         raise RuntimeStoreError('room_link_api_unavailable')
-    resolve = getattr(runner, '_adapters_for_profile', None)
-    if resolve is None:
-        raise RuntimeStoreError('room_link_api_unavailable')
-    registry = getattr(runner, 'session_authorities', None)
-    profile = registry.profile_name(authority) if registry is not None else None
-    adapter = resolve(profile).get(Platform.API_SERVER)
+    # The API listener serves all reserved authorities; messaging adapter maps do not.
+    adapter = getattr(runner, 'adapters', {}).get(Platform.API_SERVER)
     if (adapter is None or getattr(adapter, 'gateway_runner', None) is not runner
             or adapter._ensure_session_db() is not authority.db):
         raise RuntimeStoreError('room_link_api_unavailable')
@@ -106,6 +103,14 @@ def _revoke(authority, actor, service, params, *, exact=False):
     return {'revoked': True}
 
 
+def _require_peer_target(room, member_id, target):
+    member = next((m for m in room['members'] if m['member_id'] == member_id), None)
+    stored = member.get('target', {}) if member is not None else {}
+    if (stored.get('kind') != 'peer'
+            or (stored.get('installation_id'), stored.get('profile')) != target):
+        raise RuntimeStoreError('room_link_scope_changed')
+
+
 def _register(authority, actor, service, params):
     from gateway.hosted_room_peer import GatewayRoomCatalog, PROTOCOL_VERSION, validate_room_link_url
     from gateway.hosted_rooms import local_authority_gateway_id
@@ -127,6 +132,8 @@ def _register(authority, actor, service, params):
     if fingerprint is not None and (not isinstance(fingerprint, str) or fingerprint and (
             len(fingerprint) != 64 or any(char not in '0123456789abcdef' for char in fingerprint))):
         raise RuntimeStoreError('invalid_params')
+    target = (catalog.installation_id, profile)
+    _require_peer_target(service._room(room_id), member, target)
     client = PeerRunsHTTPClient(base_url=url, api_key='', target_profile=profile, receipt_db_path=service.db_path)
     probe = client.probe(grant=grant)
     if GatewayRoomCatalog.from_mapping(probe.get('catalog')) != catalog:
@@ -134,6 +141,7 @@ def _register(authority, actor, service, params):
     service.authorize_room(actor.subject, room_id)
     service._owned_authority(room_id)
     room = service._room(room_id)
+    _require_peer_target(room, member, target)
     install = local_authority_gateway_id()
     expected = {'room_id': room_id, 'home_install_id': install, 'member_id': member,
                 'authority_gateway_id': room['authority_gateway_id'], 'authority_epoch': room['authority_epoch'],
