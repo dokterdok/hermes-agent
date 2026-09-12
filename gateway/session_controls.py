@@ -39,7 +39,7 @@ class AuthorityConnection:
         rid = request.get('id')
         method = request.get('method')
         params = request.get('params') or {}
-        if method == 'session.detach' and not isinstance(params, dict):
+        if method in {'session.detach', 'session.export.read'} and not isinstance(params, dict):
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
@@ -68,8 +68,10 @@ class AuthorityConnection:
         handlers.update(config_handlers(self))
         from gateway.session_ancillary import handlers as ancillary_handlers
         handlers.update(ancillary_handlers(self))
-        from gateway.session_images import attach_bytes
+        from gateway.session_classic_exports import read_classic_export
         from functools import partial
+        handlers['session.export.read'] = partial(read_classic_export, self)
+        from gateway.session_images import attach_bytes
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
         try:
             from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
