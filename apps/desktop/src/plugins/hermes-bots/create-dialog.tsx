@@ -43,10 +43,10 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
-import { registerCanonicalGroup } from './canonical-group-registry'
 import { normalizeCanonicalGroupName, readCanonicalGroupCreate } from './canonical-group-create'
 import type { PreparedCanonicalGroupCreate } from './canonical-group-create'
 import { CanonicalGroupCreateRecovery } from './canonical-group-create-recovery'
+import { registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupRoute } from './canonical-groups'
 import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
@@ -1126,6 +1126,11 @@ interface CreateGroupChatDialogProps {
   roster: RosterRow[]
 }
 
+function groupCreationSourceIsCurrent(route: CanonicalGroupRoute): boolean {
+  return route.connectionId === host.state.connectionId.get() && route.profile === host.state.profile.get()
+    && host.state.gateway.get() === 'open'
+}
+
 /** Discord-style group chat creation: pick 2+ bots via checkboxes (with
  *  search), name the group, create. Assignment appends to each local bot's
  *  group membership list, so the room appears in the roster and syncs
@@ -1134,6 +1139,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const { t } = useI18n()
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
@@ -1146,6 +1154,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   // Reset per open so a cancelled draft doesn't leak into the next one.
   useEffect(() => {
     const generation = ++openGeneration.current
+
     if (open) {
       setQuery('')
       setChecked({})
@@ -1153,6 +1162,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setImage(null)
       setSavedCreate(undefined)
       setSetupReadError('')
+
       try {
         const route = captureCanonicalGroupRoute()
         setCreationRoute(route)
@@ -1163,6 +1173,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         })
       } catch (error) {setSetupReadError(error instanceof Error ? error.message : String(error))}
     }
+
     return () => { openGeneration.current++ }
   }, [open])
 
@@ -1177,7 +1188,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : b.group.nameLabel
 
-  const canCreate = savedCreate === null && !setupReadError && selected.length >= 2 && Boolean(name.trim() || selected.length)
+  const currentSource = creationRoute?.connectionId === connectionId && creationRoute?.profile === profile && gateway === 'open'
+  const canCreate = currentSource && savedCreate === null && !setupReadError && selected.length >= 2 && Boolean(name.trim() || selected.length)
 
   const creating = useRef(false)
 
@@ -1185,22 +1197,37 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     if (creating.current || !canCreate || !creationRoute) {return}
     creating.current = true
     const generation = openGeneration.current
+    const route = { ...creationRoute }
+    const sourceCurrent = () => generation === openGeneration.current && groupCreationSourceIsCurrent(route)
 
     try {
     const base = normalizeCanonicalGroupName((name.trim() || placeholder).slice(0, 64))
 
-    if (selected.length < 2 || !base) {
+    if (selected.length < 2 || !base || !sourceCurrent()) {
       return
     }
 
-    const route = { ...creationRoute }
     const frozenMembers = durableGroupChatMembers(selected)
-    const capabilities = await canonicalGroupRequest<{ driver: boolean; persistent_process?: boolean; features?: string[] }>(route, 'groups.capabilities')
-    if (generation !== openGeneration.current) {return}
+    const capabilities = await canonicalGroupRequest<Record<string, unknown> | null>(route, 'groups.capabilities')
 
-    if (capabilities.driver) {
-      const created = await createCanonicalGroup(route, base, frozenMembers)
-      if (generation !== openGeneration.current) {return}
+    if (!sourceCurrent()) {return}
+
+    if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) {
+      throw new Error(b.canonical.driverUnavailable)
+    }
+
+    if (capabilities.driver === true) {
+      const authorityId = capabilities.authority_gateway_id
+
+      if (typeof authorityId !== 'string' || !authorityId.trim() || authorityId.length > 512) {
+        throw new Error(b.canonical.driverUnavailable)
+      }
+
+      const created = await createCanonicalGroup(route, base, frozenMembers, authorityId)
+
+      // Let the durable helper settle its exact intent; only current-source UI may adopt it.
+      if (!sourceCurrent()) {return}
+
       const key = registerCanonicalGroup(route, created.room)
       onClose()
       onCreated?.(key)
@@ -1208,8 +1235,11 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       return
     }
 
+    const features = capabilities.features
+
     if (capabilities.driver !== false || capabilities.persistent_process !== false
-      || capabilities.features?.includes('canonical_session_owner')) {
+      || (features !== undefined && (!Array.isArray(features) || features.some(feature => typeof feature !== 'string')
+        || features.includes('canonical_session_owner')))) {
       throw new Error('This gateway is not ready to create a group. Reconnect it and try again.')
     }
 
@@ -1257,19 +1287,22 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     onClose()
     onCreated?.(groupName)
     } catch (error) {
+      if (!sourceCurrent()) {return}
       host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
-      if (creationRoute && generation === openGeneration.current) {
+
+      if (sourceCurrent()) {
         try {
-          const saved = await readCanonicalGroupCreate(creationRoute)
-          if (generation === openGeneration.current) {setSavedCreate(saved ?? null)}
+          const saved = await readCanonicalGroupCreate(route)
+
+          if (sourceCurrent()) {setSavedCreate(saved ?? null)}
         } catch (readError) {
-          if (generation === openGeneration.current) {setSetupReadError(readError instanceof Error ? readError.message : String(readError))}
+          if (sourceCurrent()) {setSetupReadError(readError instanceof Error ? readError.message : String(readError))}
         }
       }
     } finally { creating.current = false }
   }
 
-  if (savedCreate) {return <CanonicalGroupCreateRecovery entry={savedCreate} open={open} onClose={onClose} onCreated={onCreated} />}
+  if (savedCreate && currentSource) {return <CanonicalGroupCreateRecovery entry={savedCreate} onClose={onClose} onCreated={onCreated} open={open} />}
 
   return (
     <Dialog
@@ -1286,6 +1319,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
         {setupReadError && <p role="alert">{setupReadError}</p>}
+        {creationRoute && !currentSource && <p role="alert">{b.canonical.driverUnavailable}</p>}
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}
