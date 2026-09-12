@@ -200,6 +200,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
+            if agent_failed_early and not is_context_overflow_failure:
+                response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
             )
