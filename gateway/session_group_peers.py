@@ -14,7 +14,7 @@ GROUP_PEER_METHODS = {name: 'session:control' for name in (
     'groups.peer.invite', 'groups.peer.revoke', 'groups.peer.revoke_exact', 'groups.peer.register')}
 GROUP_PEER_FIELDS = {
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
-                         'member_id', 'grant_id', 'ttl_seconds', 'status_ttl_seconds',
+                         'member_id', 'grant_id', 'request_id', 'ttl_seconds', 'status_ttl_seconds',
                          'replication', 'work_records', 'passive_only'},
     'groups.peer.revoke': {'grant'},
     'groups.peer.revoke_exact': {'grant'},
@@ -74,14 +74,23 @@ def _invite(authority, actor, service, params):
     if not 60 <= ttl <= 86400 or not ttl <= status_ttl <= 30 * 86400:
         raise RuntimeStoreError('invalid_params')
     secret = gateway_room_grant_secret()
-    token = issue_room_grant(secret,
-        grant_id=params.get('grant_id') or 'grant-' + secrets.token_hex(16),
+    grant = dict(
+        grant_id=params.get('grant_id') or None,
         room_id=params['room_id'], home_install_id=params['home_install_id'],
         authority_gateway_id=params['authority_gateway_id'], authority_epoch=params['authority_epoch'],
         member_id=params['member_id'], target_install_id=install, target_profile=profile,
         execution_policy_digest=policy['policy_digest'], ttl_seconds=ttl, status_ttl_seconds=status_ttl,
         permissions=invitation_permissions(params.get('replication', False), params.get('work_records', False),
                                            passive_only=params.get('passive_only', False)))
+    if 'request_id' in params:
+        from gateway.session_peer_invitation_receipts import issue_with_receipt
+        result = issue_with_receipt(authority, actor, params['request_id'], secret=secret, grant=grant, catalog=catalog)
+        # No store transaction spans the fresh adapter/config checks.
+        fresh_policy, fresh_catalog = _local_room_catalog(_api_adapter(authority), profile, install)
+        if fresh_policy != policy or fresh_catalog != catalog:
+            raise RuntimeStoreError('room_invitation_conflict')
+        return result
+    token = issue_room_grant(secret, **{**grant, 'grant_id': grant['grant_id'] or 'grant-' + secrets.token_hex(16)})
     claims = decode_room_grant(secret, token, permission='status')
     reserve_grant_state(grant_state_db_paths(authority.profile_id), claims=claims,
                         expires_at=claims['status_expires_at'])
