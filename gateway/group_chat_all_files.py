@@ -65,6 +65,15 @@ async def _construct(runner, event, backend, rooms, state, position, command, st
         state.initialized = True
     for key in list(state.streams):
         if key not in current:
+            try:
+                await _read(runner, lambda: backend.check(state.streams[key]['room']))
+            except PermissionError:
+                pass
+            else:
+                # Discovery hides an unavailable peer summary. Its still-valid
+                # local reservation is not permission to display cached data,
+                # but neither is the outage permission to consume its cursor.
+                raise FileAccessError('file_host_unavailable', retryable=True)
             del state.streams[key]
             state.incomplete = True
         else:
