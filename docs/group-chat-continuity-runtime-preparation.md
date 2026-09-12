@@ -8,7 +8,7 @@ It keeps the gateway responsible for execution instead of adding another
 session runner in Desktop or the messaging adapters.
 
 **This is a development checkpoint, not a release build.** It is based on
-runtime `8488b3a4161` and main `1c671beab291`. The original source PRs remain
+runtime `8f7a8ec3bc0` and its merged main `e440bf35472`. The original source PRs remain
 separate review units; this branch does not change their readiness or the
 maintainer's review schedule. Use disposable profiles and matching client and
 gateway revisions when evaluating it.
@@ -36,6 +36,10 @@ between different login identities. The room owner explicitly grants messaging
 access; command-admin status alone does not grant all rooms or their files.
 Shared messaging chats also require an audience confirmation.
 
+Accepted shared documents keep their working copies through session cleanup.
+Older inputs without reliable custody records are retained conservatively;
+this is not a new automatic file-retirement policy or a total disk-usage limit.
+
 An unavailable gateway is not evidence that accepted work never ran. Setup and
 publication preserve their original identifiers so an interrupted acknowledgement
 can be reconciled instead of creating another group or repeating a task.
@@ -61,13 +65,19 @@ repairs belong in [#108594](https://github.com/NousResearch/hermes-agent/pull/10
 being hidden inside a Files or recovery layer. These are semantic ports where
 the runtime changed, not claims that entire source PRs have been absorbed.
 
+The branch also includes unsupportedpastels' authored
+[#109403](https://github.com/NousResearch/hermes-agent/pull/109403), which refreshes
+active Desktop conversations and mounted tiles when missed events require a
+fresh snapshot. Its original commit is retained, rather than reimplemented.
+
 ## Verification Boundary
 
-This preparation passed 189 Desktop tests across 17 files and the renderer
-typecheck. Its focused Python selection passed 1,025 tests across 126 files,
+The current code checkpoint passed 334 Desktop tests across 24 files and the renderer
+and Electron typechecks. Its focused Python selection passed 1,075 tests across 132 files,
 with two Linux-only skips and no automatic retries. Independent reviews covered
-the consequential ports and their repairs,
-including actual native/HTTP setup and real SDK/creation-helper interactions.
+the consequential ports and their repairs, including actual native/HTTP setup,
+real SDK/creation-helper interactions, and document custody during cleanup and
+admission. Review and test counts overlap and are not summed as unique cases.
 
 These are focused integration and component results, not a green full repository
 suite or new signed-installation, physical-host failure or live-client acceptance.
