@@ -4,6 +4,9 @@ from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
 from gateway.session_group_files import GROUP_FILE_FIELDS, GROUP_FILE_METHODS, dispatch_group_files
+from gateway.session_group_peers import (
+    GROUP_PEER_FIELDS, GROUP_PEER_METHODS, dispatch_group_peer, peer_capabilities,
+)
 
 
 GROUP_METHODS = {
@@ -16,6 +19,7 @@ GROUP_METHODS = {
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
     **GROUP_FILE_METHODS,
+    **GROUP_PEER_METHODS,
     'groups.stop': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
@@ -31,6 +35,7 @@ _FIELDS = {
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     **GROUP_FILE_FIELDS,
+    **GROUP_PEER_FIELDS,
     'groups.stop': {'room_id', 'cancel_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
@@ -91,6 +96,8 @@ def _group(authority, actor, home, method, params):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    if method in GROUP_PEER_METHODS:
+        return dispatch_group_peer(authority, actor, service, method, params)
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
@@ -109,8 +116,9 @@ def _group(authority, actor, home, method, params):
     def capabilities():
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
-                'room_link': {'enabled': False, 'reason': 'canonical_driver_required'},
-                'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
+                'room_link': peer_capabilities(authority),
+                'features': ['room_identity', 'monotonic_log', 'replayable_disband',
+                             'peer_route_grant_fingerprint', 'peer_grant_renewal'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT}
 
     def listing():
@@ -169,7 +177,7 @@ def _group(authority, actor, home, method, params):
         room = rooms.room_state(db_path, **params)
         result = {'room': room}
         if service is not None and room.get('disbanded_at') is None:
-            result['driver_status'] = service.status(room['room_id'])
+            result['driver_status'] = service.status_with_grant_fingerprints(room['room_id'])
         return result
 
     handlers = {
