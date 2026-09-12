@@ -58,6 +58,7 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.native_document_guard import check_document_fallback, mark_native_document_guard
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -1568,6 +1569,7 @@ class MatrixAdapter(BasePlatformAdapter):
             delivered = delivered or result.success
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
+    @mark_native_document_guard
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -1795,6 +1797,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if not p.exists():
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
+            check_document_fallback()
             text = "⚠️ Couldn't deliver the attachment."
             return await self.send(room_id, f"{caption}\n{text}" if caption else text, reply_to)
         try:

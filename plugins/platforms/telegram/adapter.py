@@ -141,6 +141,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
+from gateway.native_document_guard import check_document_fallback, mark_native_document_guard
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
@@ -4764,17 +4765,21 @@ class TelegramAdapter(BasePlatformAdapter):
         logger.warning("[%s] Failed to send %s: %s", self.name, media_key, _redact_telegram_error_text(e))
         return await fallback
 
+    @mark_native_document_guard
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a document/file natively as a Telegram file attachment."""
+        async def fallback():
+            check_document_fallback()
+            return await super(TelegramAdapter, self).send_document(
+                chat_id, file_path, caption, file_name, reply_to, metadata=metadata
+            )
+
         return await self._send_local_file(
             "File", file_path, chat_id, reply_to, metadata, "document",
             lambda f: {"document": f, "filename": file_name or os.path.basename(file_path), "caption": self._caption_1024(caption)},
-            lambda e: self._warn_then(
-                "document", e, super(
-                    TelegramAdapter, self,
-                ).send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)))
+            lambda e: self._warn_then("document", e, fallback()))
 
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

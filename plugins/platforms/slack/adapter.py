@@ -34,6 +34,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
+from gateway.native_document_guard import check_document_fallback, mark_native_document_guard
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
 from gateway.platforms.base import (
@@ -2654,6 +2655,8 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[%s] Failed to send %s %s: %s", self.name, kind, file_path, e, exc_info=True)
+            if kind == "document":
+                check_document_fallback()
             return await self._send_failure_notice(
                 chat_id, caption, failure_notice, reply_to, metadata)
 
@@ -3209,6 +3212,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_id, video_path, caption, reply_to, metadata, "video", os.path.basename(video_path),
             f"Video file not found: {video_path}", "⚠️ Couldn't deliver the video attachment.")
 
+    @mark_native_document_guard
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, reply_to: Optional[str] = None,
