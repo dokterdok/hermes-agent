@@ -23,11 +23,9 @@ def http_routes(adapter):
 
     async def handle(request, operation):
         from gateway.platforms.api_server import _api_request_profile
+        from gateway.platforms.api_server_room_grants import _effective_room_profile
 
-        if request.match_info.get("profile") or _api_request_profile.get() not in {
-            None,
-            "default",
-        }:
+        if request.match_info.get("profile") or _effective_room_profile(_api_request_profile) != "default":
             return error(
                 "Use this gateway's installation endpoint.",
                 "installation_endpoint_required",
