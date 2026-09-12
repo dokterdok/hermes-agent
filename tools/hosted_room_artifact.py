@@ -205,5 +205,4 @@ registry.register(
     toolset="bot_room",
     schema=SHARE_GROUP_FILE_SCHEMA,
     handler=_handle_share_group_file,
-    
 )
