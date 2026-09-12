@@ -1,5 +1,8 @@
 """Source #98073 presentation primitives on read-only canonical snapshots."""
 from collections.abc import Mapping
+from datetime import datetime
+import math
+import time
 from typing import Any
 import re
 
@@ -239,6 +242,46 @@ def status_text(status):
         return 'work queued or running'
     return 'idle'
 
+def timestamp(value, *, milliseconds=False):
+    """Normalize known wire units; reject unknown or timezone-ambiguous values."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        if not isinstance(value, str) or milliseconds:
+            return None
+        try:
+            instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if instant.tzinfo is None:
+                return None
+            number = instant.timestamp()
+        except (ValueError, OverflowError, OSError):
+            return None
+    if milliseconds:
+        number /= 1000
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def event_age(event, *, desktop, now):
+    stamp = timestamp(event.get("at") if desktop else event.get("created_at"), milliseconds=desktop)
+    if stamp is None or stamp > now:
+        return ""
+    seconds = now - stamp
+    if seconds < 60:
+        return text("age_now")
+    for unit, width, ceiling in (("minutes", 60, 3600), ("hours", 3600, 86400), ("days", 86400, math.inf)):
+        if seconds < ceiling:
+            return text("age_" + unit, count=int(seconds // width))
+    return ""
+
+
+def recent_heading(events, *, desktop, now):
+    # The last visible event is authoritative. An older known time must not
+    # masquerade as the latest when the newest event has no valid timestamp.
+    age = event_age(events[-1], desktop=desktop, now=now) if events else ""
+    return text("recent_latest", age=age) if age else text("recent")
+
 
 def format_room_list(backend, rooms, command='/group', page=1):
     if not rooms:
@@ -260,23 +303,26 @@ def format_room_list(backend, rooms, command='/group', page=1):
     return '\n'.join(lines + read_actions(command))
 
 
-def format_room_detail(backend, room, command='/group'):
-    snapshot = backend.summary(room)
+def format_room_detail(backend, room, command='/group', *, native=False, snapshot=None):
+    snapshot = backend.summary(room) if snapshot is None else snapshot
     current = snapshot['room']
     state = status_text(snapshot['status'])
     lines = [f"💬 **{_plain_display_label(current['name'], limit=72)}**", f'{_room_status_icon(state)} {state}', '', '🤖 **Bots**', *_room_participant_lines(current)]
     names = {member['member_id']: _room_member_name(member) for member in current['members']}
-    visible = [event for event in snapshot['events'] if event.get('kind') in {'message.user', 'message.member'}][-5:]
-    lines += ['', text('recent')]
+    visible = [event for event in snapshot['events'] if event.get('kind') in {'message.user', 'message.member'}][-(3 if native else 5):]
+    now = time.time()
+    lines += ['', recent_heading(visible, desktop=False, now=now)]
     for event in visible:
-        lines += [f"• **{_plain_display_label(_event_label(event, names))}**", _plain_preview_text(event.get('payload', {}).get('text'))]
+        age = event_age(event, desktop=False, now=now)
+        lines += [f"• **{_plain_display_label(_event_label(event, names))}**" + (f' · _{age}_' if age else ''),
+                  _plain_preview_text(event.get('payload', {}).get('text'))]
     if not visible:
         lines += ['No messages yet.']
-    return '\n'.join(lines + read_actions(command, room_reference(room), can_send='send' in snapshot.get('control_actions', [])))
+    return '\n'.join(lines + ([] if native else read_actions(command, room_reference(room), can_send='send' in snapshot.get('control_actions', []))))
 
 
-def format_room_bots(backend, room, command='/group', selected=None):
-    current = backend.summary(room)['room']
+def format_room_bots(backend, room, command='/group', selected=None, *, native=False, snapshot=None):
+    current = (backend.summary(room) if snapshot is None else snapshot)['room']
     members = current['members'][:MAX_GROUP_MEMBERS]
     if selected is not None:
         candidates = [member for index, member in enumerate(members, 1) if selected == str(index) or selected.lstrip('@').casefold() == _room_member_handle(member).casefold()]
@@ -287,7 +333,7 @@ def format_room_bots(backend, room, command='/group', selected=None):
     for index, member in enumerate(members, 1):
         name, handle = _plain_display_label(_room_member_name(member)), _room_member_handle(member)
         lines += ['', f"{index}. **{name}**" + (f' · `@{handle}`' if handle else '')]
-    return '\n'.join(lines + read_actions(command, room_reference(room)))
+    return '\n'.join(lines + ([] if native else read_actions(command, room_reference(room))))
 
 
 def format_room_files(backend, room, command='/group', query=''):

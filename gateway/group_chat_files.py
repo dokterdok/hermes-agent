@@ -32,6 +32,26 @@ def source_key(backend, event, stamp):
     return hashlib.sha256(json.dumps(values, separators=(',', ':')).encode()).hexdigest()
 
 
+def delivery_keys(runner, event, backend, stamp, selection):
+    from gateway.hosted_room_file_delivery import delivery_identity, FileDeliveryError
+    message_id = getattr(event, 'message_id', None)
+    if not isinstance(message_id, str) or not message_id:
+        raise FileDeliveryError('file_invalid_request')
+    rates = getattr(runner, '_canonical_file_send_rates', None)
+    if rates is None:
+        rates = runner._canonical_file_send_rates = OrderedDict()
+    source = source_key(backend, event, stamp)
+    now = time.monotonic()
+    recent = [sent for sent in rates.pop(source, []) if now - sent < 60]
+    rates[source] = recent
+    if len(recent) >= 6:
+        raise FileDeliveryError('rate')
+    recent.append(now)
+    while len(rates) > 2048:
+        rates.popitem(last=False)
+    return delivery_identity(source, message_id, selection)
+
+
 def error_message(exc):
     key = {
         'file_code_ambiguous': 'ambiguous', 'file_too_large': 'large', 'too_large': 'large',
@@ -39,6 +59,7 @@ def error_message(exc):
         'file_invalid_request': 'invalid', 'file_access_denied': 'denied',
         'file_access_unsupported': 'unsupported', 'unsupported': 'unsupported',
         'attachment_cursor_reset_required': 'cursor_reset', 'file_lookup_limit': 'lookup_limit',
+        'rate': 'rate',
     }.get(getattr(exc, 'code', str(exc)), 'error')
     return text('group_files', key)
 
@@ -79,7 +100,7 @@ def menus(runner):
     return pages
 
 
-async def browse_files(runner, event, backend, room, query, command, stamp):
+async def browse_files(runner, event, backend, room, query, command, stamp, *, render=None):
     table = menus(runner)
     parts = query.split()
     if parts and parts[0] == '--page':
@@ -141,11 +162,13 @@ async def browse_files(runner, event, backend, room, query, command, stamp):
         if items or state.query or page['has_more']:
             lines += ['', text('group_files', 'search_with', command=f'`{command} {room_reference(room)} files <query>`')]
         lines += ['', f"{text('group_files', 'view_group')}: `{command} {room_reference(room)}`"]
+        if render is not None:
+            return render(state, page, items, lines)
         return '\n'.join(lines)
 
 
 async def get_file(runner, event, backend, room, code, stamp):
-    from gateway.hosted_room_file_delivery import Document, deliver_document, delivery_identity, native_document_limit
+    from gateway.hosted_room_file_delivery import Document, deliver_document, native_document_limit
     from gateway.platforms.base import _thread_metadata_for_event
     context = receiving_group_context(runner, event.source)
     if context is None:
@@ -166,19 +189,7 @@ async def get_file(runner, event, backend, room, code, stamp):
         command = group_command_prefix(runner, event.source) + 'group'
         return text('group_files', 'confirm_send', name=_plain_display_label(item['name']), size=f"{item['size']/1_000_000:.1f} MB") + '\n\n' + text(
             'group_files', 'confirm_command', command=f'`{command} {room_reference(room)} file {exact} confirm`')
-    rates = getattr(runner, '_canonical_file_send_rates', None)
-    if rates is None:
-        rates = runner._canonical_file_send_rates = OrderedDict()
-    source = source_key(backend, event, stamp)
-    now = time.monotonic()
-    recent = [sent for sent in rates.pop(source, []) if now - sent < 60]
-    rates[source] = recent
-    if len(recent) >= 6:
-        return text('group_files', 'rate')
-    recent.append(now)
-    while len(rates) > 2048:
-        rates.popitem(last=False)
-    key, scope = delivery_identity(source, message_id, exact)
+    key, scope = delivery_keys(runner, event, backend, stamp, exact)
 
     def load(maximum):
         require_current(runner, event, stamp)

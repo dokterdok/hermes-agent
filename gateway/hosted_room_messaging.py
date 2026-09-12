@@ -140,6 +140,22 @@ class MessagingRoomBackend:
             self.check(room)
             return result
 
+    def latest_reply(self, *, room):
+        from gateway.hosted_room_file_lookup import latest_reply
+        with owner_scope(self.authority):
+            self.check(room)
+            result = latest_reply(self, room=room, profile=self.profile)
+            self.check(room)
+            return result
+
+    def read_reply(self, *, room, event_id):
+        from gateway.hosted_room_shared_message_access import read_shared_message
+        with owner_scope(self.authority):
+            self.check(room)
+            result = read_shared_message(self, room=room, event_id=event_id, profile=self.profile)
+            self.check(room)
+            return result
+
     def send(self, *, room, command_id, text, actor, write_guard):
         with owner_scope(self.authority):
             self.check(room)

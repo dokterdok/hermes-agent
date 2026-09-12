@@ -19,7 +19,7 @@ def message_command_id(event, room, profile_id):
     return 'message-' + hashlib.sha256(json.dumps(parts, separators=(',', ':')).encode()).hexdigest()
 
 
-async def send_group_message(runner, event, backend, room, content, stamp):
+async def send_group_message(runner, event, backend, room, content, stamp, *, extra_guard=None):
     if not content or not content.strip():
         return 'Type a message after send.'
     if len(content) > 64 * 1024:
@@ -38,6 +38,8 @@ async def send_group_message(runner, event, backend, room, content, stamp):
         def guard():
             require_command_open(runner)
             require_current(runner, event, stamp)
+            if extra_guard is not None:
+                extra_guard()
         await run_group_command_work(runner, 'send', lambda: backend.send(room=room, command_id=command_id,
             text=content, actor=actor, write_guard=guard))
         return 'Sent to ' + _plain_display_label(room['name'], limit=80) + '.'

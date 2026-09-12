@@ -38,6 +38,7 @@ class GroupChatSlashCommandsMixin:
             text('group_files', 'help_find', command=f'`{command} 7 files [query]`'), '',
             f'`{command} files [query]` - Find files across your Group Chats.', '',
             text('group_files', 'help_get', command=f'`{command} 7 file <file-id>`'), '',
+            text('group_files', 'help_reply', command=f'`{command} 7 reply`'), '',
             f'`{command} 7 send <message>` - Send a message to the group.', '',
             "Replace 7 with the Group Chat's number from the list.",
             'Only rooms shared with this Home are visible. Stop and Retry are not enabled here yet.'])
@@ -83,6 +84,9 @@ class GroupChatSlashCommandsMixin:
             if words and words[0].casefold() == 'files':
                 from gateway.group_chat_all_files import browse_all_files
                 return await browse_all_files(self, event, backend, rooms, query[len(words[0]):].strip(), command, stamp)
+            from gateway.group_chat_menu import show_group_menu
+            if not query and await show_group_menu(self, event, backend, command, stamp, rooms=rooms):
+                return None
             if not query and await self._group_read_picker(event, backend, rooms, command, stamp):
                 return None
             if not words or words[0].casefold() == 'list':
@@ -97,11 +101,16 @@ class GroupChatSlashCommandsMixin:
                 if kind == 'send':
                     from gateway.group_chat_send import send_group_message
                     return await send_group_message(self, event, backend, room, argument, stamp)
-                if kind in {'files', 'file'}:
+                if kind in {'files', 'file', 'reply'}:
                     from gateway.group_chat_files import browse_files, get_file, error_message
                     try:
                         if kind == 'files':
+                            if await show_group_menu(self, event, backend, command, stamp, room=room, view='files', selected=argument):
+                                return None
                             return await browse_files(self, event, backend, room, argument, command, stamp)
+                        if kind == 'reply' and not argument:
+                            from gateway.group_chat_reply_file import get_reply
+                            return await get_reply(self, event, backend, room, stamp)
                         return await get_file(self, event, backend, room, argument, stamp)
                     except Exception as exc:
                         return error_message(exc)
@@ -111,8 +120,13 @@ class GroupChatSlashCommandsMixin:
                 }
                 if kind not in handlers:
                     return self._group_chat_help(command)
+                if await show_group_menu(self, event, backend, command, stamp, room=room, view=kind,
+                                         selected=argument if kind == 'bot' else None):
+                    return None
                 return await run_group_read(handlers[kind])
             room = resolve_room(rooms, query)
+            if await show_group_menu(self, event, backend, command, stamp, room=room):
+                return None
             return await run_group_read(lambda: format_room_detail(backend, room, command))
         except RoomControlError as exc:
             return str(exc)
