@@ -1,6 +1,7 @@
 """Reciprocal status crosses real HTTP, profile middleware and canonical storage."""
 from contextlib import ExitStack
 from dataclasses import replace
+import json
 import time
 from types import SimpleNamespace
 
@@ -75,7 +76,7 @@ async def test_scoped_status_and_exact_revocation_do_not_share_profile_identity(
             assert response.status == 200, await response.text()
             result = await response.json()
             assert result['room']['name'] == f'{name} private room'
-            assert result['control_actions'] == []
+            assert result['control_actions'] == ['send']
             assert response.headers['Cache-Control'] == 'no-store'
         assert (await client.get('/p/reviewer/v1/room-controls/room',
             headers=_headers(rows['default'][2]))).status == 401
@@ -91,8 +92,8 @@ async def test_scoped_status_and_exact_revocation_do_not_share_profile_identity(
         assert (await client.get('/v1/room-controls/room', headers=_headers(rows['default'][2]))).status == 401
         assert (await client.get('/p/reviewer/v1/room-controls/room',
             headers=_headers(rows['reviewer'][2]))).status == 200
-        assert (await client.post('/v1/room-controls/room', headers=_headers(rows['reviewer'][2]),
-            json={'action': 'send', 'text': 'must not execute'})).status == 405
+        assert (await client.post('/p/reviewer/v1/room-controls/room', headers=_headers(rows['reviewer'][2]),
+            json={'action': 'stop', 'command_id': 'unsupported'})).status == 400
 
 
 @pytest.mark.asyncio
@@ -204,3 +205,33 @@ async def test_registration_rechecks_reservation_after_probe(homes, monkeypatch)
         await dispatch_group_control(SimpleNamespace(authority=authority, actor=actor),
                                      'groups.control.register', params)
     assert controls.load_peer_control_links(authority.db.db_path, include_inactive=True).links == ()
+
+
+@pytest.mark.asyncio
+async def test_http_send_accepts_one_command_and_keeps_receiving_profile(homes):
+    from gateway.hosted_room_driver import list_tasks
+    adapter, rows = homes
+    authority = rows['default'][0]
+    roster = [{'member_id': 'writer', 'profile': 'default', 'handle': 'writer'},
+        {'member_id': 'peer', 'profile': 'remote', 'handle': 'peer', 'target': {
+            'kind': 'peer', 'installation_id': 'peer-install', 'profile': 'remote',
+            'peer_id': 'remote-peer', 'capability_digest': 'a' * 64}}]
+    authority.db._execute_write(lambda conn: conn.execute(
+        'UPDATE hosted_rooms SET members_json=? WHERE room_id=?', (json.dumps(roster), 'room')))
+    body = {'action': 'send', 'command_id': 'message-one', 'text': '@writer Prepare the report',
+            'actor_display_name': 'Owner via messaging'}
+    async with TestClient(TestServer(_app(adapter))) as client:
+        received = []
+        for _ in range(2):
+            response = await client.post('/v1/room-controls/room', headers=_headers(rows['default'][2]), json=body)
+            assert response.status == 200, await response.text()
+            received.append(await response.json())
+        assert all(value['accepted'] for value in received)
+        assert received[0]['event']['event_id'] == received[1]['event']['event_id']
+        assert received[1]['event']['idempotent']
+        assert received[0]['event']['actor']['id'] == 'peer:peer'
+        assert len(list_tasks(authority.db.db_path, room_id='room', status='queued')) == 1
+        assert not any(e['kind'] == 'message.user' for e in rows['reviewer'][0].hosted_room_service._events('room'))
+        rejected = await client.post('/v1/room-controls/room', headers=_headers(rows['default'][2]),
+                                     json={**body, 'profile': 'reviewer'})
+        assert rejected.status == 400

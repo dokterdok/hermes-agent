@@ -1,7 +1,7 @@
 """Room-scoped reciprocal reads on the receiving canonical profile.
 
 Ports the #98073 return-control wire contract without its legacy global server.
-Mutations are not exposed until delegation reaches their final acceptance fence.
+Text sending carries delegation through its final event-acceptance fence.
 """
 from collections.abc import Mapping
 
@@ -99,7 +99,7 @@ async def _summary(adapter, request):
                        'queued', 'running', 'stopping', 'deferred', 'indeterminate',
                        'settled', 'failed', 'cancelled') if int(counts.get(key) or 0) > 0}},
         'events': _visible_events(delta),
-        'control_actions': [],
+        'control_actions': ['send'],
     }
 
 
@@ -121,6 +121,44 @@ def _response(result, *, status=200):
 
 
 def _http_routes(adapter):
+    async def send(request):
+        import asyncio
+        from gateway.platforms.api_server import _reserve_pending_api_work
+        from gateway.session_group_messaging_send import send_from_peer
+        try:
+            _authorize(adapter, request)
+            with _reserve_pending_api_work(adapter):
+                if request.query:
+                    raise ValueError('unexpected query')
+                body, error = await adapter._read_json_body(request)
+                if error is not None:
+                    return error
+                if (not isinstance(body, dict) or body.get('action') != 'send'
+                        or set(body) - {'action', 'command_id', 'text', 'actor_display_name'}
+                        or not {'action', 'command_id', 'text'} <= set(body)):
+                    raise ValueError('invalid send request')
+                draining = adapter._draining_response()
+                if draining is not None:
+                    return draining
+                authority, _actor, room_id, member_id, token = _authorize(adapter, request)
+                room = authority.hosted_room_service._room(room_id)
+                event = await asyncio.to_thread(send_from_peer, authority, room=room, member_id=member_id,
+                    token=token, command_id=body['command_id'], text=body['text'],
+                    actor_display_name=body.get('actor_display_name'))
+                # Acceptance is durable even if later observation becomes unavailable.
+                return _response({'action': 'send', 'accepted': True, 'event': event})
+        except RuntimeStoreError as exc:
+            if exc.reason != 'invalid_params':
+                return _response({'error': {'code': 'invalid_room_control',
+                    'message': 'Group Chat access changed. Open the group again.'}}, status=401)
+        except (ValueError, controls.HostedRoomControlError):
+            pass
+        except Exception:
+            return _response({'error': {'code': 'room_control_unavailable',
+                'message': 'Message acceptance could not be confirmed. Check the group before trying a new message.'}}, status=409)
+        return _response({'error': {'code': 'invalid_room_control',
+            'message': 'This Group Chat request is not supported.'}}, status=400)
+
     async def handle(request):
         try:
             if request.query or request.can_read_body:
@@ -139,4 +177,5 @@ def _http_routes(adapter):
             return _response({'error': {'code': 'room_control_unavailable',
                 'message': 'Group Chat status could not be loaded.'}}, status=409)
     return [('GET', '/v1/room-controls/{room_id}', handle),
+            ('POST', '/v1/room-controls/{room_id}', send),
             ('DELETE', '/v1/room-controls/{room_id}', handle)]
