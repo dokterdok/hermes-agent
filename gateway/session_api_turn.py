@@ -15,7 +15,7 @@ _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
-                 'session_history_delivery')
+                 'session_history_delivery', 'room_artifact_publication')
 
 
 def api_settings(authority, ref):
@@ -46,6 +46,9 @@ def check_api_turn(authority, ref, payload):
 
 
 def check_api_settings(adapter, settings):
+    publication = settings.get('room_artifact_publication')
+    if publication is not None and type(publication) is not bool:
+        raise RuntimeStoreError('invalid_params')
     dispatch = settings.get('room_dispatch')
     if dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
@@ -91,6 +94,8 @@ def admit_api_turn(adapter, **kwargs):
         sid = declared_api_session(authority.db, declared_key) or sid
     authority._require_admission_open()
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
+    if kwargs.get('room_artifact_publication') is None:
+        settings.pop('room_artifact_publication')
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):
