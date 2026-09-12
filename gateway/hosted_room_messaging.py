@@ -132,6 +132,14 @@ class MessagingRoomBackend:
             self.check(room)
             return result
 
+    def resolve_file(self, *, room, code):
+        from gateway.hosted_room_file_lookup import resolve_file
+        with owner_scope(self.authority):
+            self.check(room)
+            result = resolve_file(self, room=room, code=code, profile=self.profile)
+            self.check(room)
+            return result
+
     def send(self, *, room, command_id, text, actor, write_guard):
         with owner_scope(self.authority):
             self.check(room)

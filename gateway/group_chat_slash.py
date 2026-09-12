@@ -12,7 +12,7 @@ from gateway.hosted_room_file_contract import FileAccessError
 from gateway.hosted_room_messaging import current_room_backend
 from gateway.hosted_room_messaging_presentation import (
     RoomControlError, _plain_display_label, format_room_bots, format_room_detail,
-    format_room_files, format_room_list, resolve_room,
+    format_room_list, resolve_room,
 )
 
 _MUTATIONS = frozenset({'stop', 'retry', 'approve', 'deny', 'discard', 'remember', 'forget', 'confirm'})
@@ -36,9 +36,11 @@ class GroupChatSlashCommandsMixin:
             f'`{command} 7` - Check recent activity.', f"`{command} 7 bots` - See who's in the group.",
             f'`{command} 7 bot <number>` - View a Bot.',
             text('group_files', 'help_find', command=f'`{command} 7 files [query]`'), '',
+            f'`{command} files [query]` - Find files across your Group Chats.', '',
+            text('group_files', 'help_get', command=f'`{command} 7 file <file-id>`'), '',
             f'`{command} 7 send <message>` - Send a message to the group.', '',
             "Replace 7 with the Group Chat's number from the list.",
-            'Only rooms shared with this Home are visible. Stop, Retry and file delivery are not enabled here yet.'])
+            'Only rooms shared with this Home are visible. Stop and Retry are not enabled here yet.'])
 
     def _group_chat_rate_limit_denial(self, event):
         stamp = disclosure_stamp(self, event)
@@ -78,6 +80,9 @@ class GroupChatSlashCommandsMixin:
         try:
             rooms = await run_group_read(backend.list_rooms)
             require_current(self, event, stamp)
+            if words and words[0].casefold() == 'files':
+                from gateway.group_chat_all_files import browse_all_files
+                return await browse_all_files(self, event, backend, rooms, query[len(words[0]):].strip(), command, stamp)
             if not query and await self._group_read_picker(event, backend, rooms, command, stamp):
                 return None
             if not words or words[0].casefold() == 'list':
@@ -92,10 +97,17 @@ class GroupChatSlashCommandsMixin:
                 if kind == 'send':
                     from gateway.group_chat_send import send_group_message
                     return await send_group_message(self, event, backend, room, argument, stamp)
+                if kind in {'files', 'file'}:
+                    from gateway.group_chat_files import browse_files, get_file, error_message
+                    try:
+                        if kind == 'files':
+                            return await browse_files(self, event, backend, room, argument, command, stamp)
+                        return await get_file(self, event, backend, room, argument, stamp)
+                    except Exception as exc:
+                        return error_message(exc)
                 handlers = {
                     'bots': lambda: format_room_bots(backend, room, command),
                     'bot': lambda: format_room_bots(backend, room, command, selected=argument),
-                    'files': lambda: format_room_files(backend, room, command, query=argument),
                 }
                 if kind not in handlers:
                     return self._group_chat_help(command)
