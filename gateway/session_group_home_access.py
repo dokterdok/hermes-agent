@@ -23,25 +23,31 @@ def _issuer(authority, subject, room_id, gateway, epoch):
 
 
 def home_access_granted(authority, room_id):
-    from gateway.hosted_rooms import local_authority_gateway_id
-    from gateway.session_hosted_service import _OWNER
     from hermes_state_runtime import _epoch
     _service(authority)
     with authority.db._read_ctx() as conn:
         _epoch(conn, authority.epoch)
-        row = conn.execute(
-            'SELECT owner.value AS subject, consent.value AS consent, r.authority_gateway_id AS gateway, '
-            'r.authority_epoch AS epoch FROM hosted_rooms r '
-            'JOIN state_meta owner ON owner.key=? JOIN state_meta consent ON consent.key=? '
-            'WHERE r.room_id=? AND r.disbanded_at IS NULL',
-            (_OWNER + room_id, _HOME + room_id, room_id)).fetchone()
-        if row is None or row['gateway'] != local_authority_gateway_id():
-            return False
-        try:
-            value = json.loads(row['consent'])
-        except (ValueError, TypeError):
-            return False
+        result = home_access_granted_locked(authority, conn, room_id)
         _epoch(conn, authority.epoch)
+        return result
+
+
+def home_access_granted_locked(authority, conn, room_id):
+    """Same consent predicate inside the eventual message append transaction."""
+    from gateway.hosted_rooms import local_authority_gateway_id
+    from gateway.session_hosted_service import _OWNER
+    row = conn.execute(
+        'SELECT owner.value AS subject, consent.value AS consent, r.authority_gateway_id AS gateway, '
+        'r.authority_epoch AS epoch FROM hosted_rooms r '
+        'JOIN state_meta owner ON owner.key=? JOIN state_meta consent ON consent.key=? '
+        'WHERE r.room_id=? AND r.disbanded_at IS NULL',
+        (_OWNER + room_id, _HOME + room_id, room_id)).fetchone()
+    if row is None or row['gateway'] != local_authority_gateway_id():
+        return False
+    try:
+        value = json.loads(row['consent'])
+    except (ValueError, TypeError):
+        return False
     return isinstance(value, dict) and value == {
         'enabled': True, 'issuer': _issuer(authority, row['subject'], room_id, row['gateway'], row['epoch'])}
 

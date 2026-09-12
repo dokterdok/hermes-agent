@@ -1135,7 +1135,8 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
     authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
-    expected_latest_seq: int | None = None, expected_output: dict | None = None) -> dict[str, Any]:
+    expected_latest_seq: int | None = None, expected_output: dict | None = None,
+    authorize_write: Callable[[sqlite3.Connection], bool] | None = None) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
     with identical content returns the original, different content fails closed."""
     room_id = _room_id(room_id)
@@ -1155,6 +1156,8 @@ def append_event(
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
         room_safety._raise_if_quarantined(conn, room_id)
+        if authorize_write is not None and authorize_write(conn) is not True:
+            raise HostedRoomError("message publication is not authorized")
         if expected_output is not None:
             from gateway.hosted_room_output_fence import require_output_publication
             require_output_publication(conn, room_id, expected_output, kind=kind, actor=normalized_actor, payload=payload)
