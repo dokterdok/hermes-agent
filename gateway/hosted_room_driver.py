@@ -88,6 +88,8 @@ _COMPLETE_STOP_SQL = _task_update(
 _INDETERMINATE_STALE = "indeterminate task generation changed"
 _GENERATION_TRANSITIONS = {
     "resolve": ("indeterminate", _SETTLE_SET, _INDETERMINATE_STALE, "indeterminate task changed during reconciliation"),
+    "resolve_deferred_completion": (
+        "deferred", _SETTLE_SET, "deferred task generation changed", "deferred task changed during reconciliation"),
     "resolve_cancel": (
         "indeterminate", _CANCEL_SET, "indeterminate cancellation proof is stale",
         "indeterminate cancellation proof lost its fence"),
@@ -721,6 +723,19 @@ def resolve_indeterminate_task(
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _generation_transition(
         db_path, identity, lease, "resolve", expected_execution_generation, expected_cancel_generation, now=now,
+        replay=replay, set_params=set_params)
+
+
+def resolve_deferred_completion(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, settlement_id: Any, result: Any, clock: Clock
+) -> dict[str, Any]:
+    """Reconcile an exact successful receipt without allocating another attempt."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    now, replay, set_params = _settlement(settlement_id, "settled", result, clock)
+    return _generation_transition(
+        db_path, identity, lease, "resolve_deferred_completion",
+        expected_execution_generation, expected_cancel_generation, now=now,
         replay=replay, set_params=set_params)
 
 

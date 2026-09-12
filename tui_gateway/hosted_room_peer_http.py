@@ -44,8 +44,9 @@ _RECEIPT_SCOPE_FIELDS = (
     "member_id", "target_install_id", "target_profile")
 _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
-_KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
-_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event")
+_KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES | {"unknown"}
+_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event",
+                    "pending_controls", "execution_generation", "admission_id")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -191,6 +192,33 @@ class PeerRunsHTTPError(RuntimeError):
         self.status_code, self.error_code = status_code, error_code
         self.needs_reauthorization = (
             status_code in {401, 403} and error_code in _REAUTHORIZATION_CODES)
+
+
+def _canonical_approval(status: Mapping[str, Any], request_id: str | None = None) -> dict[str, Any] | None:
+    """Translate one canonical prompt without confusing its generation with the room attempt."""
+    if status.get('status') not in {'running', 'waiting_for_approval'}:
+        return None
+    pending = status.get('pending_controls', [])
+    if not isinstance(pending, list):
+        raise PeerRunsHTTPError('peer returned invalid pending controls')
+    for prompt in pending:
+        if not isinstance(prompt, Mapping):
+            raise PeerRunsHTTPError('peer returned invalid pending control')
+        if prompt.get('kind') != 'approval':
+            continue
+        generation, prompt_id = prompt.get('execution_generation'), prompt.get('prompt_id')
+        if (type(generation) is not int or generation < 1
+                or type(status.get('execution_generation')) is not int
+                or generation != status.get('execution_generation')
+                or not isinstance(prompt_id, str) or not prompt_id):
+            raise PeerRunsHTTPError('peer approval identity does not match its run')
+        choices = prompt.get('choices')
+        if not isinstance(choices, list) or any(not isinstance(choice, str) for choice in choices):
+            raise PeerRunsHTTPError('peer returned invalid approval choices')
+        choices = [choice for choice in choices if choice in {'once', 'deny'}]
+        if choices and request_id in {None, prompt_id}:
+            return {**prompt, 'request_id': prompt_id, 'choices': choices}
+    return None
 
 
 _ROOM_GRANT_REQUEST_BUDGET: ContextVar[tuple[float, float, Callable[[], float]] | None] = ContextVar(
@@ -576,9 +604,9 @@ class PeerRunsHTTPClient:
         previous = float(cached["delay"]) if cached is not None else self.poll_min_seconds / 2
         return min(self.poll_max_seconds, max(self.poll_min_seconds, previous * 2))
 
-    def _poll_receipt(self, record: Mapping[str, Any], *, grant: str) -> dict[str, Any]:
+    def _poll_receipt(self, record: Mapping[str, Any], *, grant: str, fresh: bool = False) -> dict[str, Any]:
         run_id, now = str(record["run_id"]), self.clock()
-        cached = self._status_cache.get(run_id)
+        cached = None if fresh else self._status_cache.get(run_id)
         fingerprint = hashlib.sha256(grant.encode()).hexdigest()
         if (cached is not None and getattr(cached.get("error"), "needs_reauthorization", False)
                 and cached.get("grant_sha256") != fingerprint):
@@ -597,6 +625,15 @@ class PeerRunsHTTPClient:
         try:
             full = self._request(_run_path(record), room_grant=self._require_room_grant(grant))
             status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
+            if 'pending_controls' in status:
+                # Canonical Run projection uses interrupted for retained unknown;
+                # completed interruption is cancelled. Unknown is not a receipt.
+                if status.get('status') == 'interrupted':
+                    status['status'] = 'unknown'
+                approval = _canonical_approval(status)
+                status['approval'] = approval
+                if approval is not None:
+                    status.update(status='waiting_for_approval', approval=approval)
             if (
                 str(status.get("run_id") or "") != run_id
                 or status.get("status") not in _KNOWN_RUN_STATES):
@@ -629,30 +666,44 @@ class PeerRunsHTTPClient:
             "content": status.get("output") or status.get("error") or ""}]
 
     def status(
-        self, *, room_id: str, profile: str, session_id: str, grant: str) -> Mapping[str, Any]:
+        self, *, room_id: str, profile: str, session_id: str, grant: str,
+        fresh: bool = False) -> Mapping[str, Any]:
         receipt = self._observation_receipt(room_id=room_id, profile=profile, session_id=session_id)
         if receipt is None:
-            return {"active": False, "task_id": None}
-        status = self._poll_receipt(receipt, grant=grant)
+            return {"active": False, "task_id": None, "status": "unknown"}
+        status = self._poll_receipt(receipt, grant=grant, fresh=fresh)
         return {
             "active": status.get("status") in _ACTIVE_RUN_STATES, "task_id": receipt["task_id"],
             "execution_generation": receipt["execution_generation"],
             "status": status.get("status"), "run_id": status.get("run_id"),
-            "approval": status.get("approval")}
+            "approval": status.get("approval"),
+            **({'canonical_execution_generation': status.get('execution_generation')}
+               if 'pending_controls' in status else {})}
 
     def approve_receipt(
         self, *, task_id: str, execution_generation: int, request_id: str, choice: str, grant: str
     ) -> Mapping[str, Any] | None:
         """Resolve approval for the exact durable remote run."""
+        if (not isinstance(task_id, str) or not task_id
+                or type(execution_generation) is not int or execution_generation < 1):
+            raise PeerRunsHTTPError('an exact hosted task generation is required')
         record = self._receipt(task_id, execution_generation)
         if record is None:
             return None
-        request_id = str(request_id or "").strip()
-        if not request_id:
+        if not isinstance(request_id, str) or not request_id:
             raise PeerRunsHTTPError("an exact approval request_id is required")
+        if choice not in {'once', 'deny'}:
+            raise PeerRunsHTTPError('room approvals require once or deny')
         self._require_room_grant(grant)
+        # Re-read this exact run, never substitute a newer task or a cached prompt.
+        status = self._poll_receipt(record, grant=grant, fresh=True)
+        approval = _canonical_approval(status, request_id)
+        if approval is None or choice not in approval['choices']:
+            raise PeerRunsHTTPError('peer canonical approval is no longer pending',
+                                    status_code=409, error_code='approval_not_pending')
         return self._post_run_action(
-            record, "approval", body={"choice": choice, "request_id": request_id}, grant=grant)
+            record, "approval", body={"choice": choice, "request_id": request_id,
+                                      'execution_generation': approval['execution_generation']}, grant=grant)
 
     def _post_run_action(
         self, record: Mapping[str, Any], action: str, *, body: dict[str, Any], grant: str
