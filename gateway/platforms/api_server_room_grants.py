@@ -168,7 +168,7 @@ async def _handle_room_member_invitation(
         "authority_epoch",
         "member_id",
     }
-    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds"}
+    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication", "work_records", "passive_only"}
     if set(body) - allowed or not required <= set(body):
         return web.json_response(
             _openai_error(
@@ -184,6 +184,7 @@ async def _handle_room_member_invitation(
             catalog_mapping,
             decode_room_grant,
             issue_room_grant,
+            invitation_permissions,
         )
         from gateway.hosted_room_execution_policy import execution_policy_mapping
 
@@ -223,6 +224,8 @@ async def _handle_room_member_invitation(
             issued_at=time.time(),
             ttl_seconds=ttl,
             status_ttl_seconds=status_ttl,
+            permissions=invitation_permissions(body.get("replication", False), body.get("work_records", False),
+                                               passive_only=body.get("passive_only", False)),
         )
         claims = decode_room_grant(
             self._room_grant_secret(), token, permission="status"
