@@ -54,18 +54,24 @@ def home_access_granted_locked(authority, conn, room_id):
 
 def dispatch_home_access(authority, actor, method, params):
     if (method not in HOME_ACCESS_METHODS or not isinstance(params, dict)
-            or set(params) != HOME_ACCESS_FIELDS[method]):
+            or not HOME_ACCESS_FIELDS[method] <= set(params) <= HOME_ACCESS_FIELDS[method] | {'expected_authority'}):
         raise RuntimeStoreError('invalid_params')
     if actor.profile_id != authority.profile_id or HOME_ACCESS_METHODS[method] not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     service = _service(authority)
     room_id = controls._identifier(params['room_id'], label='room_id')
     service.authorize_room(actor.subject, room_id)
+    gateway, epoch = service._owned_authority(room_id)
+    expected = params.get('expected_authority')
+    if expected is not None and (not isinstance(expected, dict) or set(expected) != {'gateway_id', 'epoch'}
+            or type(expected.get('epoch')) is not int
+            or expected != {'gateway_id': gateway, 'epoch': epoch}):
+        raise RuntimeStoreError('stale_generation')
     if method == 'groups.control.home.get':
-        return {'room_id': room_id, 'enabled': home_access_granted(authority, room_id)}
+        return {'room_id': room_id, 'enabled': home_access_granted(authority, room_id),
+                'authority': {'gateway_id': gateway, 'epoch': epoch}}
     if type(params['enabled']) is not bool:
         raise RuntimeStoreError('invalid_params')
-    gateway, epoch = service._owned_authority(room_id)
     def write(conn):
         _owner(authority, conn, room_id, actor.subject)
         if not controls._active_room_scope(conn, room_id=room_id, authority_gateway_id=gateway,
@@ -76,5 +82,5 @@ def dispatch_home_access(authority, actor, method, params):
                            separators=(',', ':'))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                      (_HOME + room_id, value))
-        return {'room_id': room_id, 'enabled': params['enabled']}
+        return {'room_id': room_id, 'enabled': params['enabled'], 'authority': {'gateway_id': gateway, 'epoch': epoch}}
     return authority.db._execute_write(write)

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { canonicalFilesFailure } from './canonical-files-client'
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { CanonicalGroupFiles } from './canonical-group-files'
+import { CanonicalGroupHome } from './canonical-group-home'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
@@ -155,6 +156,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     <header className="flex items-center gap-2">
       {onBack && <Button onClick={onBack}>{labels.back}</Button>}
       <h2>{state?.room.name || labels.loadingGroup}</h2>
+      {visible && !filesAccessDenied && state?.room.authority_gateway_id && state.room.authority_epoch &&
+        <CanonicalGroupHome binding={binding} name={state.room.name}
+          authority={{ gatewayId: state.room.authority_gateway_id, epoch: state.room.authority_epoch }} />}
       {visible && <CanonicalGroupFiles accessDenied={filesAccessDenied} authority={state?.room.authority_gateway_id && state.room.authority_epoch
         ? { gatewayId: state.room.authority_gateway_id, epoch: state.room.authority_epoch } : undefined}
         binding={binding} latestFileSeq={events.reduce((latest, event) => event.payload.attachments?.length ? Math.max(latest, event.seq) : latest, 0)}

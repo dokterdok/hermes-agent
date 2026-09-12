@@ -57,3 +57,19 @@ async def test_native_dispatch_preserves_actor_schema_and_epoch_boundaries(room)
     dispatch_home_access(authority, actor, 'groups.control.home.set', {'room_id': 'room', 'enabled': True})
     authority.db._execute_write(lambda conn: conn.execute('UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id=?', ('room',)))
     assert not home_access_granted(authority, 'room')
+
+
+@pytest.mark.asyncio
+async def test_visible_owner_permission_control_cannot_cross_room_authority_change(room):
+    from types import SimpleNamespace
+    from gateway.session_group_controls import dispatch_group_control
+    authority, actor, service = room
+    actor = replace(actor, capabilities=frozenset({'session:control', 'session:read'}))
+    connection = SimpleNamespace(authority=authority, actor=actor)
+    state = await dispatch_group_control(connection, 'groups.control.home.get', {'room_id': 'room'})
+    params = {'room_id': 'room', 'enabled': True, 'expected_authority': state['authority']}
+    assert (await dispatch_group_control(connection, 'groups.control.home.set', params))['enabled'] is True
+    authority.db._execute_write(lambda conn: conn.execute('UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id=?', ('room',)))
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        await dispatch_group_control(connection, 'groups.control.home.set', params)
+    assert not home_access_granted(authority, 'room')

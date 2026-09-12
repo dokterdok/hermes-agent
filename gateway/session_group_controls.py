@@ -39,7 +39,7 @@ _FIELDS = {
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     **GROUP_FILE_FIELDS,
-    **HOME_ACCESS_FIELDS,
+    **{method: fields | {'expected_authority'} for method, fields in HOME_ACCESS_FIELDS.items()},
     **CONTROL_SETUP_FIELDS,
     **GROUP_PEER_FIELDS,
     'groups.stop': {'room_id', 'cancel_id'},
