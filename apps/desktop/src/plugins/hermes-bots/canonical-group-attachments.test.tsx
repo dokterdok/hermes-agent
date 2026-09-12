@@ -47,6 +47,18 @@ it.each([32, 1_048_576])('uploads all %i bytes using the canonical owner method'
   expect(submit).not.toHaveBeenCalled()
 })
 
+it('disables Download for an uncommitted upload and enables it for committed history', () => {
+  const attachment = { attachment_id: 'file-one', kind: 'file', name: 'report.bin', mime: 'application/octet-stream' }
+  const view = render(<CanonicalGroupAttachments attachments={[attachment]} binding={binding} disabled={false} onChange={vi.fn()} />)
+  const download = screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement
+  expect(download.disabled).toBe(true)
+  fireEvent.click(download)
+  expect(request).not.toHaveBeenCalled()
+  view.rerender(<CanonicalGroupAttachments attachments={[{ ...attachment, event_id: 'committed-event' }]} binding={binding} disabled={false} readOnly />)
+  expect((screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement).disabled).toBe(false)
+  expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull()
+})
+
 it('downloads only the selected committed attachment from its captured owner', async () => {
   const attachment = { attachment_id: 'file-one', event_id: 'event-one', kind: 'file', name: 'report.bin', mime: 'application/octet-stream' }
   const save = vi.fn().mockResolvedValue(undefined)
