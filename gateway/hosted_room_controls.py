@@ -241,14 +241,20 @@ def _derived_control_token(
     authority_gateway_id: str,
     authority_epoch: int,
     request_id: str,
+    issuance_nonce: str | None = None,
 ) -> str:
+    if issuance_nonce is not None and (
+        not isinstance(issuance_nonce, str) or re.fullmatch(r"[0-9a-f]{64}", issuance_nonce) is None
+    ):
+        raise HostedRoomControlError("invalid control issuance nonce")
     material = "\0".join((
-        "hermes-room-control-v1",
+        "hermes-room-control-v1" if issuance_nonce is None else "hermes-room-control-v2",
         room_id,
         member_id,
         authority_gateway_id,
         str(authority_epoch),
         request_id,
+        *((issuance_nonce,) if issuance_nonce is not None else ()),
     )).encode("utf-8")
     digest = hmac.new(gateway_room_grant_secret(), material, hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
@@ -274,6 +280,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             authority_gateway_id TEXT NOT NULL,
             authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
             request_id TEXT NOT NULL,
+            issuance_nonce TEXT,
             token_hash BLOB NOT NULL CHECK (length(token_hash) = 32),
             status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
             created_at REAL NOT NULL,
@@ -335,6 +342,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 def _schema_is_current(conn: sqlite3.Connection) -> bool:
+    # Nonce metadata is needed only by issuance/recovery. Existing active
+    # grants must remain readable before any owner invokes a migrating writer.
     home = {
         row[1] for row in conn.execute("PRAGMA table_info(hosted_room_control_tokens)")
     }
@@ -399,6 +408,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             """ALTER TABLE hosted_room_control_tokens
                ADD COLUMN request_id TEXT NOT NULL DEFAULT 'legacy'"""
         )
+    if home and "issuance_nonce" not in home:
+        conn.execute("ALTER TABLE hosted_room_control_tokens ADD COLUMN issuance_nonce TEXT")
 
 
 def _connect(db_path: Path | str) -> sqlite3.Connection:
@@ -523,19 +534,8 @@ def issue_home_control_token(
     if expires_at <= created_at:
         raise HostedRoomControlError("control credential expiry must be in the future")
 
-    control_token = (
-        _derived_control_token(
-            room_id=room_id,
-            member_id=member_id,
-            authority_gateway_id=authority_gateway_id,
-            authority_epoch=authority_epoch,
-            request_id=normalized_request_id,
-        )
-        if request_id is not None
-        else secrets.token_urlsafe(TOKEN_BYTES)
-    )
-    token_hash = hashlib.sha256(control_token.encode("ascii")).digest()
     with (_transaction(db_path, immediate=True) if _conn is None else nullcontext(_conn)) as conn:
+        _migrate_schema(conn)
         if not _active_room_scope(
             conn,
             room_id=room_id,
@@ -547,18 +547,21 @@ def issue_home_control_token(
                 "active Group Chat authority scope is unavailable"
             )
         existing = conn.execute(
-            """SELECT request_id, token_hash, status, created_at, expires_at
+            """SELECT request_id, issuance_nonce, token_hash, status, created_at, expires_at
                  FROM hosted_room_control_tokens
                 WHERE room_id=? AND member_id=? AND authority_gateway_id=?
                   AND authority_epoch=?""",
             (room_id, member_id, authority_gateway_id, authority_epoch),
         ).fetchone()
         if existing is not None and existing["status"] == "active":
-            if reuse_existing is True and float(existing["expires_at"]) > created_at:
+            same_request = (str(existing["request_id"]) == normalized_request_id
+                            and float(existing["expires_at"]) == expires_at)
+            if same_request or (reuse_existing is True and float(existing["expires_at"]) > created_at):
                 recovered = _derived_control_token(
                     room_id=room_id, member_id=member_id,
                     authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch,
                     request_id=str(existing["request_id"]),
+                    issuance_nonce=existing["issuance_nonce"],
                 )
                 if not hmac.compare_digest(
                     hashlib.sha256(recovered.encode("ascii")).digest(), bytes(existing["token_hash"])
@@ -571,20 +574,6 @@ def issue_home_control_token(
                     created_at=float(existing["created_at"]), expires_at=float(existing["expires_at"]),
                 )
             if (
-                str(existing["request_id"]) == normalized_request_id
-                and float(existing["expires_at"]) == expires_at
-            ):
-                return IssuedRoomControlToken(
-                    room_id=room_id,
-                    member_id=member_id,
-                    authority_gateway_id=authority_gateway_id,
-                    authority_epoch=authority_epoch,
-                    control_token=control_token,
-                    status="active",
-                    created_at=created_at,
-                    expires_at=expires_at,
-                )
-            if (
                 str(existing["request_id"]) != "legacy"
                 and float(existing["expires_at"]) > created_at
             ):
@@ -593,16 +582,26 @@ def issue_home_control_token(
                 )
         if reuse_existing is True and existing is not None:
             raise HostedRoomControlConflictError("control access was invalidated; explicit authorization is required")
+        # Every fresh authorization gets new derivation material, even when an
+        # arbitrarily old request ID is reused after several revoke rotations.
+        # NULL retains v1 recovery for existing rows; no old bearer is stored.
+        issuance_nonce = secrets.token_hex(TOKEN_BYTES) if request_id is not None else None
+        control_token = (_derived_control_token(
+            room_id=room_id, member_id=member_id, authority_gateway_id=authority_gateway_id,
+            authority_epoch=authority_epoch, request_id=normalized_request_id, issuance_nonce=issuance_nonce,
+        ) if request_id is not None else secrets.token_urlsafe(TOKEN_BYTES))
+        token_hash = hashlib.sha256(control_token.encode("ascii")).digest()
         conn.execute(
             """INSERT INTO hosted_room_control_tokens(
                    room_id, member_id, authority_gateway_id, authority_epoch,
-                   request_id, token_hash, status, created_at, updated_at, expires_at,
+                   request_id, issuance_nonce, token_hash, status, created_at, updated_at, expires_at,
                    revoked_at
-               ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL)
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL)
                ON CONFLICT(
                    room_id, member_id, authority_gateway_id, authority_epoch
                ) DO UPDATE SET
                    token_hash=excluded.token_hash,
+                   issuance_nonce=excluded.issuance_nonce,
                    request_id=excluded.request_id,
                    status='active',
                    created_at=excluded.created_at,
@@ -615,6 +614,7 @@ def issue_home_control_token(
                 authority_gateway_id,
                 authority_epoch,
                 normalized_request_id,
+                issuance_nonce,
                 token_hash,
                 created_at,
                 created_at,

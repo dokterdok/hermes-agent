@@ -138,7 +138,11 @@ class RoomControlHTTPClient:
         return latest_shared_message(self, target_profile=target_profile)
 
     def revoke(self) -> None:
-        self._request(method="DELETE")
+        result = self._request(method="DELETE")
+        if type(result.get("revoked")) is not int or result["revoked"] not in (0, 1):
+            raise RoomControlClientError(
+                "Group Chat host did not acknowledge revocation", retryable=True,
+            )
 
     def mutate(
         self,
