@@ -86,6 +86,10 @@ class SessionSource:
     profile: Optional[str] = None
     # Transport-local fail-closed signal: explicit profile route whose target is not served.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
+    # Live adapter facts survive in-process routing, never persistence/from_dict.
+    is_one_to_one: Optional[bool] = field(default=None, repr=False, compare=False)
+    message_is_edit: bool = field(default=False, repr=False, compare=False)
+    message_had_attachments: bool = field(default=False, repr=False, compare=False)
     # Discord auto-thread metadata: explicit so pre-existing/renamed threads are never renamed.
     auto_thread_created: bool = False
     auto_thread_initial_name: Optional[str] = None

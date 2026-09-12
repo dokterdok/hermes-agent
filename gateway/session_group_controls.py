@@ -4,6 +4,8 @@ from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
 from gateway.session_group_files import GROUP_FILE_FIELDS, GROUP_FILE_METHODS, dispatch_group_files
+from gateway.session_group_home_access import HOME_ACCESS_FIELDS, HOME_ACCESS_METHODS, dispatch_home_access
+from gateway.session_group_control_setup import CONTROL_SETUP_FIELDS, CONTROL_SETUP_METHODS, dispatch_control_setup
 from gateway.session_group_peers import (
     GROUP_PEER_FIELDS, GROUP_PEER_METHODS, dispatch_group_peer, peer_capabilities,
 )
@@ -19,6 +21,8 @@ GROUP_METHODS = {
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
     **GROUP_FILE_METHODS,
+    **HOME_ACCESS_METHODS,
+    **CONTROL_SETUP_METHODS,
     **GROUP_PEER_METHODS,
     'groups.stop': 'session:control',
     'groups.retry': 'session:control',
@@ -35,6 +39,8 @@ _FIELDS = {
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     **GROUP_FILE_FIELDS,
+    **HOME_ACCESS_FIELDS,
+    **CONTROL_SETUP_FIELDS,
     **GROUP_PEER_FIELDS,
     'groups.stop': {'room_id', 'cancel_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
@@ -96,6 +102,10 @@ def _group(authority, actor, home, method, params):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    if method in HOME_ACCESS_METHODS:
+        return dispatch_home_access(authority, actor, method, params)
+    if method in CONTROL_SETUP_METHODS:
+        return dispatch_control_setup(authority, actor, method, params)
     if method in GROUP_PEER_METHODS:
         return dispatch_group_peer(authority, actor, service, method, params)
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
