@@ -4223,6 +4223,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _handle_slack_message_impl(self, event: dict, payload: Optional[dict] = None) -> None:
         """Handle an incoming Slack message event."""
+        is_message_edit = event.get("subtype") == "message_changed"
         accepted = await self._prefilter_inbound(event, payload)
         if accepted is None:
             return
@@ -4320,6 +4321,8 @@ class SlackAdapter(BasePlatformAdapter):
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
             media_types=media_types, channel_context=channel_context)
+        msg_event.source.is_one_to_one = is_one_to_one_dm
+        msg_event.source.message_is_edit = is_message_edit
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -5664,6 +5667,8 @@ class SlackAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)
+        source.is_one_to_one = is_dm
+        source.message_is_edit = False
         event = MessageEvent(
             text=text,
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),

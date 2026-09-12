@@ -6339,6 +6339,8 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
+        source.is_one_to_one = str(getattr(chat, "type", "") or "").casefold() == "private"
+        source.message_is_edit = getattr(message, "edit_date", None) is not None
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
