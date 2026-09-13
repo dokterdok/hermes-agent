@@ -1,0 +1,77 @@
+{
+  "page": {
+    "object": "hermes.group_recovery.copies",
+    "copies": [
+      {
+        "room_id": "saved-room",
+        "name": "Weekly planning",
+        "source_authority": {
+          "gateway_id": "install:original",
+          "epoch": 1
+        },
+        "saved_through_seq": 1,
+        "advertised_latest_seq": 1,
+        "copy_updated_at": 1789290000.0,
+        "group_ended": false,
+        "copy_status": "saved"
+      }
+    ],
+    "next_room_id": null,
+    "accepted_tail": "unverified",
+    "execution_authorized": false,
+    "target_gateway_id": "install:6898c558fb164f928c3a544f6783ad75"
+  },
+  "preview": {
+    "object": "hermes.group_recovery.preview",
+    "room_id": "saved-room",
+    "name": "Weekly planning",
+    "snapshot_id": "f60d87cd62d1a341f52209889e2a7735d39831c233c5f8884bcdeb9421185df2",
+    "source_authority": {
+      "gateway_id": "install:original",
+      "epoch": 1
+    },
+    "target_gateway_id": "install:6898c558fb164f928c3a544f6783ad75",
+    "saved_through_seq": 1,
+    "advertised_latest_seq": 1,
+    "copy_updated_at": 1789290000.0,
+    "work_records": {
+      "availability": "not_retained",
+      "source_loss_safe": false,
+      "incompleteness": [
+        "work_evidence_unknown"
+      ]
+    },
+    "blockers": [
+      "work_records_unavailable"
+    ],
+    "member_origins": [
+      {
+        "member_id": "original",
+        "installation_id": "install:original",
+        "profile": "default",
+        "resolved": true
+      },
+      {
+        "member_id": "target",
+        "installation_id": "install:6898c558fb164f928c3a544f6783ad75",
+        "profile": "default",
+        "resolved": true
+      }
+    ],
+    "candidate_member_ids": [
+      "target"
+    ],
+    "previous_host_member_ids": [
+      "original"
+    ],
+    "reconciliation_required": true,
+    "accepted_tail": "unverified",
+    "execution_authorized": false,
+    "requirements": [
+      "operator_confirms_previous_host_fenced",
+      "reconcile_recorded_work",
+      "confirm_saved_recovery_point",
+      "preserve_bot_installation_identity"
+    ]
+  }
+}
