@@ -8,7 +8,7 @@ It keeps the gateway responsible for execution instead of adding another
 session runner in Desktop or the messaging adapters.
 
 **This is a development checkpoint, not a release build.** It is based on
-runtime `8f7a8ec3bc0` and its merged main `e440bf35472`. The original source PRs remain
+runtime `f9a5ccbd83f4` and its merged main `de2d6a1b9350`. The original source PRs remain
 separate review units; this branch does not change their readiness or the
 maintainer's review schedule. Use disposable profiles and matching client and
 gateway revisions when evaluating it.
@@ -36,9 +36,10 @@ between different login identities. The room owner explicitly grants messaging
 access; command-admin status alone does not grant all rooms or their files.
 Shared messaging chats also require an audience confirmation.
 
-Accepted shared documents keep their working copies through session cleanup.
-Older inputs without reliable custody records are retained conservatively;
-this is not a new automatic file-retirement policy or a total disk-usage limit.
+Document lifetime across cleanup is undergoing a separate upgrade-migration
+review. The intended boundary protects existing shared inputs without preventing
+cleanup of unrelated new uploads. This checkpoint is not yet a document-retention
+release candidate.
 
 An unavailable gateway is not evidence that accepted work never ran. Setup and
 publication preserve their original identifiers so an interrupted acknowledgement
@@ -69,26 +70,28 @@ repairs belong in [#108594](https://github.com/NousResearch/hermes-agent/pull/10
 being hidden inside a Files or recovery layer. These are semantic ports where
 the runtime changed, not claims that entire source PRs have been absorbed.
 
-The branch also includes unsupportedpastels' authored
+The runtime now incorporates unsupportedpastels' authored
 [#109403](https://github.com/NousResearch/hermes-agent/pull/109403), which refreshes
-active Desktop conversations and mounted tiles when missed events require a
-fresh snapshot. Its original commit is retained, rather than reimplemented.
-It also carries the authored viewer-detach work in
-[#109404](https://github.com/NousResearch/hermes-agent/pull/109404), plus a
+Desktop conversations and mounted tiles after missed events, and the viewer-detach
+work in [#109404](https://github.com/NousResearch/hermes-agent/pull/109404), including a
 [small ordering repair](https://github.com/dokterdok/hermes-agent/commit/e30c00250bb64ecdf34dbae6de5a312103d770f0)
-so a stale reply cannot disconnect the winning terminal view.
+so a stale reply cannot disconnect the winning terminal view. This preparation
+keeps the maintainer's reconciled versions rather than applying competing copies.
 
 ## Verification Boundary
 
-The current code checkpoint passed 383 Desktop tests across 25 files and the renderer
-and Electron typechecks. Its focused Python selection passed 1,110 tests across 133 files,
-with two Linux-only skips and no automatic retries. Independent reviews covered
-the consequential ports and their repairs, including actual native/HTTP setup,
-real SDK/creation-helper interactions, and document custody during cleanup and
-admission. Review and test counts overlap and are not summed as unique cases.
-Separate checks cover terminal subscription ordering and the actual serialized
-response for an old export after explicit native adoption, through the Files
-consumer to download initiation. No hidden adoption is part of that read path.
+The F9 composition passed 258 Desktop journal/Group-creation checks across 12
+files, 165 Files UI checks across 9 files, and the renderer typecheck. Selected
+Python checks passed for Files, messaging access/views and API contracts
+(104 checks), plus media/API/peer retention (28 checks), without automatic retries.
+Independent reviews cover the consequential repairs; these counts overlap other
+recorded checks and are not presented as unique programme totals.
+
+Earlier classic-file verification also fed the actual serialized backend response
+through the Files consumer to download initiation after explicit native adoption.
+No hidden adoption is part of that read path. The earlier 1,110-check Python and
+383-check Desktop checkpoint predates F9 and is not a full-suite result for this
+revision. Document migration remains a separate review gate.
 
 These are focused integration and component results, not a green full repository
 suite or new signed-installation, physical-host failure or live-client acceptance.
