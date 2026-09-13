@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -14,7 +14,9 @@ export function preparedJournal(userData: string, origin: string) {
   const read = (): Record<string, unknown> => {
     try {
       const value: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+
       if (!value || typeof value !== 'object' || Array.isArray(value)) {throw new Error('Invalid prepared submission journal')}
+
       return value as Record<string, unknown>
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {return {}}
@@ -24,7 +26,7 @@ export function preparedJournal(userData: string, origin: string) {
 
   const write = (journal: Record<string, unknown>) => {
     fs.mkdirSync(userData, { recursive: true })
-    // Atomic replacement is process-crash durable, not a power-loss guarantee.
+    // Private atomic replacement, not a power-loss durability promise.
     writeSecretFileAtomic(file, JSON.stringify(journal), { encoding: 'utf8' })
   }
 
@@ -41,16 +43,30 @@ export function preparedJournal(userData: string, origin: string) {
     compareAndSet(key: string, expected: unknown | null, entry: unknown | null): boolean {
       const journal = read()
       const current = Object.hasOwn(journal, key) ? journal[key] : null
+
       if (JSON.stringify(current) !== JSON.stringify(expected)) {return false}
+
       if (entry === null) {delete journal[key]}
       else {Object.defineProperty(journal, key, { value: entry, enumerable: true, configurable: true })}
+
       write(journal)
+
       return true
     }
   }
 }
 
 export function registerPreparedSubmissions() {
+  // Stable across reloads of one window, never inherited by another window.
+  const owners = new WeakMap<Electron.WebContents, string>()
+  ipcMain.handle('hermes:prepared-submissions:owner', event => {
+    let owner = owners.get(event.sender)
+
+    if (!owner) {owner = randomUUID(); owners.set(event.sender, owner)}
+
+    return owner
+  })
+
   const store = (event: Electron.IpcMainInvokeEvent) =>
     preparedJournal(app.getPath('userData'), new URL(event.senderFrame!.url).origin)
 
@@ -66,6 +82,7 @@ export function registerPreparedSubmissions() {
     if (typeof key !== 'string' || key.length > 2048 || [expected, entry].some(value => value !== null && (typeof value !== 'string' || value.length > 1024 * 1024))) {
       throw new Error('Invalid prepared submission comparison')
     }
+
     return store(event).compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
   })
 }
