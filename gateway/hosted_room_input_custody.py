@@ -1,5 +1,4 @@
 """Bounded legacy inventory and pre-admission private document custody."""
-import errno
 import hashlib
 import os
 from pathlib import Path
@@ -8,7 +7,7 @@ import sqlite3
 import stat
 import tempfile
 
-from gateway.hosted_room_attachments import _name, default_attachment_root
+from gateway.hosted_room_attachments import default_attachment_root
 from hermes_state_runtime import RuntimeStoreError, _json
 from hermes_state_terminal import terminal_admission
 
@@ -184,33 +183,3 @@ def _copy(data, target):
         _sync_directory(target.parent)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def retain_document(store, name, data):
-    """Authorized bytes only; durable v2 backing before materializer handoff."""
-    from gateway.session_ingress_media import _media_root, _sync_directory, restore_native_media
-    if _name(name) != name:
-        raise RuntimeStoreError('invalid_params')
-    root = _media_root()
-    digest = hashlib.sha256(data).hexdigest()
-    backing_root = _backing_root(store.db_path)
-    backing = backing_root / digest / name
-    alias = root / digest / name
-    reference = {'path': str(alias), 'sha256': digest, 'size': len(data)}
-    with store._lock, store._transaction(immediate=True) as conn:
-        if not _ready(conn, root):
-            raise RuntimeStoreError('storage_unavailable')
-        for directory in (backing_root, backing.parent, root, alias.parent):
-            _directory(directory)
-        _copy(data, backing)
-        if not alias.exists() and not alias.is_symlink():
-            try:
-                os.link(backing, alias)
-            except OSError as exc:
-                if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES, errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP}:
-                    raise
-                _copy(data, alias)
-        restore_native_media([reference])
-        for directory in (alias.parent, root, root.parent, backing.parent, backing_root, backing_root.parent):
-            _sync_directory(directory)
-    return reference
