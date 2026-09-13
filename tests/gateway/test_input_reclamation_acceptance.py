@@ -102,3 +102,27 @@ async def test_authorization_after_background_preparation_refuses_acceptance(tmp
         assert collect_working_copies(db, epoch=owner.epoch)['removed'] == 1
     finally:
         close(db, tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('named', [False, True])
+async def test_mixed_inputs_reconstruct_from_exact_refs_without_staging(tmp_path, monkeypatch, named):
+    from gateway.hosted_room_input_preparation import reconstruct_accepted_payload
+    db, owner = owned(tmp_path, monkeypatch)
+    try:
+        rpc, bound = rpc_files(tmp_path, owner, named=named, count=2, image=True)
+        prepared = prepare_hosted_input(rpc, request_id='hosted:mixed', prompt='read', attachments=[item for item, _ in bound])
+        receipt = await owner.submit(rpc.principal, Submission('hosted:mixed', rpc.ref, prepared.payload, 'queue'),
+                                     _input_custody=prepared.handle)
+        row = get_session_admission(db, admission_id=receipt.admission_id)
+        assert row['payload']['attachments_v1']['media_types'] == ['image/png']
+        def no_capture(*args, **kwargs):
+            raise AssertionError('preclaim and exact retries must be read-only')
+        monkeypatch.setattr('gateway.session_ingress_media.capture_native_media', no_capture)
+        monkeypatch.setattr('gateway.hosted_room_input_preparation._copy', no_capture)
+        assert reconstruct_accepted_payload(rpc, 'read', [item for item, _ in bound], row) == row['payload']
+        again = prepare_hosted_input(rpc, request_id='hosted:mixed', prompt='read', attachments=[item for item, _ in bound])
+        assert (await owner.submit(rpc.principal, Submission('hosted:mixed', rpc.ref, again.payload, 'queue'),
+                                   _input_custody=again.handle)).admission_id == receipt.admission_id
+    finally:
+        close(db, tmp_path)
