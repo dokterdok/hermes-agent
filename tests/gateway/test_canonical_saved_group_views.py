@@ -64,6 +64,7 @@ async def test_saved_copy_list_is_paginated_metadata_only_and_nonexecuting(tmp_p
         assert 'SHARED MESSAGE CONTENT' not in json.dumps(page) and token not in json.dumps(page)
         preview = await native.dispatch({'id': 2, 'method': 'groups.recovery.prepare', 'params': {'room_id': 'newer'}})
         assert preview['result']['room_id'] == 'newer'
+        assert preview['result']['target_gateway_id'] == page['target_gateway_id']
         assert preview['result']['execution_authorized'] is False
         assert dump(shared) == before and dump(authority.db.db_path) == local
         assert not authority.sessions and not authority.db._read_all('SELECT * FROM session_admissions')
@@ -153,3 +154,39 @@ async def test_damaged_copy_header_is_unavailable_not_an_empty_store(tmp_path, m
         result = await native.dispatch({'id': 1, 'method': 'groups.recovery.list', 'params': {}})
         assert result['error']['message'] == 'recovery_evidence_unavailable'
         assert 'result' not in result and dump(shared) == before
+
+
+@pytest.mark.asyncio
+async def test_oversized_stored_metadata_is_not_loaded_into_response_projection(tmp_path, monkeypatch):
+    from gateway import hosted_room_saved_views
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    async with owner(tmp_path, monkeypatch) as (authority, _, _):
+        native = connection(authority)
+        shared, _ = save_copy(tmp_path, monkeypatch, room_id='saved', name='Planning', received_at=10)
+        with sqlite3.connect(shared) as conn:
+            conn.execute("UPDATE hosted_room_replicas SET name=? WHERE room_id='saved'", ('x' * 100000,))
+        seen = []
+        original = hosted_room_saved_views._summary
+        def project(row):
+            seen.append(row['name'])
+            return original(row)
+        monkeypatch.setattr(hosted_room_saved_views, '_summary', project)
+        result = await native.dispatch({'id': 1, 'method': 'groups.recovery.list', 'params': {}})
+        assert seen == [None]
+        assert result['error']['message'] == 'recovery_evidence_unavailable'
+
+
+@pytest.mark.asyncio
+async def test_recorded_copy_flags_never_claim_recovery_readiness(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    async with owner(tmp_path, monkeypatch) as (authority, _, _):
+        native = connection(authority)
+        shared, _ = save_copy(tmp_path, monkeypatch, room_id='saved', name='Planning', received_at=10)
+        with sqlite3.connect(shared) as conn:
+            conn.execute("UPDATE hosted_room_replicas SET quarantine_reason='stored warning',disbanded_at=20 WHERE room_id='saved'")
+        before = dump(shared)
+        result = (await native.dispatch({'id': 1, 'method': 'groups.recovery.list', 'params': {}}))['result']
+        assert result['copies'][0]['copy_status'] == 'needs_review'
+        assert result['copies'][0]['group_ended'] is True
+        assert result['execution_authorized'] is False and result['accepted_tail'] == 'unverified'
+        assert dump(shared) == before

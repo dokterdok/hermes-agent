@@ -8,10 +8,14 @@ from pathlib import Path
 import sqlite3
 
 from gateway.hosted_room_recovery_read import literal_id, readonly
-from gateway.hosted_rooms import _validate_room_name
+from gateway.hosted_rooms import MAX_ACTOR_ID_CHARS, MAX_ROOM_ID_CHARS, MAX_ROOM_NAME_CHARS, _validate_room_name
 from gateway.hosted_rooms_common import table_exists
 
 MAX_PAGE = 20
+
+
+def _text(column, limit):
+    return f"CASE WHEN typeof({column})='text' AND length({column})<={limit} THEN {column} END"
 
 
 def page_parameters(params):
@@ -36,8 +40,8 @@ def _summary(row):
     return {'room_id': room_id, 'name': name,
             'source_authority': {'gateway_id': gateway, 'epoch': epoch},
             'saved_through_seq': saved, 'advertised_latest_seq': latest,
-            'copy_updated_at': received, 'group_ended': row['disbanded_at'] is not None,
-            'copy_status': 'needs_review' if row['quarantine_reason'] is not None else
+            'copy_updated_at': received, 'group_ended': bool(row['group_ended']),
+            'copy_status': 'needs_review' if row['needs_review'] else
                 'retired' if row['retired'] else 'saved'}
 
 
@@ -57,8 +61,17 @@ def list_saved_copies(db_path, *, limit, after_room_id):
         from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
         retired = (f'EXISTS(SELECT 1 FROM {RETIREMENT_TABLE} t WHERE t.room_id=r.room_id)'
                    if table_exists(conn, RETIREMENT_TABLE) else '0')
-        rows = conn.execute(f'''SELECT r.room_id,r.name,r.authority_gateway_id,r.authority_epoch,
-            r.last_seq,r.latest_seq,r.updated_at,r.disbanded_at,r.quarantine_reason,{retired} AS retired
+        # Bound damaged on-disk fields before returning values to Python.
+        selected = ','.join((
+            f"{_text('r.room_id', MAX_ROOM_ID_CHARS)} AS room_id",
+            f"{_text('r.name', MAX_ROOM_NAME_CHARS)} AS name",
+            f"{_text('r.authority_gateway_id', MAX_ACTOR_ID_CHARS)} AS authority_gateway_id",
+            *(f"CASE WHEN typeof(r.{column})='integer' THEN r.{column} END AS {column}"
+              for column in ('authority_epoch', 'last_seq', 'latest_seq')),
+            "CASE WHEN typeof(r.updated_at) IN ('integer','real') THEN r.updated_at END AS updated_at",
+            'r.disbanded_at IS NOT NULL AS group_ended',
+            'r.quarantine_reason IS NOT NULL AS needs_review', f'{retired} AS retired'))
+        rows = conn.execute(f'''SELECT {selected}
             FROM hosted_room_replicas r WHERE (? IS NULL OR r.room_id>?)
             ORDER BY r.room_id ASC LIMIT ?''', (after_room_id, after_room_id, limit + 1)).fetchall()
         result['copies'] = [_summary(row) for row in rows[:limit]]

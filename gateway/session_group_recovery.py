@@ -159,6 +159,7 @@ def dispatch_recovery(connection, method, params):
             from gateway.hosted_room_saved_views import list_saved_copies
             from gateway.hosted_rooms import default_db_path
             result = list_saved_copies(default_db_path(), limit=limit, after_room_id=after)
+            result['target_gateway_id'] = gateway
         elif method == 'groups.recovery.prepare':
             from gateway.hosted_room_manual_recovery import prepare_recovery
             from gateway.hosted_rooms import default_db_path
