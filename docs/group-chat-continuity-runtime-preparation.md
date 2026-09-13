@@ -36,6 +36,11 @@ between different login identities. The room owner explicitly grants messaging
 access; command-admin status alone does not grant all rooms or their files.
 Shared messaging chats also require an audience confirmation.
 
+Use existing Bots for now. The canonical native connection does not yet expose
+installation-authorized Bot creation; the current New Bot form cannot complete
+that operation. Creating a profile and enrolling it in a running gateway need
+an explicit installation-management contract, not broader session permissions.
+
 Shared documents receive verified private working copies before session handoff.
 New copies have tracked preparation and admission lifetimes: abandoned preparations
 expire, while accepted inputs and branched conversations keep the copies they need.
@@ -115,8 +120,24 @@ revision. Migration review includes fixed-cohort retirement, named-profile scope
 atomic readiness refusal, observed file identities and pre-admission backing;
 it is not a live-upgrade certification.
 
-These are focused integration and component results, not a green full repository
-suite or new signed-installation, physical-host failure or live-client acceptance.
-Recorded field testing on the original PRs remains revision-specific. The
-remaining unsupported paths above need their own implementation and acceptance
+An isolated Apple Development-signed macOS installation at `807b114eca6e` also
+passed ordinary session Send/Queue, normal GUI Quit, completion with Desktop closed,
+and reopening the same conversation. A two-profile Group Chat completed both
+participants after Quit; reopening preserved its history, and downloads from both
+the conversation and searchable Files browser matched the original bytes. These
+checks used the real installed app and local gateway with a deterministic loopback
+model, pre-provisioned profiles, and no external tools or credentials.
+
+The subsequent Desktop presentation/addressing repair has an independent
+32-case UI check at `5cae152d0d33`: human room titles, room-scoped speaker names,
+usable composer controls and the visible handle frozen into new group membership.
+Existing room identities and accepted membership are unchanged.
+An installed signed-app recheck at that same revision confirmed that `@hermes`
+scheduled only the selected bot, the revised title/composer/history rendered,
+and a native attachment download still matched the original bytes.
+
+This is scoped native and integration evidence, not a green full repository
+suite, Developer ID notarization, physical-host failure or cross-host release
+acceptance. Recorded field testing on the original PRs remains revision-specific.
+The remaining unsupported paths above need their own implementation and acceptance
 before this branch can replace the field build.
