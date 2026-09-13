@@ -18,7 +18,7 @@ def test_explicit_delete_refuses_atomically_with_ledger_reference(tmp_path, monk
             target = 'grandchild'
         for sid in ('protected', 'legacy', target):
             db.append_message(sid, 'user', 'history fixture')
-            (tmp_path / (sid + '.json')).write_text('transcript fixture')
+            (tmp_path / (sid + '.json')).write_text('transcript fixture', encoding='utf-8')
         # Opaque pre-existing metadata is not an acceptance/closing-result simulation.
         db.set_meta('fixture-do-not-change', 'original')
         expected = db.get_session_delete_targets('protected')
@@ -41,7 +41,7 @@ def test_explicit_delete_refuses_atomically_with_ledger_reference(tmp_path, monk
                     expected_delete_ids=expected if operation == 'verified' else None)
         assert refused.value.reason == 'runtime_coordination_required'
         assert snapshot(db) == before
-        assert all((tmp_path / (sid + '.json')).read_text() == 'transcript fixture'
+        assert all((tmp_path / (sid + '.json')).read_text(encoding='utf-8') == 'transcript fixture'
                    for sid in ('protected', 'legacy', target))
 
 
@@ -55,7 +55,7 @@ def test_cleanup_skips_and_reports_ledger_rows_but_collects_legacy(tmp_path, mon
         before = db.get_session('protected')
         untouched = {key: value for key, value in snapshot(db).items() if key != 'sessions'}
         for sid in ('protected', 'legacy'):
-            (tmp_path / (sid + '.json')).write_text('transcript fixture')
+            (tmp_path / (sid + '.json')).write_text('transcript fixture', encoding='utf-8')
         preview = {}
         assert db.count_empty_sessions(report=preview) == 1
         assert preview == {'skipped_protected': 1}
@@ -80,6 +80,6 @@ def test_cleanup_skips_and_reports_ledger_rows_but_collects_legacy(tmp_path, mon
             assert report == {'removed': 1, 'skipped_protected': 1}
         assert db.get_session('protected') == before and db.get_session('legacy') is None
         assert {key: value for key, value in snapshot(db).items() if key != 'sessions'} == untouched
-        assert (tmp_path / 'protected.json').read_text() == 'transcript fixture'
+        assert (tmp_path / 'protected.json').read_text(encoding='utf-8') == 'transcript fixture'
         assert not (tmp_path / 'legacy.json').exists()
         assert db._read_all('PRAGMA foreign_key_check') == []

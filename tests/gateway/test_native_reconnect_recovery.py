@@ -48,7 +48,7 @@ def state(tmp_path, monkeypatch):
     homes = {'default': root, **{name: root / 'profiles' / name for name in ('alpha', 'beta')}}
     for home in homes.values():
         home.mkdir(exist_ok=True, parents=True)
-        (home / 'config.yaml').write_text('{}')
+        (home / 'config.yaml').write_text('{}', encoding='utf-8')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
     monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
@@ -233,16 +233,16 @@ async def test_actual_sender_policy_is_rechecked_in_receiving_home_not_routed_ho
     runner._under_authorization_profile = GatewayRunner._under_authorization_profile.__get__(runner)
     runner._is_user_authorized_for_source = GatewayRunner._is_user_authorized_for_source.__get__(runner)
     receiving_env = state.homes['alpha'] / '.env'
-    receiving_env.write_text('TELEGRAM_ALLOWED_USERS=allowed\n')
-    (state.homes['beta'] / '.env').write_text('TELEGRAM_ALLOWED_USERS=runtime-only\n')
+    receiving_env.write_text('TELEGRAM_ALLOWED_USERS=allowed\n', encoding='utf-8')
+    (state.homes['beta'] / '.env').write_text('TELEGRAM_ALLOWED_USERS=runtime-only\n', encoding='utf-8')
     receipt, _ = await queued(state, 'beta', transport='alpha', chat='real-policy')
     replacement = Adapter('alpha')
     runner._profile_adapters['alpha'][Platform.TELEGRAM] = replacement
     before = ledger(state)
-    receiving_env.write_text('TELEGRAM_ALLOWED_USERS=now-revoked\n')
+    receiving_env.write_text('TELEGRAM_ALLOWED_USERS=now-revoked\n', encoding='utf-8')
     await recover_adapter_native_inputs(runner, Platform.TELEGRAM, replacement, profile='alpha')
     assert state.scheduled == [] and ledger(state) == before
-    receiving_env.write_text('TELEGRAM_ALLOWED_USERS=allowed\n')
+    receiving_env.write_text('TELEGRAM_ALLOWED_USERS=allowed\n', encoding='utf-8')
     await recover_adapter_native_inputs(runner, Platform.TELEGRAM, replacement, profile='alpha')
     assert state.scheduled == [(str(state.homes['beta']), receipt.ref.session_id, str(state.homes['beta']))]
     assert ledger(state) == before

@@ -15,8 +15,8 @@ def test_secondary_worker_env_drops_launch_terminal_policy_and_env_settings(tmp_
     root = tmp_path / '.hermes'
     beta = root / 'profiles' / 'beta'
     beta.mkdir(parents=True)
-    (root / '.env').write_text('HERMES_MODEL=launch-model\nTERMINAL_ENV=docker\n')
-    (beta / '.env').write_text('BETA_ONLY_TOKEN=beta-secret\n')
+    (root / '.env').write_text('HERMES_MODEL=launch-model\nTERMINAL_ENV=docker\n', encoding='utf-8')
+    (beta / '.env').write_text('BETA_ONLY_TOKEN=beta-secret\n', encoding='utf-8')
     monkeypatch.setenv('HERMES_HOME', str(root))
     monkeypatch.setenv('HERMES_MODEL', 'launch-model')
     monkeypatch.setenv('TERMINAL_ENV', 'docker')
@@ -41,7 +41,7 @@ def test_launch_scrub_preserves_constructed_context_then_target_overlay(tmp_path
     root = tmp_path / 'root'
     target = root / 'profiles' / 'member'
     target.mkdir(parents=True)
-    (root / '.env').write_text('HERMES_SESSION_ID=fixture-launch-session\nLAUNCH_CREDENTIAL=fixture-launch-only\n')
+    (root / '.env').write_text('HERMES_SESSION_ID=fixture-launch-session\nLAUNCH_CREDENTIAL=fixture-launch-only\n', encoding='utf-8')
     (target / '.env').write_text('TARGET_CREDENTIAL=fixture-target-only\n' +
         (f'HERMES_SESSION_ID={target_session}\n' if target_session else ''))
     monkeypatch.setattr(os, 'environ', {'PATH': os.defpath, 'HOME': str(tmp_path), 'HERMES_HOME': str(root),
