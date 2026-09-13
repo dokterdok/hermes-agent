@@ -13,6 +13,15 @@ separate review units; this branch does not change their readiness or the
 maintainer's review schedule. Use disposable profiles and matching client and
 gateway revisions when evaluating it.
 
+**Remote-client dependency:** #106742 currently unifies gateway-attached clients,
+including Desktop local mode. Desktop SSH, URL/token and Cloud connections and
+browser chat still use the separate `hermes serve` session host. They need the
+maintainer's [entry-point cutover](https://gist.github.com/unsupportedpastels/765f9d551ce88ee01630c18367763e75)
+before the same-owner guarantee applies there. The [multiplexing tracker](https://github.com/NousResearch/hermes-agent/issues/109417)
+also keeps combined-runtime parity and forced-migration gates separate from fixes
+already on main. This branch does not remove supported standalone topologies or
+add another session executor to bridge those gaps.
+
 ## What Is Available
 
 | Journey | Current preparation |
@@ -23,6 +32,7 @@ gateway revisions when evaluating it.
 | Check in from messaging | Explicitly authorized chats can view groups, send input, retrieve outputs and handle scoped approvals. Telegram has a reply-based compose flow; native choices depend on adapter support. This supplements Desktop rather than replacing its full group experience. |
 | Reopen retained classic history | Old history and local file copies stay readable. Already-published file references can also be fetched from their authorized original producer; missing or unbound sources remain unavailable. No replacement session is created for a download. |
 | Preserve evidence on another host | Opted-in participant gateways can retain authenticated history and work records. Recovery preview and custody checks remain non-executing; promotion, takeover and automatic continuation are not enabled. |
+| Inspect a saved copy | A native-owner Desktop connection can discover copies retained on its gateway and explicitly inspect their coverage and work-record summary. Copies remain separate from active groups; no work is resumed. Remote access awaits the owner-authenticated transport cutover above. |
 
 Each Bot retains its own working context, tools and credentials. Files enter the
 shared space explicitly: mentioning one Bot does not make a group attachment
@@ -78,6 +88,12 @@ repairs belong in [#108594](https://github.com/NousResearch/hermes-agent/pull/10
 [#109338](https://github.com/NousResearch/hermes-agent/pull/109338), rather than
 being hidden inside a Files or recovery layer. These are semantic ports where
 the runtime changed, not claims that entire source PRs have been absorbed.
+
+The existing layer PRs are also being reconciled onto the future runtime, starting
+with #98307 as the integration view. The published preparation branch is evidence
+and reusable implementation, not a substitute for those per-layer PR updates.
+Original source heads are preserved while their unique changes and dependencies
+are accounted for; incompatible old executor paths are not carried forward silently.
 
 Two small follow-ups to newer main changes can land independently:
 [#109644](https://github.com/NousResearch/hermes-agent/pull/109644) preserves revoked
@@ -135,6 +151,13 @@ Existing room identities and accepted membership are unchanged.
 An installed signed-app recheck at that same revision confirmed that `@hermes`
 scheduled only the selected bot, the revised title/composer/history rendered,
 and a native attachment download still matched the original bytes.
+
+Saved-copy discovery and preview have separate bounded backend/UI review. An
+embedded-NUL metadata-size case was repaired and rechecked without weakening the
+Unicode name limit. The native read-only view at `7b3bbeeed73e` displayed both
+retained-work and missing-work copies; saved-table hashes were unchanged, with
+zero canonical admissions or conversation-model calls. This is observation of
+retained evidence, not a host-loss or recovery-execution acceptance result.
 
 This is scoped native and integration evidence, not a green full repository
 suite, Developer ID notarization, physical-host failure or cross-host release
