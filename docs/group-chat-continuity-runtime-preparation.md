@@ -8,7 +8,7 @@ It keeps the gateway responsible for execution instead of adding another
 session runner in Desktop or the messaging adapters.
 
 **This is a development checkpoint, not a release build.** It is based on
-runtime `f9a5ccbd83f4` and its merged main `de2d6a1b9350`. The original source PRs remain
+runtime `f9a5ccbd83f4` with main `41380ccef90f`. The original source PRs remain
 separate review units; this branch does not change their readiness or the
 maintainer's review schedule. Use disposable profiles and matching client and
 gateway revisions when evaluating it.
@@ -70,6 +70,12 @@ repairs belong in [#108594](https://github.com/NousResearch/hermes-agent/pull/10
 being hidden inside a Files or recovery layer. These are semantic ports where
 the runtime changed, not claims that entire source PRs have been absorbed.
 
+Two small follow-ups to newer main changes can land independently:
+[#109644](https://github.com/NousResearch/hermes-agent/pull/109644) preserves revoked
+named-profile approvals, and [#109647](https://github.com/NousResearch/hermes-agent/pull/109647)
+lets proxy replies finish without waiting for another network chunk. Both are
+also carried here; neither requires the continuity stack.
+
 The runtime now incorporates unsupportedpastels' authored
 [#109403](https://github.com/NousResearch/hermes-agent/pull/109403), which refreshes
 Desktop conversations and mounted tiles after missed events, and the viewer-detach
@@ -80,10 +86,12 @@ keeps the maintainer's reconciled versions rather than applying competing copies
 
 ## Verification Boundary
 
-The F9 composition passed 258 Desktop journal/Group-creation checks across 12
-files, 165 Files UI checks across 9 files, and renderer, Electron and end-to-end
-TypeScript checks. Selected Python checks cover Files, messaging access/views,
-API contracts, retained documents and upgrade inventory, without automatic retries.
+The current-main composition passed 202 selected Python checks across 31 files
+and 153 Desktop checks across 8 files, plus renderer, Electron and end-to-end
+TypeScript checks. Separate focused checks cover the new approval, profile-cloning,
+state-file permission and proxy-stream boundaries. Earlier F9 composition checks
+include 258 journal/Group-creation cases and 165 Files UI cases. No automatic retries
+were used.
 Independent reviews cover the consequential repairs; these counts overlap other
 recorded checks and are not presented as unique programme totals.
 
