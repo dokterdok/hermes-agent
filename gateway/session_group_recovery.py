@@ -13,9 +13,9 @@ from gateway.hosted_room_recovery_read import literal_id, readonly
 from gateway.session_group_delegation import _owner
 from hermes_state_runtime import RuntimeStoreError, _epoch, _admission
 
-RECOVERY_METHODS = {'groups.recovery.prepare': 'session:read',
+RECOVERY_METHODS = {'groups.recovery.list': 'session:read', 'groups.recovery.prepare': 'session:read',
                     'groups.custody.status': 'session:read', 'groups.custody.prepare': 'session:control'}
-RECOVERY_FIELDS = {'groups.recovery.prepare': {'room_id'},
+RECOVERY_FIELDS = {'groups.recovery.list': {'limit', 'after_room_id'}, 'groups.recovery.prepare': {'room_id'},
     'groups.custody.status': {'room_id', 'member_id'},
     'groups.custody.prepare': {'room_id', 'member_id', 'admission_id'}}
 
@@ -137,17 +137,29 @@ def _status(authority, params, gateway):
 
 
 def dispatch_recovery(connection, method, params):
-    if method not in RECOVERY_METHODS or not isinstance(params, dict) or set(params) != RECOVERY_FIELDS[method]:
+    if method not in RECOVERY_METHODS or not isinstance(params, dict):
+        raise RuntimeStoreError('invalid_params')
+    listing = method == 'groups.recovery.list'
+    fields = RECOVERY_FIELDS[method]
+    if set(params) - fields or (not listing and set(params) != fields):
         raise RuntimeStoreError('invalid_params')
     try:
-        for value in params.values():
-            literal_id(value)
+        if listing:
+            from gateway.hosted_room_saved_views import page_parameters
+            limit, after = page_parameters(params)
+        else:
+            for value in params.values():
+                literal_id(value)
     except ValueError as exc:
         raise RuntimeStoreError('invalid_params') from exc
     capability = RECOVERY_METHODS[method]
     gateway = _native_owner(connection, capability)
     try:
-        if method == 'groups.recovery.prepare':
+        if listing:
+            from gateway.hosted_room_saved_views import list_saved_copies
+            from gateway.hosted_rooms import default_db_path
+            result = list_saved_copies(default_db_path(), limit=limit, after_room_id=after)
+        elif method == 'groups.recovery.prepare':
             from gateway.hosted_room_manual_recovery import prepare_recovery
             from gateway.hosted_rooms import default_db_path
             result = prepare_recovery(default_db_path(), room_id=params['room_id'], target_gateway_id=gateway)
