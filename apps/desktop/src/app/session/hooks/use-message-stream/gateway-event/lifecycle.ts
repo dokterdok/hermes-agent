@@ -1,5 +1,6 @@
 import type { HermesSkin } from '@hermes/shared/skin'
 
+import { eventSourceMatchesOwner, gatewayEventSource } from '@/lib/replay-gap-owner'
 import {
   notifyCronChanged,
   notifyPairingChanged,
@@ -11,7 +12,8 @@ import {
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { markRuntimeGone } from '@/store/runtime-gone'
-import { getSessionOwnerHint, requestSessionResume } from '@/store/session'
+import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
+import type { SessionOwnerScope } from '@/store/session-request-router'
 import {
   $sessionTiles,
   dropSessionState,
@@ -129,29 +131,30 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
       ? deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId
       : null
 
-    const eventMatchesOwner = (owner: { connectionId: string; profile: string } | undefined) =>
-      Boolean(
-        owner &&
-          event.connectionId === owner.connectionId &&
-          (event.profile?.trim() || 'default') === (owner.profile.trim() || 'default')
-      )
+    const source = gatewayEventSource(event)
+
+    const ownerForStoredSession = (id: string): SessionOwnerScope =>
+      getSessionOwnerHint(id, source) ?? knownSessionOwner(ownerLookupSessionRows(), id)
 
     if (storedSessionId && runtimeId === deps.activeSessionIdRef.current) {
-      const ownerRoute = getSessionOwnerHint(storedSessionId, {
-        connectionId: event.connectionId || '',
-        profile: event.profile || 'default'
-      })
+      const ownerRoute = ownerForStoredSession(storedSessionId)
 
-      if (eventMatchesOwner(ownerRoute)) {
-        requestSessionResume(storedSessionId, ownerRoute, { authoritativeSnapshot: true })
+      if (eventSourceMatchesOwner(source, ownerRoute)) {
+        requestSessionResume(storedSessionId, ownerRoute && typeof ownerRoute === 'object' ? ownerRoute : undefined, {
+          authoritativeSnapshot: true
+        })
 
         return true
       }
     }
 
-    const tile = $sessionTiles
-      .get()
-      .find(candidate => candidate.runtimeId === runtimeId && eventMatchesOwner(candidate.ownerRoute))
+    const tile = $sessionTiles.get().find(candidate => {
+      if (candidate.runtimeId !== runtimeId) {
+        return false
+      }
+
+      return eventSourceMatchesOwner(source, candidate.ownerRoute ?? ownerForStoredSession(candidate.storedSessionId))
+    })
 
     if (tile) {
       void sessionTileDelegate()?.resumeTile(tile.storedSessionId, { authoritativeSnapshot: true }).catch(() => undefined)

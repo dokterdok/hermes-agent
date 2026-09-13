@@ -20,7 +20,6 @@ import {
   DialogHeader,
   DialogTitle,
   DisclosureCaret,
-  gatewayActivationEpoch,
   GlyphSpinner,
   host,
   Input,
@@ -44,7 +43,7 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
-import { groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import { normalizeCanonicalGroupName, readCanonicalGroupCreate } from './canonical-group-create'
 import type { PreparedCanonicalGroupCreate } from './canonical-group-create'
 import { CanonicalGroupCreateRecovery } from './canonical-group-create-recovery'
@@ -1128,11 +1127,6 @@ interface CreateGroupChatDialogProps {
   roster: RosterRow[]
 }
 
-function groupCreationSourceIsCurrent(route: CanonicalGroupRoute): boolean {
-  return route.connectionId === host.state.connectionId.get() && route.profile === host.state.profile.get()
-    && host.state.gateway.get() === 'open'
-}
-
 /** Discord-style group chat creation: pick 2+ bots via checkboxes (with
  *  search), name the group, create. Assignment appends to each local bot's
  *  group membership list, so the room appears in the roster and syncs
@@ -1201,10 +1195,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     creating.current = true
     const generation = openGeneration.current
     const route = { ...creationRoute }
-    const activationEpoch = gatewayActivationEpoch()
-
-    const sourceCurrent = () => generation === openGeneration.current && gatewayActivationEpoch() === activationEpoch
-      && groupCreationSourceIsCurrent(route)
+    const routeCurrent = groupCreationSource(route)
+    const sourceCurrent = () => generation === openGeneration.current && routeCurrent()
 
     try {
     const base = normalizeCanonicalGroupName((name.trim() || placeholder).slice(0, 64))

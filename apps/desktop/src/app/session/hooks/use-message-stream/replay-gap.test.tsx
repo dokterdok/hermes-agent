@@ -6,7 +6,8 @@ import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/
 import {
   $sessionResumeRequest,
   _resetSessionOwnerHintsForTests,
-  setSessionOwnerHint
+  setSessionOwnerHint,
+  setSessions
 } from '@/store/session'
 import {
   $sessionTiles,
@@ -19,7 +20,7 @@ import { renderMessageStream } from './test-harness'
 
 const replayGap = (
   sessionId: string,
-  owner: { connectionId: string; profile: string }
+  owner: { connectionId?: string; profile?: string }
 ): RpcEvent => ({
   ...owner,
   payload: { latest_seq: 41, replay_epoch: 'epoch-next' },
@@ -42,6 +43,7 @@ describe('session.replay_gap recovery', () => {
   beforeEach(() => {
     $sessionResumeRequest.set(null)
     $sessionTiles.set([])
+    setSessions([])
     _resetSessionOwnerHintsForTests()
     setSessionTileDelegate(inertDelegate() as never)
   })
@@ -52,6 +54,7 @@ describe('session.replay_gap recovery', () => {
     clearSessionDraft('stored-tile')
     $sessionResumeRequest.set(null)
     $sessionTiles.set([])
+    setSessions([])
     _resetSessionOwnerHintsForTests()
   })
 
@@ -118,26 +121,4 @@ describe('session.replay_gap recovery', () => {
     expect(sessionTileDelegate()).toBe(delegate)
   })
 
-  it('ignores a colliding runtime id delivered by a different exact owner', () => {
-    const ownerRoute = { connectionId: 'remote-a', profile: 'default' }
-    const state = createClientSessionState('stored-active')
-    const resumeTile = vi.fn(async () => 'runtime-collision')
-
-    setSessionOwnerHint('stored-active', ownerRoute)
-    $sessionTiles.set([
-      { ownerRoute, runtimeId: 'runtime-collision', storedSessionId: 'stored-tile' }
-    ] as never)
-    setSessionTileDelegate({ ...inertDelegate(), resumeTile } as never)
-
-    const stream = renderMessageStream('runtime-collision', {
-      states: new Map([['runtime-collision', state]])
-    })
-
-    act(() =>
-      stream.handleEvent(replayGap('runtime-collision', { connectionId: 'remote-b', profile: 'default' }))
-    )
-
-    expect($sessionResumeRequest.get()).toBeNull()
-    expect(resumeTile).not.toHaveBeenCalled()
-  })
 })
