@@ -1,4 +1,6 @@
-export interface CanonicalGroupMessages {
+import { SAVED_GROUP_LOCALES, type SavedGroupMessages } from './canonical-saved-group-locales'
+
+export interface CanonicalGroupMessages extends SavedGroupMessages {
   continueSetup: string
   savedSetup: string
   savedSetupDetail: string
@@ -30,6 +32,7 @@ export interface CanonicalGroupMessages {
 
 export const CANONICAL_GROUP_LOCALES = {
   en: {
+    ...SAVED_GROUP_LOCALES.en,
     continueSetup: 'Continue setup',
     savedSetup: 'Finish setting up this Group Chat',
     savedSetupDetail: 'The previous setup is not confirmed. Continue with the same Bots and group ID; no second group will be created. Closing this dialog keeps the saved setup.',
@@ -59,6 +62,7 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Upload failed'
   },
   ja: {
+    ...SAVED_GROUP_LOCALES.ja,
     continueSetup: '設定を続ける',
     savedSetup: 'このグループチャットの設定を完了',
     savedSetupDetail: '前回の設定は未確認です。同じボットとグループIDで続行します。別のグループは作成しません。この画面を閉じても設定は保持されます。',
@@ -88,6 +92,7 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'アップロードに失敗しました'
   },
   zh: {
+    ...SAVED_GROUP_LOCALES.zh,
     continueSetup: '继续设置',
     savedSetup: '完成此群聊的设置',
     savedSetupDetail: '上次设置尚未确认。将使用相同的机器人和群组ID继续，不会再创建一个群组。关闭此窗口仍会保留已保存的设置。',
@@ -117,6 +122,7 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上传失败'
   },
   'zh-hant': {
+    ...SAVED_GROUP_LOCALES['zh-hant'],
     continueSetup: '繼續設定',
     savedSetup: '完成此群組聊天的設定',
     savedSetupDetail: '上次設定尚未確認。將使用相同的機器人和群組ID繼續，不會另外建立群組。關閉此視窗仍會保留已儲存的設定。',
@@ -146,6 +152,7 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上傳失敗'
   },
   ar: {
+    ...SAVED_GROUP_LOCALES.ar,
     continueSetup: 'متابعة الإعداد',
     savedSetup: 'إكمال إعداد محادثة المجموعة هذه',
     savedSetupDetail: 'لم يتم تأكيد الإعداد السابق. ستتم المتابعة بالبوتات ومعرّف المجموعة نفسها دون إنشاء مجموعة ثانية. إغلاق هذه النافذة يحتفظ بالإعداد المحفوظ.',
@@ -175,6 +182,7 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'فشل الرفع'
   },
   ru: {
+    ...SAVED_GROUP_LOCALES.ru,
     continueSetup: 'Продолжить настройку',
     savedSetup: 'Завершить настройку этой группы',
     savedSetupDetail: 'Предыдущая настройка не подтверждена. Продолжим с теми же ботами и идентификатором группы, не создавая вторую группу. Закрытие окна сохраняет настройку.',

@@ -16,6 +16,7 @@ import {
   saveSelectedRosterBot
 } from './bot-state'
 import { CanonicalGroupList } from './canonical-group-registry'
+import { CanonicalSavedGroups } from './canonical-saved-groups'
 /**
  * The Bots pane itself: the roster's selection reconciliation, the
  * workspace-ownership reads its lifecycle keys off, and the pane that lists
@@ -455,6 +456,7 @@ export function BotsPane() {
   return (
     <div className="flex h-full flex-col">
       <CanonicalGroupList onOpen={openGroupChat} />
+      <CanonicalSavedGroups />
       {renderRosterToolbar({
         b,
         activityToasts,
