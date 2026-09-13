@@ -1206,6 +1206,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     }
 
     const frozenMembers = durableGroupChatMembers(selected)
+
+    const canonicalMembers = frozenMembers.map((member, index) => ({
+      ...member,
+      handle: botHandle(selected[index].name, selected[index])
+    }))
+
     const capabilities = await canonicalGroupRequest<Record<string, unknown> | null>(route, 'groups.capabilities')
 
     if (!sourceCurrent()) {return}
@@ -1223,7 +1229,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         throw new Error(b.canonical.driverUnavailable)
       }
 
-      const created = await createCanonicalGroup(route, base, frozenMembers, authorityId)
+      const created = await createCanonicalGroup(route, base, canonicalMembers, authorityId)
 
       // Let the durable helper settle its exact intent; only current-source UI may adopt it.
       if (!sourceCurrent()) {return}
