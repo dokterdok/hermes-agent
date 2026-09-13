@@ -36,10 +36,10 @@ between different login identities. The room owner explicitly grants messaging
 access; command-admin status alone does not grant all rooms or their files.
 Shared messaging chats also require an audience confirmation.
 
-Document lifetime across cleanup is undergoing a separate upgrade-migration
-review. The intended boundary protects existing shared inputs without preventing
-cleanup of unrelated new uploads. This checkpoint is not yet a document-retention
-release candidate.
+Shared documents receive verified private working copies before session handoff.
+A one-time upgrade inventory protects existing inputs without preventing cleanup
+of unrelated new uploads. Prepared but unadmitted document copies are retained
+conservatively; this is not a total disk-usage bound or complete reclamation policy.
 
 An unavailable gateway is not evidence that accepted work never ran. Setup and
 publication preserve their original identifiers so an interrupted acknowledgement
@@ -81,9 +81,9 @@ keeps the maintainer's reconciled versions rather than applying competing copies
 ## Verification Boundary
 
 The F9 composition passed 258 Desktop journal/Group-creation checks across 12
-files, 165 Files UI checks across 9 files, and the renderer typecheck. Selected
-Python checks passed for Files, messaging access/views and API contracts
-(104 checks), plus media/API/peer retention (28 checks), without automatic retries.
+files, 165 Files UI checks across 9 files, and renderer, Electron and end-to-end
+TypeScript checks. Selected Python checks cover Files, messaging access/views,
+API contracts, retained documents and upgrade inventory, without automatic retries.
 Independent reviews cover the consequential repairs; these counts overlap other
 recorded checks and are not presented as unique programme totals.
 
@@ -91,7 +91,9 @@ Earlier classic-file verification also fed the actual serialized backend respons
 through the Files consumer to download initiation after explicit native adoption.
 No hidden adoption is part of that read path. The earlier 1,110-check Python and
 383-check Desktop checkpoint predates F9 and is not a full-suite result for this
-revision. Document migration remains a separate review gate.
+revision. Migration review includes fixed-cohort retirement, named-profile scope,
+atomic readiness refusal, observed file identities and pre-admission backing;
+it is not a live-upgrade certification.
 
 These are focused integration and component results, not a green full repository
 suite or new signed-installation, physical-host failure or live-client acceptance.
