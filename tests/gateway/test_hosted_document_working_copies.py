@@ -9,6 +9,7 @@ from gateway import hosted_room_input_custody as custody
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore
 from gateway.session_hosted_attachments import submission_payload
 from gateway.session_ingress_media import _media_root, restore_native_media
+from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_peer_media_retention_budget import local_documents
 
@@ -28,14 +29,17 @@ def test_working_copies_never_link_canonical_blobs_or_repair_changed_bytes(tmp_p
     payload = submission_payload(rpc, 'read', bound)
     digest = hashlib.sha256(b'A' * 2048).hexdigest()
     alias = _media_root() / digest / '0.txt'
-    backing = custody._root(store.db_path) / digest / '0.txt'
+    backing = custody._backing_root(store.db_path) / digest / '0.txt'
     reference = {'path': str(alias), 'sha256': digest, 'size': 2048}
     assert str(alias) in payload['text']
     assert backing.read_bytes() == alias.read_bytes() == b'A' * 2048
     assert os.path.samefile(backing, alias) is not fallback
     assert all(not os.path.samefile(path, source) for path in (alias, backing) for source in source_blobs)
-    assert custody.holds_native_reference(store.db_path, reference)
-    assert not custody.holds_native_reference(tmp_path / 'profiles' / 'other' / 'state.db', reference)
+    with SessionDB(store.db_path) as db, db._read_ctx() as conn:
+        assert custody.custody_holds(conn, store.db_path, reference)
+    other_backing = custody._backing_root(tmp_path / 'profiles' / 'other' / 'state.db')
+    assert other_backing != custody._backing_root(store.db_path)
+    assert not other_backing.exists()
 
     damaged = backing if changed == 'backing' else alias
     damaged.write_bytes(b'changed private working copy')
@@ -55,7 +59,7 @@ def test_working_copy_symlink_refuses_materialization_without_modifying_target(t
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     rpc, bound = local_documents(tmp_path, transferred=False)
     digest = hashlib.sha256(b'A' * 2048).hexdigest()
-    root = custody._root(rpc.authority.db.db_path) if redirect == 'backing' else _media_root()
+    root = custody._backing_root(rpc.authority.db.db_path) if redirect == 'backing' else _media_root()
     target = root / digest / '0.txt'
     target.parent.mkdir(parents=True)
     outside = tmp_path / 'not-an-input.txt'

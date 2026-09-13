@@ -69,8 +69,15 @@ def test_peer_document_batch_rejects_total_before_any_capture(tmp_path, monkeypa
     assert [Path(path).read_bytes() for path in restore_native_media(retained['media'])] == [item[3] for item in items]
 
 
-def local_documents(tmp_path, *, transferred):
+def local_documents(tmp_path, *, transferred, db=None):
+    from gateway.hosted_room_input_custody import initialize_input_custody
+    from hermes_state import SessionDB
     db_path = tmp_path / 'state.db'
+    if db is None:
+        with SessionDB(db_path) as fixture_db:
+            initialize_input_custody(fixture_db)
+    else:
+        initialize_input_custody(db)
     hosted_rooms.create_room(db_path, room_id='room', name='Room', authority_gateway_id='home',
         members=[dict(member_id='member', profile='default', handle='member')])
     store = HostedRoomAttachmentStore(db_path)

@@ -40,14 +40,13 @@ def _candidate(home, authority, name, data):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('transferred', [False, True], ids=['local', 'named-owner-snapshot'])
 @pytest.mark.parametrize('status', ['queued', 'unknown', 'terminal'])
-@pytest.mark.parametrize('witness_available', [True, False], ids=['recorded-custody', 'deferred-custody'])
 async def test_materialization_handoff_and_admission_keep_exact_bytes_and_retry(
-        tmp_path, monkeypatch, transferred, status, witness_available):
+        tmp_path, monkeypatch, transferred, status):
     home = tmp_path / 'profiles' / 'member' if transferred else tmp_path
     home.mkdir(parents=True, exist_ok=True)
     db, authority = _authority(home, monkeypatch)
     with db:
-        prepared, bound = local_documents(home, transferred=transferred)
+        prepared, bound = local_documents(home, transferred=transferred, db=db)
         candidate, references = _candidate(home, authority, '0.txt', b'A' * 2048)
         principal = Principal('human', authority.profile_id,
             frozenset({'session:read', 'session:submit', 'session:control'}), 'fixture-private-owner')
@@ -61,11 +60,6 @@ async def test_materialization_handoff_and_admission_keep_exact_bytes_and_retry(
             def no_foreign_lookup(*args, **kwargs):
                 raise AssertionError('named materialization must use the borrowed source snapshot')
             monkeypatch.setattr(HostedRoomAttachmentStore, 'read', no_foreign_lookup)
-        if not witness_available:
-            def unavailable(*args):
-                raise OSError('fixture bookkeeping unavailable')
-            monkeypatch.setattr(hosted_room_input_custody, 'record_admission_custody', unavailable)
-
         materialize = session_hosted_attachments.submission_payload
         observed = []
 
@@ -97,15 +91,15 @@ async def test_materialization_handoff_and_admission_keep_exact_bytes_and_retry(
         assert Path(restore_native_media(references)[0]).read_bytes() == b'A' * 2048
 
         unique, unique_refs = _candidate(home, authority, 'unique.txt', b'unrelated')
-        assert release_admission_media(db, unique['admission_id']) == int(witness_available)
-        assert Path(unique_refs[0]['path']).exists() is not witness_available
+        assert release_admission_media(db, unique['admission_id']) == 1
+        assert not Path(unique_refs[0]['path']).exists()
         after = get_session_admission(db, admission_id=receipt['admission_id'])
         assert (after['request_id'], after['payload']) == (queued['request_id'], queued['payload'])
 
 
 @pytest.mark.parametrize('named', [False, True], ids=['local', 'named'])
 @pytest.mark.parametrize('status', ['queued', 'unknown', 'terminal'])
-def test_unwitnessed_legacy_rows_conservatively_retain_without_rewriting(tmp_path, monkeypatch, named, status):
+def test_fixed_legacy_inventory_retains_old_rows_without_rewriting(tmp_path, monkeypatch, named, status):
     home = tmp_path / 'profiles' / 'member' if named else tmp_path
     home.mkdir(parents=True, exist_ok=True)
     db, authority = _authority(home, monkeypatch)
@@ -118,18 +112,8 @@ def test_unwitnessed_legacy_rows_conservatively_retain_without_rewriting(tmp_pat
         row = admit_session_input(db, epoch=authority.epoch, principal_id='human', session_id='old-hosted',
             request_id=request_id, payload=payload)
         set_holder_status(authority, row, status)
-        key = hosted_room_input_custody._WITNESS + row['admission_id']
-        # Missing, malformed, and differently scoped proof all deny deletion.
-        with db._read_ctx() as conn:
-            identity = conn.execute('''SELECT principal_id,target_session_id,request_id,payload_digest
-                FROM session_admissions WHERE admission_id=?''', (row['admission_id'],)).fetchone()
-        wrong_scope = {'version': 1, **dict(zip(hosted_room_input_custody._IDENTITY, identity)),
-            'target_session_id': 'another-session'}
-        for proof in (None, 'not-json', json.dumps(wrong_scope)):
-            if proof is not None:
-                db._execute_write(lambda conn: conn.execute(
-                    'INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, proof)))
-            assert release_admission_media(db, candidate['admission_id']) == 0
-            assert Path(restore_native_media(references)[0]).read_bytes() == b'pre-upgrade document'
-            after = get_session_admission(db, admission_id=row['admission_id'])
-            assert (after['request_id'], after['payload'], after['status']) == (request_id, payload, status)
+        hosted_room_input_custody.initialize_input_custody(db)
+        assert release_admission_media(db, candidate['admission_id']) == 0
+        assert Path(restore_native_media(references)[0]).read_bytes() == b'pre-upgrade document'
+        after = get_session_admission(db, admission_id=row['admission_id'])
+        assert (after['request_id'], after['payload'], after['status']) == (request_id, payload, status)
