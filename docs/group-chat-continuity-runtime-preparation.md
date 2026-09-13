@@ -100,10 +100,11 @@ were used.
 Independent reviews cover the consequential repairs; these counts overlap other
 recorded checks and are not presented as unique programme totals.
 
-The working-copy follow-up passes 181 selected checks across 29 files on the
+The working-copy follow-up passes 185 selected checks across 31 files on the
 composed branch, including native/peer retention, Files and messaging projections,
 old-input migration, preparation expiry, atomic admission references, and owner-scoped
-collection. Its independent review is pending; this is not publication clearance.
+collection. Independent review and the final targeted repair recheck found no
+remaining blocking findings in this scope.
 No gateway deployment or live upgrade is claimed by these temporary-store checks.
 
 Earlier classic-file verification also fed the actual serialized backend response
