@@ -20,7 +20,7 @@ def _reserve_homes(tmp_path, monkeypatch, names=('alpha', 'beta')):
     for name in names:
         home = root / 'profiles' / name
         home.mkdir(parents=True, mode=0o700)
-        (home / 'config.yaml').write_text('{}')
+        (home / 'config.yaml').write_text('{}', encoding='utf-8')
         homes.append((name, home))
     return root, homes
 
