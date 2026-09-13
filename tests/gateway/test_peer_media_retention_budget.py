@@ -33,8 +33,10 @@ def spool_inputs(db_path, root, items, **scope):
 @pytest.mark.parametrize('status', ['queued', 'unknown', 'terminal'])
 @pytest.mark.asyncio
 async def test_peer_reference_survives_native_cleanup_of_same_path(api, owner, tmp_path, status):
+    from gateway.hosted_room_input_custody import initialize_input_custody
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     from gateway.platforms.base import get_image_cache_dir
+    initialize_input_custody(owner.db)
     owner.profile_id = str(tmp_path)
     install = hosted_rooms.local_authority_gateway_id()
     policy, catalog = _local_room_catalog(api, 'default', install)

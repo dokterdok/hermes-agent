@@ -17,7 +17,9 @@ from tests.gateway.test_api_cutover_contract import api, owner  # noqa: F401
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=')
 
 
-def api_image(api):
+def api_image(api, owner):
+    from gateway.hosted_room_input_custody import initialize_input_custody
+    initialize_input_custody(owner.db)
     return admit_api_turn(api, session_id='image-holder', request_id='api-image',
         user_message=[{'type': 'image_url', 'image_url': {
             'url': 'data:image/png;base64,' + base64.b64encode(PNG).decode()}}], conversation_history=[])
@@ -51,7 +53,7 @@ def settled_native(owner, paths):
 @pytest.mark.parametrize('status', ['queued', 'started', 'unknown', 'terminal'])
 def test_api_image_same_digest_and_filename_survives_native_cleanup(api, owner, status):
     from gateway.platforms.base import get_image_cache_dir
-    _, _, row = api_image(api)
+    _, _, row = api_image(api, owner)
     reference = row['payload']['api_turn_v1']['media'][0]
     set_holder_status(owner, row, status)
     native = settled_native(owner, [get_image_cache_dir() / Path(reference['path']).name])
@@ -65,7 +67,7 @@ def test_api_image_same_digest_and_filename_survives_native_cleanup(api, owner, 
 
 def test_unique_native_candidate_is_collected_while_shared_api_bytes_survive(api, owner):
     from gateway.platforms.base import get_image_cache_dir
-    _, _, row = api_image(api)
+    _, _, row = api_image(api, owner)
     reference = row['payload']['api_turn_v1']['media'][0]
     unique = get_image_cache_dir() / 'unique.png'
     unique.write_bytes(PNG + b'unique')
@@ -77,7 +79,7 @@ def test_unique_native_candidate_is_collected_while_shared_api_bytes_survive(api
 
 
 def test_terminal_api_image_is_not_a_native_deletion_candidate(api, owner):
-    _, _, row = api_image(api)
+    _, _, row = api_image(api, owner)
     reference = row['payload']['api_turn_v1']['media'][0]
     set_holder_status(owner, row, 'terminal')
     assert release_admission_media(owner.db, row['admission_id']) == 0
