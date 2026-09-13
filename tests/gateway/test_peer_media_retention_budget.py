@@ -1,5 +1,6 @@
 """Composed peer holders and local/named document batches use the native media budget."""
 import hashlib
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +10,7 @@ from gateway import hosted_rooms
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore
 from gateway.platforms.api_server_room_attachments import RoomAttachmentSpool
 from gateway.session_api_turn import admit_api_turn
-from gateway.session_hosted_attachments import submission_payload
+from gateway.hosted_room_input_preparation import prepare_hosted_input
 from gateway.session_ingress_media import _media_root, release_admission_media, restore_native_media
 from gateway.session_peer_input import check_peer_input, retain_peer_input
 from hermes_state_runtime import RuntimeStoreError
@@ -97,19 +98,41 @@ def local_documents(tmp_path, *, transferred, db=None):
     return rpc, bound
 
 
+@contextmanager
+def owned_documents(home, monkeypatch, *, transferred=False):
+    from gateway.session_authority import LiveSession
+    from gateway.session_contract import Principal, SessionRef
+    from tests.gateway.input_reclamation_fixtures import owned, close
+
+    db, authority = owned(home, monkeypatch)
+    try:
+        rpc, bound = local_documents(home, transferred=transferred, db=db)
+        rpc.authority = authority
+        rpc.ref = SessionRef(authority.profile_id, 'document-budget')
+        rpc.principal = Principal('human', authority.profile_id,
+            frozenset({'session:read', 'session:submit'}), 'fixture')
+        db.create_session(rpc.ref.session_id, source='cli')
+        authority.sessions[rpc.ref.session_id] = LiveSession(SimpleNamespace(platform=None), 'fixture')
+        yield db, rpc, bound
+    finally:
+        close(db, home)
+
+
 @pytest.mark.parametrize('transferred', [False, True], ids=['local-store', 'named-owner-snapshot'])
 def test_local_document_batch_rejects_total_before_capture(tmp_path, monkeypatch, transferred):
     from gateway.platforms import base
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    rpc, bound = local_documents(tmp_path, transferred=transferred)
-    monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 3072)
-    assert not _media_root().exists()
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        submission_payload(rpc, 'read', bound)
-    assert not _media_root().exists()
-    monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 4096)
-    payload = submission_payload(rpc, 'read', bound)
-    assert payload['text'].count('[Shared attachment] file:') == 2
+    with owned_documents(tmp_path, monkeypatch, transferred=transferred) as (db, rpc, bound):
+        from gateway.hosted_room_attachments import default_attachment_root
+        working_root = default_attachment_root(db.db_path) / 'working-documents-v3'
+        monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 3072)
+        assert not working_root.exists()
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            prepare_hosted_input(rpc, request_id='hosted:budget', prompt='read', attachments=bound)
+        assert not working_root.exists()
+        monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 4096)
+        prepared = prepare_hosted_input(rpc, request_id='hosted:budget', prompt='read', attachments=bound)
+        assert prepared.payload['text'].count('[Shared attachment] file:') == 2
 
 
 @pytest.mark.parametrize('limit', [0, -1])
@@ -117,5 +140,6 @@ def test_disabled_batch_budget_retains_existing_behavior(tmp_path, monkeypatch, 
     from gateway.platforms import base
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: limit)
-    rpc, bound = local_documents(tmp_path, transferred=False)
-    assert submission_payload(rpc, 'read', bound)['text'].count('[Shared attachment] file:') == 2
+    with owned_documents(tmp_path, monkeypatch) as (_, rpc, bound):
+        prepared = prepare_hosted_input(rpc, request_id='hosted:unlimited', prompt='read', attachments=bound)
+        assert prepared.payload['text'].count('[Shared attachment] file:') == 2

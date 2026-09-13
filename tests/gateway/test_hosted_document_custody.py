@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_input_custody, session_hosted_attachments
+from gateway import hosted_room_input_custody, hosted_room_input_preparation
+from gateway.hosted_room_input_reclamation import collect_working_copies
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore
 from gateway.hosted_room_driver import TaskIdentity
 from gateway.session_authority import LiveSession
@@ -18,7 +19,7 @@ from hermes_state_runtime import admit_session_input, claim_session_input, get_s
 from hermes_state_runtime import settle_session_input
 from tests.gateway.test_api_media_retention import set_holder_status
 from tests.gateway.test_native_media_budget import _authority
-from tests.gateway.test_peer_media_retention_budget import local_documents
+from tests.gateway.test_peer_media_retention_budget import owned_documents
 
 
 def _candidate(home, authority, name, data):
@@ -44,9 +45,8 @@ async def test_materialization_handoff_and_admission_keep_exact_bytes_and_retry(
         tmp_path, monkeypatch, transferred, status):
     home = tmp_path / 'profiles' / 'member' if transferred else tmp_path
     home.mkdir(parents=True, exist_ok=True)
-    db, authority = _authority(home, monkeypatch)
-    with db:
-        prepared, bound = local_documents(home, transferred=transferred, db=db)
+    with owned_documents(home, monkeypatch, transferred=transferred) as (db, prepared, bound):
+        authority = prepared.authority
         candidate, references = _candidate(home, authority, '0.txt', b'A' * 2048)
         principal = Principal('human', authority.profile_id,
             frozenset({'session:read', 'session:submit', 'session:control'}), 'fixture-private-owner')
@@ -60,35 +60,38 @@ async def test_materialization_handoff_and_admission_keep_exact_bytes_and_retry(
             def no_foreign_lookup(*args, **kwargs):
                 raise AssertionError('named materialization must use the borrowed source snapshot')
             monkeypatch.setattr(HostedRoomAttachmentStore, 'read', no_foreign_lookup)
-        materialize = session_hosted_attachments.submission_payload
+        materialize = hosted_room_input_preparation.prepare_hosted_input
         observed = []
 
-        def cleanup_before_admission():
+        def cleanup_before_admission(working):
             rows = list_session_admissions(db, session_id=rpc.ref.session_id)
             deleted = release_admission_media(db, candidate['admission_id'])
-            observed.append((len(rows), deleted, Path(references[0]['path']).read_bytes()))
+            observed.append((len(rows), deleted, working.read_bytes(), Path(references[0]['path']).exists()))
 
         def finished_materialization(*args, **kwargs):
-            payload = materialize(*args, **kwargs)
+            result = materialize(*args, **kwargs)
             # Ordinary owner-loop callback runs before this to_thread completion
             # wakes _submit. No worker, held response, barrier, or timer is used.
-            loop.call_soon_threadsafe(cleanup_before_admission)
-            return payload
+            working = Path(result.payload['text'].split('file: ', 1)[1].split('\n')[0])
+            loop.call_soon_threadsafe(cleanup_before_admission, working)
+            return result
 
-        monkeypatch.setattr(session_hosted_attachments, 'submission_payload', finished_materialization)
+        monkeypatch.setattr(hosted_room_input_preparation, 'prepare_hosted_input', finished_materialization)
         params = dict(task=TaskIdentity('room', 'dtask:holder', 'thread', 'turn'), execution_generation=1,
             prompt='Read the two files', attachments=bound, on_terminal=lambda value: None)
         receipt = await rpc._submit(params)
-        assert observed == [(0, 0, b'A' * 2048)]
-        monkeypatch.setattr(session_hosted_attachments, 'submission_payload', materialize)
+        assert observed == [(0, 1, b'A' * 2048, False)]
+        monkeypatch.setattr(hosted_room_input_preparation, 'prepare_hosted_input', materialize)
         queued = get_session_admission(db, admission_id=receipt['admission_id'])
-        assert references[0]['path'] in queued['payload']['text']
+        assert references[0]['path'] not in queued['payload']['text']
+        working = Path(queued['payload']['text'].split('file: ', 1)[1].split('\n')[0])
         retry = await rpc._submit(params)
         assert retry['admission_id'] == receipt['admission_id']
         assert get_session_admission(db, admission_id=receipt['admission_id'])['payload'] == queued['payload']
         set_holder_status(authority, queued, status)
         assert release_admission_media(db, candidate['admission_id']) == 0
-        assert Path(restore_native_media(references)[0]).read_bytes() == b'A' * 2048
+        assert collect_working_copies(db, epoch=authority.epoch)['removed'] == 0
+        assert working.read_bytes() == b'A' * 2048
 
         unique, unique_refs = _candidate(home, authority, 'unique.txt', b'unrelated')
         assert release_admission_media(db, unique['admission_id']) == 1

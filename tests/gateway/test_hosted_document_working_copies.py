@@ -1,71 +1,67 @@
-"""Files working-copy custody is private, verified, and profile-local."""
-import errno
+"""Working inputs are private, verified, and independent of native snapshots."""
 import hashlib
 import os
+from pathlib import Path
 
 import pytest
 
-from gateway import hosted_room_input_custody as custody
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-from gateway.session_hosted_attachments import submission_payload
-from gateway.session_ingress_media import _media_root, restore_native_media
-from hermes_state import SessionDB
+from gateway.hosted_room_attachments import HostedRoomAttachmentStore, default_attachment_root
+from gateway.hosted_room_input_preparation import prepare_hosted_input
+from gateway.session_ingress_media import capture_native_media, restore_native_media
 from hermes_state_runtime import RuntimeStoreError
-from tests.gateway.test_peer_media_retention_budget import local_documents
+from tests.gateway.test_peer_media_retention_budget import owned_documents
 
 
-@pytest.mark.parametrize('fallback', [False, True], ids=['private-hardlink', 'portable-copy'])
-@pytest.mark.parametrize('changed', ['backing', 'alias'])
-def test_working_copies_never_link_canonical_blobs_or_repair_changed_bytes(tmp_path, monkeypatch, fallback, changed):
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    rpc, bound = local_documents(tmp_path, transferred=False)
-    store = HostedRoomAttachmentStore(rpc.authority.db.db_path)
-    source_blobs = [path for path in store.blob_root.rglob('*') if path.is_file()]
-    assert source_blobs
-    if fallback:
-        def cross_device(*args):
-            raise OSError(errno.EXDEV, 'fixture different filesystem')
-        monkeypatch.setattr(custody.os, 'link', cross_device)
-    payload = submission_payload(rpc, 'read', bound)
-    digest = hashlib.sha256(b'A' * 2048).hexdigest()
-    alias = _media_root() / digest / '0.txt'
-    backing = custody._backing_root(store.db_path) / digest / '0.txt'
-    reference = {'path': str(alias), 'sha256': digest, 'size': 2048}
-    assert str(alias) in payload['text']
-    assert backing.read_bytes() == alias.read_bytes() == b'A' * 2048
-    assert os.path.samefile(backing, alias) is not fallback
-    assert all(not os.path.samefile(path, source) for path in (alias, backing) for source in source_blobs)
-    with SessionDB(store.db_path) as db, db._read_ctx() as conn:
-        assert custody.custody_holds(conn, store.db_path, reference)
-    other_backing = custody._backing_root(tmp_path / 'profiles' / 'other' / 'state.db')
-    assert other_backing != custody._backing_root(store.db_path)
-    assert not other_backing.exists()
+@pytest.mark.parametrize('changed', ['working', 'native'])
+def test_working_copies_never_link_sources_or_repair_changed_bytes(tmp_path, monkeypatch, changed):
+    with owned_documents(tmp_path, monkeypatch) as (db, rpc, bound):
+        store = HostedRoomAttachmentStore(db.db_path)
+        sources = [path for path in store.blob_root.rglob('*') if path.is_file()]
+        assert sources
+        prepared = prepare_hosted_input(rpc, request_id='hosted:copies', prompt='read', attachments=bound)
+        working = Path(prepared.payload['text'].split('file: ', 1)[1].split('\n')[0])
+        captured = capture_native_media([working])
+        native = Path(captured[0]['path'])
+        assert working.read_bytes() == native.read_bytes() == b'A' * 2048
+        assert not os.path.samefile(working, native)
+        assert all(not os.path.samefile(path, source) for path in (working, native) for source in sources)
+        other = default_attachment_root(tmp_path / 'profiles' / 'other' / 'state.db') / 'working-documents-v3'
+        assert not other.exists()
 
-    damaged = backing if changed == 'backing' else alias
-    damaged.write_bytes(b'changed private working copy')
-    with pytest.raises(RuntimeStoreError):
-        submission_payload(rpc, 'read', bound)
-    assert damaged.read_bytes() == b'changed private working copy'
-    saved = store.read(room_id='room', attachment_id=bound[0]['attachment_id'],
-        event_id='source', recipient_member_id='member')
-    assert saved.data == b'A' * 2048
-    if changed == 'alias' or not fallback:
-        with pytest.raises(RuntimeStoreError):
-            restore_native_media([reference])
+        damaged = working if changed == 'working' else native
+        damaged.write_bytes(b'changed private copy')
+        if changed == 'working':
+            with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+                prepare_hosted_input(rpc, request_id='hosted:copies', prompt='read', attachments=bound)
+            assert Path(restore_native_media(captured)[0]).read_bytes() == b'A' * 2048
+        else:
+            again = prepare_hosted_input(rpc, request_id='hosted:copies', prompt='read', attachments=bound)
+            assert again.payload == prepared.payload
+            with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+                restore_native_media(captured)
+        assert damaged.read_bytes() == b'changed private copy'
+        assert store.read(room_id='room', attachment_id=bound[0]['attachment_id'],
+            event_id='source', recipient_member_id='member').data == b'A' * 2048
 
 
-@pytest.mark.parametrize('redirect', ['backing', 'alias'])
-def test_working_copy_symlink_refuses_materialization_without_modifying_target(tmp_path, monkeypatch, redirect):
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    rpc, bound = local_documents(tmp_path, transferred=False)
-    digest = hashlib.sha256(b'A' * 2048).hexdigest()
-    root = custody._backing_root(rpc.authority.db.db_path) if redirect == 'backing' else _media_root()
-    target = root / digest / '0.txt'
-    target.parent.mkdir(parents=True)
-    outside = tmp_path / 'not-an-input.txt'
-    outside.write_bytes(b'A' * 2048)
-    target.symlink_to(outside)
-    with pytest.raises(RuntimeStoreError):
-        submission_payload(rpc, 'read', bound)
-    assert target.is_symlink()
-    assert outside.read_bytes() == b'A' * 2048
+@pytest.mark.parametrize('redirect', ['directory', 'file'])
+def test_working_copy_symlink_refuses_without_modifying_target(tmp_path, monkeypatch, redirect):
+    with owned_documents(tmp_path, monkeypatch) as (db, rpc, bound):
+        digest = hashlib.sha256(b'A' * 2048).hexdigest()
+        root = default_attachment_root(db.db_path) / 'working-documents-v3'
+        root.mkdir(parents=True)
+        outside = tmp_path / 'not-inputs'
+        outside.mkdir()
+        untouched = outside / '0.txt'
+        untouched.write_bytes(b'A' * 2048)
+        if redirect == 'directory':
+            target = root / digest
+            target.symlink_to(outside, target_is_directory=True)
+        else:
+            target = root / digest / '0.txt'
+            target.parent.mkdir()
+            target.symlink_to(untouched)
+        with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+            prepare_hosted_input(rpc, request_id='hosted:symlink', prompt='read', attachments=bound)
+        assert target.is_symlink()
+        assert untouched.read_bytes() == b'A' * 2048
