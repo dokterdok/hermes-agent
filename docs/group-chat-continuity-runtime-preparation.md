@@ -37,10 +37,13 @@ access; command-admin status alone does not grant all rooms or their files.
 Shared messaging chats also require an audience confirmation.
 
 Shared documents receive verified private working copies before session handoff.
-A one-time upgrade inventory protects existing inputs without preventing cleanup
-of unrelated new uploads. Private working-document copies do not yet have automatic
-reclamation, including abandoned preparations. Identical copies are reused; this is
-not a total disk-usage bound. Reclamation is the next storage-lifecycle follow-up.
+New copies have tracked preparation and admission lifetimes: abandoned preparations
+expire, while accepted inputs and branched conversations keep the copies they need.
+The gateway collects eligible copies through its existing housekeeping loop.
+A fixed upgrade inventory protects older inputs without holding up unrelated new
+uploads; older shared cache aliases are considered only before gateway ingress.
+Uncertain ownership or file identity retains bytes conservatively. This is not a
+total disk-usage bound, and canonical Group Files are not cleanup candidates.
 
 An unavailable gateway is not evidence that accepted work never ran. Setup and
 publication preserve their original identifiers so an interrupted acknowledgement
@@ -87,7 +90,7 @@ keeps the maintainer's reconciled versions rather than applying competing copies
 
 ## Verification Boundary
 
-The current-main composition passed 322 selected Python checks across 42 files
+Before the working-copy follow-up, the current-main composition passed 322 selected Python checks across 42 files
 and 153 Desktop checks across 8 files, plus renderer, Electron and end-to-end
 TypeScript checks. Separate focused checks cover the new approval, profile-cloning,
 state-file permission, history-maintenance and reconnect boundaries. Reconnect
@@ -96,6 +99,12 @@ include 258 journal/Group-creation cases and 165 Files UI cases. No automatic re
 were used.
 Independent reviews cover the consequential repairs; these counts overlap other
 recorded checks and are not presented as unique programme totals.
+
+The working-copy follow-up passes 181 selected checks across 29 files on the
+composed branch, including native/peer retention, Files and messaging projections,
+old-input migration, preparation expiry, atomic admission references, and owner-scoped
+collection. Its independent review is pending; this is not publication clearance.
+No gateway deployment or live upgrade is claimed by these temporary-store checks.
 
 Earlier classic-file verification also fed the actual serialized backend response
 through the Files consumer to download initiation after explicit native adoption.
