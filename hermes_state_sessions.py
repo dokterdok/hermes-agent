@@ -1537,10 +1537,13 @@ class SessionSessionsMixin:
 
     def count_empty_sessions(self, *, report: Optional[dict] = None) -> int:
         """Count deletable empty, ended, non-archived sessions; optionally report ledger-owned skips."""
-        from hermes_state_raw_delete import LEDGER_REFERENCES_SQL, report_maintenance
-        total, protected = self._read_one(
-            f'SELECT COUNT(*), COALESCE(SUM({LEDGER_REFERENCES_SQL.format(session_id="sessions.id")}), 0) '
-            f'FROM sessions WHERE {self._EMPTY_SESSION_WHERE}')
+        from hermes_state_raw_delete import preview_ledger_references, report_maintenance
+        def read(conn):
+            protection = preview_ledger_references(conn, read_only=self.read_only).format(session_id='sessions.id')
+            return conn.execute(
+                f'SELECT COUNT(*), COALESCE(SUM({protection}), 0) '
+                f'FROM sessions WHERE {self._EMPTY_SESSION_WHERE}').fetchone()
+        total, protected = self._read_retrying_ioerr(read)
         report_maintenance(report, skipped_protected=protected)
         return total - protected
 

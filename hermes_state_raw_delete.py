@@ -1,5 +1,6 @@
 """Raw history maintenance cannot retire canonical runtime records."""
 import logging
+import sqlite3
 
 from hermes_state_common import _id_chunks, _placeholders
 
@@ -16,6 +17,25 @@ LEDGER_REFERENCES_SQL = '''(
     {session_id} IN (SELECT target_session_id FROM session_admissions)
     OR {session_id} IN (SELECT session_id FROM worker_executions)
 )'''
+
+
+def preview_ledger_references(conn, *, read_only):
+    """Only an explicitly absent legacy table is omitted from read-only previews."""
+    if not read_only:
+        return LEDGER_REFERENCES_SQL
+    # Unlike the boolean table-exists probe, keep non-table name collisions and
+    # case-insensitive SQLite names visible; neither means an absent old ledger.
+    objects = {row[0].casefold(): row[1] for row in conn.execute(
+        "SELECT name,type FROM sqlite_master WHERE name COLLATE NOCASE IN "
+        "('session_admissions','worker_executions')")}
+    clauses = []
+    for table, column in (('session_admissions', 'target_session_id'), ('worker_executions', 'session_id')):
+        if table not in objects:
+            continue
+        if objects[table] != 'table':
+            raise sqlite3.DatabaseError('Runtime ledger name is not a table')
+        clauses.append('{session_id} IN (SELECT ledger.' + column + ' FROM ' + table + ' ledger)')
+    return '(' + ' OR '.join(clauses) + ')' if clauses else '0'
 
 
 def protected_session_ids(conn, session_ids):
