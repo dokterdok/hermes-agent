@@ -269,9 +269,25 @@ it.each([
   expect(() => parseSavedGroupPage({ ...page(), ...override }, null)).toThrow()
 })
 
-it('rejects backward keysets and accepts SQLite code-point ordering for non-ASCII IDs', () => {
+it('rejects backward keysets and keeps ordinary ASCII ID ordering', () => {
   expect(() => parseSavedGroupPage(page([copy('a-room')]), 'b-room')).toThrow()
-  expect(parseSavedGroupPage(page([copy('\ue000'), copy('\u{10000}')]), null).copies).toHaveLength(2)
+  expect(parseSavedGroupPage(page([copy('a.room:1'), copy('b_room-2')]), null).copies).toHaveLength(2)
+})
+
+it.each(['', '_room', 'a/b', 'room\n', '\u00e9-room', 'a'.repeat(129)])('rejects invalid wire ID %j without normalizing identity', id => {
+  expect(() => parseSavedGroupPage(page([copy(id)]), null)).toThrow()
+  expect(() => parseSavedGroupPage({ ...page(), target_gateway_id: id }, null)).toThrow()
+  expect(() => parseSavedGroupPage(page([{ ...copy(), source_authority: { gateway_id: id, epoch: 1 } }]), null)).toThrow()
+  expect(() => parseSavedGroupPage(page([]), id)).toThrow()
+})
+
+it('keeps Unicode room names and counts the backend character limit rather than UTF-16 units', () => {
+  const name = '\u{10400}'.repeat(200)
+  const selected = parseSavedGroupPage(page([copy('a'.repeat(128), name)]), null).copies[0]
+  expect(selected.name).toBe(name)
+  expect(parseSavedGroupPreview(preview(selected.roomId, name), selected, 'install:holder').name).toBe(name)
+  expect(() => parseSavedGroupPage(page([copy('a-room', name + 'a')]), null)).toThrow()
+  expect(() => parseSavedGroupPreview(preview(selected.roomId, name + 'a'), selected, 'install:holder')).toThrow()
 })
 
 it.each([

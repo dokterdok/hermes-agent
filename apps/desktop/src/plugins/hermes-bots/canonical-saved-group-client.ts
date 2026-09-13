@@ -40,8 +40,14 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function literal(value: unknown): string {
-  if (typeof value !== 'string' || !value.trim() || value.trim() !== value || value.length > 1024) {return invalid()}
+function identifier(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 128 || value.trim() !== value || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)) {return invalid()}
+
+  return value
+}
+
+function roomName(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.trim() !== value || value.length > 400 || [...value].length > 200) {return invalid()}
 
   return value
 }
@@ -64,7 +70,7 @@ function authority(value: unknown): SavedGroupCopy['authority'] {
 
   if (epoch === 0) {return invalid()}
 
-  return { gatewayId: literal(data.gateway_id), epoch }
+  return { gatewayId: identifier(data.gateway_id), epoch }
 }
 
 function readonly(value: unknown, object: string) {
@@ -75,53 +81,41 @@ function readonly(value: unknown, object: string) {
   return data
 }
 
-// SQLite's UTF-8 binary key order follows code points, not UTF-16 surrogate order.
-function compareIds(left: string, right: string) {
-  const a = Array.from(left, char => char.codePointAt(0)!)
-  const b = Array.from(right, char => char.codePointAt(0)!)
-
-  for (let i = 0; i < Math.min(a.length, b.length); i++) {
-    if (a[i] !== b[i]) {return a[i] - b[i]}
-  }
-
-  return a.length - b.length
-}
-
 export function parseSavedGroupPage(value: unknown, afterRoomId: string | null): SavedGroupPage {
   const data = readonly(value, 'hermes.group_recovery.copies')
 
   if (!Array.isArray(data.copies) || data.copies.length > 20) {return invalid()}
-  let previous = afterRoomId
+  let previous = afterRoomId === null ? null : identifier(afterRoomId)
 
   const copies = data.copies.map(item => {
     const copy = record(item)
-    const roomId = literal(copy.room_id)
+    const roomId = identifier(copy.room_id)
 
-    if ((previous !== null && compareIds(roomId, previous) <= 0) || typeof copy.group_ended !== 'boolean' ||
+    if ((previous !== null && roomId <= previous) || typeof copy.group_ended !== 'boolean' ||
       typeof copy.copy_status !== 'string' || !['saved', 'needs_review', 'retired'].includes(copy.copy_status)) {return invalid()}
 
     previous = roomId
 
     return {
-      roomId, name: literal(copy.name), authority: authority(copy.source_authority),
+      roomId, name: roomName(copy.name), authority: authority(copy.source_authority),
       savedThrough: integer(copy.saved_through_seq), advertisedLatest: integer(copy.advertised_latest_seq),
       updatedAt: timestamp(copy.copy_updated_at), ended: copy.group_ended,
       status: copy.copy_status as SavedGroupCopy['status']
     }
   })
 
-  const nextRoomId = data.next_room_id === null ? null : literal(data.next_room_id)
+  const nextRoomId = data.next_room_id === null ? null : identifier(data.next_room_id)
 
   if (nextRoomId !== null && (nextRoomId !== copies.at(-1)?.roomId || nextRoomId === afterRoomId)) {return invalid()}
 
-  return { copies, nextRoomId, targetGatewayId: literal(data.target_gateway_id) }
+  return { copies, nextRoomId, targetGatewayId: identifier(data.target_gateway_id) }
 }
 
 export function parseSavedGroupPreview(value: unknown, selected: SavedGroupCopy, holder: string): SavedGroupPreview {
   const data = readonly(value, 'hermes.group_recovery.preview')
   const source = authority(data.source_authority)
 
-  if (data.room_id !== selected.roomId || data.target_gateway_id !== holder ||
+  if (identifier(data.room_id) !== selected.roomId || identifier(data.target_gateway_id) !== holder ||
     source.gatewayId !== selected.authority.gatewayId || source.epoch !== selected.authority.epoch ||
     typeof data.reconciliation_required !== 'boolean' || !Array.isArray(data.blockers) ||
     data.blockers.some(item => typeof item !== 'string')) {return invalid()}
@@ -140,7 +134,7 @@ export function parseSavedGroupPreview(value: unknown, selected: SavedGroupCopy,
   })
 
   return {
-    name: literal(data.name), updatedAt: timestamp(data.copy_updated_at),
+    name: roomName(data.name), updatedAt: timestamp(data.copy_updated_at),
     incomplete: integer(data.saved_through_seq) < integer(data.advertised_latest_seq),
     ended: selected.ended || data.blockers.includes('group_disbanded'),
     needsReview: data.blockers.length > 0, workUnknown,
@@ -155,17 +149,19 @@ export async function savedGroupHolder(route: CanonicalGroupRoute, signal: Abort
 
   if (!Array.isArray(methods) || !['groups.recovery.list', 'groups.recovery.prepare'].every(method => methods.includes(method))) {return null}
 
-  return literal(data.authority_gateway_id)
+  return identifier(data.authority_gateway_id)
 }
 
 export async function readSavedGroups(route: CanonicalGroupRoute, afterRoomId: string | null, signal: AbortSignal) {
+  const cursor = afterRoomId === null ? null : identifier(afterRoomId)
+
   return parseSavedGroupPage(await withFilesDeadline(canonicalGroupRequest<unknown>(route, 'groups.recovery.list', {
-    limit: 20, after_room_id: afterRoomId
-  }), signal), afterRoomId)
+    limit: 20, after_room_id: cursor
+  }), signal), cursor)
 }
 
 export async function readSavedGroupPreview(route: CanonicalGroupRoute, selected: SavedGroupCopy, holder: string, signal: AbortSignal) {
   return parseSavedGroupPreview(await withFilesDeadline(canonicalGroupRequest<unknown>(route, 'groups.recovery.prepare', {
-    room_id: selected.roomId
+    room_id: identifier(selected.roomId)
   }), signal), selected, holder)
 }
