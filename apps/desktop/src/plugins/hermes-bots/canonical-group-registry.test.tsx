@@ -1,5 +1,5 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { useStore } from '@nanostores/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -11,14 +11,15 @@ vi.mock('@hermes/plugin-sdk', () => {
   controls.connection = value => state.connectionId.set(value)
   controls.profile = value => state.profile.set(value)
   controls.gateway = value => state.gateway.set(value)
+
   return { atom, useValue: useStore, Button: (props: ComponentProps<'button'>) => <button {...props} />,
     host: { requestProfile: transport.request, state } }
 })
 vi.mock('./canonical-group-labels', () => ({ useCanonicalGroupLabels: () => ({ refreshGroups: 'Refresh groups' }) }))
-import { $canonicalGroupBindings, CanonicalGroupList } from './canonical-group-registry'
+import { $canonicalGroupBindings, $canonicalGroupNames, CanonicalGroupList } from './canonical-group-registry'
 
 beforeEach(() => { controls.connection('owner-a'); controls.profile('default'); controls.gateway('open') })
-afterEach(() => { cleanup(); transport.request.mockReset(); $canonicalGroupBindings.set({}) })
+afterEach(() => { cleanup(); transport.request.mockReset(); $canonicalGroupBindings.set({}); $canonicalGroupNames.set({}) })
 
 it('retains last-known groups while disconnected and refreshes automatically on reconnect', async () => {
   let title = 'Existing group'
@@ -41,7 +42,9 @@ it('never publishes a late inventory from the previous connection', async () => 
   let release!: (value: unknown) => void
   transport.request.mockImplementation(async (route, method) => {
     if (method === 'groups.capabilities') {return { driver: true }}
+
     if (route.connectionId === 'owner-a') {return new Promise(resolve => { release = resolve })}
+
     return { rooms: [{ room_id: 'room-b', name: 'New owner group', members: [] }], next_offset: null }
   })
   render(<CanonicalGroupList onOpen={() => {}} />)

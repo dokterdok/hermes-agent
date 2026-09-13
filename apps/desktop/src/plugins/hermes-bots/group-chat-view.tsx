@@ -38,7 +38,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { $canonicalGroupBindings } from './canonical-group-registry'
+import { $canonicalGroupBindings, $canonicalGroupNames } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import {
   $botMeta,
@@ -1299,7 +1299,9 @@ export function openGroupChat(group: string): void {
   if (typeof host.openWorkspace === 'function') {
     try {
       const close = host.openWorkspace(`${ID}:group:${slugify(group)}`, {
-        title: group,
+        title: $canonicalGroupBindings.get()[group]
+          ? $canonicalGroupNames.get()[group] || botsText().canonical.loadingGroup
+          : group,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,
         onClose: () => {

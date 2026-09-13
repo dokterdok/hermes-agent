@@ -1,39 +1,54 @@
 import { atom, Button, host, useValue } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
+import { discoverCanonicalGroups } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
+// Display names must not become part of the immutable routing binding.
+export const $canonicalGroupNames = atom<Record<string, string>>({})
 
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
-  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id } })
+  const bindings = $canonicalGroupBindings.get()
+  const current = bindings[key]
+
+  if (!current || current.connectionId !== route.connectionId || current.profile !== route.profile || current.roomId !== room.room_id) {
+    $canonicalGroupBindings.set({ ...bindings, [key]: { connectionId: route.connectionId, profile: route.profile, roomId: room.room_id } })
+  }
+
+  const names = $canonicalGroupNames.get()
+
+  if (names[key] !== room.name) {
+    $canonicalGroupNames.set({ ...names, [key]: room.name })
+  }
 
   return key
 }
 
 export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }) {
-  const labels = useCanonicalGroupLabels()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
+
+  return <ScopedCanonicalGroupList connectionId={connectionId} key={JSON.stringify([connectionId, profile])}
+    onOpen={onOpen} profile={profile} />
+}
+
+function ScopedCanonicalGroupList({ connectionId, profile, onOpen }: {
+  connectionId: string | null; profile: string; onOpen: (key: string) => void
+}) {
+  const labels = useCanonicalGroupLabels()
   const gateway = useValue(host.state.gateway)
   const [rooms, setRooms] = useState<Array<{ key: string; name: string }>>([])
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
-  const scope = useRef('')
   useEffect(() => {
     let cancelled = false
-    const identity = JSON.stringify([connectionId, profile])
-    if (scope.current !== identity) {
-      scope.current = identity
-      setRooms([])
-      setError('')
-    }
+
     if (gateway !== 'open') {return}
     void (async () => {
-      const route = captureCanonicalGroupRoute()
+      const route = { connectionId: connectionId ?? '', profile }
       const result = await discoverCanonicalGroups(route)
 
       if (!cancelled) {
