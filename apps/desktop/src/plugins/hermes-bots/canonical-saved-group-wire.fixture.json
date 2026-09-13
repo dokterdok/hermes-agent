@@ -19,18 +19,18 @@
     "next_room_id": null,
     "accepted_tail": "unverified",
     "execution_authorized": false,
-    "target_gateway_id": "install:6898c558fb164f928c3a544f6783ad75"
+    "target_gateway_id": "install:1e33acd3321548e0a93cfeeb65bb77fe"
   },
   "preview": {
     "object": "hermes.group_recovery.preview",
     "room_id": "saved-room",
     "name": "Weekly planning",
-    "snapshot_id": "f60d87cd62d1a341f52209889e2a7735d39831c233c5f8884bcdeb9421185df2",
+    "snapshot_id": "707ebe90aa6347128d8d314d326519ca642e3d24d1465d18f2529f2f63be9555",
     "source_authority": {
       "gateway_id": "install:original",
       "epoch": 1
     },
-    "target_gateway_id": "install:6898c558fb164f928c3a544f6783ad75",
+    "target_gateway_id": "install:1e33acd3321548e0a93cfeeb65bb77fe",
     "saved_through_seq": 1,
     "advertised_latest_seq": 1,
     "copy_updated_at": 1789290000.0,
@@ -53,7 +53,158 @@
       },
       {
         "member_id": "target",
-        "installation_id": "install:6898c558fb164f928c3a544f6783ad75",
+        "installation_id": "install:1e33acd3321548e0a93cfeeb65bb77fe",
+        "profile": "default",
+        "resolved": true
+      }
+    ],
+    "candidate_member_ids": [
+      "target"
+    ],
+    "previous_host_member_ids": [
+      "original"
+    ],
+    "reconciliation_required": true,
+    "accepted_tail": "unverified",
+    "execution_authorized": false,
+    "requirements": [
+      "operator_confirms_previous_host_fenced",
+      "reconcile_recorded_work",
+      "confirm_saved_recovery_point",
+      "preserve_bot_installation_identity"
+    ]
+  },
+  "preview_with_work": {
+    "object": "hermes.group_recovery.preview",
+    "room_id": "saved-room",
+    "name": "Weekly planning",
+    "snapshot_id": "57842c675f71bba628a2906c7e5917159d4ff713c2512342db419c9540758e60",
+    "source_authority": {
+      "gateway_id": "install:original",
+      "epoch": 1
+    },
+    "target_gateway_id": "install:1e33acd3321548e0a93cfeeb65bb77fe",
+    "saved_through_seq": 1,
+    "advertised_latest_seq": 1,
+    "copy_updated_at": 1789290000.0,
+    "work_records": {
+      "mode": "passive_work_records",
+      "producer": {
+        "gateway_id": "install:original",
+        "epoch": 1
+      },
+      "disposition": "current",
+      "source_loss_safe": false,
+      "revision": 1,
+      "digest": "d5da707652fee25c0c59ed6f0e8b848c9159e0e031777bb6021fd2b414d74a31",
+      "history": {
+        "event_sha256": "7e391e6fc6608100ee138ef7dcbbb9cf493ed9e244c7182bdd57a291ac024d8b",
+        "seq": 1
+      },
+      "availability": "available",
+      "reason": null,
+      "stop": {
+        "cancel_id": null,
+        "closing": false,
+        "revocation_complete": false,
+        "seq": 0
+      },
+      "limitations": [
+        "process_local_approvals_not_captured",
+        "field_journals_not_captured",
+        "external_effects_not_captured",
+        "absent_record_is_not_non_admission",
+        "not_execution_checkpoint"
+      ],
+      "task_count": 1,
+      "receipt_count": 0,
+      "phases": {
+        "queued": 1
+      },
+      "tasks": [
+        {
+          "cancel_generation": 0,
+          "cancel_id": null,
+          "execution_generation": 0,
+          "member_id": "original",
+          "payload_sha256": "882627f54fdcd23dc383fccaf5805fe80f26e82b14381999a3f785db2f0e94b5",
+          "phase": "queued",
+          "profile": "default",
+          "settlement_id": null,
+          "source_event_seq": 1,
+          "task_id": "known-task",
+          "thread_id": "thread",
+          "turn_id": "turn"
+        }
+      ],
+      "receipts": [],
+      "incompleteness": [],
+      "scopes": [
+        {
+          "producer": {
+            "gateway_id": "install:original",
+            "epoch": 1
+          },
+          "disposition": "current",
+          "source_loss_safe": false,
+          "revision": 1,
+          "digest": "d5da707652fee25c0c59ed6f0e8b848c9159e0e031777bb6021fd2b414d74a31",
+          "history": {
+            "event_sha256": "7e391e6fc6608100ee138ef7dcbbb9cf493ed9e244c7182bdd57a291ac024d8b",
+            "seq": 1
+          },
+          "availability": "available",
+          "reason": null,
+          "stop": {
+            "cancel_id": null,
+            "closing": false,
+            "revocation_complete": false,
+            "seq": 0
+          },
+          "limitations": [
+            "process_local_approvals_not_captured",
+            "field_journals_not_captured",
+            "external_effects_not_captured",
+            "absent_record_is_not_non_admission",
+            "not_execution_checkpoint"
+          ],
+          "task_count": 1,
+          "receipt_count": 0,
+          "phases": {
+            "queued": 1
+          },
+          "tasks": [
+            {
+              "cancel_generation": 0,
+              "cancel_id": null,
+              "execution_generation": 0,
+              "member_id": "original",
+              "payload_sha256": "882627f54fdcd23dc383fccaf5805fe80f26e82b14381999a3f785db2f0e94b5",
+              "phase": "queued",
+              "profile": "default",
+              "settlement_id": null,
+              "source_event_seq": 1,
+              "task_id": "known-task",
+              "thread_id": "thread",
+              "turn_id": "turn"
+            }
+          ],
+          "receipts": [],
+          "incompleteness": []
+        }
+      ]
+    },
+    "blockers": [],
+    "member_origins": [
+      {
+        "member_id": "original",
+        "installation_id": "install:original",
+        "profile": "default",
+        "resolved": true
+      },
+      {
+        "member_id": "target",
+        "installation_id": "install:1e33acd3321548e0a93cfeeb65bb77fe",
         "profile": "default",
         "resolved": true
       }

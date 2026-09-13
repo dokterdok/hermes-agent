@@ -320,6 +320,37 @@ it('consumes the actual temporary Python native-handler wire without promoting m
   expect(dialog.textContent).not.toContain('work_evidence_unknown')
 })
 
+it('parses and renders populated counts from actual passive work capture without implying execution', async () => {
+  const saved = parseSavedGroupPage(actualWire.page, null)
+  expect(parseSavedGroupPreview(actualWire.preview_with_work, saved.copies[0], saved.targetGatewayId)).toMatchObject({
+    taskCount: 1, receiptCount: 0, workUnknown: false, reconciliationRequired: true
+  })
+  mocks.request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return { ...capabilities, authority_gateway_id: saved.targetGatewayId }}
+
+    if (method === 'groups.recovery.list') {return actualWire.page}
+
+    if (method === 'groups.recovery.prepare') {return actualWire.preview_with_work}
+
+    throw new Error(`Unexpected RPC ${method}`)
+  })
+  const dialog = await openBrowser()
+  fireEvent.click(await screen.findByRole('button', { name: /Weekly planning/ }))
+  const details = within(screen.getByRole('region', { name: 'Saved copy details' }))
+  await details.findByText(SAVED_GROUP_LOCALES.en.savedWorkTasks)
+  expect(details.getByText('1')).toBeTruthy()
+  expect(details.getByText(SAVED_GROUP_LOCALES.en.savedWorkReceipts)).toBeTruthy()
+  expect(details.getByText('0')).toBeTruthy()
+  expect(details.queryByText(SAVED_GROUP_LOCALES.en.savedWorkUnknown)).toBeNull()
+  expect(details.getByText(SAVED_GROUP_LOCALES.en.savedWorkReconciliation)).toBeTruthy()
+  expect(dialog.textContent).toContain(SAVED_GROUP_LOCALES.en.savedCopiesNotResumed)
+  expect(dialog.textContent).toContain(SAVED_GROUP_LOCALES.en.savedCopiesRecentWork)
+
+  for (const internal of ['known-task', 'install:', 'payload_sha256', actualWire.preview_with_work.snapshot_id]) {
+    expect(dialog.textContent).not.toContain(internal)
+  }
+})
+
 it.each(['list', 'preview'] as const)('rejects a wrong-holder %s response without adopting its metadata', async kind => {
   if (kind === 'preview') {
     await openBrowser()
