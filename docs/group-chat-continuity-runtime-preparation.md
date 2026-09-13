@@ -86,10 +86,11 @@ keeps the maintainer's reconciled versions rather than applying competing copies
 
 ## Verification Boundary
 
-The current-main composition passed 202 selected Python checks across 31 files
+The current-main composition passed 322 selected Python checks across 42 files
 and 153 Desktop checks across 8 files, plus renderer, Electron and end-to-end
 TypeScript checks. Separate focused checks cover the new approval, profile-cloning,
-state-file permission and proxy-stream boundaries. Earlier F9 composition checks
+state-file permission, history-maintenance and reconnect boundaries. Reconnect
+tests record scheduling without executing a turn. Earlier F9 composition checks
 include 258 journal/Group-creation cases and 165 Files UI cases. No automatic retries
 were used.
 Independent reviews cover the consequential repairs; these counts overlap other
