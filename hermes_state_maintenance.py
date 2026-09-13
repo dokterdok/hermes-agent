@@ -223,11 +223,12 @@ class SessionMaintenanceMixin:
         = inactivity threshold: latest message, else ``started_at``). Prune previews opt into
         *exclude_ledger_owned* and may collect skipped_protected in *report*; archive keeps all matches."""
         where, params = self._prune_where(older_than_days, source, filters)
-        from hermes_state_raw_delete import LEDGER_REFERENCES_SQL, report_maintenance
-        protection = (', ' + LEDGER_REFERENCES_SQL.format(session_id='s.id') + ' AS _ledger_owned'
-                      if exclude_ledger_owned else '')
-        rows = [dict(row) for row in self._read_all(
-            f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
+        from hermes_state_raw_delete import preview_ledger_references, report_maintenance
+        def read(conn):
+            protection = (', ' + preview_ledger_references(conn, read_only=self.read_only).format(session_id='s.id')
+                          + ' AS _ledger_owned' if exclude_ledger_owned else '')
+            return [dict(row) for row in conn.execute(
+                f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
                            COALESCE(
                                (SELECT MAX(m.timestamp) FROM messages m
                                 WHERE m.session_id = s.id),
@@ -235,7 +236,8 @@ class SessionMaintenanceMixin:
                            ) AS last_active,
                            s.ended_at, s.message_count, s.archived {protection}
                     FROM sessions s WHERE {where}
-                    ORDER BY last_active ASC, s.started_at ASC""", params)]
+                    ORDER BY last_active ASC, s.started_at ASC""", params).fetchall()]
+        rows = self._read_retrying_ioerr(read)
         if not exclude_ledger_owned:
             return rows
         eligible = [row for row in rows if not row.pop('_ledger_owned')]
