@@ -131,6 +131,8 @@ def _external_holds(conn, db, copy, path, now):
         return True
     try:
         identity = _file_identity(path)
+        if copy['namespace'] == 'v3' and path.stat(follow_symlinks=False).st_nlink != 1:
+            return True  # V3 never creates hardlinks; an extra owner is untracked.
     except FileNotFoundError:
         return False
     if identity in identities or _legacy_holds(conn, path, copy):
