@@ -38,8 +38,9 @@ Shared messaging chats also require an audience confirmation.
 
 Shared documents receive verified private working copies before session handoff.
 A one-time upgrade inventory protects existing inputs without preventing cleanup
-of unrelated new uploads. Prepared but unadmitted document copies are retained
-conservatively; this is not a total disk-usage bound or complete reclamation policy.
+of unrelated new uploads. Private working-document copies do not yet have automatic
+reclamation, including abandoned preparations. Identical copies are reused; this is
+not a total disk-usage bound. Reclamation is the next storage-lifecycle follow-up.
 
 An unavailable gateway is not evidence that accepted work never ran. Setup and
 publication preserve their original identifiers so an interrupted acknowledgement
