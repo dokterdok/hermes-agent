@@ -133,12 +133,12 @@ def prepare_hosted_input(rpc, *, request_id, prompt, attachments=None, ttl=300):
     if old is not None:
         payload = reconstruct_accepted_payload(rpc, prompt, attachments, old, retired=retired)
         return PreparedHostedInput({'text': prompt}, AcceptedInputHandle(old['admission_id'], payload))
-    owned_home(db)
     inputs = resolve_inputs(rpc, attachments)
     documents = [(item, data) for item, data in inputs if item['mime'] not in _ATTACHMENT_MIMES]
     if not documents:
         images = [_image_staging(item, data) for item, data in inputs]
         return PreparedHostedInput({'text': prompt, **({'attachments': images} if images else {})}, None)
+    owned_home(db)
 
     def plan(conn):
         require_initialized(conn, db)

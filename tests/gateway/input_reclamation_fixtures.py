@@ -30,14 +30,19 @@ def close(db, home):
     process_ownership.release(home)
 
 
-def rpc_files(home, owner, *, named=False, count=1):
+def rpc_files(home, owner, *, named=False, count=1, image=False):
     hosted_rooms.create_room(owner.db.db_path, room_id='room', name='Room', authority_gateway_id='home',
         members=[dict(member_id='member', profile='default', handle='member')])
     store = HostedRoomAttachmentStore(owner.db.db_path)
     entries = []
     for index in range(count):
         data = bytes([65 + index]) * 32
-        saved = store.put(room_id='room', upload_id=f'upload-{index}', kind='file', name=f'{index}.txt', mime='text/plain', data=data)
+        is_image = image and index == count - 1
+        if is_image:
+            from tests.gateway.test_api_media_retention import PNG
+            data = PNG
+        saved = store.put(room_id='room', upload_id=f'upload-{index}', kind='image' if is_image else 'file',
+            name=f'{index}.png' if is_image else f'{index}.txt', mime='image/png' if is_image else 'text/plain', data=data)
         entries.append(({key: saved[key] for key in ('attachment_id', 'kind', 'name', 'size', 'mime')}, data))
     store.commit_message(room_id='room', event_id='event', manifest=[item for item, _ in entries], recipient_member_ids=['member'])
     bound = [({**item, 'event_id': 'event'}, data) for item, data in entries]
