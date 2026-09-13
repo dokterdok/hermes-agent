@@ -157,14 +157,15 @@ async def test_damaged_copy_header_is_unavailable_not_an_empty_store(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_oversized_stored_metadata_is_not_loaded_into_response_projection(tmp_path, monkeypatch):
+@pytest.mark.parametrize('stored_name', ['x' * 100000, 'x\x00' + 'y' * 100000])
+async def test_oversized_stored_metadata_is_not_loaded_into_response_projection(tmp_path, monkeypatch, stored_name):
     from gateway import hosted_room_saved_views
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     async with owner(tmp_path, monkeypatch) as (authority, _, _):
         native = connection(authority)
         shared, _ = save_copy(tmp_path, monkeypatch, room_id='saved', name='Planning', received_at=10)
         with sqlite3.connect(shared) as conn:
-            conn.execute("UPDATE hosted_room_replicas SET name=? WHERE room_id='saved'", ('x' * 100000,))
+            conn.execute("UPDATE hosted_room_replicas SET name=? WHERE room_id='saved'", (stored_name,))
         seen = []
         original = hosted_room_saved_views._summary
         def project(row):
@@ -174,6 +175,18 @@ async def test_oversized_stored_metadata_is_not_loaded_into_response_projection(
         result = await native.dispatch({'id': 1, 'method': 'groups.recovery.list', 'params': {}})
         assert seen == [None]
         assert result['error']['message'] == 'recovery_evidence_unavailable'
+
+
+@pytest.mark.asyncio
+async def test_valid_multibyte_copy_names_keep_the_source_character_limit(tmp_path, monkeypatch):
+    from gateway.hosted_rooms import MAX_ROOM_NAME_CHARS
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    async with owner(tmp_path, monkeypatch) as (authority, _, _):
+        native = connection(authority)
+        name = '\U0001f4c1' * MAX_ROOM_NAME_CHARS
+        save_copy(tmp_path, monkeypatch, room_id='saved', name=name, received_at=10)
+        result = await native.dispatch({'id': 1, 'method': 'groups.recovery.list', 'params': {}})
+        assert result['result']['copies'][0]['name'] == name
 
 
 @pytest.mark.asyncio

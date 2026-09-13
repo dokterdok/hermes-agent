@@ -15,7 +15,7 @@ MAX_PAGE = 20
 
 
 def _text(column, limit):
-    return f"CASE WHEN typeof({column})='text' AND length({column})<={limit} THEN {column} END"
+    return f"CASE WHEN typeof({column})='text' AND length(CAST({column} AS BLOB))<={limit} THEN {column} END"
 
 
 def page_parameters(params):
@@ -64,7 +64,7 @@ def list_saved_copies(db_path, *, limit, after_room_id):
         # Bound damaged on-disk fields before returning values to Python.
         selected = ','.join((
             f"{_text('r.room_id', MAX_ROOM_ID_CHARS)} AS room_id",
-            f"{_text('r.name', MAX_ROOM_NAME_CHARS)} AS name",
+            f"{_text('r.name', MAX_ROOM_NAME_CHARS * 4)} AS name",
             f"{_text('r.authority_gateway_id', MAX_ACTOR_ID_CHARS)} AS authority_gateway_id",
             *(f"CASE WHEN typeof(r.{column})='integer' THEN r.{column} END AS {column}"
               for column in ('authority_epoch', 'last_seq', 'latest_seq')),
