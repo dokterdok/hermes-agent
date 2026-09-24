@@ -11,6 +11,8 @@ GROUP_METHODS = {
     'groups.state': 'session:read',
     'groups.log': 'session:read',
     'groups.create': 'session:control',
+    'groups.import_history': 'session:control',
+    'groups.member.resolve': 'session:control',
     'groups.rename': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
@@ -27,6 +29,8 @@ _FIELDS = {
     'groups.state': {'room_id', 'include_disbanded'},
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
+    'groups.import_history': {'room_id', 'name', 'source_id', 'members', 'history', 'held_work'},
+    'groups.member.resolve': {'room_id', 'member_id', 'action'},
     'groups.rename': {'room_id', 'event_id', 'name'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
@@ -83,6 +87,7 @@ def _group(authority, actor, home, method, params):
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
+    import_service = resolution_service = service
     room_authorizer = getattr(service, 'authorize_room', None)
     if service is not None:
         if Path(service.db_path).resolve() != Path(db_path).resolve():
@@ -92,10 +97,20 @@ def _group(authority, actor, home, method, params):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
-    if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
+    if method != 'groups.import_history' and getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
         room_authorizer(actor.subject, params['room_id'], create=method == 'groups.create')
+    if method == 'groups.import_history':
+        importer = getattr(import_service, 'import_shipped_group_history', None)
+        if not callable(importer):
+            raise RuntimeStoreError('runtime_coordination_required')
+        return importer(actor_subject=actor.subject, **params)
+    if method == 'groups.member.resolve':
+        resolver = getattr(resolution_service, 'resolve_shipped_group_member', None)
+        if not callable(resolver):
+            raise RuntimeStoreError('runtime_coordination_required')
+        return resolver(actor_subject=actor.subject, **params)
     if method in {'groups.attachment.upload', 'groups.attachment.download'}:
         if service is None:
             raise RuntimeStoreError('runtime_coordination_required')

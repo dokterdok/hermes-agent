@@ -623,6 +623,8 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
             "SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND thread_id=? AND turn_id=?",
             (identity.room_id, identity.thread_id, identity.turn_id)).fetchone() is not None:
             raise TaskConflictError("thread_id and turn_id are already bound to a task")
+        from gateway.hosted_room_member_retirement import require_member_work_open
+        require_member_work_open(conn, identity.room_id, normalized_payload, error=RoomUnavailableError)
         conn.execute("""INSERT INTO hosted_room_driver_tasks (
                    room_id, task_id, thread_id, turn_id, source_event_seq, payload_json, payload_digest,
                    status, execution_generation, cancel_generation, created_at, updated_at

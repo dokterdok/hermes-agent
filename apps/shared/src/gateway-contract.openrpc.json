@@ -1141,6 +1141,24 @@
       }
     },
     {
+      "name": "groups.import_history",
+      "summary": "Owner-authorized one-shot import of a shipped Desktop Group Chat. History and uncertain work are inert; remote members remain visible without receiving authorization.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsImportHistoryParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsImportHistoryResult"
+        }
+      }
+    },
+    {
       "name": "groups.list",
       "summary": "List rooms hosted by this gateway, most recently changed first.",
       "params": [
@@ -1173,6 +1191,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsLogResult"
+        }
+      }
+    },
+    {
+      "name": "groups.member.resolve",
+      "summary": "Owner-authorized refresh, reactivation, or retirement of one imported member. Current local profile state and authenticated peer routes are authoritative; imported identity is preserved.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsMemberResolveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsMemberResolveResult"
         }
       }
     },
@@ -13947,6 +13983,109 @@
         "title": "GroupsDisbandResult",
         "type": "object"
       },
+      "GroupsImportHistoryParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/ShippedGroupImportMember"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/ShippedGroupHistoryEntry"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "held_work": {
+            "items": {
+              "$ref": "#/components/schemas/ShippedGroupHeldWork"
+            },
+            "title": "Held Work",
+            "type": "array"
+          }
+        },
+        "required": [
+          "room_id",
+          "name",
+          "source_id",
+          "members",
+          "history",
+          "held_work"
+        ],
+        "title": "GroupsImportHistoryParams",
+        "type": "object"
+      },
+      "GroupsImportHistoryResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room": {
+            "$ref": "#/components/schemas/Room"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "imported_history": {
+            "title": "Imported History",
+            "type": "integer"
+          },
+          "held_work": {
+            "title": "Held Work",
+            "type": "integer"
+          },
+          "held_members": {
+            "title": "Held Members",
+            "type": "integer"
+          },
+          "retired_members": {
+            "title": "Retired Members",
+            "type": "integer"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room",
+          "source_id",
+          "imported_history",
+          "held_work",
+          "held_members",
+          "retired_members",
+          "idempotent"
+        ],
+        "title": "GroupsImportHistoryResult",
+        "type": "object"
+      },
       "GroupsListParams": {
         "additionalProperties": false,
         "properties": {
@@ -14128,6 +14267,67 @@
           "authority"
         ],
         "title": "GroupsLogResult",
+        "type": "object"
+      },
+      "GroupsMemberResolveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "action": {
+            "$ref": "#/components/schemas/ImportedMemberResolutionAction"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "action"
+        ],
+        "title": "GroupsMemberResolveParams",
+        "type": "object"
+      },
+      "GroupsMemberResolveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room": {
+            "$ref": "#/components/schemas/Room"
+          },
+          "member": {
+            "$ref": "#/components/schemas/RoomMember"
+          },
+          "action": {
+            "$ref": "#/components/schemas/ImportedMemberResolutionAction"
+          },
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room",
+          "member",
+          "action",
+          "changed"
+        ],
+        "title": "GroupsMemberResolveResult",
         "type": "object"
       },
       "GroupsPeerInviteParams": {
@@ -15406,6 +15606,15 @@
         ],
         "title": "ImageGenerateResult",
         "type": "object"
+      },
+      "ImportedMemberResolutionAction": {
+        "enum": [
+          "refresh",
+          "activate",
+          "retire"
+        ],
+        "title": "ImportedMemberResolutionAction",
+        "type": "string"
       },
       "InflightTurn": {
         "additionalProperties": false,
@@ -31378,6 +31587,198 @@
         ],
         "title": "ShellExecResult",
         "type": "object"
+      },
+      "ShippedGroupHeldWork": {
+        "additionalProperties": false,
+        "properties": {
+          "source_work_id": {
+            "title": "Source Work Id",
+            "type": "string"
+          },
+          "at_ms": {
+            "title": "At Ms",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ShippedHeldWorkState"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "member_source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member Source Id"
+          }
+        },
+        "required": [
+          "source_work_id",
+          "at_ms",
+          "state",
+          "description"
+        ],
+        "title": "ShippedGroupHeldWork",
+        "type": "object"
+      },
+      "ShippedGroupHistoryEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "source_entry_id": {
+            "title": "Source Entry Id",
+            "type": "string"
+          },
+          "at_ms": {
+            "title": "At Ms",
+            "type": "integer"
+          },
+          "author_kind": {
+            "$ref": "#/components/schemas/ShippedHistoryAuthorKind"
+          },
+          "author_name": {
+            "title": "Author Name",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "member_source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member Source Id"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thread Id"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
+          }
+        },
+        "required": [
+          "source_entry_id",
+          "at_ms",
+          "author_kind",
+          "author_name",
+          "text"
+        ],
+        "title": "ShippedGroupHistoryEntry",
+        "type": "object"
+      },
+      "ShippedGroupImportMember": {
+        "additionalProperties": false,
+        "description": "One shipped Desktop roster row, mapped without accepting execution authority from the client.",
+        "properties": {
+          "source_member_id": {
+            "title": "Source Member Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "remote_source": {
+            "title": "Remote Source",
+            "type": "boolean"
+          },
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Id"
+          },
+          "connection_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Label"
+          }
+        },
+        "required": [
+          "source_member_id",
+          "name",
+          "profile",
+          "handle",
+          "remote_source"
+        ],
+        "title": "ShippedGroupImportMember",
+        "type": "object"
+      },
+      "ShippedHeldWorkState": {
+        "enum": [
+          "uncertain"
+        ],
+        "title": "ShippedHeldWorkState",
+        "type": "string"
+      },
+      "ShippedHistoryAuthorKind": {
+        "enum": [
+          "user",
+          "member"
+        ],
+        "title": "ShippedHistoryAuthorKind",
+        "type": "string"
       },
       "SideAgentCompletePayload": {
         "additionalProperties": false,
