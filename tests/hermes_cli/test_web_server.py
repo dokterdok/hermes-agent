@@ -4228,7 +4228,7 @@ class TestDeleteEmptySessionsEndpoint:
         self._seed()
         resp = self.auth_client.delete("/api/sessions/empty")
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "deleted": 2}
+        assert resp.json() == {"ok": True, "deleted": 2, "skipped_protected": 0}
 
         db = SessionDB()
         try:

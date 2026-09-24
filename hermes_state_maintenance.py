@@ -447,8 +447,11 @@ class SessionMaintenanceMixin:
             # _MAX_LEASE_S=900 per call, so a multi-minute step renews per step rather than
             # once at entry. No-op when the watchdog is not armed; never raises.
             report_startup_progress(900.0, phase="state_db_auto_prune")
+            prune_report = {}
             result["pruned"] = pruned = self.prune_sessions(
-                older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+                older_than_days=retention_days, sessions_dir=sessions_dir,
+                exclude_active_write_guards=True, report=prune_report)
+            result["skipped_protected"] = prune_report["skipped_protected"]
             report_startup_progress(900.0, phase="state_db_auto_sweep")
             closed = self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,

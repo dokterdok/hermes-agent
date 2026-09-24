@@ -96,16 +96,19 @@ class _StubDB:
     def delete_sessions(self, ids):
         return len(ids)
 
-    def delete_empty_sessions(self):
+    def delete_empty_sessions(self, *, report=None):
+        report['skipped_protected'] = 0
         return 1
 
     def count_open_prune_matches(self, **_filters):
         return 0
 
     def list_prune_candidates(self, **_filters):
+        _filters['report']['skipped_protected'] = 0
         return []
 
     def prune_sessions(self, **_kwargs):
+        _kwargs['report']['skipped_protected'] = 0
         return 1
 
     def close(self):
