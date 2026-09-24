@@ -36,7 +36,7 @@ TASK_STATUSES = frozenset(get_args(TaskStatus))
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({"target_profile", "prompt", "source_event_seq"})
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "input_context", "attachments"})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "input_context", "attachments", "publication_members"})
 _LEASE_COLUMNS = frozenset({
     "room_id", "gateway_id", "authority_epoch", "process_generation", "lease_generation", "expires_at", "acquired_at",
     "updated_at", "released_at"})
@@ -185,6 +185,19 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         normalized["target_member_id"] = _identifier(value["target_member_id"], label="target_member_id")
     if "attachments" in value:
         normalized["attachments"] = validate_bound_task_manifest(value["attachments"])
+    if "publication_members" in value:
+        from gateway.hosted_room_discussion import validate_roster
+        members = value["publication_members"]
+        if not isinstance(members, list):
+            raise DriverValidationError("publication_members must be a roster")
+        try:
+            validate_roster(members, local_profiles=(
+                str(member["profile"]) for member in members
+                if isinstance(member, Mapping) and isinstance(member.get("target"), Mapping)
+                and member["target"].get("kind") == "local" and isinstance(member.get("profile"), str)))
+        except ValueError as exc:
+            raise DriverValidationError("publication_members must be a valid frozen roster") from exc
+        normalized["publication_members"] = members
     encoded = compact_json(normalized)
     return normalized, encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

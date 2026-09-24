@@ -163,6 +163,12 @@ _SCHEMA_DDL = (
             retired_member_count INTEGER NOT NULL DEFAULT 0 CHECK (retired_member_count >= 0),
             imported_at REAL NOT NULL,
             FOREIGN KEY (room_id) REFERENCES hosted_rooms(room_id)
+        )""",
+    """CREATE TABLE IF NOT EXISTS hosted_room_history_source_reservations (
+            source_id TEXT PRIMARY KEY,
+            source_kind TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            room_id TEXT NOT NULL UNIQUE
         )""")
 # (table, required columns) parsed from the DDL, in the order _schema_is_current probes them.
 _REQUIRED_COLUMNS = tuple(
@@ -403,6 +409,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     for statement in _SCHEMA_DDL:
         conn.execute(statement)
     _migrate_legacy_columns(conn)
+    # This compact source identity outlives room payload pruning. Reopen markers
+    # written by the prior Runtime candidate before any retention operation.
+    conn.execute("""INSERT OR IGNORE INTO hosted_room_history_source_reservations
+        (source_id, source_kind, content_sha256, room_id)
+        SELECT source_id, source_kind, content_sha256, room_id FROM hosted_room_history_imports""")
     # Old schemas kept the final identity tombstone in hosted_rooms itself. Copy those identities before
     # bounded history pruning can remove their heavier room/event payloads. This compact registry is
     # intentionally permanent: a stale coordinate must never name a different Group Chat.
@@ -1466,6 +1477,12 @@ def import_shipped_group_history(
                 row, _, _ = _refresh_imported_members_locked(
                     conn, row, local_profiles=profiles, now=timestamp)
                 return _history_import_result(row, marker, idempotent=True)
+            reservation = conn.execute(
+                """SELECT source_id, source_kind, content_sha256, room_id
+                   FROM hosted_room_history_source_reservations WHERE source_id=? OR room_id=?""",
+                (source_id, room_id)).fetchone()
+            if reservation is not None:
+                raise RoomConflictError("source room already exists with different import content or expired history")
             if (
                 _is_retired(conn, room_id)
                 or conn.execute("SELECT 1 FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone() is not None
@@ -1530,6 +1547,10 @@ def import_shipped_group_history(
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (room_id, _IMPORTED_SOURCE_KIND, source_id, content_sha256,
                  len(history_events), len(held_events), held_members, retired_members, timestamp))
+            conn.execute(
+                """INSERT INTO hosted_room_history_source_reservations
+                    (source_id, source_kind, content_sha256, room_id) VALUES (?, ?, ?, ?)""",
+                (source_id, _IMPORTED_SOURCE_KIND, content_sha256, room_id))
             marker = conn.execute(
                 "SELECT * FROM hosted_room_history_imports WHERE room_id=?", (room_id,)).fetchone()
             row = _reload(conn, _SELECT_ROOM_WITH_BYTES, (room_id,), "imported room could not be reloaded")

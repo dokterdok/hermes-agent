@@ -183,6 +183,8 @@ def test_import_is_atomic_on_denial_interruption_and_conflicting_retries_fail_cl
         import_group(db)
     monkeypatch.setattr(rooms, "_history_import_result", finish)
     assert rooms.list_rooms(db) == []
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_history_source_reservations").fetchone() == (0,)
 
     import_group(db)
     changed = released_group()
@@ -221,3 +223,91 @@ def test_history_is_inert_until_new_user_work_and_then_becomes_bounded_context(t
     assert "Earlier shipped result" in queued[0]["payload"]["prompt"]
     assert "read-only historical context" in queued[0]["payload"]["prompt"].lower()
     assert not any(task["payload"]["target_profile"] == "builder" for task in queued)
+
+
+@pytest.mark.parametrize("transition", ["retire", "profile_lost"])
+def test_settled_imported_turn_publishes_after_member_becomes_unavailable(tmp_path, monkeypatch, transition):
+    db = tmp_path / "shared-state.db"
+    monkeypatch.setattr(rooms, "local_authority_gateway_id", lambda: "gateway-a")
+    service = HostedRoomService(SimpleNamespace(), db_path=db)
+    service.local_profiles = lambda: ("default", "reviewer")
+    imported = import_group(db)
+    target = imported["room"]["members"][1]["member_id"]
+    binding = service.bindings()[0]
+    service.send(room_id="release-room", event_id="user:terminal",
+                 payload={"text": "@reviewer Answer", "thread_id": "thread-1"})
+    task, = driver.list_tasks(db, room_id="release-room", status="queued")
+    lease = driver.acquire_lease(db, room_id="release-room", gateway_id="gateway-a",
+                                 authority_epoch=1, process_generation="test", ttl_seconds=300, clock=time.time)
+    attempt = driver.start_task(db, task["identity"], lease, expected_cancel_generation=0, clock=time.time)
+    driver.settle_task(db, attempt, settlement_id="result", status="settled",
+                       result={"text": "Finished before losing readiness"}, clock=time.time)
+    if transition == "retire":
+        rooms.resolve_imported_member(db, room_id="release-room", member_id=target, action="retire",
+                                      local_profiles=("default", "reviewer"))
+    else:
+        service.local_profiles = lambda: ("default",)
+        rooms.refresh_imported_member_readiness(db, room_id="release-room", local_profiles=("default",))
+
+    # The terminal driver record predates the readiness transition; no new work may target it.
+    service.prepare_room(binding)
+    own = [event for event in service._events("release-room")
+           if event["payload"].get("task_id") == task["identity"].task_id]
+    assert [event["kind"] for event in own] == ["message.member", "turn.settled"]
+    assert own[0]["payload"]["text"] == "Finished before losing readiness"
+    assert service._publish_terminal_tasks(service._room("release-room")) is False
+    with pytest.raises(rooms.HostedRoomError, match="two authorized local members"):
+        service.send(room_id="release-room", event_id="user:blocked",
+                     payload={"text": "@reviewer Work again", "thread_id": "thread-2"})
+    assert driver.list_tasks(db, room_id="release-room", status="queued") == []
+
+
+def test_source_reservation_survives_prune_and_failed_import_leaves_no_claim(tmp_path):
+    db = tmp_path / "shared-state.db"
+    source = released_group()
+
+    def denied(_conn):
+        raise PermissionError("denied")
+
+    with pytest.raises(PermissionError, match="denied"):
+        import_group(db, authorize_write=denied)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_history_source_reservations").fetchone() == (0,)
+    assert import_group(db)["idempotent"] is False
+    assert import_group(db)["idempotent"] is True
+    with pytest.raises(rooms.RoomConflictError, match="different import content"):
+        rooms.import_shipped_group_history(
+            db, **{**source, "source_id": "different-source"},
+            local_profiles=("default", "reviewer"), authority_gateway_id="gateway-a", now=1_800_000_000)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_history_source_reservations").fetchone() == (1,)
+    rooms.disband_room(db, room_id=source["room_id"], expected_gateway_id="gateway-a",
+                       expected_epoch=1, now=1_800_000_001)
+    assert rooms.prune_disbanded_rooms(db, now=1_800_000_001 + rooms.DISBANDED_ROOM_RETENTION_SECONDS + 1) == 1
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_history_imports").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_events").fetchone()[0] == 0
+    for altered in ({**source, "room_id": "new-room"},
+                    {**source, "room_id": "new-room", "history": [{**source["history"][0], "text": "changed"}]}):
+        with pytest.raises(rooms.RoomConflictError, match="source room already exists"):
+            rooms.import_shipped_group_history(
+                db, **altered, local_profiles=("default", "reviewer"),
+                authority_gateway_id="gateway-a", now=1_800_000_003)
+    with pytest.raises(rooms.RoomConflictError):
+        import_group(db)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hosted_rooms").fetchone()[0] == 0
+        assert conn.execute("SELECT source_id, room_id FROM hosted_room_history_source_reservations").fetchone() == (
+            source["source_id"], source["room_id"])
+
+
+def test_reopening_prior_import_marker_backfills_durable_source_reservation(tmp_path):
+    db = tmp_path / "shared-state.db"
+    import_group(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("DROP TABLE hosted_room_history_source_reservations")
+    # A prior Runtime candidate has the marker but not the compact reservation table.
+    assert import_group(db)["idempotent"] is True
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT source_id, room_id FROM hosted_room_history_source_reservations").fetchone() == (
+            released_group()["source_id"], released_group()["room_id"])
