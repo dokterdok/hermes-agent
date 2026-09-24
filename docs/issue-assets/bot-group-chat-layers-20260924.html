@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Group Chat layers</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=block" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1c2433;
+    --ink-2: #4a5568;
+    --ink-3: #718096;
+    --line: #cfd6e2;
+    --bg: #f7f8fb;
+    --l1: #e4e9f5; --l1-b: #b9c4de;
+    --l2: #dff0e9; --l2-b: #a9d3c2;
+    --l3: #e0ebf6; --l3-b: #b0c8e3;
+    --cap: #ece8f6; --cap-b: #c7bde6;
+    --res: #fbeedd; --res-b: #e8c89d;
+    --fut-b: #7fa8a0;
+    --ok-bg: #e3f3e8; --ok-ink: #1f7a47;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 1000px; background: var(--bg); }
+  body {
+    font-family: Inter, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+    padding: 44px 56px 36px;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 26px;
+    border: 2px solid #e2e6ee;
+  }
+  header .eyebrow { font-size: 17px; font-weight: 700; letter-spacing: .08em; color: var(--ink-2); }
+  header h1 { font-size: 46px; font-weight: 800; letter-spacing: -.02em; margin-top: 8px; }
+  header p { font-size: 19px; color: var(--ink-2); margin-top: 10px; font-weight: 500; }
+
+  .diagram {
+    display: grid;
+    grid-template-columns: 250px 1fr 300px;
+    grid-template-rows: 150px 150px 92px 92px 92px 58px;
+    column-gap: 16px;
+    row-gap: 12px;
+  }
+  /* left rail group labels with a brace */
+  .rail { display: flex; align-items: center; justify-content: flex-end; text-align: right; position: relative; padding-right: 30px; }
+  .rail::after {
+    content: ""; position: absolute; right: 6px; top: 6px; bottom: 6px; width: 14px;
+    border: 2px solid #a0aec0; border-right: none; border-radius: 12px 0 0 12px;
+  }
+  .rail b { display: block; font-size: 19px; font-weight: 700; }
+  .rail span { display: block; font-size: 15px; color: var(--ink-3); font-weight: 500; margin-top: 3px; }
+  .rail.plain::after { display: none; }
+
+  .box { border-radius: 14px; border: 2px solid; padding: 14px 20px; display: flex; align-items: center; gap: 16px; }
+  .num {
+    flex: none; width: 40px; height: 40px; border-radius: 50%; border: 2px solid var(--ink-2);
+    display: grid; place-items: center; font-weight: 700; font-size: 19px; background: #fff; color: var(--ink);
+  }
+  .box h2 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+  .box p { font-size: 15.5px; color: var(--ink-2); margin-top: 3px; font-weight: 500; line-height: 1.35; }
+  .grow { flex: 1; min-width: 0; }
+  .ok {
+    flex: none; font-size: 13.5px; font-weight: 700; color: var(--ok-ink); background: var(--ok-bg);
+    border-radius: 999px; padding: 6px 12px; letter-spacing: .01em;
+  }
+
+  .future {
+    grid-column: 2 / 4; border: 2px dashed var(--fut-b); border-radius: 16px; background: #fff;
+    padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; justify-content: center;
+  }
+  .future h2 { font-size: 20px; font-weight: 700; }
+  .future h2 small { font-size: 15px; font-weight: 500; color: var(--ink-3); margin-left: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 9px; }
+  .chip { font-size: 15px; font-weight: 600; color: #2d5a53; background: #eaf4f1; border: 1px solid #cfe5df; border-radius: 999px; padding: 6px 13px; }
+
+  .caps { grid-column: 2; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .caps .box { background: var(--cap); border-color: var(--cap-b); flex-direction: column; align-items: flex-start; justify-content: center; gap: 8px; padding: 14px 18px; }
+  .caps .box .top { display: flex; align-items: center; gap: 12px; }
+  .caps .box .num { width: 36px; height: 36px; font-size: 17px; }
+
+  .l1 { grid-column: 2; background: var(--l1); border-color: var(--l1-b); }
+  .l2 { grid-column: 2; background: var(--l2); border-color: var(--l2-b); }
+  .l3 { grid-column: 2; background: var(--l3); border-color: var(--l3-b); }
+
+  .res {
+    grid-column: 3; grid-row: 2 / 6; background: var(--res); border-color: var(--res-b);
+    flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 12px; padding: 24px 24px 22px;
+  }
+  .res h2 { font-size: 23px; }
+  .res .verbs { font-size: 17px; font-weight: 600; color: var(--ink); white-space: nowrap; }
+  .res .gate { margin-top: auto; }
+  .res .foot { font-size: 14.5px; color: var(--ink-3); font-weight: 500; line-height: 1.4; }
+  .res p { font-size: 15.5px; }
+  .gate { font-size: 13.5px; font-weight: 700; color: #8a5a14; background: #f6dfbd; border-radius: 999px; padding: 6px 12px; }
+
+  .runtime {
+    grid-column: 2 / 4; border-radius: 12px; border: 2px solid var(--line); background: #eef1f6;
+    display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; color: var(--ink);
+  }
+  .runtime span { color: var(--ink-3); font-weight: 600; margin: 0 10px; }
+
+  footer { text-align: center; }
+  footer b { display: block; font-size: 19px; font-weight: 700; }
+  footer span { display: block; font-size: 16px; color: var(--ink-2); margin-top: 6px; font-weight: 500; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">HERMES &nbsp;/&nbsp; GROUP CHATS &nbsp;/&nbsp; #97681</div>
+    <h1>Seven layers. One durable Group Chat.</h1>
+    <p>A shared foundation for Bots that work together across machines, whether or not Desktop is open, and even when a gateway goes down.</p>
+  </header>
+
+  <section class="diagram">
+    <!-- row 1: future -->
+    <div class="rail" style="grid-row:1"><div><b>What this unlocks</b><span>Builds on the whole stack</span></div></div>
+    <div class="future" style="grid-row:1">
+      <h2>Owner-controlled Bot collaboration<small>future directions</small></h2>
+      <div class="chips">
+        <span class="chip">Scoped collaboration identities</span>
+        <span class="chip">Invite other people's Bots</span>
+        <span class="chip">Cost &amp; autonomy limits</span>
+        <span class="chip">Reusable specialist teams</span>
+        <span class="chip">Community contribution campaigns</span>
+        <span class="chip">Discoverable Bot ecosystem</span>
+        <span class="chip">Relay &amp; reverse-dial reach</span>
+        <span class="chip">Bots-first mobile app</span>
+      </div>
+    </div>
+
+    <!-- row 2: capabilities -->
+    <div class="rail" style="grid-row:2"><div><b>Clients &amp; capabilities</b><span>Parallel tracks</span></div></div>
+    <div class="caps" style="grid-row:2">
+      <div class="box"><div class="top"><div class="num">4</div><h2>Desktop</h2></div><p>Create hosted groups that keep running when Desktop closes</p></div>
+      <div class="box"><div class="top"><div class="num">5</div><h2>Shared files</h2></div><p>Share inputs and retrieve exact versions of results</p></div>
+      <div class="box"><div class="top"><div class="num">6</div><h2>Messaging</h2></div><p>Run the group from an authorized chat</p></div>
+    </div>
+
+    <!-- resilience pillar spans rows 2-5 -->
+    <div class="box res">
+      <div class="num">7</div>
+      <h2>Host-loss resilience</h2>
+      <div class="verbs">Preserve · reconcile · recover</div>
+      <p>Survive losing any gateway, even the authority host. Reconcile accepted work, then hand over to exactly one successor.</p>
+      <p class="foot">Touches every layer. Files, secrets and credentials stay with their host.</p>
+      <span class="gate">Activation gated</span>
+    </div>
+
+    <!-- rows 3-5: foundations -->
+    <div class="rail" style="grid-row:3 / 6"><div><b>Foundations</b><span>Merged; hardening in review</span></div></div>
+    <div class="box l3" style="grid-row:3"><div class="num">3</div><div class="grow"><h2>Cross-gateway collaboration</h2><p>Bots on different gateways request work and exchange results</p></div><span class="ok">✓ on main</span></div>
+    <div class="box l2" style="grid-row:4"><div class="num">2</div><div class="grow"><h2>Gateway-owned execution</h2><p>Rounds run on the gateway instead of in the Desktop window</p></div><span class="ok">✓ on main</span></div>
+    <div class="box l1" style="grid-row:5"><div class="num">1</div><div class="grow"><h2>Durable identity &amp; replay</h2><p>One ordered conversation; work already accepted is recognized</p></div><span class="ok">✓ on main</span></div>
+
+    <!-- row 6: runtime -->
+    <div class="rail plain" style="grid-row:6"><div><b>Runtime</b></div></div>
+    <div class="runtime" style="grid-row:6">Unified gateway runtime<span>·</span>#106742</div>
+  </section>
+
+  <footer>
+    <b>Each layer is a contract. Its PRs declare what they consume and land independently.</b>
+    <span>Desktop, Files and Messaging build on the foundations in parallel. Host-loss resilience spans every layer and stays gated until one exclusive successor is proven.</span>
+  </footer>
+</body>
+</html>
