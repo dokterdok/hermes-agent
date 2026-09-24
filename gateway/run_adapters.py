@@ -822,6 +822,8 @@ class GatewayAdapterLifecycleMixin:
             logger.info("⚠ %s reconnected in degraded mode (receive path not yet confirmed)", platform.value)
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
+        from gateway.session_native_reconnect import recover_adapter_native_inputs
+        await recover_adapter_native_inputs(self, platform, adapter)
         self._schedule_planned_restart_replay()
         # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
         with _log_suppressed(
@@ -1285,6 +1287,8 @@ class GatewayAdapterLifecycleMixin:
                             profile_map[platform] = adapter
                             self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
+                            from gateway.session_native_reconnect import recover_adapter_native_inputs
+                            await recover_adapter_native_inputs(self, platform, adapter, profile=profile_name)
                             await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name
                             )
