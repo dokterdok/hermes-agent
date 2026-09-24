@@ -405,15 +405,18 @@ def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
         conn.execute(_EVENT_BYTES_BACKFILL.format(where="1"))
 
 
-def _initialize_schema(conn: sqlite3.Connection) -> None:
-    for statement in _SCHEMA_DDL:
-        conn.execute(statement)
-    _migrate_legacy_columns(conn)
+def _backfill_history_source_reservations(conn: sqlite3.Connection) -> None:
     # This compact source identity outlives room payload pruning. Reopen markers
     # written by the prior Runtime candidate before any retention operation.
     conn.execute("""INSERT OR IGNORE INTO hosted_room_history_source_reservations
         (source_id, source_kind, content_sha256, room_id)
         SELECT source_id, source_kind, content_sha256, room_id FROM hosted_room_history_imports""")
+
+def _initialize_schema(conn: sqlite3.Connection) -> None:
+    for statement in _SCHEMA_DDL:
+        conn.execute(statement)
+    _migrate_legacy_columns(conn)
+    _backfill_history_source_reservations(conn)
     # Old schemas kept the final identity tombstone in hosted_rooms itself. Copy those identities before
     # bounded history pruning can remove their heavier room/event payloads. This compact registry is
     # intentionally permanent: a stale coordinate must never name a different Group Chat.
@@ -486,6 +489,8 @@ def _initialize_store(conn: sqlite3.Connection, db_path: Path) -> None:
 
     _initialize_schema(conn)
     import_legacy_rooms(conn, db_path)
+    # Retention may have copied a prior Runtime import marker into this store.
+    _backfill_history_source_reservations(conn)
 
 
 def _connect(db_path: DbPath) -> sqlite3.Connection:
