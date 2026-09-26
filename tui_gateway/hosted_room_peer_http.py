@@ -206,12 +206,24 @@ class PeerRunsHTTPClient:
     """Drive a peer's dedicated group session via scoped async Runs APIs."""
 
     def __init__(
-        self, *, base_url: str, api_key: str, timeout_seconds: float = 30,
+        self, *, base_url: str, api_key: str, target_profile: str | None = None, timeout_seconds: float = 30,
         receipt_db_path: Path | str | None = None, poll_min_seconds: float = 0.1,
         poll_max_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
         base_url, self.transport_security = validate_room_link_url(base_url)
         if api_key and len(api_key) < 16:
             raise ValueError("peer API key is missing or too short")
+        profile = str(target_profile or "").strip()
+        if profile and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", profile) is None:
+            raise ValueError("peer target profile is invalid")
+        self._profile_prefix = (
+            f"/p/{urllib.parse.quote(profile, safe='')}" if profile else ""
+        )
+        scoped = re.search(r"/p/([^/]+)$", urllib.parse.urlsplit(base_url).path)
+        if profile and scoped:
+            if urllib.parse.unquote(scoped.group(1), errors="strict") != profile:
+                raise ValueError("peer target profile does not match the scoped endpoint")
+            # Desktop and saved routes may already include the profile.
+            self._profile_prefix = ""
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
         self.timeout_seconds = float(timeout_seconds)
         self.receipt_db_path = Path(receipt_db_path) if receipt_db_path else None
@@ -283,7 +295,7 @@ class PeerRunsHTTPClient:
         from hermes_cli.urllib_security import open_credentialed_url
         deadline, ambiguous = time.monotonic() + self.timeout_seconds, method == "POST"
         request = urllib.request.Request(
-            f"{self.base_url}{path}", method=method,
+            f"{self.base_url}{self._profile_prefix}{path}", method=method,
             data=None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8"),
             headers={
                 "Authorization": (
@@ -611,3 +623,16 @@ class PeerRunsHTTPClient:
         if not value or value in {"compat", "compatibility-only"}:
             raise PeerRunsHTTPError("a scoped room grant is required")
         return value
+
+    def revoke_grant_exact(self, *, grant: str) -> Mapping[str, Any]:
+        """Retire a single bearer, never the concurrent room grant replacing it."""
+        self._require_room_grant(grant)
+        result = self._request(
+            "/v1/room-members/grants/revoke-exact",
+            method="POST",
+            body={},
+            room_grant=grant,
+        )
+        if result.get("revoked") is not True:
+            raise PeerRunsHTTPError("peer did not acknowledge exact grant revocation", retryable=True)
+        return result
