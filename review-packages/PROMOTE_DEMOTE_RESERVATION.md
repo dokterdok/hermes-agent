@@ -68,6 +68,18 @@ HOME=/tmp/promotion-fence/home TMPDIR=/tmp/promotion-fence/tmp \
 
 Replicas 14 passed. Groups replication 4 passed. Hosted rooms 46 passed, 2 failed: `test_upgrade_keeps_rooms_from_before_the_shared_state_db_split` and `test_legacy_import_is_a_one_shot_and_skips_driver_liveness_state`, both `UNIQUE constraint failed: hosted_room_id_reservations.room_id` during legacy import. That collision is pre-existing on this safety overlay and is not this slice.
 
+The send lock was re-run on that overlay after `96fb162564b3bb8edb96c61485db506fec4845af` (safety blob unchanged, splice still applied):
+
+```text
+HOME=/tmp/promotion-fence/home TMPDIR=/tmp/promotion-fence/tmp \
+  scripts/run_tests.sh \
+  tests/tui_gateway/test_groups_replication_methods.py \
+  tests/gateway/test_hosted_room_replicas.py \
+  -q --tb=line
+```
+
+2 files, 18 passed, 0 failed, wall 2.3s. `groups.send` still returns 4111, and the quarantine reason in the message is `unsafe_replica_promotion`.
+
 ## Adversarial review
 
 Re-review count: **2**.
