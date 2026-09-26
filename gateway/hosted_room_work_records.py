@@ -247,8 +247,43 @@ def capture_transition_locked(conn, room_id):
         conn.execute("RELEASE work_transition_capture")
 
 
+def _require_capture_source(conn, room_id, local_gateway_id):
+    room = conn.execute("SELECT * FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+    if room is None or room["authority_gateway_id"] != local_gateway_id or room["disbanded_at"] is not None:
+        raise WorkRecordError("work record source is unavailable")
+    return room
+
+
+def _require_delivery_source(conn, room_id, local_gateway_id):
+    current = conn.execute(
+        "SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+    if current is None or current["authority_gateway_id"] != local_gateway_id:
+        raise WorkRecordError("work record source is unavailable")
+    return current
+
+
+def _record_authority_current(conn, room_id, record):
+    room = conn.execute(
+        "SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+    authority = record["authority"]
+    return (room is not None and room["authority_gateway_id"] == authority["gateway_id"]
+            and room["authority_epoch"] == authority["epoch"])
+
+
+def _recheck_capture_source(conn, room_id, local_gateway_id):
+    """Recheck on the writer transaction before schema. Deny first when it is not open."""
+    if not conn.in_transaction:
+        _require_capture_source(conn, room_id, local_gateway_id)
+        conn.execute("BEGIN IMMEDIATE")
+    return _require_capture_source(conn, room_id, local_gateway_id)
+
+
 def capture(db_path, *, room_id: str, local_gateway_id: str, through_seq: int | None = None) -> dict:
     """Commit a new revision only when one consistent source view changes."""
+    with rooms._transaction(db_path, immediate=False) as conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
+        _require_capture_source(conn, room_id, local_gateway_id)
     with rooms._transaction(db_path, immediate=True) as conn:
         try:
             return capture_locked(conn, room_id=room_id, local_gateway_id=local_gateway_id, through_seq=through_seq)
@@ -258,10 +293,8 @@ def capture(db_path, *, room_id: str, local_gateway_id: str, through_seq: int | 
 
 
 def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
+    room = _recheck_capture_source(conn, room_id, local_gateway_id)
     initialize(conn)
-    room = conn.execute("SELECT * FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
-    if (room is None or room["authority_gateway_id"] != local_gateway_id or room["disbanded_at"] is not None):
-        raise WorkRecordError("work record source is unavailable")
     seq = room["next_seq"] - 1
     if through_seq is not None and seq > through_seq:
         raise WorkRecordPrefixError("history delivery must precede work records")
@@ -324,10 +357,11 @@ def _validate_roster(record, members):
 
 def prepare_delivery_locked(conn, *, room_id, target_install_id, route_generation, local_gateway_id, through_seq):
     """Freeze a source view now; expose it only after its history is acknowledged."""
+    if not conn.in_transaction:
+        _require_delivery_source(conn, room_id, local_gateway_id)
+        conn.execute("BEGIN IMMEDIATE")
+    current = _require_delivery_source(conn, room_id, local_gateway_id)
     initialize(conn)
-    current = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
-    if current is None or current["authority_gateway_id"] != local_gateway_id:
-        raise WorkRecordError("work record source is unavailable")
     key = (room_id, current["authority_gateway_id"], current["authority_epoch"], target_install_id)
     old = conn.execute(f"SELECT * FROM {PENDING_TABLE} WHERE room_id=? AND producer_gateway_id=? AND producer_epoch=? AND target_install_id=?", key).fetchone()
     old_record = storage.validate_stored_locked(conn, PENDING_TABLE, old) if old is not None else None
@@ -359,6 +393,12 @@ def prepare_delivery_locked(conn, *, room_id, target_install_id, route_generatio
 
 
 def delivery_status_locked(conn, *, room_id, target_install_id, route_generation, record, status):
+    if not conn.in_transaction:
+        if not _record_authority_current(conn, room_id, record):
+            return False
+        conn.execute("BEGIN IMMEDIATE")
+    if not _record_authority_current(conn, room_id, record):
+        return False
     initialize(conn)
     row = conn.execute(f"SELECT * FROM {PENDING_TABLE} WHERE room_id=? AND target_install_id=? "
                        "AND producer_gateway_id=? AND producer_epoch=? AND disposition='current'",
