@@ -53,6 +53,8 @@ HOME=/tmp/promotion-fence/home TMPDIR=/tmp/promotion-fence/tmp \
 
 4 files, 70 passed, 0 failed, wall 4.5s. Replicas 14, groups replication 4, hosted rooms 48 (`claim_authority` on an ordinary room still appends), session hosted service 4 (ordinary `bindings()` still returns `owned`).
 
+`groups.send` after `confirm=true` returns code 4111 with `room_authority_quarantined` and `unsafe_replica_promotion`. The live service `bindings()` omit the room, and `hosted_room_driver_tasks` gains no row. Reconfirmed on the groups file: 4 passed.
+
 Overlay (safety checkout + splice), same three room files:
 
 ```text

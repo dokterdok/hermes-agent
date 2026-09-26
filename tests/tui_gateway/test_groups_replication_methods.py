@@ -128,6 +128,32 @@ def test_promote_requires_confirm_and_takes_over(home, tmp_path):
             authority_epoch=promoted["authority_epoch"],
         )
 
+    sent = _error(srv._methods["groups.send"](
+        5,
+        {
+            "room_id": "room-1",
+            "event_id": "after-promote",
+            "payload": {"text": "should not run", "thread_id": "thread-1"},
+        },
+    ))
+    assert sent["code"] == 4111
+    assert "unsafe_replica_promotion" in sent["message"]
+    assert sent["data"]["reason"] == "room_authority_quarantined"
+    service = methods_groups.get_hosted_room_service()
+    assert service is not None
+    assert all(binding.room_id != "room-1" for binding in service.bindings())
+    import sqlite3
+    with sqlite3.connect(default_db_path()) as conn:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_tasks'"
+        ).fetchone()
+        tasks = 0 if table is None else conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_driver_tasks WHERE room_id=?", ("room-1",)
+        ).fetchone()[0]
+    assert tasks == 0
+    again = _result(srv._methods["groups.log"](6, {"room_id": "room-1"}))
+    assert [event["kind"] for event in again["events"]] == kinds
+
 
 def test_demote_fences_local_room_against_newer_epoch(home):
     from gateway.hosted_rooms import local_authority_gateway_id
