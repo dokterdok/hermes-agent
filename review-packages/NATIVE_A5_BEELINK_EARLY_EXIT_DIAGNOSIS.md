@@ -10,6 +10,8 @@
 
 Either hash is this script. If the copy matches neither, stop with `RUNBOOK_DRIFT`. Do not edit the script to fix a mismatch, a port, a path, a username, or the line endings.
 
+**Phase 2 clicks** do not require the CUA tool to show `ExecutablePath`. Each click or type is gated by the SSH attestation in Phase 2. That attestation is not a Launch. The launch script bytes stay the two hashes above.
+
 ## What the ns2 launch showed
 
 On 2026-09-26 the one Launch against `C:\Users\ddewit\hermes-uat-a5-ns2-20260926` did start Hermes. The transcript records:
@@ -80,11 +82,39 @@ Once `CMDLINE_OK` has been printed, an unexpected fault leaves the UAT pid runni
 - If the script prints `KILL_REFUSED` or `KILL_ERROR`, stop. Do not escalate to an image-name kill.
 - If the script prints `UAT_EXE_ALREADY_RUNNING`, stop. Do not kill that pid. Do not launch the daily exe instead.
 - If daily Hermes is not seen, do not start it. If the script prints `DAILY_HERMES_DIED`, do not restart it.
+- Do not click a window because its title is Hermes, or because its image name is `Hermes.exe`.
+- Do not enable `SeDebugPrivilege`. Do not run the Phase 2 attestation as any user other than `ddewit`.
+- Do not start a Cursor private worker from this procedure. None is connected on Beelink. The worker is an alternate unlock only when the Phase 2 SSH attestation cannot be made CLEAN. Do not ask for one before that attestation has been tried.
+- Do not run Launch a second time against ns3. The Phase 2 attestation is not a Launch.
 - Do not put PsExec on `PATH`. Do not download PsExec. The script opens `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\PsExec64.exe` itself when that file exists.
 
 ## What remains unproven
 
 A stable window does not prove login, Cancel, Save, or the fixture bytes. `HASH_RECORDED_NOT_A_PASS` does not prove them either. Nothing in this procedure compares the hash to the fixture payload. Whether pid 38980 had a visible window is unproven. The next launch's `WINDOW_PROBE_SESSION`, `UAT_WINDOW`, `UAT_WINDOW_HIDDEN`, and `UAT_WINDOW_SMALL` lines are what separate a blind detector from a window that never became visible. This procedure does not launch ns2 to settle that.
+
+This checkout did not re-query pid 42312. A UIA report of that pid on session 1 is not a path and is not a click grant.
+
+## Why the ns3 CUA resume stopped
+
+The one ns3 Launch had already reached a live UAT process. CUA login then stopped `CUA_CANNOT_SEE_PROCESS_PATH`. BarrX saw a UIA window for Hermes, pid 42312, session 1. On the CUA side, `Get-Process`, `MainModule`, CIM, and WMI all returned a blank path, so the old gate forbade the click. Separately, an SSH logon as `ddewit` can often resolve `Win32_Process.ExecutablePath` for that pid. No Cursor private worker is connected on Beelink.
+
+That split is real, and it is the same split this runbook already uses at launch. `Get-Process.MainModule` opens the process with `PROCESS_QUERY_INFORMATION` and `PROCESS_VM_READ` and then reads the module list. A caller that cannot read the target address space gets an empty path or an access error that a tool turns into a blank. `Win32_Process.ExecutablePath` is a different property. Microsoft qualifies it with `SeDebugPrivilege` and maps it to the module path. A caller who cannot inspect the process gets null rather than a throw. `scripts/install.ps1` records that shape: CIM returns a null `ExecutablePath` for a process it cannot inspect. The CUA tool is that kind of caller. Its blank path does not mean pid 42312 has no image path.
+
+The caller that can see the path is the process owner. The launch script, running in the SSH PowerShell as `ddewit`, already selects Hermes with `Get-CimInstance Win32_Process` and `.ExecutablePath`. The ns2 transcript got as far as `UAT_MAIN_PID`, `UAT_SESSION=1`, `UAT_OWNER=ddewit`, and `CMDLINE_OK`, which requires that property to be non-blank. SSH as `ddewit` is that same query. It does not need a private worker, and it does not need the CUA tool to expose `ExecutablePath`.
+
+"Often" is the limit. This checkout did not query pid 42312, and a blank SSH result is still a stop. Do not enable `SeDebugPrivilege` to fill a blank. Do not translate a `\Device\` path into a drive letter. Do not case-fold a path into a match.
+
+These substitutes are discarded:
+
+- A click by title. Daily Hermes and the UAT build use the same titles.
+- A match on image name `Hermes.exe`. Both installs use that name.
+- `MainModule`, including `MainModule` run over SSH. That is the API that was blank.
+- One attestation for the whole session. Focus can move to daily Hermes between two clicks.
+- PsExec for this query. Image path is not a desktop property. PsExec here would be another interactive start.
+- A second Launch of ns3, ns2, or ns, to "refresh" the path.
+- Requiring David to start a Cursor private worker before this SSH query exists. None is connected. The worker remains the alternate unlock when this SSH attestation cannot be made CLEAN.
+
+The hypothesis holds inside those limits. Immediately before each click or type, a read-only SSH PowerShell 5.1 process as `ddewit` prints `EXACT_EXECUTABLE_PATH` for that HWND's pid from CIM `Win32_Process`. The click is legal only when that path is the Phase-1 `UAT_EXE` line, byte for byte, and the rest of the CLEAN rule below is true.
 
 ## Mechanical procedure
 
@@ -164,11 +194,192 @@ The script's own stops, and the only meaning of each:
 
 ### Phase 2 — CUA login
 
-Use only windows whose process executable path equals the `UAT_EXE` line. If the CUA tool cannot show that path for the window it is about to click, stop `CUA_CANNOT_SEE_PROCESS_PATH`. Do not click by title alone. If the foreground executable is the daily exe, stop `FOCUS_IS_DAILY` without clicking. A daily window with the same title or the same button is not an entry control.
+The live ns3 resume already has its one Launch. Do not run Launch again. Do not create ns4. Do not delete ns3. Use `UAT_EXE`, `UAT_MAIN_PID`, `ATTEMPT`, and `DEST_FILE` from that transcript. If this resume has no `WINDOW_STABLE` line from that one Launch, stop. Do not launch to obtain one.
 
-This phase does not launch Hermes. It does not kill a process by image name. It does not take a second Launch.
+This phase does not launch Hermes. It does not kill a process by image name. It does not take a second Launch. It does not start a Cursor private worker. A blank path from the CUA tool is expected and is not, by itself, the stop. The stop is an SSH attestation that is not CLEAN. Do not click by title. Do not match image name `Hermes.exe`. Pid 42312 is the pid that stopped the last resume. It is not a hardcoded target. Attest the pid of the control you are about to use.
 
-Do not take a screenshot while the password field is focused or contains text. Do not echo the username or the password.
+Do not take a screenshot while the password field is focused or contains text. Do not echo the username or the password. The attestation does not read `uat-password.txt` or `uat-username.txt`.
+
+#### Path attestation, before every click and every type
+
+Run this gate immediately before each click, each type, and each foreground change in Phase 2, Phase 3, and Phase 5. A CLEAN result covers that one action and then expires. Login does not cover Cancel. Cancel does not cover Save. Do not retry a blank query inside the same action. One CIM query per action.
+
+1. From UIA, take the element that will receive the input. Its candidate pid is `CurrentProcessId`. Its candidate HWND is `CurrentNativeWindowHandle` when that handle is not zero. When the handle is zero, use the top-level window HWND and still use the element's pid. If the pid is missing, or both handles are missing, stop `CUA_CANNOT_SEE_PROCESS_PATH`. If the top-level window's process id is present and differs from the element's pid, stop `ATTEST_PID_MISMATCH`. If UIA shows a session and it is not 1, stop `ATTEST_WRONG_SESSION`. Do not search processes by title or by image name.
+2. The Phase-1 `UAT_EXE` value is the exact characters after `UAT_EXE=` on that one transcript line. It must be byte-for-byte `C:\Users\ddewit\hermes-uat-desktop-renderer-reuse-20260923\source\apps\desktop\release\win-unpacked\Hermes.exe`. If it is anything else, stop `RUNBOOK_DRIFT`. Do not attest against a different path.
+3. On the existing SSH logon as `ddewit` to Beelink — the same logon that runs `powershell.exe` for Launch — start exactly:
+
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -
+```
+
+Send the script below on that process's stdin, as ASCII or UTF-8 with no BOM, then close stdin so the process can exit. Do not use `pwsh.exe`. Do not use `SysWOW64\WindowsPowerShell`. Do not use PsExec. Do not use `Enter-PSSession`. Do not pass `-Phase Launch`. Do not write this script into the attempt folder, into `launch-a5.ps1`, or anywhere else on Beelink. Do not run it through a local shell that expands `$` or backticks. If the SSH logon as `ddewit` is not available, stop `CUA_CANNOT_SEE_PROCESS_PATH`. If the process does not exit, do not click, do not start a second query for the same action, and do not kill any process to clear it. Leave the UAT pid and daily Hermes running. Stop `CUA_CANNOT_SEE_PROCESS_PATH`. Stderr is not a path. Read `EXACT_EXECUTABLE_PATH` from stdout only.
+
+Replace the single token `PID_DECIMAL` with the candidate pid in decimal digits, no sign and no leading zero. No other character of the script may change. If the token is missing, repeated, or the pid is not `^[1-9][0-9]{0,9}$`, stop `RUNBOOK_DRIFT`.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+if ([int]$PSVersionTable.PSVersion.Major -ne 5) {
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=ATTEST_POWERSHELL'
+  exit 2
+}
+if ($PSHOME -like '*\SysWOW64\WindowsPowerShell\*') {
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=ATTEST_WOW64'
+  exit 2
+}
+if ($env:USERNAME -ine 'ddewit') {
+  Write-Output ('ATTEST_USER=' + [string]$env:USERNAME)
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=ATTEST_WRONG_OWNER'
+  exit 2
+}
+Write-Output 'ATTEST_USER=ddewit'
+$candidateText = 'PID_DECIMAL'
+if ($candidateText -notmatch '^[1-9][0-9]{0,9}$') {
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=CUA_CANNOT_SEE_PROCESS_PATH'
+  exit 2
+}
+if ([uint64]$candidateText -gt 4294967295) {
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=CUA_CANNOT_SEE_PROCESS_PATH'
+  exit 2
+}
+$candidatePid = [uint32]$candidateText
+if ([string]$candidatePid -ne $candidateText) {
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=CUA_CANNOT_SEE_PROCESS_PATH'
+  exit 2
+}
+$listed = @(Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId = ' + $candidatePid))
+if ($listed.Count -ne 1 -or $null -eq $listed[0]) {
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=CUA_CANNOT_SEE_PROCESS_PATH'
+  exit 2
+}
+$row = $listed[0]
+$printedPid = [string]([uint32]$row.ProcessId)
+if ($printedPid -ne $candidateText) {
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=ATTEST_PID_MISMATCH'
+  exit 2
+}
+$ownerUser = ''
+$ownerRead = $false
+try {
+  $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwner
+  $ownerUser = [string]$owner.User
+  $ownerRead = $true
+} catch {
+  $ownerRead = $false
+}
+if ((-not $ownerRead) -or [string]::IsNullOrEmpty($ownerUser)) {
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=CUA_CANNOT_SEE_PROCESS_PATH'
+  exit 2
+}
+if ($ownerUser -ine 'ddewit') {
+  Write-Output 'EXACT_EXECUTABLE_PATH='
+  Write-Output 'ATTEST_STOP=ATTEST_WRONG_OWNER'
+  exit 2
+}
+$ordinal = [System.StringComparison]::Ordinal
+$ignore = [System.StringComparison]::OrdinalIgnoreCase
+$uat = 'C:\Users\ddewit\hermes-uat-desktop-renderer-reuse-20260923\source\apps\desktop\release\win-unpacked\Hermes.exe'
+$dailyExe = 'C:\Users\ddewit\AppData\Local\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe'
+$dailyRoot = 'C:\Users\ddewit\AppData\Local\hermes\hermes-agent'
+$path = [string]$row.ExecutablePath
+Write-Output 'ATTEST_SOURCE=CIM'
+Write-Output ('ATTEST_PID=' + $printedPid)
+Write-Output ('ATTEST_SESSION=' + [string]([int]$row.SessionId))
+Write-Output ('EXACT_EXECUTABLE_PATH=' + $path)
+$cmd = [string]$row.CommandLine
+$udd = 'C:\Users\ddewit\hermes-uat-a5-ns3-20260926\user-data'
+$uddOk = ($cmd -like ('*--user-data-dir=' + $udd)) -or ($cmd -like ('*--user-data-dir=' + $udd + ' *')) -or ($cmd -like ('*--user-data-dir=' + $udd + '"*')) -or ($cmd -like ('*--user-data-dir="' + $udd + '"*'))
+$sandboxOk = ($cmd -like '*--no-sandbox') -or ($cmd -like '*--no-sandbox *') -or ($cmd -like '*--no-sandbox=*')
+$frozen = ($cmd -like '*hermes-uat-a5-ns-20260926*') -or ($cmd -like '*hermes-uat-a5-ns2-20260926*') -or ($cmd -like '*hermes-uat-a5-live-20260926*')
+Write-Output ('ATTEST_CMDLINE_UDD=' + $(if ($uddOk) { '1' } else { '0' }))
+Write-Output ('ATTEST_CMDLINE_SANDBOX=' + $(if ($sandboxOk) { '1' } else { '0' }))
+Write-Output ('ATTEST_CMDLINE_FROZEN=' + $(if ($frozen) { '1' } else { '0' }))
+if ([string]::IsNullOrEmpty($path)) {
+  Write-Output 'ATTEST_STOP=CUA_CANNOT_SEE_PROCESS_PATH'
+  exit 2
+}
+$dailyHit = $false
+$rootSlash = $dailyRoot + '\'
+foreach ($prefix in @('', '\\?\', '\??\')) {
+  $item = $path
+  if ($prefix -ne '') {
+    if ($path.Length -lt $prefix.Length) { continue }
+    if (-not [string]::Equals($path.Substring(0, $prefix.Length), $prefix, $ordinal)) { continue }
+    $item = $path.Substring($prefix.Length)
+  }
+  $slash = $item.Replace('/', '\')
+  $under = $false
+  if ($slash.Length -gt $rootSlash.Length) {
+    $under = [string]::Equals($slash.Substring(0, $rootSlash.Length), $rootSlash, $ignore)
+  }
+  if ([string]::Equals($slash, $dailyExe, $ignore) -or [string]::Equals($slash, $dailyRoot, $ignore) -or $under) {
+    $dailyHit = $true
+  }
+}
+if ($dailyHit) {
+  Write-Output 'ATTEST_STOP=FOCUS_IS_DAILY'
+  exit 2
+}
+if ([int]$row.SessionId -ne 1) {
+  Write-Output 'ATTEST_STOP=ATTEST_WRONG_SESSION'
+  exit 2
+}
+if (-not [string]::Equals($path, $uat, $ordinal)) {
+  Write-Output 'ATTEST_STOP=ATTEST_PATH_MISMATCH'
+  exit 2
+}
+if ((-not $uddOk) -or (-not $sandboxOk) -or $frozen) {
+  Write-Output 'ATTEST_STOP=ATTEST_CMDLINE_REJECTED'
+  exit 2
+}
+Write-Output 'ATTEST_MATCH=UAT'
+exit 0
+```
+
+`Get-CimInstance Win32_Process` filtered by `ProcessId` is the query. It is the equivalent that still returns `ExecutablePath` when `MainModule` is blank for the CUA caller. Do not also call `Get-WmiObject` in the same action. A second query is a second pid. Do not call `Get-Process`. Do not call `Invoke-CimMethod` except `GetOwner`. `GetOwner` does not create a process. Do not call `Create` or `Delete` on `Win32_Process`.
+
+The attestation process exit code is not a `launch-a5.ps1` exit and it is not a click grant. Exit 0 is a click grant only together with a CLEAN parse. Do not apply the launch exit table to an `ATTEST_STOP=` line. `ATTEST_WRONG_OWNER` is not launch exit 10, and it does not kill. These stop lines do not kill a pid and do not authorize a Launch:
+
+| Line | When |
+| --- | --- |
+| `CUA_CANNOT_SEE_PROCESS_PATH` | The SSH logon is missing, the pid is not one row, the path line is missing or blank, the stdout cannot be parsed, or the HWND pid changed after the query. |
+| `FOCUS_IS_DAILY` | The path is the daily exe, the daily install root, or a file under that root. Prefixes `\\?\` and `\??\` and either slash still count. |
+| `ATTEST_PATH_MISMATCH` | The path is non-blank, not daily, and not byte-for-byte the staged UAT exe. A `\Device\` path is this stop. Do not translate it. |
+| `ATTEST_WRONG_SESSION` | `SessionId` is not 1. |
+| `ATTEST_PID_MISMATCH` | The printed pid is not the candidate pid, or the window pid and the element pid disagree. |
+| `ATTEST_POWERSHELL` | The attestation host's major version is not 5. Do not substitute `pwsh.exe`. |
+| `ATTEST_WOW64` | The host is `SysWOW64` PowerShell. A 32-bit host is a known way to blank a 64-bit image path. |
+| `ATTEST_CMDLINE_REJECTED` | The command line does not pin `--user-data-dir` to the ns3 `user-data` directory, lacks a bounded `--no-sandbox`, mentions a frozen attempt, or is blank. |
+| `ATTEST_WRONG_OWNER` | The SSH user is not `ddewit`, or the process owner was read and is not `ddewit`. A failed owner read is `CUA_CANNOT_SEE_PROCESS_PATH`. Owner `ddewit` is required and is not sufficient. This line does not kill. |
+| `RUNBOOK_DRIFT` | The script text changed, or `UAT_EXE` / `ATTEST_MATCH=UAT` disagrees with the path bytes. |
+
+4. Parse stdout as text lines. Ignore blank lines. Do not read stderr. Split `EXACT_EXECUTABLE_PATH=` on the first `=` only. The value is the exact remainder, with no trim, no quote stripping, no slash change, and no case fold.
+   - More than one `EXACT_EXECUTABLE_PATH=` line, or more than one `ATTEST_STOP=` line: `RUNBOOK_DRIFT`.
+   - Exactly one `ATTEST_STOP=` line: that line is the stop. It wins over exit code 0 and over any missing success line. Do not relabel it. Do not continue to step 5.
+   - Zero `ATTEST_STOP=` lines: require exactly one of each of `ATTEST_USER=ddewit`, `ATTEST_SOURCE=CIM`, `ATTEST_PID=` plus the candidate digits, `ATTEST_SESSION=1`, `ATTEST_CMDLINE_UDD=` whose value is `0` or `1`, `ATTEST_CMDLINE_SANDBOX=` whose value is `0` or `1`, `ATTEST_CMDLINE_FROZEN=` whose value is `0` or `1`, `ATTEST_MATCH=UAT`, and `EXACT_EXECUTABLE_PATH=`. A miss or a repeat is `CUA_CANNOT_SEE_PROCESS_PATH`.
+5. Step 5 is the independent check of a transcript that printed no stop line. An edited script that prints `ATTEST_MATCH=UAT` for a daily path still dies here. Stop on the first hit. Do not click.
+   1. `path` empty: `CUA_CANNOT_SEE_PROCESS_PATH`.
+   2. `path` equals `C:\Users\ddewit\AppData\Local\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe`, equals `C:\Users\ddewit\AppData\Local\hermes\hermes-agent`, or has that root plus `\` as a prefix, compared ordinal-ignore-case. Also try the same test after removing one leading `\\?\` or `\??\`, and after replacing `/` with `\`. Any hit is `FOCUS_IS_DAILY`.
+   3. `path` is not ordinal-equal to the staged UAT exe: `ATTEST_PATH_MISMATCH`. Do not case-fold this comparison. `ATTEST_MATCH=UAT` does not repair it. The staged path is ASCII. Ordinal equality of those characters is the byte-for-byte check.
+   4. Command-line flags are not `1`, `1`, and `0`: `ATTEST_CMDLINE_REJECTED`. A blank command line is this stop. Do not enable `SeDebugPrivilege` to fill it. Path equality alone does not cover a process whose command line is not the ns3 wrapper.
+6. Re-read the same HWND's process id from UIA. If the HWND is gone or the pid differs, discard the stdout. Stop `CUA_CANNOT_SEE_PROCESS_PATH`. Do not attest a replacement pid inside this action. Do not sleep, do not switch windows, and do not start another UIA action between the pid read, this re-read, and the input.
+7. A result is CLEAN only when step 5 did not stop, step 6 matched, the attestation exit code is 0, and `ATTEST_MATCH=UAT` was printed. Send exactly one click, one type, or one foreground change to that HWND. Do not send it to whatever window is foreground unless that foreground HWND is the attested HWND. Do not type the password unless this action's own result is CLEAN.
+8. The next click, type, or foreground change starts again at step 1.
+
+Cursor private worker: if this SSH attestation cannot be made CLEAN, stop with the line above. Leave the UAT pid and daily Hermes running. Do not click. Do not launch. A private worker on Beelink is the alternate unlock for a later decision. It is not connected. This procedure does not start one, and it does not wait for David to start one before the SSH query. A worker is not permission to click by title.
+
+#### Login steps
+
+Every click, every type, and every foreground change below includes a new run of the path attestation. The click on a field and the type into that field are two actions. Title chooses which control to attest. Title does not authorize the input. The control named in the step is the UIA element the gate attests. A heading, a description, or a hint is not a control. `Remote gateway sign-in required` is a heading. Do not click it. Words inside hint text are not a button. Do not accept `Sign out and sign in`. Do not click `Gateway settings`, `Use local gateway`, `Open logs`, `Retry`, or `Repair`. A daily window with the same title or the same button is not an entry control. The gate's `FOCUS_IS_DAILY` stop is that refusal.
 
 1. Choose one entry control on the UAT executable, in this order, and use only that one. A heading, a description, or a hint is not a control. `Remote gateway sign-in required` is a heading. Do not click it. Words inside hint text are not a button. Do not accept `Sign out and sign in`. Do not click `Gateway settings`, `Use local gateway`, `Open logs`, `Retry`, or `Repair`. If the rung you reach matches more than one control, stop `SIGNIN_CONTROL_AMBIGUOUS` and do not click.
    1. If a UAT window titled exactly `Sign in to Hermes gateway` is open, bring that window to the foreground. Do not click `Sign in to remote gateway` or `Sign out & sign in` while it is open.
@@ -184,7 +395,7 @@ Do not take a screenshot while the password field is focused or contains text. D
 
 ### Phase 3 — CUA Cancel
 
-Still only on the UAT executable.
+Every click in this phase runs the Phase 2 path attestation again, on that click's HWND and pid. A CLEAN result from login has expired.
 
 1. Find a control named exactly `Files` that does **not** sit with sibling tabs named `All`, `Images`, `Files`, and `Links`. That sibling set is the Artifacts tab. Do not use it.
 2. Do not click `File system`. Do not click `Download` until step 4.
@@ -204,7 +415,7 @@ Continue only when the exit code is 0 and the output contains `DEST_EMPTY`. `CAN
 
 ### Phase 5 — CUA Save
 
-Repeat Phase 3 steps 4 through 6 on the same row. In the box labeled `File name:`, replace the contents with the exact `DEST_FILE` path from Phase 1. Click `Save`.
+Every click and the type into `File name:` run the Phase 2 path attestation again. Repeat Phase 3 steps 4 through 6 on the same row. In the box labeled `File name:`, replace the contents with the exact `DEST_FILE` path from Phase 1. Click `Save`.
 
 If a replace confirmation appears, click `No` when that exact button exists. Otherwise stop `REPLACE_PROMPT`. Do not click `Yes`.
 
@@ -242,4 +453,18 @@ Reviewer question for this delta: would BarrX click hint text, sign into daily H
 
 The live overlay heading is `Remote gateway sign-in required`. The button on that overlay is `Sign out & sign in`. Hint text can contain the words `Sign in to remote gateway` without that string being a button. The old step stopped `SIGNIN_CONTROL_ABSENT` because it allowed only the login-window title and that remote-gateway button. The procedure now accepts entry controls only in this order, and the refusal list is in the same step as the click: the exact window title `Sign in to Hermes gateway` if that window is open, else the exact button `Sign in to remote gateway`, else the exact button `Sign out & sign in`. Headings and hints are not clicks. `Gateway settings`, `Use local gateway`, and `Open logs` are not entry controls. Two matches on the rung that is reached stop `SIGNIN_CONTROL_AMBIGUOUS` with no click. The chosen entry control is used once. On the form, `Sign in` is the whole button name, and neither entry button is pressed again. The login window that must close is the one titled `Sign in to Hermes gateway`. The UAT main window stays, the `Username` field must be gone, and `UAT_MAIN_PID` must still be running. The launch script does not embed these CUA steps. Its bytes and both hashes above are unchanged. This edit does not launch, does not kill by image name, does not echo a password, and does not authorize a password screenshot.
 
-**Adversarial review: CLEAN.** Re-review count: 3. No open finding inside this procedure. Native Files PASS is not claimed. ns, ns2, and the evidence attempt stay frozen. This procedure does not reboot, change the reserve, grant an ACE, or take a second launch of a user-data directory that may be `booting`. Beelink was not executed from this checkout. `LEAVE_UAT_RUNNING` is a finished stop: report the pid and do not clear it.
+That pass was re-review 3 of the entry controls. Re-review 4 is the SSH path gate.
+
+Reviewer question for this delta: would BarrX click daily Hermes because the CUA path was blank, click by title, match `Hermes.exe`, reuse one attestation, treat attestation exit 0 as a click, launch ns3 again, enable `SeDebugPrivilege`, grant an ACE, kill a pid, or wait for David to start a private worker before trying SSH?
+
+The CUA blank path is expected and is not a query. The only query is one SSH `Get-CimInstance Win32_Process` by `ProcessId`, as `ddewit`, immediately before the action. Continue requires ordinal equality with the staged exe and with the Phase-1 `UAT_EXE` line, plus `ATTEST_MATCH=UAT`, session 1, owner `ddewit`, and the ns3 command-line pins. Daily classification uses ordinal-ignore-case, runs before a match, and includes the install root with a `\` boundary plus `\\?\`, `\??\`, and either slash. Owner `ddewit` is not sufficient. Exit 0 is not sufficient. `ATTEST_STOP=` wins over exit 0 and is not relabeled when success lines are missing. A `\Device\` path is `ATTEST_PATH_MISMATCH` and is not translated. Image name is not a filter. Title chooses the control and does not authorize input. One result covers one click, one type, or one foreground change. PsExec, `Get-WmiObject` in the same action, `Get-Process`, `SeDebugPrivilege`, and a second Launch are refused. A hung attestation kills nothing. The command line pin is an additional stop: the same UAT exe opened on a frozen profile must not be clicked, and a blank command line does not fall through to a path-only click. `NATIVE_A5_BEELINK_EARLY_EXIT_LAUNCH.Tests.ps1` does not cover this decision text. It was not changed. The launch script was not changed.
+
+Re-review 4 found one kill-shaped name collision. The attestation stop was `WRONG_OWNER`, which is also launch exit 10, and that launch stop kills the UAT tree. A failed `GetOwner` used the same line, so a dead pid could be read as a reason to change user or to kill. The attestation stop is now `ATTEST_WRONG_OWNER`, and only when the owner was actually read and is not `ddewit`. A failed owner read is `CUA_CANNOT_SEE_PROCESS_PATH`. The launch exit table does not apply to `ATTEST_STOP=`. `ATTEST_WRONG_OWNER` does not kill.
+
+No Cursor private worker is connected. The procedure tries the SSH attestation first. If that attestation is not CLEAN, it stops. The worker is the alternate unlock after that stop. It is not a step, and it is not permission to click by title.
+
+Re-review 5 checked that rename against the gate. No attestation stop line is a launch exit line. `ATTEST_WRONG_OWNER` does not select `Stop-UatTree`. Daily still stops as `FOCUS_IS_DAILY` before `ATTEST_MATCH=UAT`. A match flag does not override a daily path in step 5. The launch script bytes are unchanged.
+
+Re-review 5 also required the daily prefix test to use `Substring` and `String.Equals`. `String.StartsWith` with a `StringComparison` argument is off this path, so a binder miss cannot throw after a real UAT path has been printed and turn that match into `CUA_CANNOT_SEE_PROCESS_PATH`. The prefix rule is unchanged: ordinal-ignore-case equality with the daily exe or the daily root, or a longer path whose first characters are that root plus `\`.
+
+**Adversarial review: CLEAN.** Re-review count: 6. No open finding inside this procedure. Native Files PASS is not claimed. ns, ns2, and the evidence attempt stay frozen. This procedure does not reboot, change the reserve, grant an ACE, or take a second launch of a user-data directory that may be `booting`. Beelink was not executed from this checkout. `LEAVE_UAT_RUNNING` is a finished stop: report the pid and do not clear it.
