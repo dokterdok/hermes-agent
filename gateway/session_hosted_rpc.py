@@ -246,6 +246,25 @@ class HostedRoomAuthorityRPC:
     def resume(self, *, profile, session_id, source):
         return self._call('resume', profile=profile, session_id=session_id, source=source)
 
+    def publish_secondary_retained(
+            self, task, *, route=None, publication_id=None, transport_error=None,
+            confirm=False, consent=None):
+        """Invitation→NEW-run completion calls the Output secondary contract.
+
+        This does not admit work and does not treat send-consent as publication.
+        A missing contract fails closed before any secondary row is written.
+        """
+        from gateway.hosted_room_artifacts import RoomArtifactError
+        service = getattr(self.authority, 'hosted_room_service', None)
+        consumer = getattr(service, 'consume_secondary_retained_publication', None)
+        if not callable(consumer):
+            if consent is not None:
+                raise RoomArtifactError('Group Chat send consent is not publication authority')
+            raise RoomArtifactError('Group Chat secondary publication is not registered')
+        return consumer(
+            task, route=route, publication_id=publication_id, transport_error=transport_error,
+            confirm=confirm, consent=consent)
+
     def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal, attachments=None):
         return self._call('submit', profile=profile, session_id=session_id, source=source,
                           prompt=prompt, task=task, execution_generation=execution_generation, on_terminal=on_terminal,
