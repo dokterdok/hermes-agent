@@ -7,6 +7,7 @@ tip's attachment-store blobs are checked out beside this Runtime tree.
 from __future__ import annotations
 
 import base64
+import hashlib
 import sqlite3
 
 import pytest
@@ -100,7 +101,7 @@ def test_import_commits_history_bytes_for_members_and_viewers_only(tmp_path):
     assert row["state"] == "committed"
     assert row["viewer_access"] == 1
     assert row["event_id"] == event["event_id"]
-    assert row["sha256"]
+    assert row["sha256"] == hashlib.sha256(PNG).hexdigest()
 
     store = HostedRoomAttachmentStore(db, clock=lambda: NOW)
     assert store.stats()["attachments"] == 1
@@ -117,6 +118,13 @@ def test_import_commits_history_bytes_for_members_and_viewers_only(tmp_path):
             attachment_id=manifest["attachment_id"],
             recipient_member_id="foreign-member",
             event_id=event["event_id"],
+        )
+    with pytest.raises(AttachmentNotFoundError):
+        store.read(
+            room_id="release-room-files",
+            attachment_id=manifest["attachment_id"],
+            recipient_member_id=member_id,
+            event_id="history:not-this-event",
         )
     assert store.read_viewer(
         room_id="release-room-files",
@@ -159,6 +167,14 @@ def test_import_rejects_mime_mismatch_without_leaving_a_room_or_blob(tmp_path):
 
 def test_import_interruption_rolls_back_custody_and_recovers_orphan_blobs(tmp_path, monkeypatch):
     db = tmp_path / "shared-state.db"
+    written: list = []
+    original = HostedRoomAttachmentStore._write_blob
+
+    def record_write(self, target, data):
+        written.append(target)
+        return original(self, target, data)
+
+    monkeypatch.setattr(HostedRoomAttachmentStore, "_write_blob", record_write)
     monkeypatch.setattr(
         rooms,
         "_history_import_result",
@@ -166,6 +182,8 @@ def test_import_interruption_rolls_back_custody_and_recovers_orphan_blobs(tmp_pa
     )
     with pytest.raises(InterruptedError, match="simulated interruption"):
         _import(db)
+    assert written
+    assert all(not path.exists() for path in written)
     assert rooms.list_rooms(db) == []
     blobs = db.parent / "hosted-room-attachments" / "blobs"
     assert blobs.is_dir()
