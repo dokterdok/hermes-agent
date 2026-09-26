@@ -194,6 +194,96 @@ method("groups.create", params=GroupsCreateParams, result=GroupsCreateResult,
        doc="Create a hosted room idempotently; authority is this gateway's stable install identity.")
 
 
+class ShippedHistoryAuthorKind(WireEnum):
+    user = "user"
+    member = "member"
+
+
+class ShippedHeldWorkState(WireEnum):
+    uncertain = "uncertain"
+
+
+class ShippedGroupImportMember(Params):
+    """One shipped Desktop roster row, mapped without accepting execution authority from the client."""
+
+    source_member_id: str
+    name: str
+    profile: str
+    handle: str
+    remote_source: bool
+    active: bool = True
+    connection_id: str | None = None
+    connection_label: str | None = None
+
+
+class ShippedGroupHistoryEntry(Params):
+    source_entry_id: str
+    at_ms: int
+    author_kind: ShippedHistoryAuthorKind
+    author_name: str
+    text: str
+    member_source_id: str | None = None
+    thread_id: str | None = None
+    attachments: list[dict[str, JsonValue]] | None = None
+
+
+class ShippedGroupHeldWork(Params):
+    source_work_id: str
+    at_ms: int
+    state: ShippedHeldWorkState
+    description: str
+    member_source_id: str | None = None
+
+
+class GroupsImportHistoryParams(ProfileParams):
+    room_id: str
+    name: str
+    source_id: str
+    members: list[ShippedGroupImportMember]
+    history: list[ShippedGroupHistoryEntry]
+    held_work: list[ShippedGroupHeldWork]
+
+
+class GroupsImportHistoryResult(Result):
+    room: Room
+    source_id: str
+    imported_history: int
+    held_work: int
+    held_members: int
+    retired_members: int
+    idempotent: bool
+
+
+method(
+    "groups.import_history", params=GroupsImportHistoryParams, result=GroupsImportHistoryResult,
+    doc=("Owner-authorized one-shot import of a shipped Desktop Group Chat. History and uncertain work "
+         "are inert; remote members remain visible without receiving authorization."))
+
+
+class ImportedMemberResolutionAction(WireEnum):
+    refresh = "refresh"
+    activate = "activate"
+    retire = "retire"
+
+
+class GroupsMemberResolveParams(RoomParams):
+    member_id: str
+    action: ImportedMemberResolutionAction
+
+
+class GroupsMemberResolveResult(Result):
+    room: Room
+    member: RoomMember
+    action: ImportedMemberResolutionAction
+    changed: bool
+
+
+method(
+    "groups.member.resolve", params=GroupsMemberResolveParams, result=GroupsMemberResolveResult,
+    doc=("Owner-authorized refresh, reactivation, or retirement of one imported member. Current local "
+         "profile state and authenticated peer routes are authoritative; imported identity is preserved."))
+
+
 class GroupsStateParams(RoomParams):
     include_disbanded: bool | None = None
 

@@ -36,6 +36,9 @@ _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
 
+class ImportedRoomReadinessError(hosted_rooms.HostedRoomError):
+    """Current imported roster cannot admit a new turn."""
+
 
 def _hosted_room_turn_timeout_seconds() -> float:
     try:
@@ -373,6 +376,62 @@ class HostedRoomService:
         return self.policy_checkpoint.snapshot(
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
+    def _policy_room(self, room: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Project only currently resolved active imported members into execution."""
+        members = room.get("members")
+        if not isinstance(members, list) or not any(isinstance(member, Mapping) and "availability" in member
+                                                    for member in members):
+            return room
+        room = hosted_rooms.refresh_imported_member_readiness(
+            self.db_path, room_id=room["room_id"], local_profiles=self.local_profiles())
+        members = room.get("members")
+        executable: list[dict[str, Any]] = []
+        for member in members if isinstance(members, list) else []:
+            if not isinstance(member, Mapping):
+                continue
+            membership = member.get("membership")
+            availability = member.get("availability")
+            if ((isinstance(membership, Mapping) and membership.get("state") != "active")
+                    or not isinstance(availability, Mapping) or availability.get("state") != "ready"):
+                continue
+            executable.append({
+                key: member[key] for key in ("member_id", "profile", "handle", "display_name", "target")
+                if key in member})
+        if not discussion.MIN_DISCUSSION_MEMBERS <= len(executable) <= discussion.MAX_DISCUSSION_MEMBERS:
+            raise ImportedRoomReadinessError(
+                "This imported Group Chat needs at least two authorized local members before new work can continue.")
+        return {**room, "members": executable}
+
+
+    def _with_imported_history(
+        self, room: Mapping[str, Any], decision: discussion.DiscussionDecision
+    ) -> discussion.DiscussionDecision:
+        """Freeze bounded imported context into a NEW task prompt; historical rows stay inert."""
+        task = decision.task
+        if task is None:
+            return decision
+        prompt = str(task.payload["prompt"])
+        available = min(hosted_rooms.MAX_IMPORT_CONTEXT_BYTES, driver.MAX_PROMPT_BYTES - len(prompt.encode("utf-8")) - 2)
+        if available <= 0:
+            return decision
+        context = hosted_rooms.imported_history_context(
+            self.db_path, room_id=room["room_id"], thread_id=task.identity.thread_id, max_bytes=available)
+        if not context:
+            return decision
+        augmented = context + "\n\n" + prompt
+        rebuilt = discussion._make_task_plan(
+            room=discussion.validate_room(room, local_profiles=self.local_profiles()),
+            discussion_event=discussion._ValidatedEvent(
+                raw={}, seq=int(decision.source_event_seq or 0),
+                event_id=str(decision.discussion_event_id or ""), kind="message.user",
+                actor={"kind": "user", "id": "desktop"},
+                payload={"thread_id": str(decision.thread_id or "")}),
+            member=task.member, member_index=task.member_index, round_index=task.round_index,
+            seen_through_seq=task.seen_through_seq, prompt=augmented,
+            input_context=task.payload.get("input_context"), attachments=task.payload.get("attachments", ()))
+        return replace(decision, task=rebuilt)
+
+
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
         changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
         cursor = int(room["latest_seq"])
@@ -385,6 +444,12 @@ class HostedRoomService:
             task_events = self.policy_checkpoint.events_for_task(
                 room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
                 input_context=task["payload"].get("input_context"), task_id=task["identity"].task_id)
+            publication_members = task["payload"].get("publication_members")
+            publication_room = ({**room, "members": publication_members}
+                                if publication_members is not None else room)
+            publication_profiles = tuple(local_profiles) + tuple(
+                member["profile"] for member in (publication_members or ())
+                if member.get("target", {}).get("kind") == "local")
             plan = discussion.reconstruct_task_plan(
                 room, task_events, task, local_profiles=local_profiles)
             message_id = f"dmessage:{task['identity'].task_id.removeprefix('dtask:')}"
@@ -393,9 +458,9 @@ class HostedRoomService:
                 task_events = [event for event in task_events if event["kind"] != "message.user"
                                or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
             publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
+                publication_room, task_events, plan, status=status, result=task.get("result"),
                 execution_generation=execution_generation if status == "deferred" else None,
-                local_profiles=local_profiles)
+                local_profiles=publication_profiles)
             for event in publication.events:
                 appended = hosted_rooms.append_event(
                     self.db_path, **event.append_kwargs(room_id), expected_latest_seq=cursor)
@@ -435,10 +500,20 @@ class HostedRoomService:
                 self.db_path, room_id=binding.room_id, clock=self.runtime.clock)
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
+            try:
+                policy_room = self._policy_room(room)
+            except ImportedRoomReadinessError:
+                return  # Terminal publication completed; only new admission needs readiness.
             decision = discussion.plan_next_task(
-                room, list(snapshot.events), local_profiles=self.local_profiles(),
+                policy_room, list(snapshot.events), local_profiles=self.local_profiles(),
                 initial_watermarks=snapshot.watermarks, freeze_input_context=True)
+            decision = self._with_imported_history(policy_room, decision)
             if decision.status == "task" and decision.task is not None:
+                if any(isinstance(member, Mapping) and "availability" in member
+                       for member in room.get("members", ())):
+                    decision = replace(decision, task=replace(
+                        decision.task,
+                        payload={**decision.task.payload, "publication_members": list(policy_room["members"])}))
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
                 legacy_payload = dict(decision.task.payload)
                 legacy_payload.pop("input_context", None)
@@ -483,9 +558,13 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
+    def import_shipped_group_history(self, *, actor_subject: str, **_params: Any) -> dict[str, Any]:
+        raise hosted_rooms.HostedRoomError('shipped Group Chat import requires an authenticated canonical owner')
+
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
+        self._policy_room(self._room(room_id))
         from gateway.session_hosted_attachments import append_user_event
         event = append_user_event(
             self, room_id=room_id, event_id=event_id, payload=normalized,

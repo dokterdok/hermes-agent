@@ -364,6 +364,22 @@ def _(rid, params: dict, service) -> dict:
     return _ok(rid, {"room": room})
 
 
+@method("groups.import_history")
+def _(rid, params: dict) -> dict:
+    """Refuse ownerless legacy-server import; canonical sessions carry the authenticated principal."""
+    return _err(
+        rid, 4124, "Shipped Group Chat import requires an authenticated gateway owner.",
+        {"reason": "canonical_owner_required"})
+
+
+@method("groups.member.resolve")
+def _(rid, params: dict) -> dict:
+    """Refuse ownerless legacy-server roster authority changes."""
+    return _err(
+        rid, 4124, "Imported member resolution requires an authenticated gateway owner.",
+        {"reason": "canonical_owner_required"})
+
+
 @_room_method("groups.state", code=5115, room_code=4114, db=True)
 def _(rid, params: dict, db_path) -> dict:
     """Return one hosted room's replay cursor and fenced authority state."""

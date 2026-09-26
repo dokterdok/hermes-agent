@@ -47,7 +47,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return result
 
     def local_profiles(self):
-        return tuple(self.profile_homes())
+        from hermes_constants import named_profile_has_identity, named_profile_is_deleted
+
+        own_home = Path(self.authority.profile_id)
+        return tuple(
+            name for name, home in self.profile_homes().items()
+            if home == own_home or (named_profile_has_identity(home) and not named_profile_is_deleted(home)))
 
     def attest(self, selector, operation, params):
         from dataclasses import asdict
@@ -100,7 +105,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def _turn_lock(self, profile):
         return nullcontext()
 
-    def authorize_room(self, actor_subject, room_id, *, create=False):
+    def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):
         from gateway.hosted_rooms_common import IDENTIFIER_RE
         if (not isinstance(actor_subject, str) or not actor_subject
                 or not isinstance(room_id, str) or len(room_id) > 128
@@ -121,7 +126,66 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             if row is None or row[0] != actor_subject:
                 raise RuntimeStoreError('permission_denied')
             return True
-        return self.authority.db._execute_write(write)
+        return write(conn) if conn is not None else self.authority.db._execute_write(write)
+
+    def import_shipped_group_history(self, *, actor_subject, **params):
+        """Import only under the authenticated owner's held store transaction."""
+        from gateway import hosted_rooms
+
+        room_id = params.get('room_id')
+        return hosted_rooms.import_shipped_group_history(
+            self.db_path,
+            **params,
+            local_profiles=self.local_profiles(),
+            authority_gateway_id=hosted_rooms.local_authority_gateway_id(),
+            authorize_write=lambda conn: self.authorize_room(
+                actor_subject, room_id, create=True, conn=conn),
+        )
+
+
+    def resolve_shipped_group_member(self, *, actor_subject, room_id, member_id, action):
+        """Apply one owner action while deriving readiness only from current owned state."""
+        from gateway import hosted_rooms, hosted_room_member_retirement as retirement
+
+        self.authorize_room(actor_subject, room_id)
+        authorize = lambda conn: self.authorize_room(actor_subject, room_id, conn=conn)
+        snapshot = None
+        if action == 'retire':
+            with self._policy_lock:
+                snapshot = retirement.begin(
+                    self.db_path, room_id=room_id, member_id=member_id, authorize_write=authorize)
+        if snapshot is not None:
+            if 'result' in snapshot:
+                return snapshot['result']
+            stored = snapshot['link']
+            if stored is not None:
+                from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+                from tui_gateway.hosted_room_service import _grant_revoke_is_terminal
+                # This client and bearer come from ONE immutable writer snapshot.
+                # Never look up a mutable replacement route to send the old bearer.
+                client = PeerRunsHTTPClient(
+                    base_url=stored.target_url, api_key='', target_profile=stored.target_profile,
+                    receipt_db_path=self.db_path)
+                try:
+                    client.revoke_grant_exact(grant=stored.grant)
+                except Exception as exc:
+                    if not isinstance(exc, PeerRunsHTTPError) or not _grant_revoke_is_terminal(exc):
+                        raise RuntimeStoreError('peer_setup_pending') from None
+            with self._policy_lock:
+                result = retirement.finish(
+                    self.db_path, room_id=room_id, member_id=member_id, snapshot=snapshot,
+                    local_profiles=self.local_profiles(), authorize_write=authorize)
+                if stored is not None:
+                    self._peer_route_status[(room_id, member_id)] = 'needs_reauthorization'
+        else:
+            result = hosted_rooms.resolve_imported_member(
+                self.db_path, room_id=room_id, member_id=member_id,
+                action='refresh' if action == 'retire' else action,
+                local_profiles=self.local_profiles(), authorize_write=authorize)
+            result['action'] = action
+        self.runtime.wakeup()
+        return result
+
 
     def _owner(self, room_id):
         with self.authority.db._read_ctx() as conn:

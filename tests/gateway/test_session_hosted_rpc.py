@@ -84,6 +84,10 @@ def test_room_binding_exact_retry_terminal_history_and_unknown(owner):
     recover_session_inputs(authority.db, epoch=authority.epoch)
     with pytest.raises(RuntimeStoreError, match='unknown_execution') as exc:
         adapter().submit(**args, on_terminal=callbacks.append)
+    with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='unknown')
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='task')
     assert not getattr(exc.value, 'not_admitted', False)
     assert len(list_session_admissions(authority.db, session_id=sid, pending_only=False)) == 2
     allowed[0] = False
@@ -119,14 +123,70 @@ def test_controls_are_exact_current_admission_and_loop_safe(owner):
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
         rpc.interrupt(**coords, session_id=sid, expected_task_id='other')
     assert not agent.interrupted
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task')['interrupted']
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task') == {
+        'interrupted': False, 'status': 'running'}
     assert agent.interrupted
+    assert rpc.info(**coords, session_id=sid)['status'] == 'started'
     with pytest.raises(RuntimeStoreError):
         rpc.approve(session_id=sid, request_id='missing', choice='once')
     async def same_loop():
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             rpc.info(**coords, session_id=sid)
     asyncio.run_coroutine_threadsafe(same_loop(), loop).result()
+
+
+def test_started_stop_request_waits_for_real_producer_settlement(owner, monkeypatch):
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.session_authority import SessionAuthority
+    from gateway.hosted_room_driver import TaskIdentity
+    from gateway import session_finite
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    authority, loop, principal, agent = owner
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member',
+        profile='default', principal=principal, authorize=lambda *args: True)
+    coords = dict(profile='default', source='bot_room')
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    coords['session_id'] = sid
+    authority.runner._adapter_for_source = lambda source: authority.runner.adapters[source.platform]
+    authority.hosted_room_service = SimpleNamespace(check_admission=lambda ref, row: True)
+    entered, settled = threading.Event(), threading.Event()
+    release = asyncio.run_coroutine_threadsafe(_new_event(), loop).result()
+    async def execute(authority, ref, row):
+        entered.set()
+        await release.wait()
+        return 'settled after release'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    monkeypatch.setattr(authority, '_schedule', SessionAuthority._schedule.__get__(authority))
+    receipts = []
+    try:
+        rpc.submit(**coords, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'),
+                   execution_generation=17, on_terminal=lambda receipt: (receipts.append(receipt), settled.set()))
+        assert entered.wait(5)
+        before, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        assert before['status'] == 'started' and before['generation'] != 17
+        with pytest.raises(RuntimeStoreError, match='stale_generation'):
+            rpc.interrupt(**coords, expected_task_id='other')
+        response = rpc.interrupt(**coords, expected_task_id='task')
+        assert response.get('interrupted') is not True
+        assert response.get('status') not in {'interrupted', 'cancelled'}
+        assert agent.interrupted
+        during, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        assert during['admission_id'] == before['admission_id']
+        assert during['generation'] == before['generation'] and during['status'] == 'started'
+        assert rpc.info(**coords)['status'] == 'started' and not receipts
+    finally:
+        loop.call_soon_threadsafe(release.set)
+    assert settled.wait(5)
+    after, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+    assert after['admission_id'] == before['admission_id'] and after['status'] == 'terminal'
+    assert receipts[0]['settlement_id'] == before['admission_id']
+    assert rpc.history(**coords)[-1]['settlement_id'] == before['admission_id']
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        rpc.interrupt(**coords, expected_task_id='task')
+
+
+async def _new_event():
+    return asyncio.Event()
 
 
 def test_terminal_callback_follows_canonical_drain_without_polling(owner, monkeypatch):

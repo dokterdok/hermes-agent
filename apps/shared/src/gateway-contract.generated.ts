@@ -1351,6 +1351,67 @@ export interface RoomMemberInput {
 export interface GroupsCreateResult {
   room: Room
 }
+export interface GroupsImportHistoryParams {
+  profile?: string | null
+  room_id: string
+  name: string
+  source_id: string
+  members: ShippedGroupImportMember[]
+  history: ShippedGroupHistoryEntry[]
+  held_work: ShippedGroupHeldWork[]
+}
+/** One shipped Desktop roster row, mapped without accepting execution authority from the client. */
+export interface ShippedGroupImportMember {
+  source_member_id: string
+  name: string
+  profile: string
+  handle: string
+  remote_source: boolean
+  active?: boolean
+  connection_id?: string | null
+  connection_label?: string | null
+}
+export interface ShippedGroupHistoryEntry {
+  source_entry_id: string
+  at_ms: number
+  author_kind: ShippedHistoryAuthorKind
+  author_name: string
+  text: string
+  member_source_id?: string | null
+  thread_id?: string | null
+  attachments?: Record<string, unknown>[] | null
+}
+export type ShippedHistoryAuthorKind = 'user' | 'member'
+export interface ShippedGroupHeldWork {
+  source_work_id: string
+  at_ms: number
+  state: ShippedHeldWorkState
+  description: string
+  member_source_id?: string | null
+}
+export type ShippedHeldWorkState = 'uncertain'
+export interface GroupsImportHistoryResult {
+  room: Room
+  source_id: string
+  imported_history: number
+  held_work: number
+  held_members: number
+  retired_members: number
+  idempotent: boolean
+}
+export interface GroupsMemberResolveParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  action: ImportedMemberResolutionAction
+}
+export type ImportedMemberResolutionAction = 'refresh' | 'activate' | 'retire'
+export interface GroupsMemberResolveResult {
+  room: Room
+  member: RoomMember
+  action: ImportedMemberResolutionAction
+  changed: boolean
+}
 export interface GroupsStateParams {
   profile?: string | null
   room_id: string
@@ -4795,10 +4856,14 @@ export interface RpcMethods {
   'groups.demote': { params: GroupsDemoteParams; result: GroupsDemoteResult }
   /** Permanently tombstone a hosted room id after stopping its work and revoking peer routes. */
   'groups.disband': { params: GroupsDisbandParams; result: GroupsDisbandResult }
+  /** Owner-authorized one-shot import of a shipped Desktop Group Chat. History and uncertain work are inert; remote members remain visible without receiving authorization. */
+  'groups.import_history': { params: GroupsImportHistoryParams; result: GroupsImportHistoryResult }
   /** List rooms hosted by this gateway, most recently changed first. */
   'groups.list': { params: GroupsListParams; result: GroupsListResult }
   /** A monotonic room-log delta after since_seq, bounded by count and page bytes. */
   'groups.log': { params: GroupsLogParams; result: GroupsLogResult }
+  /** Owner-authorized refresh, reactivation, or retirement of one imported member. Current local profile state and authenticated peer routes are authoritative; imported identity is preserved. */
+  'groups.member.resolve': { params: GroupsMemberResolveParams; result: GroupsMemberResolveResult }
   /** Mint one target-issued room/profile grant for a prospective room home. */
   'groups.peer.invite': { params: GroupsPeerInviteParams; result: GroupsPeerInviteResult }
   /** Register and probe one scoped peer route on the room home. */
@@ -5209,8 +5274,10 @@ export const RPC_METHODS = [
   'groups.create',
   'groups.demote',
   'groups.disband',
+  'groups.import_history',
   'groups.list',
   'groups.log',
+  'groups.member.resolve',
   'groups.peer.invite',
   'groups.peer.register',
   'groups.peer.revoke',

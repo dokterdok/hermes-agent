@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Any, Literal
 
@@ -742,8 +742,6 @@ def reconstruct_task_plan(
     room_value: Any, events: Sequence[Mapping[str, Any]], task: Mapping[str, Any], *, local_profiles: Iterable[str]
 ) -> DiscussionTaskPlan:
     """Reconstruct and verify one persisted driver task after a restart."""
-    room = validate_room(room_value, local_profiles=local_profiles)
-    validated = _validated_events(events, room=room)
     identity, payload = task.get("identity"), task.get("payload")
     if not isinstance(identity, driver.TaskIdentity) or not isinstance(payload, Mapping):
         raise DiscussionReconstructionError("driver task has no valid identity or payload")
@@ -751,6 +749,28 @@ def reconstruct_task_plan(
     if not driver._TASK_PAYLOAD_REQUIRED_FIELDS <= fields <= (
         driver._TASK_PAYLOAD_REQUIRED_FIELDS | driver._TASK_PAYLOAD_OPTIONAL_FIELDS):
         raise DiscussionReconstructionError("driver task payload shape changed")
+    # Imported execution may lose readiness after settlement. This roster was
+    # frozen in the admitted task, not rediscovered for another execution.
+    publication_members = payload.get("publication_members")
+    if publication_members is not None:
+        if not isinstance(room_value, Mapping) or not isinstance(publication_members, list):
+            raise DiscussionReconstructionError("frozen publication roster is invalid")
+        current = room_value.get("members")
+        if not isinstance(current, list):
+            raise DiscussionReconstructionError("room roster is missing")
+        current_by_id = {m.get("member_id"): m for m in current if isinstance(m, Mapping)}
+        for frozen in publication_members:
+            if not isinstance(frozen, Mapping) or not isinstance(existing := current_by_id.get(frozen.get("member_id")), Mapping):
+                raise DiscussionReconstructionError("frozen publication member is not in the room")
+            if any(frozen.get(key) != existing.get(key) for key in ("member_id", "profile", "handle", "display_name")):
+                raise DiscussionReconstructionError("frozen publication member identity changed")
+        local_profiles = tuple(local_profiles) + tuple(
+            str(m["profile"]) for m in publication_members
+            if isinstance(m, Mapping) and isinstance(m.get("target"), Mapping)
+            and m["target"].get("kind") == "local")
+        room_value = {**room_value, "members": publication_members}
+    room = validate_room(room_value, local_profiles=local_profiles)
+    validated = _validated_events(events, room=room)
     if (match := _TURN_ID_RE.fullmatch(identity.turn_id)) is None:
         raise DiscussionReconstructionError("turn_id is not a Discussion coordinate")
     source_event_seq = int(match.group("source"))
@@ -795,9 +815,10 @@ def reconstruct_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
         round_index=int(match.group("round")), seen_through_seq=int(match.group("seen")), prompt=prompt,
         input_context=input_context, attachments=attachments)
-    if reconstructed.identity != identity or dict(reconstructed.payload) != dict(payload):
+    comparison_payload = {key: value for key, value in payload.items() if key != "publication_members"}
+    if reconstructed.identity != identity or dict(reconstructed.payload) != comparison_payload:
         raise DiscussionReconstructionError("driver task failed deterministic reconstruction")
-    return reconstructed
+    return replace(reconstructed, payload=dict(payload))
 
 
 def _turn_coordinates(task: DiscussionTaskPlan) -> dict[str, Any]:
