@@ -39,22 +39,53 @@ Splices, not whole-module checkouts:
 
 ## RED
 
-Parent `93fd0cd531ffe9c3e6ec1cd80c868d0ae09e44f7` plus this consumer (RPC method, publisher method, consumer module, and this test) plus the overlay above. The #15 secondary module and the retry delegates are absent.
+Throwaway tree: parent `93fd0cd531ffe9c3e6ec1cd80c868d0ae09e44f7`, this consumer (RPC method, publisher method, consumer module, and this test), and the overlay above. The #15 secondary module and the retry delegates are absent. The runner's `PYTHONPATH` is the tree root so the editable install cannot hide the overlay. That runner edit is not committed.
 
-The settled turn completes. The consumer then raises `Group Chat secondary publication is not registered`. No secondary row is published.
+```text
+HOME=/tmp/output-secondary-consumer-red/home TMPDIR=/tmp/output-secondary-consumer-red/tmp \
+  scripts/run_tests.sh tests/gateway/test_secondary_retained_publication_consumer.py -q --tb=line
+```
 
-The missing-contract unit test does not need the overlay. It passes on the committed tree: a bare service fails closed, and a consent object is refused without a secondary write.
+Measured: 1 file, 1 passed, 4 failed. Pytest 4.90s. Runner wall 10.6s.
+
+`test_consumer_fails_closed_when_the_contract_is_missing` passes without the overlay. A bare service raises `not registered`. A consent object is refused with `send consent is not publication authority` and is not written.
+
+The four lifecycle tests finish the settled turn, then fail closed. Three raise `Group Chat secondary publication is not registered` at `gateway/session_hosted_output_secondary_consumer.py:24` (`_require_contract`, before `register_secondary_publication`). The consent assertion in the forged-route test passes on that same local refusal. Its route assertion then sees `not registered` rather than `route is unauthorized`, because route authorization lives in the missing contract. No secondary publication method exists on that tree, so no secondary row is written.
 
 ## GREEN
 
-Same overlay, plus the #15 contract at `ece9f17e2d1a2143d563c52140d4e13417f18456`, plus this consumer.
+Throwaway tree: this consumer stacked on #15 `ece9f17e2d1a2143d563c52140d4e13417f18456`, same overlay, same uncommitted `PYTHONPATH` pin.
 
-The NEW-run RPC registers, publishes, records a transient failure, retries only when due, and completes at that attempt. `valid_until`, work, route, member, and event digest stay the registered commitment. A later consume returns the completion and does not insert another registration. Send-consent does not change `total_changes`. A forged route writes no row. After `valid_until`, publish/retry stay `expired_grant` and do not adopt a later horizon; completion is refused. An authorization failure stays `authorization_or_verification` when a later `ConnectionError` is recorded for the same attempt. Primary event, retry, and completion rows stay equal to the pre-call fingerprint. `runner.session_authority` stays the room authority.
+```text
+HOME=/tmp/output-secondary-consumer-green/home TMPDIR=/tmp/output-secondary-consumer-green/tmp \
+  scripts/run_tests.sh tests/gateway/test_secondary_retained_publication_consumer.py \
+  tests/gateway/test_secondary_retained_publication.py -q --tb=line
+```
+
+Measured after the blocked-path assertions: 2 files, 10 passed, 0 failed. Runner wall 6.6s. Consumer file 5 passed in 5.57s. Contract file 5 passed in 6.64s.
+
+The NEW-run RPC registers, publishes, records a transient failure, retries only when due, and completes at that attempt. `valid_until`, work, route, member, and event digest stay the registered commitment. A later consume returns the completion and does not insert another registration. Send-consent does not change `total_changes`. A forged route writes no row. After `valid_until`, publish/retry stay `expired_grant` and do not adopt a later horizon; completion is refused. An authorization failure stays `authorization_or_verification` when a later `ConnectionError` is recorded for the same attempt. Completion of that attempt is refused. Secondary counts stay `(1, 0)`. Primary event, retry, and completion rows stay equal to the pre-call fingerprint on the publish/retry/completion path, the forged-route path, the expiry path, and the authorization-block path. `runner.session_authority` stays the room authority.
 
 ## Adversarial review
 
-Re-review count: pending the confirmatory pass after GREEN.
+Re-review count: 2. Verdict: CLEAN.
+
+Review 1 of `c263fc226c05c5f64e97fcf484132661cb7ad496` found one proof gap. `test_consumer_blocked_authorization_stays_blocked` did not snapshot primary rows, and it only checked that the completion count was zero. A primary write, or deletion of the blocked registration, would still have passed.
+
+Checked on that tip and left in place:
+
+- Consent is refused before `_require_contract` and before any register or publish. The #15 `publish_secondary_from_consent` always raises and does not touch the store. A missing refuse method raises the same consent error locally.
+- A missing contract raises at `_require_contract` before register. The RED run dies there.
+- The consumer executes no SQL. Register, publish, retry, failure, and completion are the #15 methods. Each enters `_mutate`, which rechecks `_output_retry_ready`, `_output_policy_read`, `_output_owner`, and the task snapshot. Owner-changed errors are not caught here.
+- `record_secondary_publication_failure` returns the existing blocked view before it can rewrite `reason_code`. A later `ConnectionError` on that attempt stays `authorization_or_verification`. `retry_secondary_publication` does not call `_mark_published` while the row is blocked. `confirm=True` then reaches `complete_secondary_publication`, which refuses and inserts no completion row.
+- Expiry blocks with `expired_grant` and does not change `valid_until`. A later register raises lifetime expired.
+- `publish_terminal` does not call the consumer. The #15 file still passes, so a settled turn does not by itself publish a secondary row.
+- A caller-supplied publication id is never the stored id. Register computes it. A mismatched id after a valid route can observe a canonical registration the contract already committed, then refuse to continue. The forged id is not stored. That is not an authorization bypass. This slice does not add a writer that deletes the contract's own row.
+
+Review 2 covered the blocked-path assertions and this receipt. The new checks only read `_primary` and the secondary counts. The GREEN command above includes them. No remaining in-scope finding.
+
+`publish_secondary_retained` is the invitation→NEW-run call site. It is not invoked from `publish_terminal` or from admission. Folding it into primary publication would mix the two ledgers. A later owner calls it after the task has settled.
 
 ## Still later owners
 
-Publication of NousResearch #99159 / #98072 / #100016 / #106742 / #99107. F1, native/device, history rewrite, and A7 legacy atomic Stop. Merging this draft onto fork `main`.
+Publication of NousResearch #99159 / #98072 / #100016 / #106742 / #99107. F1, native/device, history rewrite, and A7 legacy atomic Stop. Merging this draft onto fork `main`. A post-settlement caller of `publish_secondary_retained` that stays outside primary `publish_terminal`.
