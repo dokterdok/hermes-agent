@@ -21,6 +21,16 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
     def output_attachments(self):
         return self.attachments
 
+    def consume_secondary_retained_publication(
+            self, task, *, route=None, publication_id=None, transport_error=None,
+            confirm=False, consent=None):
+        """Hosted-room entry for the A3 secondary consumer. Not primary publication."""
+        from gateway.session_hosted_output_secondary_consumer import (
+            consume_secondary_retained_publication)
+        return consume_secondary_retained_publication(
+            self, task, route=route, publication_id=publication_id,
+            transport_error=transport_error, confirm=confirm, consent=consent)
+
     def _output_source(self, room, task):
         result = task.get("result")
         if not isinstance(result, Mapping) or not result.get("artifacts"):
