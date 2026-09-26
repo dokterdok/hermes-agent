@@ -164,18 +164,23 @@ The script's own stops, and the only meaning of each:
 
 ### Phase 2 — CUA login
 
-Use only windows whose process executable path equals the `UAT_EXE` line. If the CUA tool cannot show that path for the window it is about to click, stop `CUA_CANNOT_SEE_PROCESS_PATH`. Do not click by title alone. If the foreground executable is the daily exe, stop `FOCUS_IS_DAILY` without clicking.
+Use only windows whose process executable path equals the `UAT_EXE` line. If the CUA tool cannot show that path for the window it is about to click, stop `CUA_CANNOT_SEE_PROCESS_PATH`. Do not click by title alone. If the foreground executable is the daily exe, stop `FOCUS_IS_DAILY` without clicking. A daily window with the same title or the same button is not an entry control.
 
-Do not take a screenshot while the password field is focused or contains text.
+This phase does not launch Hermes. It does not kill a process by image name. It does not take a second Launch.
 
-1. If a UAT window titled exactly `Sign in to Hermes gateway` is open, use it. Otherwise click the button named exactly `Sign in to remote gateway` in a UAT window.
-2. If that window or button is not present within 20 seconds, stop `SIGNIN_CONTROL_ABSENT`.
-3. Click the field labeled `Username`. Type the fixture username from orchestrator memory or from `uat-username.txt`. Do not echo it.
+Do not take a screenshot while the password field is focused or contains text. Do not echo the username or the password.
+
+1. Choose one entry control on the UAT executable, in this order, and use only that one. A heading, a description, or a hint is not a control. `Remote gateway sign-in required` is a heading. Do not click it. Words inside hint text are not a button. Do not accept `Sign out and sign in`. Do not click `Gateway settings`, `Use local gateway`, `Open logs`, `Retry`, or `Repair`. If the rung you reach matches more than one control, stop `SIGNIN_CONTROL_AMBIGUOUS` and do not click.
+   1. If a UAT window titled exactly `Sign in to Hermes gateway` is open, bring that window to the foreground. Do not click `Sign in to remote gateway` or `Sign out & sign in` while it is open.
+   2. Else if a button named exactly `Sign in to remote gateway` is in a UAT window, click that button once.
+   3. Else if a button named exactly `Sign out & sign in` is in a UAT window, click that button once. That button is the boot overlay when a remote URL is set and the session cookie is missing.
+2. If none of those three controls is present within 20 seconds, stop `SIGNIN_CONTROL_ABSENT`. After one of them has been used, do not stop `SIGNIN_CONTROL_ABSENT` and do not click a second entry control.
+3. Click the field labeled `Username`. Type the fixture username from orchestrator memory or from `uat-username.txt`. Do not echo it. That field is on the login form. The form may already be in the window from step 1.1, or in the UAT window titled `Sign in to Hermes gateway` that opens after the button click. If that field is not present within 20 seconds after the entry control is used, stop `LOGIN_NOT_FINISHED`.
 4. Click the field labeled `Password`. Type the contents of `uat-password.txt`. Do not echo them.
-5. Click the button named exactly `Sign in`. Do not press a button named `Sign in to remote gateway` on this form. Do not click `Retry` or `Repair`.
+5. Click the button whose whole name is exactly `Sign in`. Do not press a button named `Sign in to remote gateway` or `Sign out & sign in` on this form. Do not click `Retry` or `Repair`.
 6. If the page shows `Invalid username or password.` or `Too many attempts. Please wait and try again.`, stop `LOGIN_REJECTED`. Do not retry.
-7. If the login window is still open after 30 seconds, stop `LOGIN_NOT_FINISHED`.
-8. Continue only when that login window is gone and the UAT main process from `UAT_MAIN_PID` is still running.
+7. The login window is the UAT window titled exactly `Sign in to Hermes gateway`. If that window is still open 30 seconds after the `Sign in` click, stop `LOGIN_NOT_FINISHED`. The UAT main window staying open is not this stop.
+8. Continue only when that login window is gone, the `Username` field is not visible, and the UAT main process from `UAT_MAIN_PID` is still running. Do not continue while the login form is still showing.
 
 ### Phase 3 — CUA Cancel
 
@@ -231,4 +236,10 @@ Re-review of that delta:
 - `WINDOW_STABLE` without exit code 0 does not start CUA. Exit 0 without `WINDOW_STABLE` does not start CUA. One Launch only. Do not invent ns4.
 - The probe script parses, and its window-scan type compiles. That compile does not execute on Beelink. Beelink was not run.
 
-**Adversarial review: CLEAN.** Re-review count: 2. No open finding inside this procedure. Native Files PASS is not claimed. ns and ns2 stay frozen. This procedure does not reboot, change the reserve, grant an ACE, or take a second launch of a user-data directory that may be `booting`. Beelink was not executed from this checkout. `LEAVE_UAT_RUNNING` is a finished stop: report the pid and do not clear it.
+That pass was re-review 2 of the kill path. Re-review 3 is the Phase 2 entry-control delta.
+
+Reviewer question for this delta: would BarrX click hint text, sign into daily Hermes, click `Use local gateway`, click `Sign out & sign in` twice, treat the UAT main window as the login window that must close, or take a screenshot of the password?
+
+The live overlay heading is `Remote gateway sign-in required`. The button on that overlay is `Sign out & sign in`. Hint text can contain the words `Sign in to remote gateway` without that string being a button. The old step stopped `SIGNIN_CONTROL_ABSENT` because it allowed only the login-window title and that remote-gateway button. The procedure now accepts entry controls only in this order, and the refusal list is in the same step as the click: the exact window title `Sign in to Hermes gateway` if that window is open, else the exact button `Sign in to remote gateway`, else the exact button `Sign out & sign in`. Headings and hints are not clicks. `Gateway settings`, `Use local gateway`, and `Open logs` are not entry controls. Two matches on the rung that is reached stop `SIGNIN_CONTROL_AMBIGUOUS` with no click. The chosen entry control is used once. On the form, `Sign in` is the whole button name, and neither entry button is pressed again. The login window that must close is the one titled `Sign in to Hermes gateway`. The UAT main window stays, the `Username` field must be gone, and `UAT_MAIN_PID` must still be running. The launch script does not embed these CUA steps. Its bytes and both hashes above are unchanged. This edit does not launch, does not kill by image name, does not echo a password, and does not authorize a password screenshot.
+
+**Adversarial review: CLEAN.** Re-review count: 3. No open finding inside this procedure. Native Files PASS is not claimed. ns, ns2, and the evidence attempt stay frozen. This procedure does not reboot, change the reserve, grant an ACE, or take a second launch of a user-data directory that may be `booting`. Beelink was not executed from this checkout. `LEAVE_UAT_RUNNING` is a finished stop: report the pid and do not clear it.
