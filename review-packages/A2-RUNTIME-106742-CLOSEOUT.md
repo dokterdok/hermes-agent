@@ -2,50 +2,55 @@
 
 Review only. This document does not change product behavior. It reconciles the overnight “Runtime COMPLETE” claim with the still-open primary PR, classifies the already-identified remaining candidates, and records the focused checks named by that contribution.
 
-Local PASS is not public acceptance and is not a merge of #106742, #120652, or #121813.
+Local test PASS is not public acceptance, not a merge of #106742 or #120652, and not a green `All required checks pass` gate. Document findings from adversarial review of `af9b4fa` are corrected in this revision. The milestone stays **HELD** on the maintainer actions below. See `review-packages/FINDINGS.md`.
 
 ## COMPLETE vs OPEN
 
 The overnight note (`OVERNIGHT-HERMES-CONTINUATION-20260923.md`) says Runtime is COMPLETE because PR **#120652** and a linking comment on **#106742** were published, with the four-fix head at `38da16a41cb83bf809d3531fde197c5e77a8c475`.
 
-Live GitHub on 2026-09-26:
+Live GitHub re-checked 2026-09-26 after the first draft of this package:
 
 | Item | Live state |
 | --- | --- |
-| [#106742](https://github.com/NousResearch/hermes-agent/pull/106742) | **OPEN**, not draft. Head `d7f5c13d73784b4e536bf6fe0d20a48089523ec0` on `feat/unified-gateway-runtime` (unchanged from the kickoff pin). Base ref `main`. API `base.sha` `d5785bb525e4d82848e2051f5e8bc19ab50e9934`. `mergeable=false`, `mergeable_state=dirty`. Author `teknium1`. Updated `2026-09-24T17:27:30Z`. |
-| Live `main` | `d0288be5b3330d2442e3907185b8e9d0958297bb` (`2026-09-26T03:51:55Z`, `fmt(js): npm run fix on merge (#123423)`). Ahead of the SHA recorded on #106742. |
-| [#120652](https://github.com/NousResearch/hermes-agent/pull/120652) | **OPEN**, not merged, not draft. Head `38da16a41cb83bf809d3531fde197c5e77a8c475` on `dokterdok/hermes-agent:fix/runtime-reviewed-followups-20260923`. Base `NousResearch/hermes-agent:feat/unified-gateway-runtime`, API `base.sha` still `26b02651ad6f30b5409a0da90f1ed9663f03ffd2`. `mergeable=true`, `mergeable_state=unstable`. No check runs on that head. Updated `2026-09-24T04:45:58Z`. |
-| Linking comment | [dokterdok, 2026-09-23T21:02:57Z](https://github.com/NousResearch/hermes-agent/pull/106742#issuecomment-5802886339). It reports that #120652 was opened with four fixes and a 274-pass focused run, and that nothing was merged or deployed. That comment is truthful as a publication notice. It does not close #106742. |
-| [#121813](https://github.com/NousResearch/hermes-agent/pull/121813) | **OPEN**, not merged. Later same-thread note ([Lokee86, 2026-09-24T17:14:52Z](https://github.com/NousResearch/hermes-agent/pull/106742#issuecomment-5818736260)). Head `6ae81b2f4ccdaf98d84da5bd9edd419a690548bf`. Base API sha `eb9d6887dec958c9042bb79fd65ecbf868263229`. `mergeable=true`, `unstable`. Explicitly separate from #120652. |
+| [#106742](https://github.com/NousResearch/hermes-agent/pull/106742) | **OPEN**, not draft. Head `d7f5c13d73784b4e536bf6fe0d20a48089523ec0` on `feat/unified-gateway-runtime` (unchanged from the kickoff pin). Base ref `main`. API `base.sha` `d5785bb525e4d82848e2051f5e8bc19ab50e9934`. `mergeable=false`, `mergeable_state=dirty`. Author `teknium1`. `updated_at` `2026-09-24T17:27:30Z`. |
+| Live `main` | `d0288be5b3330d2442e3907185b8e9d0958297bb` (`2026-09-26T03:51:55Z`, `fmt(js): npm run fix on merge (#123423)`). |
+| [#120652](https://github.com/NousResearch/hermes-agent/pull/120652) | **OPEN**, not merged, not draft. Head `38da16a41cb83bf809d3531fde197c5e77a8c475` on `dokterdok/hermes-agent:fix/runtime-reviewed-followups-20260923`. Base ref `feat/unified-gateway-runtime`. API `base.sha` `26b02651ad6f30b5409a0da90f1ed9663f03ffd2`. `mergeable=true`, `mergeable_state=unstable`. `updated_at` `2026-09-24T04:45:58Z` (earlier than the runtime tip commit). Commit status on `38da16a` is `pending` with an empty status list. `gh pr checks` reports no checks. |
+| Linking comment | [dokterdok, 2026-09-23T21:02:57Z](https://github.com/NousResearch/hermes-agent/pull/106742#issuecomment-5802886339). It says #120652 was opened against runtime base `26b0265` with four fixes and **274 passed, 0 failed, 4 Windows-only skips**, and that nothing was merged or deployed. That sentence is a publication notice. It does not close #106742. |
+| [#121813](https://github.com/NousResearch/hermes-agent/pull/121813) | **OPEN**, not merged. Later same-thread note ([Lokee86, 2026-09-24T17:14:52Z](https://github.com/NousResearch/hermes-agent/pull/106742#issuecomment-5818736260)). Head `6ae81b2f4ccdaf98d84da5bd9edd419a690548bf`. API base sha `eb9d6887dec958c9042bb79fd65ecbf868263229`. `mergeable=true`, `unstable`. The PR text says it does not duplicate #120652. |
 
-“Published” in the overnight note means the follow-up PR and the linking comment exist. #120652 is not in the history of `d7f5c13` (`git merge-base --is-ancestor 38da16a d7f5c13` is false; `git branch --contains 38da16a` shows only `fix/runtime-reviewed-followups-20260923`). #106742 remains the open runtime integration PR and is dirty against `main`.
+“Published” in the overnight note means the follow-up PR and the linking comment exist. `38da16a` is not an ancestor of `d7f5c13`. #106742 remains the open runtime integration PR and GitHub reports it dirty against `main`.
 
-Compare of #120652’s head to the live runtime tip: `diverged`, ahead 4, behind 714. A content merge is still clean (below). GitHub `mergeable=true` matches that clean merge; `unstable` matches the absence of checks. The API `base.sha` values lag the branch tips and are not the commits to review against.
+Compare of `38da16a` to runtime tip `d7f5c13`: `diverged`, ahead 4, behind 714. A content merge of those two commits is clean: `git merge-tree --write-tree d7f5c13d73784b4e536bf6fe0d20a48089523ec0 38da16a41cb83bf809d3531fde197c5e77a8c475` prints tree `d9dfbbb105196fca621bb8fb648ef9fcd7430fa2` and exits 0. Today’s pulls API also returns `mergeable=true`. That API field is not a substitute for the merge-tree above: #120652 `updated_at` predates the tip move, and `base.sha` is still `26b02651`. `mergeable_state=unstable` is GitHub’s label while the combined status is `pending`; it is not, by itself, proof that a check suite failed.
 
 ## Pins
 
-- Primary: NousResearch/hermes-agent#106742 @ `d7f5c13d73784b4e536bf6fe0d20a48089523ec0` (`feat/unified-gateway-runtime`). Tip did not move.
+- Primary: NousResearch/hermes-agent#106742 @ `d7f5c13d73784b4e536bf6fe0d20a48089523ec0` (`feat/unified-gateway-runtime`). Tip did not move on this re-check.
 - Live main: `d0288be5b3330d2442e3907185b8e9d0958297bb`.
-- Four-fix contribution: #120652 @ `38da16a41cb83bf809d3531fde197c5e77a8c475`, parent base `26b02651ad6f30b5409a0da90f1ed9663f03ffd2` (ancestor of the runtime tip).
+- Four-fix contribution: #120652 @ `38da16a41cb83bf809d3531fde197c5e77a8c475`. Its parent is `26b02651ad6f30b5409a0da90f1ed9663f03ffd2`, which is an ancestor of the runtime tip.
 - Commits on #120652, oldest first: `5dbea4fc55` hosted admission, `4dbffd08c9` config v48 MCP replay, `cd663be1cd` Kanban exit policy, `38da16a41c` diagnostic automation category.
-- Separate already-identified follow-up: #121813 @ `6ae81b2f4ccdaf98d84da5bd9edd419a690548bf`, base ancestor `eb9d6887dec958c9042bb79fd65ecbf868263229` (also an ancestor of the runtime tip).
+- Separate already-identified follow-up: #121813 @ `6ae81b2f4ccdaf98d84da5bd9edd419a690548bf`. `eb9d6887dec958c9042bb79fd65ecbf868263229` is an ancestor of the runtime tip.
 - Related, named by #120652 as untested composition, left untouched: #111216 OPEN, head `03ab73504dae640e8cfef0b19841c7053aa31cbe`, base `feat/unified-gateway-runtime`.
-- This closeout agent: https://cursor.com/agents/bc-950540df-5f77-5c85-9123-399bfc2a2c9f
-- Local verification tree (not pushed): `git merge-tree --write-tree d7f5c13d73784b4e536bf6fe0d20a48089523ec0 38da16a41cb83bf809d3531fde197c5e77a8c475` → `d9dfbbb105196fca621bb8fb648ef9fcd7430fa2`.
+- This closeout: https://cursor.com/agents/bc-950540df-5f77-5c85-9123-399bfc2a2c9f
+- Draft handback PR: https://github.com/dokterdok/hermes-agent/pull/6 (draft). Its base is **fork** `main` at `057dcdf236f8a6a26721c10fcc6ccb72726e272a`, not Nous `main`.
+- Verification tree (not pushed): `d9dfbbb105196fca621bb8fb648ef9fcd7430fa2`. Local commit `5ba3844bd8372908894ff0f90432035519f4e612` has that tree (`git rev-parse 5ba3844^{tree}`).
 
 ## Diff boundary
 
 The intended remaining contribution, per the runtime-controller delivery note, is the already-identified config / Kanban / automation (and same-home hosted admission) fix set in #120652. It targets `feat/unified-gateway-runtime`, not `main`.
 
-Owner three-dot `d7f5c13...38da16a` is `26b02651..38da16a` (the published PR diff). Applying that merge onto the pinned tip produces the same 18 paths and the same `+501/−52`. The two patches differ only in git index lines and hunk line numbers where the tip’s copies of `hermes_cli/config_defaults.py` and `hermes_cli/config_migrations.py` have shifted. The canonical exact diff for this package is:
+The applicable patch against the pinned tip is:
 
 ```text
 git diff d7f5c13d73784b4e536bf6fe0d20a48089523ec0 d9dfbbb105196fca621bb8fb648ef9fcd7430fa2
 ```
 
-That diff is included in full at the end of this file. It is not the 1,075-file #106742-vs-main diff, and it is not the #121813 diff.
+That command’s bytes are included below with no trimming. SHA-256 `09f944383f31934ec8086e4afec154321489fd9bf57a4e10c7f1a69792beb4ef` (48524 bytes). `git apply --check` of those bytes onto a detached checkout of `d7f5c13` succeeds.
 
-Symbols absent on the pinned tip `d7f5c13` and introduced by this diff: `automation_notification_metadata`, `turn_exit_code` / `hermes_cli/turn_exit.py`, `_config_version: 48`, and migration step `(48, _migrate_to_46)`. The tip’s `DEFAULT_CONFIG["_config_version"]` is 47. An existing `_authorize_write` hook in `hermes_state_runtime.py` is reused by the hosted-admission commit; the same-home recheck inside the admission transaction is not present on the tip.
+The owner three-dot `git diff d7f5c13...38da16a` is `26b02651..38da16a`. It has the same 18 paths and the same `+501/−52`, and the same added lines, but it is not the same patch text. On the tip, `hermes_cli/config_migrations.py` has a comment immediately after the migration tuple that is not in the three-dot context. `git apply --check` of the three-dot patch onto `d7f5c13` fails at `hermes_cli/config_migrations.py:765`. Use the tip diff below, not the three-dot patch, to reproduce the tested tree.
+
+This patch is not the 1,075-file #106742-vs-main diff, not the #121813 diff, and not the git diff of draft #6. Draft #6 adds only this review document onto stale fork `main`.
+
+Symbols absent on pinned tip `d7f5c13` and introduced by this diff: `automation_notification_metadata`, `turn_exit_code` / `hermes_cli/turn_exit.py`, `_config_version: 48`, and migration step `(48, _migrate_to_46)`. The tip’s `DEFAULT_CONFIG["_config_version"]` is 47, and its `MIGRATIONS` list ends at step 47. An existing `_authorize_write` parameter in `hermes_state_runtime.py` is reused by the hosted-admission commit; the same-home recheck inside the admission transaction is part of this diff. On the tested tree, `hermes_cli/kanban_db.py` defines `KANBAN_RATE_LIMIT_EXIT_CODE = 75` and `KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78`. Those constants are what `turn_exit_code` returns for transient and terminal provider reasons. They were already on the tip; this diff does not invent the numbers.
 
 ## Candidate classification
 
@@ -53,15 +58,16 @@ Already-identified only. No new inventory.
 
 | Candidate | Class | Why |
 | --- | --- | --- |
-| P2 same-home hosted admission recheck (`5dbea4fc55`) | **keep** | Not on `d7f5c13`. Merges cleanly onto that tip. Same-home only, as the PR states. |
-| P2 runtime v48 replay of MCP enabled/disabled normalization (`4dbffd08c9`) | **keep** | Tip is still config version 47 and has no `(48, _migrate_to_46)` step. Merges cleanly. |
-| P2 shared Kanban/CLI terminal exit policy (`cd663be1cd`, new `hermes_cli/turn_exit.py`) | **keep** | `turn_exit_code` is absent on the tip. Merges cleanly. Exit codes in the PR text: incomplete → fail, interrupt → 130, transient provider → 75, terminal provider → 78. |
-| P3 diagnostic automation category through admission/storage/replay (`38da16a41c`) | **keep** | `automation_notification_metadata` is absent on the tip. Merges cleanly. |
-| #121813 ten review-gap fixes (list below) | **keep**, **outside this diff** | None of the 24 paths are already on `d7f5c13` (`git diff --stat d7f5c13 <merge-tree>` is still `+600/−52`). `git merge-tree --write-tree d7f5c13 6ae81b2f` is clean. Stacking #121813 onto the #120652 merge tree is also clean (result tree `11653ac38df89a3c59f987581bb0098d03c9e1ae`). Shared paths with #120652 are `gateway/session_authority.py`, `gateway/session_automation.py`, `gateway/session_bot.py`. Not part of the overnight COMPLETE claim and not part of the exact diff above. |
-| Rebase of #106742 onto live `main` | **blocked on upstream** | `git merge-tree --write-tree d0288be d7f5c13` exits 1 with 51 conflicts. Upstream owns this. This closeout did not rebase, merge, or comment. |
-| #111216 composition | **outside scope / untested** | Named by #120652 as an untested related admission PR. Not fetched into the test tree and not classified file-by-file. |
+| P2 same-home hosted admission recheck (`5dbea4fc55`) | **keep** | The tip diff still adds the writer-transaction recheck. Merge-tree onto `d7f5c13` is clean. Same-home only, as #120652 states. |
+| P2 runtime v48 replay of MCP enabled/disabled normalization (`4dbffd08c9`) | **keep** | Tip config version is 47 and has no `(48, _migrate_to_46)` step. Merge-tree is clean. |
+| P2 shared Kanban/CLI terminal exit policy (`cd663be1cd`, new `hermes_cli/turn_exit.py`) | **keep** | `turn_exit_code` is absent on the tip. Merge-tree is clean. Incomplete results return 1; interrupt returns 130; transient provider reasons return 75; terminal provider reasons return 78. |
+| P3 diagnostic automation category through admission/storage/replay (`38da16a41c`) | **keep** | `automation_notification_metadata` is absent on the tip. Merge-tree is clean. |
+| #121813 ten review-gap fixes (list below) | **keep**, **outside this diff** | `git merge-tree --write-tree d7f5c13 6ae81b2f` exits 0 with tree `1fb2e90cb1cd1e55213c5a7923e8acd83d852cd0`. Diff stat of that tree against `d7f5c13` is still 24 files, `+600/−52`, matching the published PR stat. Stacking #121813 onto the #120652 merge is also clean (tree `11653ac38df89a3c59f987581bb0098d03c9e1ae`). Shared paths with #120652: `gateway/session_authority.py`, `gateway/session_automation.py`, `gateway/session_bot.py`. The matching stat means those edits are not already present as the same patch. This closeout did not re-run #121813’s tests and did not show each of the ten behaviors failing on the tip. |
+| Rebase of #106742 onto live `main` | **HELD**, upstream | `git merge-tree --write-tree d0288be5b3330d2442e3907185b8e9d0958297bb d7f5c13d73784b4e536bf6fe0d20a48089523ec0` exits 1 with 51 conflicts. Upstream owns the rebase. This closeout did not rebase, merge, or comment on NousResearch. |
+| #111216 composition | **outside scope / untested** | Named by #120652 as an untested related admission PR. Not merged into the test tree and not classified file-by-file. |
+| Draft #6 merged to fork `main` | **do not merge** | See Publication. |
 
-#121813 items, each still absent from `d7f5c13`, each kept as a separate open follow-up:
+#121813 items, kept as a separate open follow-up. Presence below means the published commit message, not a fresh failure reproduction on `d7f5c13`:
 
 1. Route local ticket/bootstrap through the multiplexer control owner (`705e040139`).
 2. Terminate CLI/ACP projections on replay gaps (`5a94a1be91`).
@@ -74,13 +80,13 @@ Already-identified only. No new inventory.
 9. Include explicit `conversation_history` in Responses idempotency identity (`6ae81b2f4c`).
 10. Unsubscribe failed SSE subscribers when `StreamResponse.prepare()` raises (`6ae81b2f4c`).
 
-#121813’s own “38 passed” figure was not re-run here. Its PR body does not name the file list this closeout was told to execute.
+#121813’s own “38 passed” figure was not re-run here. Its PR body does not name the 15-file command this closeout was told to execute.
 
 ## Tested
 
-Command is the one in the #120652 body. It was run on the clean composition of those four commits onto pinned tip `d7f5c13` (tree `d9dfbbb`, local commit `5ba3844bd8372908894ff0f90432035519f4e612`, not pushed), not only on the older base `26b02651`.
+Command is the one in the #120652 body. It was run on local commit `5ba3844`, whose tree is `d9dfbbb` (the clean composition of the four commits onto pinned tip `d7f5c13`). It was not run only on the older base `26b02651`.
 
-Environment: Linux, CPython 3.11.16 from `uv sync --extra dev --frozen` in that worktree. Invoking `HOME=/tmp/a2-runtime-home` (mode 0700), `umask 077`. Canonical `scripts/run_tests.sh` uses `env -i` and forwards `HOME`; it does not forward `TMPDIR` or `HERMES_HOME`. `tests/conftest.py` then points `HERMES_HOME` at a per-test temp directory. `TZ=UTC`, `LANG=C.UTF-8`, `PYTHONHASHSEED=0`, `-j 1`, `--file-retries 0`, `--file-timeout 300`.
+Environment: Linux, CPython 3.11.16 from `uv sync --extra dev --frozen` in that worktree. Invoking `HOME=/tmp/a2-runtime-home` (mode 0700), `umask 077`. Canonical `scripts/run_tests.sh` uses `env -i` and forwards `HOME`; it does not forward `TMPDIR` or `HERMES_HOME`. On tip `d7f5c13`, `tests/conftest.py` fixture `_isolate_hermes_home` is `autouse=True` and points `HERMES_HOME` at a per-test temp directory. `TZ=UTC`, `LANG=C.UTF-8`, `PYTHONHASHSEED=0`, `-j 1`, `--file-retries 0`, `--file-timeout 300`.
 
 ```bash
 umask 077
@@ -102,36 +108,47 @@ bash scripts/run_tests.sh -j 1 -q --file-timeout 300 --file-retries 0 \
   tests/cron/test_cron_live_bot_delivery.py
 ```
 
-Result: **15 files, 274 passed, 0 failed, 4 skipped, 209.4s**. The 4 skips are the parametrized `windows_only` cases of `test_windows_writer_rejects_mixed_case_protected_name` in `tests/hermes_cli/test_config.py` (`Hermes_Yolo_Mode`, `Hermes_Optional_Mcps`, `Hermes_Copilot_Acp_Command`, `Hermes_Copilot_Acp_Args`). The runner reports them as windows_only skips on Linux.
+Result: **15 files, 274 passed, 0 failed, 4 skipped, 209.4s**. The 4 skips are the parametrized `windows_only` cases of `test_windows_writer_rejects_mixed_case_protected_name` in `tests/hermes_cli/test_config.py` (`Hermes_Yolo_Mode`, `Hermes_Optional_Mcps`, `Hermes_Copilot_Acp_Command`, `Hermes_Copilot_Acp_Args`). The runner reports them as windows_only skips on Linux. Passed counts by file, in runner order, sum to 274: cron live bot delivery 2, authority automation 2, automation notification category 9, automation retry 2, bot result recovery 3, kanban result exit 17, local automation 5, hosted controls 1, hosted rpc 22, hosted service 4, config 169, kanban managed exit reconciliation 6, runtime config migration join 4, single-query exit contract 19, bot live owner delivery 9.
 
 Also named by the #120652 verification section and run on the same tree:
 
 - `ruff check` on the 18 changed paths: all checks passed.
-- `git diff --check d7f5c13 HEAD`: clean.
+- `git diff --check d7f5c13 HEAD` in that worktree: clean.
 
-Per-file pass counts from the runner: cron live bot delivery 2; authority automation 2; automation notification category 9; automation retry 2; bot result recovery 3; kanban result exit 17; local automation 5; hosted controls 1; hosted rpc 22; hosted service 4; config 169 passed + 4 skipped; kanban managed exit reconciliation 6; runtime config migration join 4; single-query exit contract 19; bot live owner delivery 9.
+What this run does not show: it does not execute #106742’s required CI gate, and the worktree commit was not pushed.
 
 ## Untested
 
-- #106742’s full branch, its CI, and a merge onto `main`.
-- #121813’s suite (historical “38 passed” only).
+- #106742’s full branch, its CI gate, and a merge onto Nous `main`.
+- #121813’s suite (historical “38 passed” only) and a behavioral replay of each of its ten items on `d7f5c13`.
 - #111216 composed with this diff.
 - Native macOS/Windows (including the 4 windows_only cases), real providers, WAL-mode campaign, sustained/soak use.
 - Cross-home hosted admission (explicitly out of the four-fix scope).
 - Goal-loop input parity between CLI and managed workers (explicitly out of the shared exit policy).
 - Whether #91305’s terminal provider exit 76 can be combined with this policy’s 78. The #120652 text already says that needs an explicit compatibility decision.
+- Failed dependency jobs behind `All required checks pass` on `d7f5c13`. Not triaged.
 
 ## Outside scope
 
 - Any new feature, migration, verifier, or candidate beyond the lists above.
-- Rebase or merge of `feat/unified-gateway-runtime` onto `main`.
+- Performing the rebase or merge of `feat/unified-gateway-runtime` onto Nous `main`.
 - Comments or pushes on upstream #106742, #120652, #121813, #111216, #100016, #97846.
 - Merge of dokterdok/hermes-agent#5.
-- Fast-forward of this review document onto product `main`. It is a handback artifact.
+- Merge of draft #6.
+
+## Publication
+
+Draft #6 (https://github.com/dokterdok/hermes-agent/pull/6) is a handback document on `dokterdok/hermes-agent`. Its base branch is fork `main` at `057dcdf236f8a6a26721c10fcc6ccb72726e272a`. That commit is not Nous `main` `d0288be`. The pull request diff is this markdown (and `FINDINGS.md`), not the runtime product patch.
+
+Do not merge #6. Merging it does not update NousResearch/hermes-agent, does not land #120652, and does not make #106742 mergeable.
 
 ## Holds
 
-- Upstream (NousResearch, branch owner `teknium1`) integrates #106742. Action: rebase or merge `main` @ `d0288be5b3330d2442e3907185b8e9d0958297bb` into `feat/unified-gateway-runtime` @ `d7f5c13d73784b4e536bf6fe0d20a48089523ec0` and push that branch. Consequence until that lands: GitHub keeps #106742 `dirty` / `mergeable=false`, so the runtime integration cannot merge. Local `git merge-tree --write-tree refs/review/main-20260926 d7f5c13` conflicts on these 51 paths:
+These stay held. This package does not perform them.
+
+1. **Upstream rebase of #106742.** Action: NousResearch maintainer merges or rebases `main` @ `d0288be5b3330d2442e3907185b8e9d0958297bb` into `feat/unified-gateway-runtime` @ `d7f5c13d73784b4e536bf6fe0d20a48089523ec0` and pushes that branch. Reproduce conflicts with `git merge-tree --write-tree d0288be5b3330d2442e3907185b8e9d0958297bb d7f5c13d73784b4e536bf6fe0d20a48089523ec0` (exit 1, 51 conflicts). Consequence until that push exists: GitHub keeps #106742 `mergeable=false` / `dirty`, so it cannot merge to `main`.
+
+Conflict paths from that command:
 
 - apps/desktop/electron/gateway-file-download.ts
 - apps/desktop/electron/main.ts
@@ -185,25 +202,29 @@ Per-file pass counts from the runner: cron live bot delivery 2; authority automa
 - ui-tui/src/gatewayClient.ts
 - website/docs/user-guide/desktop.md
 
-- Landing the four fixes is a separate maintainer action on **#120652** into `feat/unified-gateway-runtime`. Content merge onto `d7f5c13` is clean. This closeout did not push that merge. The runtime tip’s required CI is already red (below), so a green focused run does not make the branch mergeable to `main`.
-- Required check failures on `d7f5c13` (GitHub check-runs, 40 runs): `All required checks pass`, `Desktop core E2E / Desktop core E2E (Linux)`, `JS & TS checks / JS & TS checks`, `OS-specific tests / Windows E2E (real processes)`, `Python tests / Run tests`, `Python tests / e2e`, `Python tests / e2e-upgrade`. `merge` and `publish` are skipped. Those failures were not triaged; triaging them would be a new audit.
+2. **CI gate on the runtime head, separate from the conflict list.** On `d7f5c13`, check-run `All required checks pass` concluded `failure`. `.github/workflows/ci.yaml` on that commit says branch protection should require only that rollup. The rollup `needs` list failed closed because these jobs concluded `failure`: `Desktop core E2E / Desktop core E2E (Linux)`, `JS & TS checks / JS & TS checks`, `OS-specific tests / Windows E2E (real processes)`, `Python tests / Run tests`, `Python tests / e2e`, `Python tests / e2e-upgrade`. `merge` and `publish` were `skipped`. This review did not read branch-protection settings and did not triage those jobs. A rebase onto `d0288be` does not inherit a green gate from today’s 274-pass. Action: after the rebase push, the maintainer needs that rollup green on the new head before #106742 can merge. That triage is not authorized as part of this closeout.
+
+3. **#120652 merge into the runtime branch.** Action: maintainer of `feat/unified-gateway-runtime` decides whether to merge #120652 (`38da16a`) into that branch. Content merge onto `d7f5c13` is clean (tree `d9dfbbb`) and the named 15-file run passed on that tree. This agent did not merge it. Merging it does not merge #106742 to `main` and does not turn the red rollup green. #120652 has no check runs of its own.
 
 ## RESULT
 
 ```text
-Scope: A2 runtime #106742 closeout review package only. Reconcile overnight Runtime COMPLETE (#120652 + linking comment) with #106742 still OPEN/dirty. Classify already-identified config/Kanban/automation candidates and the already-named #121813 follow-up. Run the focused checks named by #120652.
-Pins (repo/PR/OID): NousResearch/hermes-agent#106742 head d7f5c13d73784b4e536bf6fe0d20a48089523ec0 (unchanged) on feat/unified-gateway-runtime; live main d0288be5b3330d2442e3907185b8e9d0958297bb; #120652 OPEN 38da16a41cb83bf809d3531fde197c5e77a8c475 (not an ancestor of the tip); #121813 OPEN 6ae81b2f4ccdaf98d84da5bd9edd419a690548bf; #111216 OPEN 03ab73504dae640e8cfef0b19841c7053aa31cbe (untouched). Verification tree d9dfbbb105196fca621bb8fb648ef9fcd7430fa2 (local, not pushed).
-Changes (paths): review package only (this file). No product source change. No upstream push.
-Tests run (commands + counts): On tree d9dfbbb (four #120652 commits merged onto d7f5c13), scripts/run_tests.sh -j 1 -q --file-timeout 300 --file-retries 0 of the 15 files named in #120652. 15 files, 274 passed, 0 failed, 4 skipped (windows_only parametrize in tests/hermes_cli/test_config.py), 209.4s. ruff check on the 18 changed paths: passed. git diff --check: clean. HOME=/tmp/a2-runtime-home; canonical runner env -i; conftest per-test HERMES_HOME. CPython 3.11.16, uv sync --extra dev --frozen.
-Outcome: PASS
-Exact blocker (if any): None for this review package. Public closure of #106742 is blocked on an upstream rebase/merge of feat/unified-gateway-runtime @ d7f5c13 onto main @ d0288be (51 merge-tree conflicts; GitHub mergeable=false/dirty). #120652 stays OPEN until a maintainer merges it into the runtime branch (content merge onto d7f5c13 is clean; this agent did not merge it).
-Suggested next kickoff: None under this authority. Reserved human actions are the upstream rebase of feat/unified-gateway-runtime onto main, and a maintainer decision to merge #120652 into that branch. #121813 is classified keep and is outside this diff; do not start it from this closeout.
-Risks / holds: Local 274-pass is not #106742 CI and not merged acceptance. Tip CI is red on Desktop core E2E (Linux), JS & TS checks, Windows E2E, Python Run tests, Python e2e, and Python e2e-upgrade. #121813 overlaps three gateway files with #120652 but was not executed. #111216 composition untested. Cross-home admission, exit-code 76 vs 78, macOS/Windows, providers, and soak are outside the tested boundary. Do not merge this draft onto main. Do not FF/merge #100016, #97846, or dokterdok/hermes-agent#5.
+Scope: A2 runtime #106742 closeout review package, corrected after adversarial review of draft #6. No new product slice.
+Pins (repo/PR/OID): NousResearch/hermes-agent#106742 head d7f5c13d73784b4e536bf6fe0d20a48089523ec0 (unchanged) on feat/unified-gateway-runtime; live main d0288be5b3330d2442e3907185b8e9d0958297bb; #120652 OPEN 38da16a41cb83bf809d3531fde197c5e77a8c475 (not an ancestor of the tip); #121813 OPEN 6ae81b2f4ccdaf98d84da5bd9edd419a690548bf; #111216 OPEN 03ab73504dae640e8cfef0b19841c7053aa31cbe (untouched). Verification tree d9dfbbb105196fca621bb8fb648ef9fcd7430fa2. Draft handback dokterdok/hermes-agent#6, base fork main 057dcdf236f8a6a26721c10fcc6ccb72726e272a.
+Changes (paths): review-packages/A2-RUNTIME-106742-CLOSEOUT.md, review-packages/FINDINGS.md. No product source change. No NousResearch push or comment.
+Tests run (commands + counts): On tree d9dfbbb, scripts/run_tests.sh -j 1 -q --file-timeout 300 --file-retries 0 of the 15 files named in #120652. 15 files, 274 passed, 0 failed, 4 skipped (windows_only parametrize in tests/hermes_cli/test_config.py), 209.4s. ruff check on the 18 changed paths: passed. git diff --check: clean. Re-review: git apply --check of the embedded tip diff onto d7f5c13. HOME=/tmp/a2-runtime-home; canonical runner env -i; autouse conftest HERMES_HOME. CPython 3.11.16, uv sync --extra dev --frozen.
+Outcome: BLOCKED
+Adversarial review: HELD
+Exact blocker (if any): (1) Upstream rebase/merge of feat/unified-gateway-runtime @ d7f5c13 onto main @ d0288be — 51 merge-tree conflicts; GitHub mergeable=false/dirty. (2) All required checks pass is failure on d7f5c13; 274-pass does not satisfy that gate. (3) #120652 stays OPEN until a maintainer merges it into the runtime branch; content merge onto d7f5c13 is clean and was not performed here.
+Suggested next kickoff: None under this authority. Do not start #121813 from this closeout.
+Risks / holds: Do not merge draft #6. Do not FF/merge #100016, #97846, or dokterdok/hermes-agent#5. #121813 patch still applies and was not executed. #111216 composition untested. Cross-home admission, exit-code 76 vs 78, macOS/Windows, providers, and soak are outside the tested boundary.
 ```
 
 ## Exact diff against pinned tip
 
 `git diff d7f5c13d73784b4e536bf6fe0d20a48089523ec0 d9dfbbb105196fca621bb8fb648ef9fcd7430fa2`
+
+SHA-256 `09f944383f31934ec8086e4afec154321489fd9bf57a4e10c7f1a69792beb4ef`
 
 ```diff
 diff --git a/gateway/session_authority.py b/gateway/session_authority.py
@@ -1070,4 +1091,6 @@ index 8da2846f82..f6d108b5a8 100644
 +            **({'notification_category': record['notification_category']}
 +               if 'notification_category' in record else {})))
      return record
+ 
+ 
 ```
