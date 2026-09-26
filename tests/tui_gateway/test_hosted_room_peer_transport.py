@@ -292,6 +292,29 @@ def test_roomlink_falls_back_to_relay_on_retryable_prepare_failure():
     assert client.active_link.name == "relay"
 
 
+def test_roomlink_quarantine_is_recorded_on_every_candidate():
+    direct = FakePeerClient()
+    relay = FakePeerClient()
+    recorded = {"direct": [], "relay": []}
+
+    def remember(name):
+        def quarantine_lease_loss(*, task_id, execution_generation):
+            recorded[name].append((task_id, execution_generation))
+        return quarantine_lease_loss
+
+    direct.quarantine_lease_loss = remember("direct")
+    relay.quarantine_lease_loss = remember("relay")
+    client = FailoverHostedRoomPeerClient([
+        RoomLinkCandidate("direct", "direct", "install-peer", direct),
+        RoomLinkCandidate("relay", "relay", "install-peer", relay),
+    ])
+    client.quarantine_lease_loss(task_id="task-1", execution_generation=3)
+    assert recorded == {
+        "direct": [("task-1", 3)],
+        "relay": [("task-1", 3)],
+    }
+
+
 def test_roomlink_never_falls_back_after_ambiguous_direct_failure():
     direct = FailingPeerClient(method="dispatch")
     relay = FakePeerClient()

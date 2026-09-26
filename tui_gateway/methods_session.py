@@ -6,7 +6,6 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
 
-from .hosted_stop_fence import EXACT, INVALID, classify_hosted_stop
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -2132,6 +2131,7 @@ def _(rid, params: dict) -> dict:
     generation_supplied = (
         "expected_hosted_execution_generation" in params and raw_generation is not None)
     if _str_param(params, "expected_hosted_task_id") or generation_supplied:
+        from tui_gateway.hosted_stop_fence import EXACT, INVALID, classify_hosted_stop
         with session["history_lock"]:
             decision = classify_hosted_stop(
                 expected_task_id=params.get("expected_hosted_task_id"),
