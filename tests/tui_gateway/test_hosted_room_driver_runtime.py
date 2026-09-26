@@ -2101,3 +2101,145 @@ def test_stop_is_bounded_and_does_not_interrupt_active_turn(db: Path):
     assert time.monotonic() - started < 2.0
     assert state.get_task(db, identity)["status"] == "running"
     assert not [call for call in rpc.calls if call[0] == "interrupt"]
+
+
+def test_noop_secondary_notify_catches_up_on_the_next_room_pass(db: Path):
+    """A no-op notify is retried after prepare_room returns, not from publish_terminal."""
+    from gateway.session_hosted_output_secondary_caller import SecondaryAwaitingPrimary
+
+    identity = _identity()
+    _admit(db, identity)
+    log: list[tuple[str, str]] = []
+
+    def prepare(binding):
+        log.append(("prepare", binding.room_id))
+
+    def publish(binding, task):
+        del binding
+        log.append(("publish_terminal", task["status"]))
+
+    def secondary(binding, task):
+        del binding
+        log.append(("secondary", task["status"]))
+        if sum(1 for kind, _status in log if kind == "secondary") == 1:
+            return SecondaryAwaitingPrimary()
+        return {"published": True}
+
+    runtime = _runtime(
+        db, FakeSessionRPC(), prepare_room=prepare, publish_terminal=publish,
+        publish_settled_secondary=secondary)
+    runtime._run_cycle()
+    assert [kind for kind, _status in log] == ["prepare", "publish_terminal", "secondary"]
+    assert (identity, state.get_task(db, identity)["execution_generation"]) in runtime._secondary_awaiting_primary
+    runtime._run_cycle()
+    assert [kind for kind, _status in log] == [
+        "prepare", "publish_terminal", "secondary", "prepare", "secondary"]
+    assert not runtime._secondary_awaiting_primary
+
+
+def test_settled_notify_with_evidence_is_not_retried_on_the_next_poll(db: Path):
+    identity = _identity()
+    _admit(db, identity)
+    calls: list[str] = []
+
+    def secondary(binding, task):
+        del binding
+        calls.append(task["status"])
+        return {"published": True}
+
+    runtime = _runtime(db, FakeSessionRPC(), publish_settled_secondary=secondary)
+    runtime._run_cycle()
+    runtime._run_cycle()
+    assert calls == ["settled"]
+    assert not runtime._secondary_awaiting_primary
+
+
+def test_harvest_before_events_catches_up_without_publish_terminal(db: Path):
+    from gateway.hosted_room_artifacts import RoomArtifactError
+    from gateway.session_hosted_output_secondary_caller import SecondaryAwaitingPrimary
+    from tui_gateway.hosted_room_driver import _TerminalReceipt
+
+    identity = _identity()
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    _admit(db, identity)
+    calls: list[str] = []
+    published: list[str] = []
+
+    phase = {"n": 0}
+
+    def secondary(binding, task):
+        del binding
+        phase["n"] += 1
+        calls.append(task["status"])
+        if phase["n"] == 1:
+            return SecondaryAwaitingPrimary()
+        if phase["n"] == 2:
+            raise RoomArtifactError("Group Chat secondary publication is not registered")
+        return {"published": True}
+
+    runtime = _runtime(
+        db, FakeSessionRPC(auto_complete=False), clock=clock,
+        publish_terminal=lambda _binding, task: published.append(task["status"]),
+        prepare_room=lambda _binding: published.append("prepare"),
+        publish_settled_secondary=secondary)
+    old_lease = state.acquire_lease(
+        db, room_id=ROOM_ID, gateway_id=BINDING.gateway_id,
+        authority_epoch=BINDING.authority_epoch, process_generation="old-process",
+        ttl_seconds=30, clock=clock)
+    state.start_task(
+        db, identity, old_lease, expected_cancel_generation=0, clock=clock)
+    receipt = _TerminalReceipt(
+        status="settled", settlement_id="reply-harvest", result={"text": "harvested"})
+    runtime._harvest_previous_attempt(BINDING, state.get_task(db, identity), receipt)
+    assert calls == ["settled"]
+    assert published == []
+    assert state.get_task(db, identity)["status"] == "settled"
+    generation = state.get_task(db, identity)["execution_generation"]
+    assert (identity, generation) in runtime._secondary_awaiting_primary
+    runtime._catch_up_secondary_after_primary(BINDING)
+    assert calls == ["settled", "settled"]
+    assert published == []
+    assert "not registered" in (runtime.status()["last_error"] or "")
+    assert (identity, generation) in runtime._secondary_awaiting_primary
+    assert state.get_task(db, identity)["status"] == "settled"
+    assert ROOM_ID not in runtime._ambiguous_rooms
+
+    def fail_prepare(_binding):
+        published.append("prepare-fail")
+        raise RuntimeError("prepare failed")
+
+    runtime.prepare_room = fail_prepare
+    runtime._run_cycle()
+    assert calls == ["settled", "settled"]
+    assert published == ["prepare-fail"]
+    assert (identity, generation) in runtime._secondary_awaiting_primary
+    assert "prepare failed" in (runtime.status()["last_error"] or "")
+    runtime._catch_up_secondary_after_primary(BINDING)
+    assert calls == ["settled", "settled", "settled"]
+    assert published == ["prepare-fail"]
+    assert (identity, generation) not in runtime._secondary_awaiting_primary
+    assert ROOM_ID not in runtime._ambiguous_rooms
+
+
+def test_catch_up_forgets_a_task_that_is_no_longer_settled(db: Path):
+    from gateway.session_hosted_output_secondary_caller import SecondaryAwaitingPrimary
+
+    identity = _identity()
+    _admit(db, identity)
+    calls: list[str] = []
+
+    def secondary(binding, task):
+        del binding
+        calls.append(task["status"])
+        return SecondaryAwaitingPrimary()
+
+    runtime = _runtime(
+        db, FakeSessionRPC(auto_complete=False), publish_settled_secondary=secondary)
+    runtime._secondary_awaiting_primary.add((identity, 1))
+    runtime._catch_up_secondary_after_primary(BINDING)
+    assert calls == []
+    assert not runtime._secondary_awaiting_primary

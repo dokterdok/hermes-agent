@@ -10,7 +10,8 @@ import json
 import pytest
 
 from gateway.hosted_room_artifacts import RoomArtifactError
-from gateway.session_hosted_output_secondary_caller import call_settled_invitation_secondary
+from gateway.session_hosted_output_secondary_caller import (
+    SecondaryAwaitingPrimary, call_settled_invitation_secondary)
 
 
 def _fixtures():
@@ -122,6 +123,124 @@ async def test_deferred_primary_does_not_publish_secondary(tmp_path, monkeypatch
         stored = tasks.get_task(service.db_path, tasks.list_tasks(service.db_path, room_id='room')[0]['identity'])
         assert stored['status'] == 'settled'
         assert _secondary_counts(authority.db) == (0, 0)
+        binding = service.bindings()[0]
+        assert type(call_settled_invitation_secondary(service, binding, stored)) is SecondaryAwaitingPrimary
+        assert (stored['identity'], stored['execution_generation']) in service.runtime._secondary_awaiting_primary
+        assert _secondary_counts(authority.db) == (0, 0)
+        assert runner.session_authority is authority
+
+
+@pytest.mark.asyncio
+async def test_catch_up_publishes_after_noop_notify_when_primary_events_appear(tmp_path, monkeypatch):
+    """Primary evidence after a no-op notify publishes secondary outside prepare and terminal."""
+    _bind, _quarantine, _primary, _secondary_counts, _settled = _fixtures()
+    del _settled
+    from tests.gateway.test_canonical_hosted_outputs import execute_group_turn, owner
+    from gateway import hosted_room_driver as tasks
+    _bind()
+    async with owner(tmp_path, monkeypatch) as (authority, service, runner):
+        _quarantine(authority.db)
+        output = tmp_path / 'cache' / 'report.txt'
+        output.parent.mkdir(exist_ok=True)
+        output.write_bytes(b'explicit secondary bytes')
+
+        async def handle(event):
+            from tools.registry import registry
+            result = json.loads(await asyncio.to_thread(
+                registry.dispatch, 'share_group_file', {'path': str(output)}))
+            assert result.get('ok') is True, result
+            return 'Shared report.'
+
+        runner._handle_message = handle
+        from tools import hosted_room_artifact
+        del hosted_room_artifact
+        await execute_group_turn(authority, service, defer_publication=True)
+        stored = tasks.get_task(service.db_path, tasks.list_tasks(service.db_path, room_id='room')[0]['identity'])
+        binding = service.bindings()[0]
+        pending_key = (stored['identity'], stored['execution_generation'])
+        assert stored['status'] == 'settled'
+        assert _secondary_counts(authority.db) == (0, 0)
+        assert pending_key in service.runtime._secondary_awaiting_primary
+        service.prepare_room(binding)
+        service.publish_terminal(binding, stored)
+        assert _secondary_counts(authority.db) == (0, 0)
+        assert pending_key in service.runtime._secondary_awaiting_primary
+        primary_after_events = _primary(authority.db)
+        rpc = _rpc(service)
+        seen = []
+        publish = rpc.publish_secondary_retained
+
+        def wrapped(settled, **kwargs):
+            seen.append(kwargs)
+            return publish(settled, **kwargs)
+
+        rpc.publish_secondary_retained = wrapped
+        pointer = runner.session_authority
+        service.runtime._catch_up_secondary_after_primary(binding)
+        assert seen == [{}]
+        assert 'consent' not in seen[0]
+        assert _secondary_view(authority.db) == ([('publish', 'pending', 0, 1)], 0)
+        assert _secondary_counts(authority.db) == (1, 0)
+        assert _primary(authority.db) == primary_after_events
+        assert pending_key not in service.runtime._secondary_awaiting_primary
+        assert binding.room_id not in service.runtime._ambiguous_rooms
+        assert runner.session_authority is pointer is authority
+        service.runtime._catch_up_secondary_after_primary(binding)
+        assert seen == [{}]
+        assert _secondary_counts(authority.db) == (1, 0)
+        assert _primary(authority.db) == primary_after_events
+
+
+@pytest.mark.asyncio
+async def test_catch_up_missing_contract_writes_nothing_and_stays_pending(tmp_path, monkeypatch):
+    _bind, _quarantine, _primary, _secondary_counts, _settled = _fixtures()
+    del _settled
+    from tests.gateway.test_canonical_hosted_outputs import execute_group_turn, owner
+    from gateway import hosted_room_driver as tasks
+    _bind()
+    async with owner(tmp_path, monkeypatch) as (authority, service, runner):
+        _quarantine(authority.db)
+        output = tmp_path / 'cache' / 'report.txt'
+        output.parent.mkdir(exist_ok=True)
+        output.write_bytes(b'explicit secondary bytes')
+
+        async def handle(event):
+            from tools.registry import registry
+            result = json.loads(await asyncio.to_thread(
+                registry.dispatch, 'share_group_file', {'path': str(output)}))
+            assert result.get('ok') is True, result
+            return 'Shared report.'
+
+        runner._handle_message = handle
+        from tools import hosted_room_artifact
+        del hosted_room_artifact
+        await execute_group_turn(authority, service, defer_publication=True)
+        stored = tasks.get_task(service.db_path, tasks.list_tasks(service.db_path, room_id='room')[0]['identity'])
+        binding = service.bindings()[0]
+        pending_key = (stored['identity'], stored['execution_generation'])
+        before = _primary(authority.db)
+        service.prepare_room(binding)
+        service.publish_terminal(binding, stored)
+        events_now = _primary(authority.db)
+        assert events_now != before
+        assert _secondary_counts(authority.db) == (0, 0)
+        for name in (
+                'register_secondary_publication', 'publish_secondary_publication',
+                'retry_secondary_publication', 'record_secondary_publication_failure',
+                'complete_secondary_publication'):
+            monkeypatch.setattr(service, name, None)
+        service.runtime._catch_up_secondary_after_primary(binding)
+        assert _secondary_counts(authority.db) == (0, 0)
+        assert pending_key in service.runtime._secondary_awaiting_primary
+        fresh = tasks.get_task(service.db_path, stored['identity'])
+        assert fresh['status'] == 'settled'
+        assert binding.room_id not in service.runtime._ambiguous_rooms
+        assert 'not registered' in (service.runtime.status()['last_error'] or '')
+        assert _primary(authority.db) == events_now
+        service.runtime._catch_up_secondary_after_primary(binding)
+        assert _secondary_counts(authority.db) == (0, 0)
+        assert pending_key in service.runtime._secondary_awaiting_primary
+        assert _primary(authority.db) == events_now
         assert runner.session_authority is authority
 
 

@@ -132,6 +132,9 @@ class HostedRoomRuntime:
         # Tags an exception raised by that callback so a committed settlement
         # is not later recorded as an ambiguous observation.
         self._secondary_notify_tls = threading.local()
+        # Tasks whose notify returned before primary terminal events existed.
+        # Process-local. Not scanned from prepare_room or publish_terminal.
+        self._secondary_awaiting_primary: set[tuple[state.TaskIdentity, int]] = set()
         self.pending_action, self.clock = pending_action, clock
         for name, value in positive.items():
             setattr(self, name, float(value))
@@ -291,10 +294,64 @@ class HostedRoomRuntime:
         if fresh.get("status") != "settled":
             return
         try:
-            self.publish_settled_secondary(binding, fresh)
+            result = self.publish_settled_secondary(binding, fresh)
         except Exception as exc:
             self._secondary_notify_tls.error = exc
             raise
+        self._remember_secondary_awaiting_primary(fresh, result)
+
+    def _remember_secondary_awaiting_primary(self, task: Mapping[str, Any], result: Any) -> None:
+        """Keep a no-op notify until primary terminal evidence exists.
+
+        Any other result drops the task. A raised callback does not reach here,
+        so a failed publish stays pending.
+        """
+        from gateway.session_hosted_output_secondary_caller import SecondaryAwaitingPrimary
+        identity = task.get("identity")
+        generation = task.get("execution_generation")
+        if identity is None or isinstance(generation, bool) or not isinstance(generation, int):
+            return
+        key = (identity, generation)
+        with self._status_lock:
+            if type(result) is SecondaryAwaitingPrimary:
+                self._secondary_awaiting_primary.add(key)
+            else:
+                self._secondary_awaiting_primary.discard(key)
+
+    def _forget_secondary_catchup(self, identity: state.TaskIdentity, generation: int) -> None:
+        with self._status_lock:
+            self._secondary_awaiting_primary.discard((identity, generation))
+
+    def _catch_up_secondary_after_primary(self, binding: HostedRoomBinding) -> None:
+        """Retry no-op notifies once primary terminal evidence can exist.
+
+        Not called from ``publish_terminal`` or ``prepare_room``. Does not
+        publish primary events and does not pass send-consent. A missing
+        contract is recorded and writes nothing; the task stays pending.
+        """
+        if self.publish_settled_secondary is None:
+            return
+        with self._status_lock:
+            pending = tuple(
+                key for key in self._secondary_awaiting_primary
+                if key[0].room_id == binding.room_id)
+        for identity, generation in pending:
+            try:
+                task = state.get_task(self.db_path, identity)
+            except state.TaskConflictError:
+                self._forget_secondary_catchup(identity, generation)
+                continue
+            if (task.get("status") != "settled"
+                    or task.get("execution_generation") != generation):
+                self._forget_secondary_catchup(identity, generation)
+                continue
+            try:
+                self._notify_settled_secondary(binding, task)
+            except Exception as exc:
+                if getattr(self._secondary_notify_tls, "error", None) is exc:
+                    self._secondary_notify_tls.error = None
+                self._record_error(
+                    f"room {binding.room_id} secondary catch-up failed: {exc}")
 
     def _set_blocked(self, room_id: str, blocked: bool) -> None:
         with self._status_lock:
@@ -527,6 +584,11 @@ class HostedRoomRuntime:
     def _process_room(self, binding: HostedRoomBinding) -> None:
         if self.prepare_room is not None:
             self.prepare_room(binding)
+        # After prepare_room returns, not inside it and not inside
+        # publish_terminal. A failed prepare does not catch up. Primary evidence
+        # written by a successful call is visible to a no-op notify from an
+        # earlier settle or harvest.
+        self._catch_up_secondary_after_primary(binding)
         self._inspect_abandoned_attempts(binding)
         deferred_until = self._ambiguous_rooms.get(binding.room_id)
         if deferred_until is not None:
