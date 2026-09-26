@@ -46,10 +46,10 @@ def _require_unaccepted(adapter, dispatch, session_id, scope):
     from gateway.session_authorities import active_authority
     from hermes_state_logical_attempts import lookup_logical_attempt
     authority = active_authority(adapter.gateway_runner)
-    # No registered owner is not an unprepared index. Do not certify absence
-    # and do not ask the client to retry a storage outage.
+    # Missing owner is not certified absence and is not "peer unsupported".
+    # That reason is what a caller may treat as permission to leave this owner.
     if authority is None:
-        raise RuntimeStoreError('canonical_room_peer_unsupported')
+        raise RuntimeStoreError('storage_unavailable')
     accepted = lookup_logical_attempt(authority.db, principal_id='api',
         session_id=session_id, owner_scope=scope, task_id=dispatch.task_id,
         execution_generation=dispatch.execution_generation)

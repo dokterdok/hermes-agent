@@ -2,7 +2,9 @@
 
 Invitation, capability, and NEW run use the real HTTP handlers, SessionDB,
 process ownership, and custody bootstrap. Downstream queue scheduling is the
-only inert seam. Removing the registered owner refuses a distinct NEW task.
+only inert seam. Clearing the launch owner refuses a distinct NEW task.
+Nulling the registry slot is a different failure: the logical index cannot
+certify absence, so the response stays storage_unavailable.
 """
 import asyncio
 import hashlib
@@ -80,14 +82,27 @@ async def test_registered_owner_http_admits_new_run_and_ownerless_refuses(target
                 assert session['source'] == 'bot_room'
                 assert owned[1]['status'] in {'queued', 'started'}
                 assert len(scheduled) == 1
-                target.runner.session_authorities._by_key[target.runner.session_authorities.launch_key] = None
+                # Launch pointer only. The registry slot must stay so absence is
+                # still certified; root_target then refuses the unregistered owner.
                 target.runner.session_authority = None
                 second = _dispatch(catalog, 'task-two', 'other')
                 refused = await http.post('/v1/runs', headers={
                     'Authorization': f'HermesRoom {grant}',
                     'Idempotency-Key': f'room:{second.task_id}:{second.execution_generation}',
                 }, json={'input': second.prompt, 'hosted_room_dispatch': second.as_mapping()})
-                assert refused.status == 403, await refused.text()
+                refused_body = await refused.json()
+                assert refused.status == 403, refused_body
+                assert refused_body['error']['message'] == 'canonical_room_peer_unsupported'
+                assert len(scheduled) == 1
+                target.runner.session_authorities._by_key[target.runner.session_authorities.launch_key] = None
+                third = _dispatch(catalog, 'task-three', 'again')
+                unavailable = await http.post('/v1/runs', headers={
+                    'Authorization': f'HermesRoom {grant}',
+                    'Idempotency-Key': f'room:{third.task_id}:{third.execution_generation}',
+                }, json={'input': third.prompt, 'hosted_room_dispatch': third.as_mapping()})
+                unavailable_body = await unavailable.json()
+                assert unavailable.status == 503, unavailable_body
+                assert unavailable_body['error']['code'] == 'storage_unavailable'
                 assert len(scheduled) == 1
             finally:
                 pending = [task for task in target.adapter._active_run_tasks.values() if not task.done()]
