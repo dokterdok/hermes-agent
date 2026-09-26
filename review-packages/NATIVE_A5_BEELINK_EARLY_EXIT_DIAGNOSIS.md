@@ -12,11 +12,21 @@ Either hash is this script. If the copy matches neither, stop with `RUNBOOK_DRIF
 
 **Session-1 helper (do not retype):** `review-packages/NATIVE_A5_BEELINK_SESSION1_UIA.ps1`
 
-**SHA-256, LF bytes (git blob and GitHub raw):** `6e133bd5638dbbe28ea4d3b44abb5aa2afb1feabca1feade45ef1fdcbfe7292f`
+**SHA-256, LF bytes (git blob and GitHub raw):** `f23cc7b4051f4d41fdf8fbba94fd3d4548ed1502c28d64e98f6bb75cfa85a042`
 
-**SHA-256, CRLF bytes (a Windows checkout; `*.ps1` is `text eol=crlf`):** `0b8338c9848cd09339bb7d3c52f6aa845e3b9ca1aab6dd019f90065e79b9529b`
+**SHA-256, CRLF bytes (a Windows checkout; `*.ps1` is `text eol=crlf`):** `dcfaabb32d9bc613179ae30f4ac735b72aa8d546762da4f110999196859326eb`
 
-Either hash is this helper. Copy it only to `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\a5-session1-uia.ps1`. If the copy matches neither hash, stop `RUNBOOK_DRIFT`. Do not edit it on Beelink. Do not copy `NATIVE_A5_BEELINK_SESSION1_UIA.Tests.ps1`. Do not copy the helper into the attempt folder or over `launch-a5.ps1`.
+Either hash is this helper. The previous LF hash `6e133bd5638dbbe28ea4d3b44abb5aa2afb1feabca1feade45ef1fdcbfe7292f` is not this helper. Copy the new file only to `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\a5-session1-uia.ps1`. If the copy matches neither new hash, stop `RUNBOOK_DRIFT`. Do not edit it on Beelink. Do not copy `NATIVE_A5_BEELINK_SESSION1_UIA.Tests.ps1`. Do not copy the helper into the attempt folder or over `launch-a5.ps1`.
+
+### Why Entry stopped on 2026-09-26
+
+Discover for pid 42312 completed (`DISCOVER_ENTRY_RUNG=SIGNOUT`, window title `Hermes`, daily seen, not a grant). Entry then printed `UIA_ENTRY_RUNG=SIGNOUT` and a line whose only character was `2`. It did not print `UIA_DONE`, `UIA_STOP`, `UIA_PATH_OK`, or `ENTRY_INVOKED`. FocusUsername then printed `UIA_STOP=UIA_CONTROL_ABSENT`. No credential was typed. Cancel, Save, and Hash did not run. `DEST` is absent. UAT pid 42312 and daily pid 33048 stayed up. That attempt is not a click and not Files PASS.
+
+Two defects in helper LF `6e133bd5…` produced that transcript on Windows PowerShell 5.1. Success-stream text from `Publish-A5Grant` and `Stop-A5Uia` was consumed by `if (function)`, so `UIA_PATH_OK` and `UIA_STOP` never reached stdout. A stop string is truthy, `ENTRY_INVOKED` was then suppressed, and `return 2` became the bare line `2`. The same host writes the old value of `++` to the success stream, so the hwnd walk could return `0` mixed with the handle and fail the click before `InvokePattern`. The replacement writes fields with `[Console]::Out`, returns only a Boolean into `if`, stores the exit code in `$script:A5ExitCode`, and does not use `++`. A failed Entry now prints `UIA_STOP=` and does not print `UIA_DONE`.
+
+The SSH script in the fence below is unchanged. Its stdout is CRLF because it is Windows PowerShell. BarrX deletes CR characters before the CLEAN rules. `ATTEST_OUTPUT_CR_NORMALIZATION_REQUIRED` is not a stop. The 20:50 transcript's field values were already the staged UAT exe, session 1, and `ATTEST_MATCH=UAT`.
+
+Next action on the live ns3 pid is `Entry` again, not `FocusUsername`. The sign-out control was not invoked. The login form was not shown. Do not relaunch.
 
 **Phase 2 input** does not require a CUA tool, and it does not require the CUA tool to show `ExecutablePath`. BarrX has no CUA actuator. Each click, type, or foreground change is gated by the SSH attestation below, then sent by the helper on session 1. That attestation is not a Launch. The helper is not a Launch. The launch script bytes stay the two hashes above.
 
@@ -375,7 +385,7 @@ The attestation process exit code is not a `launch-a5.ps1` exit and it is not a 
 | `ATTEST_WRONG_OWNER` | The SSH user is not `ddewit`, or the process owner was read and is not `ddewit`. A failed owner read is `CUA_CANNOT_SEE_PROCESS_PATH`. Owner `ddewit` is required and is not sufficient. This line does not kill. |
 | `RUNBOOK_DRIFT` | The script text changed, or `UAT_EXE` / `ATTEST_MATCH=UAT` disagrees with the path bytes. |
 
-4. Parse stdout as text lines. Ignore blank lines. Do not read stderr. Split `EXACT_EXECUTABLE_PATH=` on the first `=` only. The value is the exact remainder, with no trim, no quote stripping, no slash change, and no case fold.
+4. Delete every CR (`U+000D`) from the SSH stdout before any other parse. Do the same for helper stdout before reading `UIA_` lines. Windows PowerShell ends lines with CRLF. A CR is not `ATTEST_NOT_CLEAN` and it is not a stop. Do not stop `ATTEST_OUTPUT_CR_NORMALIZATION_REQUIRED`. After those bytes are gone, parse text lines. Ignore blank lines. Do not read stderr. Split `EXACT_EXECUTABLE_PATH=` on the first `=` only. The value is the exact remainder, with no trim, no quote stripping, no slash change, and no case fold. A transcript that is CLEAN after this deletion is CLEAN. Run the helper. A transcript that is still not CLEAN does not get a helper run.
    - More than one `EXACT_EXECUTABLE_PATH=` line, or more than one `ATTEST_STOP=` line: `RUNBOOK_DRIFT`.
    - Exactly one `ATTEST_STOP=` line: that line is the stop. It wins over exit code 0 and over any missing success line. Do not relabel it. Do not continue to step 5.
    - Zero `ATTEST_STOP=` lines: require exactly one of each of `ATTEST_USER=ddewit`, `ATTEST_SOURCE=CIM`, `ATTEST_PID=` plus the candidate digits, `ATTEST_SESSION=1`, `ATTEST_CMDLINE_UDD=` whose value is `0` or `1`, `ATTEST_CMDLINE_SANDBOX=` whose value is `0` or `1`, `ATTEST_CMDLINE_FROZEN=` whose value is `0` or `1`, `ATTEST_MATCH=UAT`, and `EXACT_EXECUTABLE_PATH=`. A miss or a repeat is `CUA_CANNOT_SEE_PROCESS_PATH`.
@@ -414,6 +424,8 @@ Helper success, all required:
 - Exactly one `UIA_ACTION=` equal to the action just sent.
 - No `UIA_STOP=` line. One `UIA_STOP=` line is the stop. It wins over exit code 0 and over `UIA_PATH_OK=1`. Do not relabel it. Do not kill.
 - Exactly one `UIA_DONE=1`. Exit 0 without `UIA_DONE=1` is not success.
+- No stdout line whose entire text is a digit. `2` and `0` are not fields. That line is `RUNBOOK_DRIFT`. The process exit code is an integer from PsExec, not a line of helper stdout.
+- Helper stdout was CR-stripped before these checks, same as the SSH transcript.
 - `UIA_HOST_SESSION=1`, `UIA_HOST_USER=ddewit`, and `UIA_DESKTOP=Default`.
 - Except on Discover: exactly one `UIA_PATH_OK=1` and exactly one `UIA_PID=` equal to the SSH pid. If the SSH transcript immediately before this run was not CLEAN, stop `RUNBOOK_DRIFT` even when the helper exits 0.
 
@@ -428,7 +440,7 @@ Every later action uses that same pid. Focus and type are separate actions. Each
 A heading, a description, or a hint is not a control. `Remote gateway sign-in required` is a heading. Do not accept `Sign out and sign in`. Do not click `Gateway settings`, `Use local gateway`, `Open logs`, `Retry`, or `Repair`. A daily window with the same title is not an entry control. `FOCUS_IS_DAILY` is that refusal. The helper chooses one entry control, in this order, and uses it once: the window titled exactly `Sign in to Hermes gateway`, else the button named exactly `Sign in to remote gateway`, else the button named exactly `Sign out & sign in`. Two matches on the rung that is reached stop `SIGNIN_CONTROL_AMBIGUOUS`. Absent controls wait up to 20 seconds and then stop `SIGNIN_CONTROL_ABSENT`. The helper does not fall through to another rung after a foreground failure.
 
 1. Run Discover once, with no SSH script and no `-AttestedPid`.
-2. `Entry`. Require `ENTRY_INVOKED=1` and `UIA_ENTRY_RUNG` of `WINDOW`, `REMOTE`, or `SIGNOUT`. Do not run `Entry` again.
+2. `Entry`. Require `ENTRY_INVOKED=1`, `UIA_DONE=1`, no `UIA_STOP=`, and `UIA_ENTRY_RUNG` of `WINDOW`, `REMOTE`, or `SIGNOUT`. A rung without `UIA_DONE=1` did not click. Do not run `FocusUsername`. The 2026-09-26 Entry is that case. Re-run `Entry` on pid 42312 after a CR-normalized CLEAN attestation. Do not start at `FocusUsername`. Do not run `Entry` again after one that printed `ENTRY_INVOKED=1` and `UIA_DONE=1`.
 3. `FocusUsername`. Require `FOCUS_OK=1`.
 4. `TypeUsername`. Require `TYPED_USERNAME=1`. The helper reads `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\uat-username.txt` and strips one trailing newline. It does not print the text. An empty file stops `USERNAME_UNAVAILABLE`.
 5. `FocusPassword`. Require `FOCUS_OK=1`.
@@ -524,6 +536,12 @@ The actuator is PsExec `-i 1` without `-d`, `-s`, or `-u`, running the helper. T
 
 Discover may list more than one granted pid. The entry pid prefers `role=main` when both a main and a child show an entry control. Later actions do not switch pids. A save dialog on another pid stops `SAVE_DIALOG_ABSENT`. Titles are not grants. Entry order is still the login window, then `Sign in to remote gateway`, then `Sign out & sign in`. Headings are not clicks. `Sign in` is a separate action from those entry buttons. Files rejects the Artifacts sibling set and `File system`. Download is a `MenuItem`. Cancel finishes, then Phase 4 runs `launch-a5.ps1 -Phase AssertDestEmpty` from the SSH PowerShell, and only then does Phase 5 type and save. Phase 6 prints `HASH_RECORDED_NOT_A_PASS` and is not PASS. The helper has no password parameter, does not print the secret, and does not take a screenshot. Unknown stop text and unknown field names become `RUNBOOK_DRIFT` instead of echoing the rejected text.
 
-The worker is still not a step. It is an alternate only after SSH cannot be made CLEAN or the helper cannot start. This procedure does not start one. It does not relaunch. ns, ns2, and the evidence attempt stay frozen. The launch script bytes and both launch hashes above are unchanged. Desktop product strings are unchanged. Beelink was not executed from this checkout. The decision tests call the helper's functions; they do not run its main, and they are not copied to Beelink.
+The worker is still not a step. It is an alternate only after SSH cannot be made CLEAN or the helper cannot start. This procedure does not start one. It does not relaunch. ns, ns2, and the evidence attempt stay frozen. The launch script bytes and both launch hashes above are unchanged. Desktop product strings are unchanged. Beelink was not executed from this checkout. The decision tests call the helper's functions and one rejected-nonce process. They do not click. They are not copied to Beelink.
 
-**Adversarial review: CLEAN.** Re-review count: 7. No open finding inside this procedure. Native Files PASS is not claimed. This procedure does not reboot, change the reserve, grant an ACE, or take a second launch of a user-data directory that may be `booting`. `LEAVE_UAT_RUNNING` is a finished stop: report the pid and do not clear it. A helper stop leaves both trees running.
+That pass was re-review 7. Re-review 8 is the live Entry transcript from helper LF `6e133bd5…`.
+
+Reviewer question for this delta: would BarrX treat the bare `2` as a finished Entry, run `FocusUsername` without `UIA_DONE`, call a CRLF attestation unclean, hide `UIA_STOP` inside `if (function)`, or pass a leaked `0` into `GetWindowThreadProcessId`?
+
+The 20:50 Entry transcript is not success. `UIA_ENTRY_RUNG=SIGNOUT` without `ENTRY_INVOKED=1` and `UIA_DONE=1` did not invoke `Sign out & sign in`. `FocusUsername` is not the next action. `UIA_CONTROL_ABSENT` on that later action is the missing login form, and it does not authorize another username search until Entry succeeds. Fields and stops go to `[Console]::Out`, which `if` and assignment cannot swallow. The exit code stays in `$script:A5ExitCode` and is not written as a digit line. `++` is not used, so a 5.1 success-stream integer cannot ride along with the hwnd. A hwnd result that is not an `IntPtr`, or that is zero, fails closed as `UIA_PID_MISMATCH` and does not click. SSH script bytes are unchanged. BarrX deletes CR from SSH stdout and from helper stdout, then applies the existing CLEAN rules. `ATTEST_OUTPUT_CR_NORMALIZATION_REQUIRED` is not a stop. A normalized CLEAN transcript runs the helper. A helper `UIA_STOP=` wins over exit 0. Launch hashes are unchanged. No worker. No relaunch. No daily `computer_use`. Hash remains `HASH_RECORDED_NOT_A_PASS`.
+
+**Adversarial review: CLEAN.** Re-review count: 8. No open finding inside this procedure. Native Files PASS is not claimed. This procedure does not reboot, change the reserve, grant an ACE, or take a second launch of a user-data directory that may be `booting`. `LEAVE_UAT_RUNNING` is a finished stop: report the pid and do not clear it. A helper stop leaves both trees running.

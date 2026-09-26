@@ -101,6 +101,21 @@ function Test-A5Exact([string]$Left, [string]$Right) {
   return [string]::Equals([string]$Left, [string]$Right, [System.StringComparison]::Ordinal)
 }
 
+function Test-A5IsTrue($Value) {
+  return ($Value -is [bool] -and $Value)
+}
+
+function Write-A5Line([string]$Line) {
+  # Console.Out is process stdout. if() and assignment cannot swallow it.
+  # Windows PowerShell 5.1 puts function success-stream output into those
+  # callers, which is how Entry hid UIA_STOP and printed a bare 2.
+  [Console]::Out.WriteLine($Line)
+}
+
+function Set-A5Exit([int]$Code) {
+  $script:A5ExitCode = $Code
+}
+
 function Test-A5FieldName([string]$Name) {
   foreach ($item in $script:A5FieldNames) {
     if (Test-A5Exact $item $Name) {
@@ -188,7 +203,7 @@ function Write-A5Field([string]$Name, [string]$Value) {
 
   if (-not (Test-A5FieldName $Name)) {
     $script:A5Stopped = $true
-    Write-Output 'UIA_STOP=RUNBOOK_DRIFT'
+    Write-A5Line 'UIA_STOP=RUNBOOK_DRIFT'
     return
   }
 
@@ -198,7 +213,7 @@ function Write-A5Field([string]$Name, [string]$Value) {
 
   if ($Value.IndexOfAny(@([char]13, [char]10)) -ge 0) {
     $script:A5Stopped = $true
-    Write-Output 'UIA_STOP=RUNBOOK_DRIFT'
+    Write-A5Line 'UIA_STOP=RUNBOOK_DRIFT'
     return
   }
 
@@ -206,7 +221,7 @@ function Write-A5Field([string]$Name, [string]$Value) {
     $Value = $Value.Substring(0, 240)
   }
 
-  Write-Output ($Name + '=' + $Value)
+  Write-A5Line ($Name + '=' + $Value)
 }
 
 function Stop-A5Uia([string]$Code) {
@@ -220,7 +235,7 @@ function Stop-A5Uia([string]$Code) {
     $Code = 'RUNBOOK_DRIFT'
   }
 
-  Write-Output ('UIA_STOP=' + $Code)
+  Write-A5Line ('UIA_STOP=' + $Code)
 }
 
 function ConvertTo-A5Hwnd([int]$Raw) {
@@ -447,7 +462,7 @@ function Get-A5EntryDecision($Items) {
   $remoteIndexes = @()
   $signoutIndexes = @()
 
-  for ($i = 0; $i -lt @($Items).Count; $i++) {
+  for ($i = 0; $i -lt @($Items).Count; $i = $i + 1) {
     $item = @($Items)[$i]
     $enabled = [bool]$item.Enabled
     $offscreen = [bool]$item.Offscreen
@@ -516,7 +531,7 @@ function Test-A5ArtifactSiblings($Names) {
 function Select-A5Files($Items) {
   $indexes = @()
 
-  for ($i = 0; $i -lt @($Items).Count; $i++) {
+  for ($i = 0; $i -lt @($Items).Count; $i = $i + 1) {
     $item = @($Items)[$i]
     $kind = [string]$item.Kind
 
@@ -567,7 +582,7 @@ function Test-A5ChromeName([string]$Name) {
 function Select-A5FileRows($Rows) {
   $indexes = @()
 
-  for ($i = 0; $i -lt @($Rows).Count; $i++) {
+  for ($i = 0; $i -lt @($Rows).Count; $i = $i + 1) {
     $row = @($Rows)[$i]
     $kind = [string]$row.Kind
 
@@ -605,7 +620,7 @@ function Test-A5SaveButtons($Names) {
   $count = 0
 
   foreach ($name in @($Names)) {
-    $count++
+    $count = $count + 1
 
     if (Test-A5Exact ([string]$name) 'Cancel') {
       $cancel = $true
@@ -656,7 +671,7 @@ function Get-A5ReplaceDecision($Names) {
 function Select-A5SignIn($Items) {
   $indexes = @()
 
-  for ($i = 0; $i -lt @($Items).Count; $i++) {
+  for ($i = 0; $i -lt @($Items).Count; $i = $i + 1) {
     $item = @($Items)[$i]
 
     if (-not (Test-A5Exact ([string]$item.Kind) 'Button')) {
@@ -692,7 +707,7 @@ function Select-A5SignIn($Items) {
 function Select-A5Edit($Items, [string]$Label, [string]$WindowTitle) {
   $indexes = @()
 
-  for ($i = 0; $i -lt @($Items).Count; $i++) {
+  for ($i = 0; $i -lt @($Items).Count; $i = $i + 1) {
     $item = @($Items)[$i]
 
     if (-not (Test-A5Exact ([string]$item.Kind) 'Edit')) {
@@ -774,9 +789,9 @@ function Initialize-A5Uia {
   }
 
   try {
-    Add-Type -AssemblyName UIAutomationClient
-    Add-Type -AssemblyName UIAutomationTypes
-    Add-Type -AssemblyName System.Windows.Forms
+    $null = Add-Type -AssemblyName UIAutomationClient
+    $null = Add-Type -AssemblyName UIAutomationTypes
+    $null = Add-Type -AssemblyName System.Windows.Forms
   } catch {
     Stop-A5Uia 'UIA_ADDTYPE'
     return $false
@@ -784,7 +799,7 @@ function Initialize-A5Uia {
 
   if (-not ('A5UiaNative' -as [type])) {
     try {
-      Add-Type -TypeDefinition $script:A5NativeSource
+      $null = Add-Type -TypeDefinition $script:A5NativeSource
     } catch {
       if (-not ('A5UiaNative' -as [type])) {
         Stop-A5Uia 'UIA_ADDTYPE'
@@ -847,13 +862,15 @@ function Get-A5SiblingNames($Element) {
   while ($child -and $guard -lt 80) {
     $names += [string]$child.Current.Name
     $child = $walker.GetNextSibling($child)
-    $guard++
+    $guard = $guard + 1
   }
 
   return $names
 }
 
 function Get-A5BoundHwnd($Element) {
+  # Do not use ++. Windows PowerShell 5.1 writes that operator to the success
+  # stream, so the caller would receive 0 plus the handle and refuse the click.
   $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
   $current = $Element
   $hwnd = [IntPtr]::Zero
@@ -885,7 +902,7 @@ function Get-A5BoundHwnd($Element) {
     }
 
     $current = $parent
-    $guard++
+    $guard = $guard + 1
   }
 
   return $hwnd
@@ -902,12 +919,18 @@ function Test-A5ElementBound($Element, [uint32]$ProcessId) {
 
   $hwnd = Get-A5BoundHwnd $Element
 
-  if ($hwnd -eq [IntPtr]::Zero) {
+  # A leaked success-stream integer must not be treated as a window handle.
+  if (-not ($hwnd -is [IntPtr]) -or $hwnd -eq [IntPtr]::Zero) {
     return $false
   }
 
   $owner = [uint32]0
-  [void][A5UiaNative]::GetWindowThreadProcessId($hwnd, [ref]$owner)
+
+  try {
+    [void][A5UiaNative]::GetWindowThreadProcessId($hwnd, [ref]$owner)
+  } catch {
+    return $false
+  }
 
   return $owner -eq $ProcessId
 }
@@ -940,7 +963,7 @@ function Test-A5Focused($Element, [uint32]$ProcessId) {
     return $false
   }
 
-  for ($i = 0; $i -lt $left.Count; $i++) {
+  for ($i = 0; $i -lt $left.Count; $i = $i + 1) {
     if ([int64]$left[$i] -ne [int64]$right[$i]) {
       return $false
     }
@@ -1118,7 +1141,7 @@ function Invoke-A5Entry([uint32]$ProcessId) {
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1165,7 +1188,7 @@ function Invoke-A5Entry([uint32]$ProcessId) {
     return
   }
 
-  if (Invoke-A5Pattern $again.Element $ProcessId) {
+  if (Test-A5IsTrue (Invoke-A5Pattern $again.Element $ProcessId)) {
     Write-A5Field 'ENTRY_INVOKED' '1'
   }
 }
@@ -1207,7 +1230,7 @@ function Invoke-A5FocusEdit([uint32]$ProcessId, [string]$Label) {
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1268,7 +1291,7 @@ function Invoke-A5TypeEdit([uint32]$ProcessId, [string]$Label, [string]$FilePath
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1320,7 +1343,7 @@ function Invoke-A5ClickSignIn([uint32]$ProcessId) {
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1331,7 +1354,7 @@ function Invoke-A5ClickSignIn([uint32]$ProcessId) {
     return
   }
 
-  if (Invoke-A5Pattern $again.Element $ProcessId) {
+  if (Test-A5IsTrue (Invoke-A5Pattern $again.Element $ProcessId)) {
     Write-A5Field 'SIGNIN_INVOKED' '1'
   }
 }
@@ -1358,7 +1381,7 @@ function Get-A5Names([uint32]$ProcessId) {
 }
 
 function Invoke-A5ReadLogin([uint32]$ProcessId) {
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1432,7 +1455,7 @@ function Invoke-A5ClickFiles([uint32]$ProcessId) {
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1443,7 +1466,7 @@ function Invoke-A5ClickFiles([uint32]$ProcessId) {
     return
   }
 
-  if (Invoke-A5Pattern $again.Element $ProcessId) {
+  if (Test-A5IsTrue (Invoke-A5Pattern $again.Element $ProcessId)) {
     Write-A5Field 'FILES_INVOKED' '1'
   }
 }
@@ -1517,7 +1540,7 @@ function Invoke-A5ClickDownload([uint32]$ProcessId) {
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1598,7 +1621,7 @@ function Invoke-A5ClickDownload([uint32]$ProcessId) {
     return
   }
 
-  if (Invoke-A5Pattern $menu[0] $ProcessId) {
+  if (Test-A5IsTrue (Invoke-A5Pattern $menu[0] $ProcessId)) {
     Write-A5Field 'DOWNLOAD_INVOKED' '1'
   }
 }
@@ -1664,7 +1687,7 @@ function Invoke-A5ReadSave([uint32]$ProcessId) {
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1700,7 +1723,7 @@ function Invoke-A5DialogButton([uint32]$ProcessId, [string]$Name, [string]$DoneF
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1718,7 +1741,7 @@ function Invoke-A5DialogButton([uint32]$ProcessId, [string]$Name, [string]$DoneF
     return
   }
 
-  if (Invoke-A5Pattern $buttons[0] $ProcessId) {
+  if (Test-A5IsTrue (Invoke-A5Pattern $buttons[0] $ProcessId)) {
     Write-A5Field $DoneField '1'
   }
 }
@@ -1744,7 +1767,7 @@ function Invoke-A5TypeDest([uint32]$ProcessId) {
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1783,7 +1806,7 @@ function Get-A5ReplaceLive([uint32]$ProcessId) {
 }
 
 function Invoke-A5ReadReplace([uint32]$ProcessId) {
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1810,7 +1833,7 @@ function Invoke-A5ClickReplaceNo([uint32]$ProcessId) {
     return
   }
 
-  if (-not (Publish-A5Grant $ProcessId)) {
+  if (-not (Test-A5IsTrue (Publish-A5Grant $ProcessId))) {
     return
   }
 
@@ -1828,7 +1851,7 @@ function Invoke-A5ClickReplaceNo([uint32]$ProcessId) {
     return
   }
 
-  if (Invoke-A5Pattern $buttons[0] $ProcessId) {
+  if (Test-A5IsTrue (Invoke-A5Pattern $buttons[0] $ProcessId)) {
     Write-A5Field 'REPLACE_NO_INVOKED' '1'
   }
 }
@@ -1901,7 +1924,7 @@ function Select-A5DiscoverEntry($Hits) {
 }
 
 function Invoke-A5Discover {
-  if (-not (Initialize-A5Uia)) {
+  if (-not (Test-A5IsTrue (Initialize-A5Uia))) {
     return
   }
 
@@ -1993,7 +2016,7 @@ function Invoke-A5Discover {
 }
 
 function Invoke-A5Action([string]$Name, [uint32]$ProcessId) {
-  if (-not (Initialize-A5Uia)) {
+  if (-not (Test-A5IsTrue (Initialize-A5Uia))) {
     return
   }
 
@@ -2019,19 +2042,20 @@ function Invoke-A5Action([string]$Name, [uint32]$ProcessId) {
 
 function Invoke-A5Session1Main {
   $script:A5Stopped = $false
+  Set-A5Exit 2
   Write-A5Field 'UIA_HELPER' '1'
   Write-A5Field 'UIA_PSEXEC_IS_NOT_A_PID' '1'
 
   if (-not (Test-A5Nonce $Nonce)) {
     Stop-A5Uia 'RUNBOOK_DRIFT'
-    return 2
+    return
   }
 
   Write-A5Field 'UIA_NONCE' $Nonce
 
   if (-not (Test-A5ActionName $Action)) {
     Stop-A5Uia 'RUNBOOK_DRIFT'
-    return 2
+    return
   }
 
   Write-A5Field 'UIA_ACTION' $Action
@@ -2039,14 +2063,14 @@ function Invoke-A5Session1Main {
 
   if ($hostStop) {
     Stop-A5Uia $hostStop
-    return 2
+    return
   }
 
   Write-A5Field 'UIA_HOST_SESSION' '1'
   Write-A5Field 'UIA_HOST_USER' 'ddewit'
 
-  if (-not (Initialize-A5Uia)) {
-    return 2
+  if (-not (Test-A5IsTrue (Initialize-A5Uia))) {
+    return
   }
 
   $desktop = ''
@@ -2059,7 +2083,7 @@ function Invoke-A5Session1Main {
 
   if (-not (Test-A5DesktopName $desktop)) {
     Stop-A5Uia 'UIA_DESKTOP'
-    return 2
+    return
   }
 
   Write-A5Field 'UIA_DESKTOP' 'Default'
@@ -2069,32 +2093,32 @@ function Invoke-A5Session1Main {
   } else {
     if (-not (Test-A5PidText $AttestedPid)) {
       Stop-A5Uia 'RUNBOOK_DRIFT'
-      return 2
+      return
     }
 
     Invoke-A5Action $Action ([uint32]$AttestedPid)
   }
 
   if ($script:A5Stopped) {
-    return 2
+    return
   }
 
   Write-A5Field 'UIA_DONE' '1'
-  return 0
+  Set-A5Exit 0
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-  $code = 2
+  $script:A5ExitCode = 2
 
   try {
-    $code = Invoke-A5Session1Main
+    Invoke-A5Session1Main | Out-Null
   } catch {
     if (-not $script:A5Stopped) {
       Stop-A5Uia 'UIA_FAULT'
     }
 
-    $code = 2
+    Set-A5Exit 2
   }
 
-  exit $code
+  exit $script:A5ExitCode
 }

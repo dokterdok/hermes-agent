@@ -1,5 +1,6 @@
 # Decision tests for the session-1 UIA helper. Not a Beelink phase.
-# Do not copy this file to the UAT machine. Do not invoke the helper's main.
+# Do not copy this file to the UAT machine. The only process spawn is a
+# rejected nonce, which returns before UI Automation.
 $ErrorActionPreference = 'Stop'
 
 $helper = Join-Path $PSScriptRoot 'NATIVE_A5_BEELINK_SESSION1_UIA.ps1'
@@ -279,25 +280,87 @@ $ready = Wait-A5Until $absentSample 3 @('FILES_ROW_ABSENT')
 Assert-Equal 'absent waits once' $script:A5WaitCalls 2
 Assert-Equal 'absent can clear' $ready.Decision.Stop ''
 
-$script:A5Stopped = $false
-$badStop = @(Stop-A5Uia 'hunter2')
-$secondStop = @(Stop-A5Uia 'UIA_FAULT')
-$script:A5Stopped = $false
-$badText = ($badStop -join '|')
-if ($badText.Contains('hunter2')) {
-  throw 'stop leaked'
+function Read-A5Console([scriptblock]$Body) {
+  $writer = New-Object System.IO.StringWriter
+  $previous = [Console]::Out
+  [Console]::SetOut($writer)
+  try {
+    & $Body | Out-Null
+  } finally {
+    [Console]::SetOut($previous)
+  }
+
+  return ($writer.ToString() -replace "`r", '')
 }
-Assert-Equal 'unknown stop' $badText 'UIA_STOP=RUNBOOK_DRIFT'
-Assert-Equal 'second stop suppressed' @($secondStop).Count 0
+
+Assert-Equal 'strict true rejects a stop string' (Test-A5IsTrue 'UIA_STOP=UIA_INVOKE_UNAVAILABLE') $false
+Assert-Equal 'strict true rejects false' (Test-A5IsTrue $false) $false
+Assert-Equal 'strict true accepts true' (Test-A5IsTrue $true) $true
 
 $script:A5Stopped = $false
-$badField = @(Write-A5Field 'Password' 'hunter2')
+$stopRead = Read-A5Console {
+  $pipeline = @(Stop-A5Uia 'hunter2')
+  $second = @(Stop-A5Uia 'UIA_FAULT')
+  if (($pipeline -join '|').Contains('hunter2') -or ($second -join '|').Contains('hunter2')) {
+    throw 'stop leaked'
+  }
+
+  Assert-Equal 'stop stays off the success stream' @($pipeline).Count 0
+  Assert-Equal 'second stop suppressed' @($second).Count 0
+}
+if ($stopRead.Contains('hunter2')) {
+  throw 'stop leaked'
+}
+Assert-Equal 'unknown stop' $stopRead.Trim() 'UIA_STOP=RUNBOOK_DRIFT'
+
 $script:A5Stopped = $false
-$badFieldText = ($badField -join '|')
-if ($badFieldText.Contains('hunter2')) {
+$fieldRead = Read-A5Console {
+  $pipeline = @(Write-A5Field 'Password' 'hunter2')
+  if (($pipeline -join '|').Contains('hunter2')) {
+    throw 'field write leaked'
+  }
+
+  Assert-Equal 'field stays off the success stream' @($pipeline).Count 0
+}
+if ($fieldRead.Contains('hunter2')) {
   throw 'field write leaked'
 }
-Assert-Equal 'rejected field' $badFieldText 'UIA_STOP=RUNBOOK_DRIFT'
+Assert-Equal 'rejected field' $fieldRead.Trim() 'UIA_STOP=RUNBOOK_DRIFT'
+
+$script:A5Stopped = $false
+$invokeRead = Read-A5Console {
+  function Invoke-A5FakePattern {
+    Stop-A5Uia 'UIA_INVOKE_UNAVAILABLE'
+    return $false
+  }
+
+  if (Test-A5IsTrue (Invoke-A5FakePattern)) {
+    Write-A5Field 'ENTRY_INVOKED' '1'
+  }
+}
+if ($invokeRead.Contains('ENTRY_INVOKED')) {
+  throw 'failed invoke counted as a click'
+}
+Assert-Equal 'failed invoke prints the stop' ($invokeRead.Trim()) 'UIA_STOP=UIA_INVOKE_UNAVAILABLE'
+
+$helperPath = Join-Path $PSScriptRoot 'NATIVE_A5_BEELINK_SESSION1_UIA.ps1'
+$pwshExe = Join-Path $PSHOME 'pwsh'
+if (-not (Test-Path -LiteralPath $pwshExe)) {
+  $pwshExe = Join-Path $PSHOME 'pwsh.exe'
+}
+$nonceProbe = & $pwshExe -NoProfile -File $helperPath -Action Entry -AttestedPid 42312 -Nonce 12
+$nonceText = (($nonceProbe | Out-String) -replace "`r", '').Trim()
+if ($nonceText -match '(?m)^2$') {
+  throw 'exit code leaked'
+}
+if ($nonceText.Contains('UIA_DONE')) {
+  throw 'bad nonce completed'
+}
+Assert-Equal 'bad nonce stops' ($nonceText.Contains('UIA_STOP=RUNBOOK_DRIFT')) $true
+Assert-Equal 'bad nonce still identifies the helper' ($nonceText.Contains('UIA_HELPER=1')) $true
+if ($LASTEXITCODE -ne 2) {
+  throw 'bad nonce exit'
+}
 
 if ($MyInvocation.InvocationName -eq $null) {
   # keep the test host alive
