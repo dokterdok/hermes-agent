@@ -103,13 +103,30 @@ def test_promote_requires_confirm_and_takes_over(home, tmp_path):
         srv._methods["groups.promote"](3, {"room_id": "room-1", "confirm": True})
     )
     assert promoted["authority_epoch"] == 2
+    assert promoted["executable"] is False
     assert promoted["previous_gateway_id"] == page["authority"]["gateway_id"]
 
     # The room is now hosted locally with full history + claim event.
+    # confirm=true is not a fence: the copied log stays, and execution does not.
     log = _result(srv._methods["groups.log"](4, {"room_id": "room-1"}))
     kinds = [event["kind"] for event in log["events"]]
     assert kinds == ["message.user"] * 3 + ["authority.claimed"]
     assert log["authority"]["epoch"] == 2
+    claim = log["events"][-1]
+    assert claim["payload"]["promoted_from_replica"] is True
+    from gateway.hosted_rooms import (
+        RoomQuarantinedError, append_event, default_db_path, local_authority_gateway_id)
+    with pytest.raises(RoomQuarantinedError):
+        append_event(
+            default_db_path(),
+            room_id="room-1",
+            event_id="after-confirm",
+            kind="message.user",
+            actor={"kind": "user", "id": "tek"},
+            payload={"text": "should not run"},
+            authority_gateway_id=local_authority_gateway_id(),
+            authority_epoch=promoted["authority_epoch"],
+        )
 
 
 def test_demote_fences_local_room_against_newer_epoch(home):

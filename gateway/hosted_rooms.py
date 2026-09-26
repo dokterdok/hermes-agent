@@ -1642,6 +1642,7 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
         room = _room_row(conn, _SELECT_ROOM_WITH_BYTES, (room_id,), room_id)
         if room["disbanded_at"] is not None:
             raise RoomNotFoundError("hosted room not found")
+        raise_if_unfenced_replica_promotion(conn, room_id, int(room["authority_epoch"]))
         existing = _load_event(conn, room_id, event_id)
         if existing is not None:
             if existing["kind"] != "room.renamed" or existing["payload_json"] != payload_json:
@@ -1657,6 +1658,82 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
             room_id, seq, event_id, "room.renamed", actor_json, int(room["authority_epoch"]), payload_json, now))
         updated = conn.execute(_SELECT_ROOM, (room_id,)).fetchone()
         return {**_room_from_row(updated), "event": _event_from_row(_load_event(conn, room_id, event_id))}
+
+
+def _unfenced_promotion_error() -> RoomQuarantinedError:
+    return RoomQuarantinedError(
+        "This Group Chat has an unverified authority takeover and is read-only "
+        "until its history is reconciled (unsafe_replica_promotion)."
+    )
+
+
+def raise_if_unfenced_replica_promotion(
+    conn: sqlite3.Connection, room_id: str, authority_epoch: int
+) -> None:
+    """Refuse execution when this room's log contains an unfenced replica promotion.
+
+    Every ``authority.claimed`` payload is checked, not only the current epoch.
+    A later ``claim_authority`` compare-and-swap does not erase ``promoted_from_replica``.
+    Retention quarantine is honored when that schema is installed. A higher epoch
+    is not fencing proof.
+    """
+    from importlib.util import find_spec
+    if find_spec("gateway.hosted_room_safety") is not None and table_exists(conn, "hosted_room_quarantine"):
+        from gateway.hosted_room_safety import _raise_if_quarantined
+        _raise_if_quarantined(conn, room_id)
+    if not table_exists(conn, "hosted_room_events"):
+        return
+    rows = conn.execute(
+        """SELECT authority_epoch, payload_json FROM hosted_room_events
+            WHERE room_id=? AND kind='authority.claimed'""",
+        (room_id,),
+    ).fetchall()
+    if not rows:
+        return
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, ValueError) as exc:
+            if int(row["authority_epoch"]) == int(authority_epoch):
+                raise _unfenced_promotion_error() from exc
+            continue
+        if isinstance(payload, dict) and payload.get("promoted_from_replica") is True:
+            raise _unfenced_promotion_error()
+
+
+def execution_blocked_room_ids(db_path: DbPath) -> frozenset[str]:
+    """Room ids that must not be scheduled or sent as local authority.
+
+    Read-only. ``append_event`` and driver admission re-check inside their
+    write transaction; this set only keeps the scheduler off the room.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return frozenset()
+    blocked: set[str] = set()
+    with closing(open_sqlite(path)) as conn:
+        names = {
+            str(row[0]) for row in conn.execute(
+                """SELECT name FROM sqlite_master WHERE type='table' AND name IN
+                   ('hosted_room_quarantine', 'hosted_rooms', 'hosted_room_events')"""
+            )
+        }
+        if "hosted_room_quarantine" in names:
+            blocked.update(str(row[0]) for row in conn.execute("SELECT room_id FROM hosted_room_quarantine"))
+        if {"hosted_rooms", "hosted_room_events"} <= names:
+            for room_id, payload_json in conn.execute(
+                """SELECT rooms.room_id, events.payload_json
+                     FROM hosted_rooms AS rooms
+                     JOIN hosted_room_events AS events ON events.room_id=rooms.room_id
+                    WHERE rooms.disbanded_at IS NULL AND events.kind='authority.claimed'"""
+            ):
+                try:
+                    payload = json.loads(payload_json)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(payload, dict) and payload.get("promoted_from_replica") is True:
+                    blocked.add(str(room_id))
+    return frozenset(blocked)
 
 
 def append_event(
@@ -1690,6 +1767,7 @@ def append_event(
             conn, """SELECT next_seq, event_bytes, authority_gateway_id, authority_epoch
                 FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""", (room_id,), room_id)
         _require_authority(room, authority_gateway_id, authority_epoch, "stale hosted room authority")
+        raise_if_unfenced_replica_promotion(conn, room_id, int(room["authority_epoch"]))
         seq = int(room["next_seq"])
         if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
             raise EventCursorConflictError("room changed before event publication")
@@ -1770,7 +1848,8 @@ def claim_authority(
     now: float | None = None) -> dict[str, Any]:
     """Fence a verified authority transfer with a compare-and-swap epoch; does not decide *when* takeover is
     safe (a replicated driver calls it only after its lease/quorum policy established that the previous
-    owner can no longer commit)."""
+    owner can no longer commit). A room whose log contains ``promoted_from_replica`` stays non-executable;
+    this compare-and-swap does not clear that marker."""
     room_id = _room_id(room_id)
     expected_gateway_id = _actor_id(expected_gateway_id, "expected_gateway_id")
     new_gateway_id = _actor_id(new_gateway_id, "new_gateway_id")
@@ -1784,6 +1863,7 @@ def claim_authority(
         row = _room_row(
             conn, """SELECT authority_gateway_id, authority_epoch, next_seq, event_bytes
                 FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""", (room_id,), room_id)
+        raise_if_unfenced_replica_promotion(conn, room_id, int(row["authority_epoch"]))
         existing_event = _load_event(conn, room_id, event_id)
         idempotent = existing_event is not None
         if idempotent:

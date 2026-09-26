@@ -145,10 +145,12 @@ class HostedRoomService:
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
         local_gateway_id = hosted_rooms.local_authority_gateway_id()
+        blocked = hosted_rooms.execution_blocked_room_ids(self.db_path)
         return tuple(
             HostedRoomBinding(str(room["room_id"]), *_authority(room))
             for room in hosted_rooms.list_rooms(self.db_path)
-            if str(room["authority_gateway_id"]) == local_gateway_id)
+            if str(room["authority_gateway_id"]) == local_gateway_id
+            and str(room["room_id"]) not in blocked)
 
     def _room(self, room_id: str) -> dict[str, Any]:
         return hosted_rooms.room_state(self.db_path, room_id=room_id)

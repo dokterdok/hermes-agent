@@ -1,10 +1,11 @@
 """Replica store and takeover primitives for hosted Group Chat rooms.
 
 Non-authority gateways keep a durable local copy of the room log (``ingest_page()``: idempotent,
-gap- and epoch-regression-safe) plus fenced primitives to continue the room when the authority host
-dies: ``promote_replica()`` resumes locally at ``epoch + 1`` with a lineage-proving ``authority.claimed``
-event; ``demote_room()`` records ``authority.lost`` when a returning stale authority is shown a newer
-epoch. Storage primitives only: the caller decides *when* takeover is safe.
+gap- and epoch-regression-safe). ``promote_replica()`` copies that log locally at ``epoch + 1`` and
+records ``authority.claimed`` with ``promoted_from_replica`` so Retention can quarantine the takeover.
+It does not prove the previous host stopped, and it does not admit new events or driver tasks.
+``demote_room()`` records ``authority.lost`` when a returning stale authority is shown a newer epoch.
+This is not host-loss recovery.
 """
 
 from __future__ import annotations
@@ -240,11 +241,12 @@ def _raise_if_quarantined(conn: sqlite3.Connection, room_id: str) -> None:
 def promote_replica(
     db_path: DbPath, *, room_id: Any, reason: Any = "authority-unreachable", now: float | None = None
 ) -> dict[str, Any]:
-    """Continue a replicated room on THIS gateway at ``epoch + 1``.
+    """Copy a replicated room onto this gateway at ``epoch + 1`` without executing it.
 
-    Copies the replica log into the authoritative store and appends a lineage-proving ``authority.claimed``
-    event, so wherever the claim replicates the old epoch is stale and every fenced primitive rejects it.
-    The caller decides takeover is safe; this makes it atomic and provable.
+    The claim keeps ``promoted_from_replica`` so Retention's unsafe-lineage trigger and
+    backfill quarantine the takeover. A confirmation flag, the new epoch, and releasing
+    the replica reservation are not proof the previous host is fenced. Admission stays
+    closed until that proof exists. This function does not implement host-loss recovery.
     """
     room_id = _room_id(room_id)
     if not isinstance(reason, str) or not reason or len(reason) > 200:
@@ -272,12 +274,13 @@ def promote_replica(
         _release_consumed_replica_reservation(conn, room_id)
         previous_gateway, previous_epoch = str(replica["authority_gateway_id"]), int(replica["authority_epoch"])
         target_epoch, claim_seq = previous_epoch + 1, int(replica["last_seq"]) + 1
-        # Same lineage fields as claim_authority. The fragment promoted_from_replica
-        # is what trg_hosted_events_quarantine_unsafe_lineage classifies as an
-        # unverified takeover; writing it would quarantine the room we just continued.
+        # Retention classifies this fragment as an unverified takeover
+        # (trg_hosted_events_quarantine_unsafe_lineage and the safety backfill).
+        # Omitting it lets confirm=true become executable authority. claim_authority
+        # stays without the fragment: that path is a compare-and-swap on one store.
         claim = _control_event("claimed", target_epoch, {
             "previous_gateway_id": previous_gateway, "authority_gateway_id": local_gateway,
-            "authority_epoch": target_epoch, "reason": reason})
+            "authority_epoch": target_epoch, "promoted_from_replica": True, "reason": reason})
         conn.execute("""INSERT INTO hosted_rooms
                (room_id, name, members_json, authority_gateway_id, authority_epoch, next_seq, event_bytes,
                 revision, created_at, updated_at, disbanded_at)
@@ -300,7 +303,7 @@ def promote_replica(
     return {
         "room_id": room_id, "authority_gateway_id": local_gateway, "authority_epoch": target_epoch,
         "previous_gateway_id": previous_gateway, "previous_epoch": previous_epoch, "claim_seq": claim_seq,
-        "latest_seq": claim_seq}
+        "latest_seq": claim_seq, "executable": False}
 
 
 def demote_room(
