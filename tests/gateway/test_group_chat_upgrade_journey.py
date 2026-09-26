@@ -230,15 +230,24 @@ async def test_shipped_group_upgrades_in_place_without_executing_history(tmp_pat
                 "params": {"room_id": ROOM_ID, "member_id": reviewer_id, "action": "retire"},
             })
             assert retired["result"]["member"]["membership"] == {"state": "former"}
-            with pytest.raises(RuntimeStoreError):
-                await restarted_connection.dispatch({
-                    "id": 6, "method": "groups.send",
-                    "params": {
-                        "room_id": ROOM_ID,
-                        "event_id": "revoked-work",
-                        "payload": {"text": "@reviewer Work again", "thread_id": "thread-2"},
-                    },
-                })
+            # Session dispatch returns the refusal. It does not raise, and it
+            # must not append the turn or queue another task.
+            denied = await restarted_connection.dispatch({
+                "id": 6, "method": "groups.send",
+                "params": {
+                    "room_id": ROOM_ID,
+                    "event_id": "revoked-work",
+                    "payload": {"text": "@reviewer Work again", "thread_id": "thread-2"},
+                },
+            })
+            assert denied["error"]["data"]["reason"] == "invalid_params"
+            assert "result" not in denied
+            refused_log = _events(reopened.db_path)
+            assert [event["kind"] for event in refused_log] == [
+                event["kind"] for event in after_send]
+            assert all(
+                event["event_id"] != rooms.user_event_id("revoked-work")
+                for event in refused_log)
             assert [
                 task["identity"] for task in driver.list_tasks(
                     reopened.db_path, room_id=ROOM_ID, status="queued")
