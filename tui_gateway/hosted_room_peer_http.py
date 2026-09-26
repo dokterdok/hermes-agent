@@ -224,6 +224,7 @@ class PeerRunsHTTPClient:
         self._status_cache: dict[str, dict[str, Any]] = {}
         self._recovery_backoff: dict[tuple[str, int], dict[str, Any]] = {}
         self._terminal_receipts: set[tuple[str, int]] = set()
+        self._lease_quarantine: set[tuple[str, int]] = set()
         self._room_scope: dict[str, Any] | None = None
 
     def bind_receipt_store(self, db_path: Path | str) -> None:
@@ -250,7 +251,8 @@ class PeerRunsHTTPClient:
             return
         self._room_scope, self._observation_key = scope, None
         for table in (
-                self._runs, self._status_cache, self._recovery_backoff, self._terminal_receipts):
+                self._runs, self._status_cache, self._recovery_backoff, self._terminal_receipts,
+                self._lease_quarantine):
             table.clear()
 
     def _receipt(self, task_id: str, execution_generation: int) -> dict[str, Any] | None:
@@ -361,8 +363,39 @@ class PeerRunsHTTPClient:
             task_id=checked.task_id, execution_generation=checked.execution_generation)
         return checked
 
+    def quarantine_lease_loss(self, *, task_id: str, execution_generation: int) -> None:
+        """Refuse a new run of this generation after the home lease was lost.
+
+        An existing receipt stays observable and ``stop_receipt`` stays allowed. A missing
+        receipt becomes ambiguous: this client must not POST another run of the same pair.
+        """
+        if (
+            not isinstance(task_id, str) or not task_id
+            or type(execution_generation) is not int or execution_generation < 1
+        ):
+            raise PeerRunsHTTPError("peer quarantine identity is invalid")
+        self._lease_quarantine.add((task_id, execution_generation))
+
+    def _quarantined(self, task_id: str, execution_generation: int) -> bool:
+        return (str(task_id), int(execution_generation)) in self._lease_quarantine
+
+    def _observe_or_refuse_quarantine(self, checked: HostedMemberDispatch) -> Mapping[str, Any]:
+        """Return a stored receipt, or refuse admission, for one quarantined generation."""
+        existing = self._receipt(checked.task_id, checked.execution_generation)
+        if existing is not None:
+            if any(existing[field] != getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS):
+                raise PeerRunsHTTPError("peer run receipt conflicts with the recovered dispatch")
+            return self._accepted(
+                checked, run_id=str(existing["run_id"]), session_id=str(existing["session_id"]),
+                replayed=True)
+        raise PeerRunsHTTPError(
+            "peer generation is quarantined after lease loss", ambiguous=True)
+
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
-        return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
+        checked = self._checked_dispatch(dispatch, grant)
+        if self._quarantined(checked.task_id, checked.execution_generation):
+            return self._observe_or_refuse_quarantine(checked)
+        return self._admit_dispatch(checked, grant=grant)
 
     def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
         """Recover one exact admission by receipt or idempotent POST replay."""
@@ -374,6 +407,9 @@ class PeerRunsHTTPClient:
             return self._accepted(
                 checked, run_id=str(existing["run_id"]), session_id=str(existing["session_id"]),
                 replayed=True)
+        if self._quarantined(checked.task_id, checked.execution_generation):
+            raise PeerRunsHTTPError(
+                "peer generation is quarantined after lease loss", ambiguous=True)
         key, now = (checked.task_id, checked.execution_generation), self.clock()
         backoff = self._recovery_backoff.get(key)
         if backoff is not None and now < float(backoff["next_attempt_at"]):
@@ -399,6 +435,9 @@ class PeerRunsHTTPClient:
             "session_id": session_id, "replayed": replayed}
 
     def _admit_dispatch(self, checked: HostedMemberDispatch, *, grant: str) -> Mapping[str, Any]:
+        if self._quarantined(checked.task_id, checked.execution_generation):
+            raise PeerRunsHTTPError(
+                "peer generation is quarantined after lease loss", ambiguous=True)
         session_id = self._session_id(checked, grant=grant)
 
         def admit() -> dict[str, Any]:

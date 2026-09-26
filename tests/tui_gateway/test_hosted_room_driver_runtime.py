@@ -228,6 +228,8 @@ class FakeSessionRPC:
                 "active": session_state["active"],
                 "task_id": session_state["task_id"],
             }
+            if type(session_state.get("execution_generation")) is int:
+                result["execution_generation"] = session_state["execution_generation"]
             if session_state.get("pending_approval"):
                 result["status"] = "waiting_for_approval"
                 result["pending_approval"] = dict(session_state["pending_approval"])
@@ -242,16 +244,26 @@ class FakeSessionRPC:
         session_id: str,
         source: str,
         expected_task_id: str,
+        expected_execution_generation: int | None = None,
     ):
         params = {
             "profile": profile,
             "session_id": session_id,
             "source": source,
             "expected_task_id": expected_task_id,
+            "expected_execution_generation": expected_execution_generation,
         }
         with self._lock:
             current = self.states[session_id]
-            if not current["active"] or current["task_id"] != expected_task_id:
+            state_generation = current.get("execution_generation")
+            generation_mismatch = expected_execution_generation is None or (
+                type(state_generation) is int and state_generation != expected_execution_generation
+            )
+            if (
+                not current["active"]
+                or current["task_id"] != expected_task_id
+                or generation_mismatch
+            ):
                 self.calls.append(("interrupt_skipped", params))
                 return {"interrupted": False}
             current["active"] = False
@@ -1905,6 +1917,73 @@ def test_cancel_never_interrupts_a_newer_task_in_the_same_session(db: Path):
     assert all(params["expected_task_id"] == identity.task_id for params in skipped)
     assert rpc.states[session_id]["active"] is True
     assert rpc.states[session_id]["task_id"] == "task-2"
+    assert runtime.stop(timeout=5.0)
+
+
+def test_cancel_never_interrupts_a_newer_generation_of_the_same_task(db: Path):
+    identity = _identity()
+    _admit(db, identity)
+    rpc = FakeSessionRPC(auto_complete=False)
+    runtime = _runtime(db, rpc)
+
+    runtime.start()
+    assert rpc.submitted.wait(1.0)
+    session_id = next(iter(rpc.states))
+
+    def switch_to_newer_generation() -> None:
+        with rpc._lock:
+            rpc.states[session_id]["active"] = True
+            rpc.states[session_id]["task_id"] = identity.task_id
+            rpc.states[session_id]["execution_generation"] = 99
+
+    rpc.on_info = switch_to_newer_generation
+    cancelled = runtime.cancel(identity, cancel_id="cancel-old-generation")
+
+    assert cancelled["status"] == "stopping"
+    assert not [call for call in rpc.calls if call[0] in {"interrupt", "interrupt_skipped"}]
+    assert rpc.states[session_id]["active"] is True
+    assert rpc.states[session_id]["execution_generation"] == 99
+    assert runtime.stop(timeout=5.0)
+
+
+def test_peer_lease_loss_quarantines_exact_generation_without_local_quarantine(db: Path):
+    identity = _identity()
+    _admit(db, identity)
+    quarantined: list[tuple[str, int]] = []
+
+    class LosingPeer:
+        def prepare(self, **_kwargs):
+            return {"session_id": "peer-session"}
+
+        def dispatch(self, **_kwargs):
+            raise state.StaleLeaseError("lease lost")
+
+        def quarantine_lease_loss(self, *, task_id, execution_generation):
+            quarantined.append((task_id, execution_generation))
+
+    rpc = FakeSessionRPC(auto_complete=False)
+
+    def refuse_local(**_kwargs):
+        raise AssertionError("local lease loss must not quarantine")
+
+    rpc.quarantine_lease_loss = refuse_local
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=[BINDING],
+        rpc=rpc,
+        transport_resolver=_peer_resolver(LosingPeer()),
+        turn_lock=RecordingTurnLocks(),
+        lease_ttl_seconds=30,
+        poll_interval_seconds=0.01,
+        active_poll_interval_seconds=0.01,
+    )
+    runtime.start()
+    _wait_for(lambda: quarantined == [(identity.task_id, 1)])
+    runtime._quarantine_peer_lease_loss(
+        runtime.rpc,
+        SimpleNamespace(identity=identity, execution_generation=1),
+    )
+    assert quarantined == [(identity.task_id, 1)]
     assert runtime.stop(timeout=5.0)
 
 

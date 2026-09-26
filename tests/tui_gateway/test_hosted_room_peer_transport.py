@@ -158,6 +158,27 @@ def test_peer_transport_dispatches_full_fenced_coordinates_and_exact_stop():
             session_id="group-session",
             source=ROOM_SESSION_SOURCE,
             expected_task_id="other-task",
+            expected_execution_generation=3,
+        )
+        is None
+    )
+    assert (
+        transport.interrupt(
+            profile="reviewer",
+            session_id="group-session",
+            source=ROOM_SESSION_SOURCE,
+            expected_task_id="task-1",
+            expected_execution_generation=4,
+        )
+        is None
+    )
+    assert (
+        transport.interrupt(
+            profile="reviewer",
+            session_id="group-session",
+            source=ROOM_SESSION_SOURCE,
+            expected_task_id="task-1",
+            expected_execution_generation=True,
         )
         is None
     )
@@ -166,9 +187,49 @@ def test_peer_transport_dispatches_full_fenced_coordinates_and_exact_stop():
         session_id="group-session",
         source=ROOM_SESSION_SOURCE,
         expected_task_id="task-1",
+        expected_execution_generation=3,
     )
     assert stopped["status"] == "cancelled"
     assert len([call for call in client.calls if call[0] == "stop"]) == 1
+
+
+def test_restart_stop_uses_caller_generation_not_remembered_generation():
+    client = FakePeerClient()
+    receipts = []
+
+    def stop_receipt(**kwargs):
+        receipts.append(kwargs)
+        return {"status": "cancelled"}
+
+    client.stop_receipt = stop_receipt
+    transport = PeerHostedRoomTransport(
+        binding=BINDING,
+        route=ROUTE,
+        client=client,
+        task_id="task-1",
+        execution_generation=9,
+    )
+    stopped = transport.interrupt(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        expected_task_id="task-1",
+        expected_execution_generation=3,
+    )
+    assert stopped["status"] == "cancelled"
+    assert receipts == [{
+        "task_id": "task-1",
+        "execution_generation": 3,
+        "grant": ROUTE.grant,
+    }]
+    assert transport.interrupt(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        expected_task_id="task-2",
+        expected_execution_generation=3,
+    ) is None
+    assert len(receipts) == 1
 
 
 def test_peer_transport_carries_each_turns_real_source_event_sequence():
@@ -229,6 +290,29 @@ def test_roomlink_falls_back_to_relay_on_retryable_prepare_failure():
 
     assert session["session_id"] == "group-session"
     assert client.active_link.name == "relay"
+
+
+def test_roomlink_quarantine_is_recorded_on_every_candidate():
+    direct = FakePeerClient()
+    relay = FakePeerClient()
+    recorded = {"direct": [], "relay": []}
+
+    def remember(name):
+        def quarantine_lease_loss(*, task_id, execution_generation):
+            recorded[name].append((task_id, execution_generation))
+        return quarantine_lease_loss
+
+    direct.quarantine_lease_loss = remember("direct")
+    relay.quarantine_lease_loss = remember("relay")
+    client = FailoverHostedRoomPeerClient([
+        RoomLinkCandidate("direct", "direct", "install-peer", direct),
+        RoomLinkCandidate("relay", "relay", "install-peer", relay),
+    ])
+    client.quarantine_lease_loss(task_id="task-1", execution_generation=3)
+    assert recorded == {
+        "direct": [("task-1", 3)],
+        "relay": [("task-1", 3)],
+    }
 
 
 def test_roomlink_never_falls_back_after_ambiguous_direct_failure():

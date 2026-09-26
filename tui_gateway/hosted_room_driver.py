@@ -34,7 +34,8 @@ class InternalSessionRPC(Protocol):
     """Normalized in-process session operations required by the room driver.
 
     ``submit`` durably reports one fenced turn's terminal result via ``on_terminal``;
-    ``interrupt`` acts only while the current turn still matches ``expected_task_id``.
+    ``interrupt`` acts only while the current turn still matches both
+    ``expected_task_id`` and ``expected_execution_generation``.
     """
 
     def resolve_exact(
@@ -50,6 +51,7 @@ class InternalSessionRPC(Protocol):
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
     def interrupt(
         self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_execution_generation: int,
     ) -> Mapping[str, Any] | None: ...
 
 
@@ -364,14 +366,18 @@ class HostedRoomRuntime:
             # absence is a safe Stop acknowledgement (errors raise); a peer stays uncertain.
             return transport is not None and transport is self.rpc
         info = transport.info(**_session_kw(profile, session_id))
+        generation = int(task["execution_generation"])
         if not _info_active(info):
-            # History was checked just before this probe: an inactive exact session cannot
-            # keep executing, and after a restart its process-local task marker is absent.
-            return True
-        if not _info_is_active_for(info, task["identity"], require_exact=True):
+            # History was checked just before this probe. An inactive session whose marker
+            # is absent (or names this exact attempt) cannot keep executing. A marker for
+            # a different task or generation is not an acknowledgement of this Stop.
+            return _inactive_attempt_acked(info, task["identity"], generation)
+        if not _info_is_active_for(
+            info, task["identity"], execution_generation=generation, require_exact=True):
             return False
         result = transport.interrupt(
-            **_session_kw(profile, session_id), expected_task_id=task["identity"].task_id)
+            **_session_kw(profile, session_id), expected_task_id=task["identity"].task_id,
+            expected_execution_generation=generation)
         return result is not None and (
             result.get("interrupted") is True
             or str(result.get("status") or "") in _STOP_ACK_STATUSES)
@@ -569,6 +575,23 @@ class HostedRoomRuntime:
         with self._status_lock:
             self._leases.pop(room_id, None)
 
+    def _quarantine_peer_lease_loss(
+        self, transport: InternalSessionRPC, attempt: state.TaskAttempt) -> None:
+        """Refuse a later re-admission of this peer generation. Local turns and exact Stop stay usable.
+
+        The transport instance is rebuilt per resolve; the quarantine has to land on the
+        cached peer client the transport still holds. This does not steal the lease or
+        start another run.
+        """
+        if transport is self.rpc:
+            return
+        quarantine = getattr(transport, "quarantine_lease_loss", None)
+        if not callable(quarantine):
+            return
+        quarantine(
+            task_id=attempt.identity.task_id,
+            execution_generation=int(attempt.execution_generation))
+
     def _release_idle_leases(self) -> None:
         for room_id, lease in tuple(self._leases.items()):
             with suppress(state.DriverStateError):
@@ -603,7 +626,11 @@ class HostedRoomRuntime:
                 if receipt is None:
                     return
                 state.settle_task(self.db_path, attempt, **asdict(receipt), clock=self.clock)
-        except (state.StaleLeaseError, state.StaleTaskError) as exc:
+        except state.StaleLeaseError as exc:
+            self._drop_lease(binding.room_id)
+            self._quarantine_peer_lease_loss(transport, attempt)
+            self._record_task_error(attempt, f"fenced: {exc}")
+        except state.StaleTaskError as exc:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
@@ -762,7 +789,10 @@ class HostedRoomRuntime:
         info = transport.info(**_session_kw(profile, session_id))
         self._report_pending_action(task, session_id=session_id, info=info)
         return _RecoveryInspection(
-            terminal=receipt, active=_info_is_active_for(info, task["identity"]),
+            terminal=receipt,
+            active=_info_is_active_for(
+                info, task["identity"],
+                execution_generation=int(task["execution_generation"])),
             status=str(info.get("status") or "") or None)
 
     def _inspect_recovery_session(
@@ -965,10 +995,42 @@ def _info_active(info: Mapping[str, Any]) -> bool:
     return bool(info.get("active", info.get("running", False)))
 
 
+def _reported_generation(info: Mapping[str, Any]) -> int | None:
+    value = info.get("execution_generation")
+    return value if type(value) is int else None
+
+
+def _inactive_attempt_acked(
+    info: Mapping[str, Any], identity: state.TaskIdentity, execution_generation: int) -> bool:
+    """Ack an inactive Stop only when the marker is absent or names this attempt."""
+    if info.get("task_id") not in (None, identity.task_id):
+        return False
+    reported = _reported_generation(info)
+    return reported is None or reported == execution_generation
+
+
 def _info_is_active_for(
-    info: Mapping[str, Any], identity: state.TaskIdentity, *, require_exact: bool = False) -> bool:
-    accepted = (identity.task_id,) if require_exact else (None, identity.task_id)
-    return _info_active(info) and info.get("task_id") in accepted
+    info: Mapping[str, Any], identity: state.TaskIdentity, *,
+    execution_generation: int | None = None, require_exact: bool = False,
+) -> bool:
+    """Whether ``info`` is a live turn of ``identity``.
+
+    A missing task id matches only the non-exact recovery probe. A reported generation
+    must equal ``execution_generation``. Exact Stop does not treat a missing generation
+    as this attempt.
+    """
+    if not _info_active(info):
+        return False
+    task_id = info.get("task_id")
+    if require_exact:
+        if task_id != identity.task_id:
+            return False
+    elif task_id not in (None, identity.task_id):
+        return False
+    reported = _reported_generation(info)
+    if reported is None:
+        return not require_exact
+    return execution_generation is not None and reported == execution_generation
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

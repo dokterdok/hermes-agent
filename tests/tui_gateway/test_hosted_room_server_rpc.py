@@ -101,14 +101,27 @@ def test_info_and_interrupt_are_exact_task_scoped():
         "active": True,
         "task_id": "task-a",
     }
+    assert rpc.interrupt(
+        profile="ops",
+        session_id="runtime",
+        source="bot_room",
+        expected_task_id="task-a",
+        expected_execution_generation=True,
+    ) is None
+    assert not [name for name, _params in calls if name == "session.interrupt"]
     rpc.interrupt(
         profile="ops",
         session_id="runtime",
         source="bot_room",
         expected_task_id="task-a",
+        expected_execution_generation=4,
     )
     params = next(params for method, params in calls if method == "session.interrupt")
     assert params["expected_hosted_task_id"] == "task-a"
+    assert params["expected_hosted_execution_generation"] == 4
+    with lock:
+        server._sessions["runtime"]["_hosted_room_task"]["execution_generation"] = 4
+    assert rpc.info(profile="ops", session_id="runtime", source="bot_room")["execution_generation"] == 4
 
 
 def test_local_approval_snapshot_and_response_use_exact_request():

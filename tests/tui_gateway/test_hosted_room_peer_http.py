@@ -309,6 +309,61 @@ def test_ambiguous_admission_replays_the_identical_idempotency_key(tmp_path):
     )["run_id"] == "run-recovered"
 
 
+def test_lease_loss_quarantine_blocks_new_admission_and_keeps_exact_stop(tmp_path):
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+    )
+    posts = []
+
+    def admit(path, **kwargs):
+        posts.append(path)
+        if path.endswith("/stop"):
+            return {"status": "interrupted", "run_id": "run-1"}
+        return {"run_id": "run-1", "status": "running", "replayed": False}
+
+    client._request = admit
+    assert client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")["run_id"] == "run-1"
+    posts.clear()
+    client.quarantine_lease_loss(task_id="task-1", execution_generation=1)
+    observed = client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert observed["run_id"] == "run-1" and observed["replayed"] is True
+    assert posts == []
+    stopped = client.stop_receipt(
+        task_id="task-1", execution_generation=1, grant="signed.room.grant")
+    assert stopped["status"] == "interrupted"
+    assert posts == ["/v1/runs/run-1/stop"]
+
+    fresh = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "fresh.db",
+    )
+    fresh.bind_room_scope(
+        room_id="room-1",
+        home_install_id="install-home",
+        authority_gateway_id="gateway-home",
+        authority_epoch=1,
+        member_id="member-reviewer",
+        target_install_id="install-peer",
+        target_profile="reviewer",
+    )
+    fresh.quarantine_lease_loss(task_id="task-1", execution_generation=1)
+    fresh._request = lambda *_args, **_kwargs: pytest.fail("quarantine must not admit")
+    with pytest.raises(PeerRunsHTTPError) as missing:
+        fresh.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert missing.value.ambiguous is True and missing.value.not_admitted is False
+    with pytest.raises(PeerRunsHTTPError) as recovered:
+        fresh.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert recovered.value.ambiguous is True and recovered.value.not_admitted is False
+    fresh._request = lambda *_args, **_kwargs: {
+        "run_id": "run-2", "status": "running", "replayed": False}
+    other = fresh.dispatch(
+        dispatch=_dispatch(execution_generation=2), grant="signed.room.grant")
+    assert other["execution_generation"] == 2 and other["run_id"] == "run-2"
+
+
 def test_ambiguous_admission_recovery_is_bounded_and_backed_off(tmp_path):
     now = [0.0]
     client = PeerRunsHTTPClient(
