@@ -38,6 +38,8 @@ def _ensure_quarantine_table(db):
     def create(conn):
         conn.execute('''CREATE TABLE IF NOT EXISTS hosted_room_quarantine (
             room_id TEXT PRIMARY KEY, reason TEXT NOT NULL, detected_at REAL NOT NULL)''')
+        from gateway.hosted_room_route_schema import initialize_route_schema
+        initialize_route_schema(conn)
     db._execute_write(create)
 
 
@@ -237,6 +239,10 @@ async def test_secondary_publication_lifetime_and_owner_fail_closed(tmp_path, mo
             task, registered['publication_id'], attempt=published['attempt'],
             error=RoomArtifactError('denied'))
         assert blocked['blocked'] is True and blocked['reason_code'] == 'authorization_or_verification'
+        cleared = service.record_secondary_publication_failure(
+            task, registered['publication_id'], attempt=published['attempt'],
+            error=ConnectionError('reset'))
+        assert cleared['blocked'] is True and cleared['reason_code'] == 'authorization_or_verification'
         clock['now'] = blocked['next_attempt_at'] + 1
         still = service.retry_secondary_publication(task, registered['publication_id'])
         assert still['accepted'] is False and still['blocked'] is True

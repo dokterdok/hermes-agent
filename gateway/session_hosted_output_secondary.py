@@ -153,6 +153,8 @@ def record_secondary_publication_failure(service, task, publication_id, *, attem
                                     else 'Group Chat secondary publication completion changed')
         if row['operation'] != 'publish' or int(row['attempts']) != attempt:
             raise RoomArtifactError('Group Chat output attempt changed')
+        if int(row['blocked']):
+            return _view(row, accepted=False, published=False, completed=False)
         try:
             metadata = _live_metadata(service, conn, key)
             events = _events(service, conn, key)
