@@ -23,8 +23,9 @@ class CanonicalHostedRoomService(CanonicalHostedOutputPublisher, HostedControls,
     def publish_settled_invitation_secondary(self, binding, task):
         """Invitation→NEW settlement calls the secondary consumer.
 
-        Primary ``publish_terminal`` does not call this. History and info do not.
-        Send-consent is not supplied.
+        Primary ``publish_terminal`` does not call this. ``prepare_room`` does
+        not. History and info do not. Send-consent is not supplied. A missing
+        primary digest returns ``SecondaryAwaitingPrimary`` and writes nothing.
         """
         from gateway.session_hosted_output_secondary_caller import (
             call_settled_invitation_secondary)
