@@ -10,7 +10,15 @@
 
 Either hash is this script. If the copy matches neither, stop with `RUNBOOK_DRIFT`. Do not edit the script to fix a mismatch, a port, a path, a username, or the line endings.
 
-**Phase 2 clicks** do not require the CUA tool to show `ExecutablePath`. Each click or type is gated by the SSH attestation in Phase 2. That attestation is not a Launch. The launch script bytes stay the two hashes above.
+**Session-1 helper (do not retype):** `review-packages/NATIVE_A5_BEELINK_SESSION1_UIA.ps1`
+
+**SHA-256, LF bytes (git blob and GitHub raw):** `6e133bd5638dbbe28ea4d3b44abb5aa2afb1feabca1feade45ef1fdcbfe7292f`
+
+**SHA-256, CRLF bytes (a Windows checkout; `*.ps1` is `text eol=crlf`):** `0b8338c9848cd09339bb7d3c52f6aa845e3b9ca1aab6dd019f90065e79b9529b`
+
+Either hash is this helper. Copy it only to `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\a5-session1-uia.ps1`. If the copy matches neither hash, stop `RUNBOOK_DRIFT`. Do not edit it on Beelink. Do not copy `NATIVE_A5_BEELINK_SESSION1_UIA.Tests.ps1`. Do not copy the helper into the attempt folder or over `launch-a5.ps1`.
+
+**Phase 2 input** does not require a CUA tool, and it does not require the CUA tool to show `ExecutablePath`. BarrX has no CUA actuator. Each click, type, or foreground change is gated by the SSH attestation below, then sent by the helper on session 1. That attestation is not a Launch. The helper is not a Launch. The launch script bytes stay the two hashes above.
 
 ## What the ns2 launch showed
 
@@ -77,16 +85,18 @@ Once `CMDLINE_OK` has been printed, an unexpected fault leaves the UAT pid runni
 - Do not `setx` anything. Do not grant ACLs. `icacls` in the script is read-only and has no `/grant` and no `/T`. A `no` ACE line does not authorize `icacls /grant`.
 - Do not edit `HKCU\Software\Classes\hermes` by hand. Do not delete files under `C:\Users\ddewit\AppData\Roaming\Hermes`.
 - Do not set `HERMES_DESKTOP_BOOT_FAKE` or `HERMES_DESKTOP_BOOT_FAKE_ERROR`.
-- Do not click `Retry`, `Repair`, `Gateway settings`, or `Open logs`.
-- Do not print, log, or screenshot the fixture password or username.
+- Do not click `Retry`, `Repair`, `Gateway settings`, `Use local gateway`, `Open logs`, or `File system`.
+- Do not print, log, or screenshot the fixture password or username. Do not record helper stderr. Do not print `$Error`.
 - If the script prints `KILL_REFUSED` or `KILL_ERROR`, stop. Do not escalate to an image-name kill.
 - If the script prints `UAT_EXE_ALREADY_RUNNING`, stop. Do not kill that pid. Do not launch the daily exe instead.
 - If daily Hermes is not seen, do not start it. If the script prints `DAILY_HERMES_DIED`, do not restart it.
 - Do not click a window because its title is Hermes, or because its image name is `Hermes.exe`.
 - Do not enable `SeDebugPrivilege`. Do not run the Phase 2 attestation as any user other than `ddewit`.
-- Do not start a Cursor private worker from this procedure. None is connected on Beelink. The worker is an alternate unlock only when the Phase 2 SSH attestation cannot be made CLEAN. Do not ask for one before that attestation has been tried.
-- Do not run Launch a second time against ns3. The Phase 2 attestation is not a Launch.
-- Do not put PsExec on `PATH`. Do not download PsExec. The script opens `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\PsExec64.exe` itself when that file exists.
+- Do not use daily Hermes `computer_use`, or any daily Hermes tool, to click the UAT window.
+- Do not start a Cursor private worker from this procedure. None is connected on Beelink. The worker is an alternate unlock only after the SSH attestation cannot be made CLEAN, or after the session-1 helper cannot start (`PSEXEC_MISSING`, `UIA_NOT_SESSION1`, `UIA_DESKTOP`, `UIA_ADDTYPE`). Do not ask for one before that SSH attestation and that helper have been tried. A worker is not permission to click by title.
+- Do not run Launch a second time against ns3. The Phase 2 attestation is not a Launch. The helper is not a Launch.
+- Do not put PsExec on `PATH`. Do not download PsExec. The launch script and the helper drive both open `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\PsExec64.exe` when that file exists.
+- A helper `UIA_STOP=` does not kill. Do not apply the launch exit table to the helper. `UIA_PSEXEC_IS_NOT_A_PID=1` means the PsExec exit code is the helper's exit, not a pid.
 
 ## What remains unproven
 
@@ -110,11 +120,14 @@ These substitutes are discarded:
 - A match on image name `Hermes.exe`. Both installs use that name.
 - `MainModule`, including `MainModule` run over SSH. That is the API that was blank.
 - One attestation for the whole session. Focus can move to daily Hermes between two clicks.
-- PsExec for this query. Image path is not a desktop property. PsExec here would be another interactive start.
+- PsExec for the path query. Image path is not a desktop property. The SSH CIM script is the only path query. PsExec `-i 1` is a later step: it is the session-1 UI actuator, and only after that SSH result is CLEAN. It is not a second Launch.
 - A second Launch of ns3, ns2, or ns, to "refresh" the path.
-- Requiring David to start a Cursor private worker before this SSH query exists. None is connected. The worker remains the alternate unlock when this SSH attestation cannot be made CLEAN.
+- Requiring David to start a Cursor private worker before this SSH query exists. None is connected. The worker remains the alternate unlock when this SSH attestation cannot be made CLEAN, or when the session-1 helper cannot start. It is not the first step.
+- Daily Hermes `computer_use` as the hand that clicks UAT. The daily process stays untouched.
 
-The hypothesis holds inside those limits. Immediately before each click or type, a read-only SSH PowerShell 5.1 process as `ddewit` prints `EXACT_EXECUTABLE_PATH` for that HWND's pid from CIM `Win32_Process`. The click is legal only when that path is the Phase-1 `UAT_EXE` line, byte for byte, and the rest of the CLEAN rule below is true.
+A CLEAN SSH path still cannot click by itself. BarrX has no CUA tool and no UIAutomation actuator. No Cursor private worker is connected on Beelink. The earlier resume saw a session-1 UIA window for the UAT pid and then stopped when the CUA path was blank. That blank path is now a reason to run the SSH script, not a reason to start a worker. The unlock is the PsExec64 already at `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\PsExec64.exe`, started with `-i 1` and without `-d`, so the helper runs on session 1. This checkout did not click and did not relaunch.
+
+The hypothesis holds inside those limits. Immediately before each helper action except Discover, a read-only SSH PowerShell 5.1 process as `ddewit` prints `EXACT_EXECUTABLE_PATH` for that pid from CIM `Win32_Process`. The helper may send one input only when that path is the Phase-1 `UAT_EXE` line, byte for byte, and the rest of the CLEAN rule below is true. The helper's own `UIA_PATH_OK=1` does not replace that transcript.
 
 ## Mechanical procedure
 
@@ -196,15 +209,15 @@ The script's own stops, and the only meaning of each:
 
 The live ns3 resume already has its one Launch. Do not run Launch again. Do not create ns4. Do not delete ns3. Use `UAT_EXE`, `UAT_MAIN_PID`, `ATTEMPT`, and `DEST_FILE` from that transcript. If this resume has no `WINDOW_STABLE` line from that one Launch, stop. Do not launch to obtain one.
 
-This phase does not launch Hermes. It does not kill a process by image name. It does not take a second Launch. It does not start a Cursor private worker. A blank path from the CUA tool is expected and is not, by itself, the stop. The stop is an SSH attestation that is not CLEAN. Do not click by title. Do not match image name `Hermes.exe`. Pid 42312 is the pid that stopped the last resume. It is not a hardcoded target. Attest the pid of the control you are about to use.
+This phase does not launch Hermes. It does not kill a process by image name. It does not take a second Launch. It does not start a Cursor private worker. A blank path from a CUA tool is expected and is not, by itself, the stop. The stop is an SSH attestation that is not CLEAN, or a helper transcript that is not success. Do not click by title. Do not match image name `Hermes.exe`. Pid 42312 is the pid that stopped the last resume. It is not a hardcoded target. Attest `DISCOVER_ENTRY_PID` from the helper, and keep that same pid for every later action.
 
 Do not take a screenshot while the password field is focused or contains text. Do not echo the username or the password. The attestation does not read `uat-password.txt` or `uat-username.txt`.
 
 #### Path attestation, before every click and every type
 
-Run this gate immediately before each click, each type, and each foreground change in Phase 2, Phase 3, and Phase 5. A CLEAN result covers that one action and then expires. Login does not cover Cancel. Cancel does not cover Save. Do not retry a blank query inside the same action. One CIM query per action.
+Run this gate immediately before each helper action in Phase 2, Phase 3, and Phase 5 except Discover. A CLEAN result covers that one action and then expires. Login does not cover Cancel. Cancel does not cover Save. Do not retry a blank query inside the same action. The script below is one CIM query. Do not run it twice for the same action. The helper's own re-check is a different process and does not authorize skipping this script.
 
-1. From UIA, take the element that will receive the input. Its candidate pid is `CurrentProcessId`. Its candidate HWND is `CurrentNativeWindowHandle` when that handle is not zero. When the handle is zero, use the top-level window HWND and still use the element's pid. If the pid is missing, or both handles are missing, stop `CUA_CANNOT_SEE_PROCESS_PATH`. If the top-level window's process id is present and differs from the element's pid, stop `ATTEST_PID_MISMATCH`. If UIA shows a session and it is not 1, stop `ATTEST_WRONG_SESSION`. Do not search processes by title or by image name.
+1. The candidate pid is the single `DISCOVER_ENTRY_PID` from a successful Discover. Use that same pid for every later action. Do not switch to another `DISCOVER_UAT_PID`, a child pid, or a pid chosen by title. If Discover has no successful `DISCOVER_ENTRY_PID`, stop. Do not search processes by title or by image name. Discover itself has no candidate pid and does not run this script.
 2. The Phase-1 `UAT_EXE` value is the exact characters after `UAT_EXE=` on that one transcript line. It must be byte-for-byte `C:\Users\ddewit\hermes-uat-desktop-renderer-reuse-20260923\source\apps\desktop\release\win-unpacked\Hermes.exe`. If it is anything else, stop `RUNBOOK_DRIFT`. Do not attest against a different path.
 3. On the existing SSH logon as `ddewit` to Beelink — the same logon that runs `powershell.exe` for Launch — start exactly:
 
@@ -371,41 +384,70 @@ The attestation process exit code is not a `launch-a5.ps1` exit and it is not a 
    2. `path` equals `C:\Users\ddewit\AppData\Local\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe`, equals `C:\Users\ddewit\AppData\Local\hermes\hermes-agent`, or has that root plus `\` as a prefix, compared ordinal-ignore-case. Also try the same test after removing one leading `\\?\` or `\??\`, and after replacing `/` with `\`. Any hit is `FOCUS_IS_DAILY`.
    3. `path` is not ordinal-equal to the staged UAT exe: `ATTEST_PATH_MISMATCH`. Do not case-fold this comparison. `ATTEST_MATCH=UAT` does not repair it. The staged path is ASCII. Ordinal equality of those characters is the byte-for-byte check.
    4. Command-line flags are not `1`, `1`, and `0`: `ATTEST_CMDLINE_REJECTED`. A blank command line is this stop. Do not enable `SeDebugPrivilege` to fill it. Path equality alone does not cover a process whose command line is not the ns3 wrapper.
-6. Re-read the same HWND's process id from UIA. If the HWND is gone or the pid differs, discard the stdout. Stop `CUA_CANNOT_SEE_PROCESS_PATH`. Do not attest a replacement pid inside this action. Do not sleep, do not switch windows, and do not start another UIA action between the pid read, this re-read, and the input.
-7. A result is CLEAN only when step 5 did not stop, step 6 matched, the attestation exit code is 0, and `ATTEST_MATCH=UAT` was printed. Send exactly one click, one type, or one foreground change to that HWND. Do not send it to whatever window is foreground unless that foreground HWND is the attested HWND. Do not type the password unless this action's own result is CLEAN.
+6. Do not send the input yourself, and do not re-read a HWND from a CUA tool. BarrX has no UIA handle. Immediately after a CLEAN parse, run the helper once for this action, on this pid. The helper waits for the control, re-queries CIM once by this pid, re-finds the element, and sends one input only when the element pid and the top-level HWND pid both equal this pid. A zero HWND fails closed. If the helper prints `UIA_PID_MISMATCH` or `UIA_TARGET_CHANGED`, stop. Do not attest a replacement pid inside this action. Do not sleep, do not switch windows, and do not start another helper action between this SSH transcript and that one helper run.
+7. A result is CLEAN only when step 5 did not stop, the attestation exit code is 0, and `ATTEST_MATCH=UAT` was printed. CLEAN is not the click. The helper sends the one click, type, or foreground change. Do not also click. Do not type the password unless this action's own SSH result is CLEAN and the helper action is `TypePassword`. The helper reads the secret file itself. Do not put the secret on the command line.
 8. The next click, type, or foreground change starts again at step 1.
 
-Cursor private worker: if this SSH attestation cannot be made CLEAN, stop with the line above. Leave the UAT pid and daily Hermes running. Do not click. Do not launch. A private worker on Beelink is the alternate unlock for a later decision. It is not connected. This procedure does not start one, and it does not wait for David to start one before the SSH query. A worker is not permission to click by title.
+Cursor private worker: if this SSH attestation cannot be made CLEAN, stop with the line above. Leave the UAT pid and daily Hermes running. Do not run the helper for that action. Do not click. Do not launch. A private worker on Beelink is the alternate unlock for a later decision. It is not connected. This procedure does not start one, and it does not wait for David to start one before the SSH query. A worker is not permission to click by title. The same holds when the helper cannot start. Try the SSH script and the helper first.
+
+#### Session-1 helper drive
+
+BarrX does not click. The helper clicks, and only through PsExec `-i 1` after the SSH gate. Do not use daily Hermes `computer_use`. Do not drive UIAutomation from the SSH PowerShell. That process is not on the interactive desktop.
+
+Copy the helper, unmodified, to `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\a5-session1-uia.ps1` and require one of the two helper hashes above. Confirm `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\PsExec64.exe` exists. If it does not, stop `PSEXEC_MISSING`. Do not download PsExec. Do not put it on `PATH`. Do not start a worker to replace it.
+
+The PowerShell host is `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`. Do not use `pwsh.exe`. Do not use `SysWOW64\WindowsPowerShell`. The helper's only `Get-Process` is `Get-Process -Id $PID`, to read its own session. It does not call `Get-Process` on the UAT pid. The SSH script above still does not call `Get-Process`.
+
+Generate a new nonce for every invocation, including Discover. It must match `^[1-9][0-9]{8,18}$`. Do not reuse a nonce. Discover omits `-AttestedPid`. Every other action passes `-AttestedPid` as the SSH candidate pid.
+
+```text
+C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\PsExec64.exe -accepteula -nobanner -i 1 -w C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\a5-session1-uia.ps1 -Action ACTION -AttestedPid PID -Nonce NONCE
+```
+
+Do not add `-d`, `-s`, or `-u`. Do not pass a password, a username, or a destination path. If the SSH channel is still open after 45 seconds, stop `UIA_HELPER_HUNG`. Do not kill Hermes. Do not `taskkill /IM`. You may stop only a `powershell.exe` whose command line contains `a5-session1-uia.ps1` when exactly one such process exists. If that identification is not exact, leave the process.
+
+Helper success, all required:
+
+- PsExec's exit code is 0. The transcript contains `UIA_PSEXEC_IS_NOT_A_PID=1`. That exit code is not a pid and it is not a launch exit.
+- `UIA_HELPER=1` is present. If stdout does not begin with that field, stop `RUNBOOK_DRIFT`.
+- Exactly one `UIA_NONCE=` equal to the nonce just sent. Any other value is stale. Stop `RUNBOOK_DRIFT`.
+- Exactly one `UIA_ACTION=` equal to the action just sent.
+- No `UIA_STOP=` line. One `UIA_STOP=` line is the stop. It wins over exit code 0 and over `UIA_PATH_OK=1`. Do not relabel it. Do not kill.
+- Exactly one `UIA_DONE=1`. Exit 0 without `UIA_DONE=1` is not success.
+- `UIA_HOST_SESSION=1`, `UIA_HOST_USER=ddewit`, and `UIA_DESKTOP=Default`.
+- Except on Discover: exactly one `UIA_PATH_OK=1` and exactly one `UIA_PID=` equal to the SSH pid. If the SSH transcript immediately before this run was not CLEAN, stop `RUNBOOK_DRIFT` even when the helper exits 0.
+
+Do not read stderr. Do not copy stderr into the receipt.
+
+Discover is read-only. It prints `DISCOVER_NOT_A_GRANT=1`. It is not a click and it is not CLEAN. Require exactly one `DISCOVER_ENTRY_PID=` and exactly one `DISCOVER_ENTRY_RUNG=` of `WINDOW`, `REMOTE`, or `SIGNOUT`. `DISCOVER_UAT_PID`, `DISCOVER_WINDOW`, and `DISCOVER_ROW_COUNT` may repeat. A `DISCOVER_WINDOW` title is not a grant. Do not act on the first `DISCOVER_UAT_PID` when it is not `DISCOVER_ENTRY_PID`. `DISCOVER_DAILY_SEEN` does not authorize touching daily Hermes. If a granted main process and a granted child both show an entry control, the helper keeps the main. If no `DISCOVER_ENTRY_PID` is printed, stop with the helper's `UIA_STOP`.
+
+Every later action uses that same pid. Focus and type are separate actions. Each one gets a new SSH attestation, a new nonce, and one helper run.
 
 #### Login steps
 
-Every click, every type, and every foreground change below includes a new run of the path attestation. The click on a field and the type into that field are two actions. Title chooses which control to attest. Title does not authorize the input. The control named in the step is the UIA element the gate attests. A heading, a description, or a hint is not a control. `Remote gateway sign-in required` is a heading. Do not click it. Words inside hint text are not a button. Do not accept `Sign out and sign in`. Do not click `Gateway settings`, `Use local gateway`, `Open logs`, `Retry`, or `Repair`. A daily window with the same title or the same button is not an entry control. The gate's `FOCUS_IS_DAILY` stop is that refusal.
+A heading, a description, or a hint is not a control. `Remote gateway sign-in required` is a heading. Do not accept `Sign out and sign in`. Do not click `Gateway settings`, `Use local gateway`, `Open logs`, `Retry`, or `Repair`. A daily window with the same title is not an entry control. `FOCUS_IS_DAILY` is that refusal. The helper chooses one entry control, in this order, and uses it once: the window titled exactly `Sign in to Hermes gateway`, else the button named exactly `Sign in to remote gateway`, else the button named exactly `Sign out & sign in`. Two matches on the rung that is reached stop `SIGNIN_CONTROL_AMBIGUOUS`. Absent controls wait up to 20 seconds and then stop `SIGNIN_CONTROL_ABSENT`. The helper does not fall through to another rung after a foreground failure.
 
-1. Choose one entry control on the UAT executable, in this order, and use only that one. A heading, a description, or a hint is not a control. `Remote gateway sign-in required` is a heading. Do not click it. Words inside hint text are not a button. Do not accept `Sign out and sign in`. Do not click `Gateway settings`, `Use local gateway`, `Open logs`, `Retry`, or `Repair`. If the rung you reach matches more than one control, stop `SIGNIN_CONTROL_AMBIGUOUS` and do not click.
-   1. If a UAT window titled exactly `Sign in to Hermes gateway` is open, bring that window to the foreground. Do not click `Sign in to remote gateway` or `Sign out & sign in` while it is open.
-   2. Else if a button named exactly `Sign in to remote gateway` is in a UAT window, click that button once.
-   3. Else if a button named exactly `Sign out & sign in` is in a UAT window, click that button once. That button is the boot overlay when a remote URL is set and the session cookie is missing.
-2. If none of those three controls is present within 20 seconds, stop `SIGNIN_CONTROL_ABSENT`. After one of them has been used, do not stop `SIGNIN_CONTROL_ABSENT` and do not click a second entry control.
-3. Click the field labeled `Username`. Type the fixture username from orchestrator memory or from `uat-username.txt`. Do not echo it. That field is on the login form. The form may already be in the window from step 1.1, or in the UAT window titled `Sign in to Hermes gateway` that opens after the button click. If that field is not present within 20 seconds after the entry control is used, stop `LOGIN_NOT_FINISHED`.
-4. Click the field labeled `Password`. Type the contents of `uat-password.txt`. Do not echo them.
-5. Click the button whose whole name is exactly `Sign in`. Do not press a button named `Sign in to remote gateway` or `Sign out & sign in` on this form. Do not click `Retry` or `Repair`.
-6. If the page shows `Invalid username or password.` or `Too many attempts. Please wait and try again.`, stop `LOGIN_REJECTED`. Do not retry.
-7. The login window is the UAT window titled exactly `Sign in to Hermes gateway`. If that window is still open 30 seconds after the `Sign in` click, stop `LOGIN_NOT_FINISHED`. The UAT main window staying open is not this stop.
-8. Continue only when that login window is gone, the `Username` field is not visible, and the UAT main process from `UAT_MAIN_PID` is still running. Do not continue while the login form is still showing.
+1. Run Discover once, with no SSH script and no `-AttestedPid`.
+2. `Entry`. Require `ENTRY_INVOKED=1` and `UIA_ENTRY_RUNG` of `WINDOW`, `REMOTE`, or `SIGNOUT`. Do not run `Entry` again.
+3. `FocusUsername`. Require `FOCUS_OK=1`.
+4. `TypeUsername`. Require `TYPED_USERNAME=1`. The helper reads `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\uat-username.txt` and strips one trailing newline. It does not print the text. An empty file stops `USERNAME_UNAVAILABLE`.
+5. `FocusPassword`. Require `FOCUS_OK=1`.
+6. `TypePassword`. Require `TYPED_PASSWORD=1`. The helper reads `uat-password.txt` the same way. It does not print the text. An empty file stops `PASSWORD_UNAVAILABLE`. Do not screenshot.
+7. `ClickSignIn`. Require `SIGNIN_INVOKED=1`. That button's whole name is `Sign in`, and its window title is `Sign in to Hermes gateway`. It is not `Sign in to remote gateway`.
+8. Poll `ReadLogin` at most six times. Run the first immediately. Separate the reads by at least four seconds. Do not start a read after 30 seconds from `ClickSignIn`. Each read is a new SSH attestation and a new nonce. Continue only when one read has `LOGIN_WINDOW=0`, `USERNAME_VISIBLE=0`, `LOGIN_ERROR=none`, and `UIA_DONE=1`. If the helper prints `UIA_STOP=LOGIN_REJECTED`, or `LOGIN_ERROR` is `invalid` or `throttle`, stop `LOGIN_REJECTED`. Do not retry. If the sixth read still has `LOGIN_WINDOW=1`, or 30 seconds have passed, stop `LOGIN_NOT_FINISHED`. The UAT main window staying open is not this stop. Do not relaunch. The only login strings that count are `Invalid username or password.` and `Too many attempts. Please wait and try again.` The helper does not print any other error text.
 
-### Phase 3 — CUA Cancel
+### Phase 3 — Cancel
 
-Every click in this phase runs the Phase 2 path attestation again, on that click's HWND and pid. A CLEAN result from login has expired.
+Every helper action runs the SSH attestation again on `DISCOVER_ENTRY_PID`. A CLEAN result from login has expired. The eligible `Files` control is a button, tab, or split button named exactly `Files` whose siblings are not the Artifacts set `All`, `Images`, `Files`, and `Links`. Do not click `File system`. Do not click a button named `Download`. The file row is one enabled, visible, non-folder `TreeItem`, `ListItem`, or `DataItem` whose name is not chrome. The helper opens that row's menu and invokes one `MenuItem` named `Download`.
 
-1. Find a control named exactly `Files` that does **not** sit with sibling tabs named `All`, `Images`, `Files`, and `Links`. That sibling set is the Artifacts tab. Do not use it.
-2. Do not click `File system`. Do not click `Download` until step 4.
-3. If no eligible `Files` control appears within 20 seconds, stop `FILES_CONTROL_ABSENT`. If more than one eligible `Files` control exists, stop `FILES_CONTROL_AMBIGUOUS`.
-4. Activate that `Files` control. If there is not exactly one file row, stop `FILES_ROW_AMBIGUOUS`.
-5. Activate the control named exactly `Download` on that row.
-6. Wait for a dialog titled exactly `Save File` owned by the UAT executable. If the buttons are not exactly `Cancel` and `Save`, stop `DIALOG_LOCALE_UNEXPECTED`.
-7. Click `Cancel`. Do not type a path. Do not click `Save`.
+1. `ClickFiles`. Require `FILES_INVOKED=1`. Absent waits up to 20 seconds (`FILES_CONTROL_ABSENT`). Two eligible controls stop `FILES_CONTROL_AMBIGUOUS` without waiting.
+2. `ClickDownload`. Require `DOWNLOAD_INVOKED=1` and `FILE_ROW_COUNT=1`. `UIA_STOP=FILES_ROW_AMBIGUOUS` means the eligible row count is not 1. Read `FILE_ROW_COUNT`. Zero is none. Greater than one is several. Do not pick a row. A missing menu item stops `DOWNLOAD_CONTROL_ABSENT`. Two menu items stop `DOWNLOAD_CONTROL_AMBIGUOUS`.
+3. `ReadSaveDialog`. Require `DIALOG_PRESENT=1` and `DIALOG_BUTTONS=Cancel,Save`. The dialog title is exactly `Save File` and it must belong to the attested pid. Two such windows stop `DIALOG_LOCALE_UNEXPECTED`. Absent waits up to 20 seconds and then stops `SAVE_DIALOG_ABSENT`. Do not switch pids to find a dialog.
+4. `ClickCancel`. Require `CANCEL_INVOKED=1`. Do not run `TypeDest`. Do not run `ClickSave`.
 
 ### Phase 4 — assert Cancel wrote nothing
+
+Run this from the SSH PowerShell, not through PsExec and not through the helper:
 
 ```text
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\launch-a5.ps1 -Phase AssertDestEmpty
@@ -413,13 +455,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\ddewit\AppData\
 
 Continue only when the exit code is 0 and the output contains `DEST_EMPTY`. `CANCEL_WROTE_OR_DIRTY` (exit 21) or `ATTEMPT_MISSING` (exit 23) stops the procedure. Do not delete the unexpected file and continue.
 
-### Phase 5 — CUA Save
+### Phase 5 — Save
 
-Every click and the type into `File name:` run the Phase 2 path attestation again. Repeat Phase 3 steps 4 through 6 on the same row. In the box labeled `File name:`, replace the contents with the exact `DEST_FILE` path from Phase 1. Click `Save`.
+Every helper action runs the SSH attestation again. Repeat the download and the save-dialog read. If Phase 1 `DEST_FILE` is not `C:\Users\ddewit\hermes-uat-a5-ns3-20260926\dest\uat-download.bin`, stop `RUNBOOK_DRIFT` and do not type. The helper types that path itself. Do not pass it as an argument.
 
-If a replace confirmation appears, click `No` when that exact button exists. Otherwise stop `REPLACE_PROMPT`. Do not click `Yes`.
+1. `ClickDownload`. Same success lines as Phase 3.
+2. `ReadSaveDialog`. Same success lines as Phase 3.
+3. `TypeDest`. Require `DEST_SET=1`. The file-name control is the one `Edit` or `ComboBox` named exactly `File name:`. Any other count stops `DIALOG_LOCALE_UNEXPECTED` before the grant, or `UIA_TARGET_CHANGED` after it. A read-only value does not fall through to keystrokes.
+4. `ClickSave`. Require `SAVE_INVOKED=1`.
+5. `ReadReplace`. Require `REPLACE_WINDOW=0` or `REPLACE_WINDOW=1`, with `UIA_DONE=1`. A window whose buttons are `Yes` and `No`, and not `Save`, is the prompt. The Save File dialog is not a prompt. `Yes` without `No` stops `REPLACE_PROMPT`. Do not click `Yes`.
+6. If `REPLACE_WINDOW=1`, run `ClickReplaceNo` and require `REPLACE_NO_INVOKED=1`. If the prompt is gone or malformed, the helper stops `REPLACE_PROMPT` and does not click. If `REPLACE_WINDOW=0`, do not run `ClickReplaceNo`.
 
 ### Phase 6 — record the hash
+
+Run this from the SSH PowerShell, not through PsExec and not through the helper:
 
 ```text
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\launch-a5.ps1 -Phase Hash
@@ -467,4 +516,14 @@ Re-review 5 checked that rename against the gate. No attestation stop line is a 
 
 Re-review 5 also required the daily prefix test to use `Substring` and `String.Equals`. `String.StartsWith` with a `StringComparison` argument is off this path, so a binder miss cannot throw after a real UAT path has been printed and turn that match into `CUA_CANNOT_SEE_PROCESS_PATH`. The prefix rule is unchanged: ordinal-ignore-case equality with the daily exe or the daily root, or a longer path whose first characters are that root plus `\`.
 
-**Adversarial review: CLEAN.** Re-review count: 6. No open finding inside this procedure. Native Files PASS is not claimed. ns, ns2, and the evidence attempt stay frozen. This procedure does not reboot, change the reserve, grant an ACE, or take a second launch of a user-data directory that may be `booting`. Beelink was not executed from this checkout. `LEAVE_UAT_RUNNING` is a finished stop: report the pid and do not clear it.
+That pass was re-review 6 of the SSH gate. Re-review 7 is the session-1 helper that sends the input.
+
+Reviewer question for this delta: would BarrX start `agent worker start` before trying the helper, use daily Hermes `computer_use`, click a Discover title or the first `DISCOVER_UAT_PID`, skip the SSH script because `UIA_PATH_OK=1`, treat the PsExec exit as a pid or a launch exit, kill on `UIA_STOP`, relaunch ns3 or start ns4, click the Artifacts `Files` tab or a `Download` button, type the destination before `AssertDestEmpty`, or call the hash PASS?
+
+The actuator is PsExec `-i 1` without `-d`, `-s`, or `-u`, running the helper. That is not the path query. Re-review 4 refused PsExec inside the SSH attestation, and that refusal still stands: the script in the fence above is unchanged and still says not to use PsExec. The helper runs only after a CLEAN parse of that script, except Discover, which does not click and prints `DISCOVER_NOT_A_GRANT=1`. `UIA_PATH_OK=1` does not replace `ATTEST_MATCH=UAT`. `UIA_STOP=` wins over helper exit 0. The launch exit table does not apply. `UIA_PSEXEC_IS_NOT_A_PID=1` is that distinction. A hung helper stops `UIA_HELPER_HUNG` and does not kill Hermes.
+
+Discover may list more than one granted pid. The entry pid prefers `role=main` when both a main and a child show an entry control. Later actions do not switch pids. A save dialog on another pid stops `SAVE_DIALOG_ABSENT`. Titles are not grants. Entry order is still the login window, then `Sign in to remote gateway`, then `Sign out & sign in`. Headings are not clicks. `Sign in` is a separate action from those entry buttons. Files rejects the Artifacts sibling set and `File system`. Download is a `MenuItem`. Cancel finishes, then Phase 4 runs `launch-a5.ps1 -Phase AssertDestEmpty` from the SSH PowerShell, and only then does Phase 5 type and save. Phase 6 prints `HASH_RECORDED_NOT_A_PASS` and is not PASS. The helper has no password parameter, does not print the secret, and does not take a screenshot. Unknown stop text and unknown field names become `RUNBOOK_DRIFT` instead of echoing the rejected text.
+
+The worker is still not a step. It is an alternate only after SSH cannot be made CLEAN or the helper cannot start. This procedure does not start one. It does not relaunch. ns, ns2, and the evidence attempt stay frozen. The launch script bytes and both launch hashes above are unchanged. Desktop product strings are unchanged. Beelink was not executed from this checkout. The decision tests call the helper's functions; they do not run its main, and they are not copied to Beelink.
+
+**Adversarial review: CLEAN.** Re-review count: 7. No open finding inside this procedure. Native Files PASS is not claimed. This procedure does not reboot, change the reserve, grant an ACE, or take a second launch of a user-data directory that may be `booting`. `LEAVE_UAT_RUNNING` is a finished stop: report the pid and do not clear it. A helper stop leaves both trees running.
