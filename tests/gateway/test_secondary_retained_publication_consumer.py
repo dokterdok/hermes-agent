@@ -81,7 +81,9 @@ async def test_consumer_publish_retry_and_completion_keep_provenance(tmp_path, m
 @pytest.mark.asyncio
 async def test_consumer_rejects_consent_and_forged_routes(tmp_path, monkeypatch):
     _primary, _secondary_counts, _settled = _fixtures()
+    from tests.gateway.test_secondary_retained_publication import _drop_secondary
     async for authority, service, runner, task in _settled(tmp_path, monkeypatch):
+        _drop_secondary(authority.db)
         before = _primary(authority.db)
         changes = authority.db._conn.total_changes
         with pytest.raises(RoomArtifactError, match='send consent is not publication authority'):
