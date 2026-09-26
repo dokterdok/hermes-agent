@@ -6,9 +6,9 @@
 
 **Launch script (do not retype):** `review-packages/NATIVE_A5_BEELINK_EARLY_EXIT_LAUNCH.ps1`
 
-**SHA-256, LF bytes (git blob and GitHub raw):** `3e164392f68210dbf380f6ab28f960cc0c8b216f87f2ebf9b546fab543441cfe`
+**SHA-256, LF bytes (git blob and GitHub raw):** `1690065764519ea4505cf0fafeceb356a30c8855ef27929315b4d14382afb4ae`
 
-**SHA-256, CRLF bytes (a Windows checkout; `*.ps1` is `text eol=crlf`):** `504683729b1ff05efe6c4799bb8078123a3bd64c77e0422a106c27a0466b7875`
+**SHA-256, CRLF bytes (a Windows checkout; `*.ps1` is `text eol=crlf`):** `91e3af48599045363bcfe24fa1fb24ccb7221fc598dfcad289ebb10f6615e6ab`
 
 Either hash is this script. If the copy matches neither, stop with `RUNBOOK_DRIFT`. Do not edit the script to "fix" a mismatch, a port, a path, a username, or the line endings.
 
@@ -31,6 +31,10 @@ The owned Files fixture on `127.0.0.1:54573` had returned HTTP 200. `HERMES_DESK
 `apps/desktop/electron/windows-sandbox-fallback.ts` defines `WINDOWS_SANDBOX_BREAKPOINT_EXIT = -2147483645` and documents the matching Chromium failure: a sandboxed GPU or renderer dies with `STATUS_BREAKPOINT`, then the browser process aborts with "GPU process isn't usable. Goodbye." The in-app recovery is not immediate. `decideWindowsSandboxLaunch` tolerates one mid-boot abort, writes `windows-sandbox-fallback.json` with `state: booting`, and enables `--no-sandbox` only on the next consecutive abort (or immediately when argv already contains `--no-sandbox`, or when `ELECTRON_DISABLE_SANDBOX` is `1`). `writeSandboxMarker` runs at startup, before `app.ready`, only if that JavaScript runs.
 
 `apps/desktop/electron/main.ts` applies `HERMES_DESKTOP_USER_DATA_DIR` with `app.setPath('userData', ...)` only when the variable is set in the process that actually executes the script. Chromium itself honors `--user-data-dir` from argv before that script runs. Both are required. A profile directory that never receives `Local State` or `windows-sandbox-fallback.json` was not the profile of the process that died.
+
+`resolveHermesHome()` returns `HERMES_HOME` before it considers `%LOCALAPPDATA%\hermes`. The wrapper sets `HERMES_HOME` to `C:\Users\ddewit\hermes-uat-a5-ns-20260926\hermes` and sets `LOCALAPPDATA` to `C:\Users\ddewit\AppData\Local`. The real local app-data path is what the AppContainer profile needs. The explicit `HERMES_HOME` is what keeps that pin from becoming the daily install at `C:\Users\ddewit\AppData\Local\hermes`. The script stops if the wrapper text does not contain both pins, or if it points `LOCALAPPDATA`, `APPDATA`, or `HOME` back at the attempt.
+
+On a fresh user-data directory, `--no-sandbox` already on argv makes `decideWindowsSandboxLaunch` write `windows-sandbox-fallback.json` with `state: booting` and `shouldAttemptAclRepair` returns false, so this launch does not run `icacls /grant`. A window that actually reveals rewrites that marker to `state: ok`, because the sticky flag is false when the flag was already on argv. A crash before that reveal leaves `state: booting`. The next start of that same user-data would run `icacls /grant *S-1-15-2-2:(OI)(CI)(RX) /T` on `path.dirname(process.execPath)`, which is the staged exe directory. Do not start that user-data again. Do not copy the marker into `AppData\Roaming\Hermes`. Do not point that grant at the daily exe.
 
 `desktop.log` is `HERMES_HOME\logs\desktop.log`. `rememberLog` flushes asynchronously after 120ms. `installCrashForensics` flushes on a JavaScript exception. A native `STATUS_BREAKPOINT` abort does not take that path, so a missing `desktop.log` does not by itself prove the script never started.
 
@@ -80,7 +84,7 @@ Falsify on the next launch, which passes `--no-sandbox` and `--user-data-dir` on
 - If the script prints `KILL_REFUSED` or `KILL_ERROR`, stop. Do not escalate to an image-name kill.
 - If the script prints `UAT_EXE_ALREADY_RUNNING`, stop. Do not kill that pid. Do not launch the daily exe instead.
 - If daily Hermes is not seen, do not start it. If the script prints `DAILY_HERMES_DIED`, do not restart it.
-- One `Launch` only. Do not run `Launch` again in this procedure.
+- One `Launch` only. Do not run `Launch` again in this procedure. A crash can leave `user-data\windows-sandbox-fallback.json` at `state: booting`. Starting that directory again makes the app grant an AppContainer ACE on the staged exe tree. Do not do that grant yourself.
 
 ## What remains unproven
 
@@ -96,7 +100,7 @@ Run the phases in order. After any `STOP` line, or any PowerShell exit code othe
 2. From Beelink, request `http://127.0.0.1:54573/api/health` with a 5 second timeout. Do not scan other ports.
 3. If the status is not 200, bring the existing owned fixture and reverse tunnel back with the Windows listen port fixed at **54573**. That is the port the script writes into `connection.json`. Do not choose another port. Do not edit the script. If health is still not 200, stop `FIXTURE_DEAD`.
 4. Confirm `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\uat-password.txt` exists. Do not print its contents. If the username is not already in orchestrator memory from that bring-up and `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\uat-username.txt` does not exist, stop `USERNAME_UNAVAILABLE`. Do not read a Linux process environment to discover it.
-5. Copy `review-packages/NATIVE_A5_BEELINK_EARLY_EXIT_LAUNCH.ps1` from this PR, unmodified, to `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\launch-a5.ps1`. Compute SHA-256 of those bytes. It must equal `3e164392f68210dbf380f6ab28f960cc0c8b216f87f2ebf9b546fab543441cfe` (LF) or `504683729b1ff05efe6c4799bb8078123a3bd64c77e0422a106c27a0466b7875` (CRLF). Otherwise stop `RUNBOOK_DRIFT`.
+5. Copy `review-packages/NATIVE_A5_BEELINK_EARLY_EXIT_LAUNCH.ps1` from this PR, unmodified, to `C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\launch-a5.ps1`. Compute SHA-256 of those bytes. It must equal `1690065764519ea4505cf0fafeceb356a30c8855ef27929315b4d14382afb4ae` (LF) or `91e3af48599045363bcfe24fa1fb24ccb7221fc598dfcad289ebb10f6615e6ab` (CRLF). Otherwise stop `RUNBOOK_DRIFT`.
 
 ### Phase 1 — launch
 
@@ -126,7 +130,7 @@ The script's own stops, and the only meaning of each:
 | 5 | `ATTEMPT_EXISTS` | `C:\Users\ddewit\hermes-uat-a5-ns-20260926` already exists. Do not delete it. |
 | 6 | `PSEXEC_MISSING` | `PsExec.exe` / `PsExec64.exe` is not on `PATH`. Do not download PsExec. |
 | 7 | `PREIMAGE_EXPORT_FAILED` | The `hermes` protocol key could not be exported. Do not delete it. |
-| 8 | `UAT_EXE_ALREADY_RUNNING`, `LAUNCH_IDENTITY_MISSING`, `UAT_MAIN_MISSING`, `WRAPPER_MISSING_NO_SANDBOX`, `WRAPPER_UNSAFE`, `CONNECTIONS_JSON_PRESENT`, `ACTIVE_PROFILE_BYTES` | Process did not come up as specified. `UAT_EXE_ALREADY_RUNNING` prints a pid. Do not kill that pid. Do not switch to the daily exe. |
+| 8 | `UAT_EXE_ALREADY_RUNNING`, `LAUNCH_IDENTITY_MISSING`, `UAT_MAIN_MISSING`, `WRAPPER_MISSING_NO_SANDBOX`, `WRAPPER_HOME_UNPINNED`, `WRAPPER_REDIRECTS_PROFILE`, `WRAPPER_UNSAFE`, `CONNECTIONS_JSON_PRESENT`, `ACTIVE_PROFILE_BYTES` | Process did not come up as specified. `UAT_EXE_ALREADY_RUNNING` prints a pid. Do not kill that pid. Do not switch to the daily exe. `WRAPPER_REDIRECTS_PROFILE` means the wrapper pointed a profile root at the attempt. Do not launch with that wrapper. |
 | 9 | `EARLY_EXIT` | UAT Hermes exited. `UAT_EXIT=` is the code. Do not relaunch. |
 | 10 | `WRONG_OWNER` | Process identity was not `ddewit`. |
 | 11 | `WRONG_SESSION` | Process was not in session 1. Do not try another session. |
@@ -204,7 +208,8 @@ Checked and kept:
 - `PSEXEC_PID_UNPARSED` does not stop the launch and does not pick a process by title. The wrapper must write `OWNER_OK` before Hermes starts, and the script still requires the staged exe path, session 1, owner `ddewit`, `--user-data-dir` of the new attempt, and `--no-sandbox`.
 - The staged exe and the daily exe are different constants. Equality stops the launch. A missing staged exe does not fall through to the daily exe.
 - The evidence attempt is read-only. The new attempt name is one constant. Rollback `Remove-Item` runs only when this invocation created that exact path and PsExec was not started. It cannot target `C:\Users\ddewit` or the evidence folder.
-- `LOCALAPPDATA` is pinned to the real profile inside the wrapper, and only after `%USERNAME%` is `ddewit`, so a `SYSTEM` PsExec exit does not retarget the user profile and does not start Hermes.
+- `LOCALAPPDATA` is pinned to the real profile inside the wrapper, and only after `%USERNAME%` is `ddewit`, so a `SYSTEM` PsExec exit does not retarget the user profile and does not start Hermes. `HERMES_HOME` is pinned to the attempt in the same wrapper, so that real `LOCALAPPDATA` is not used as the Hermes install root. The script refuses a wrapper that drops either pin or that points `appdata`, `home`, or `localappdata` at the attempt.
+- The first launch does not grant an AppContainer ACE. A second launch of a user-data dir left in `state: booting` would, on the staged exe directory only. The procedure never takes that second launch.
 - `--no-sandbox` and `ELECTRON_DISABLE_SANDBOX=1` exist only in the UAT wrapper. There is no `setx` and no machine-wide sandbox disable.
 - `icacls` is a directory read with no `/grant` and no `/T`. AeDebug is printed and not written. A `no` ACE line is not a grant. Daily's surviving gpu-process is why the runbook does not repair the host.
 - The protocol key is exported before launch. It is deleted and re-imported only by the script, and only after a successful export or an English "unable to find" result. Any other export failure stops before launch and does not delete the key. The script tries `reg.exe import` twice. If both fail it prints `PROTOCOL_RESTORE_FAILED` without hiding an earlier stop code. BarrX then imports that same preimage once and does not `reg delete`. Hash and dest-assert phases do not touch the key, so a later daily registration is not removed. A restore failure after `WINDOW_STABLE` leaves the UAT process running and does not start CUA.

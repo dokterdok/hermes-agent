@@ -447,6 +447,18 @@ exit /b %RC%
     Stop-A5 8 'WRAPPER_MISSING_NO_SANDBOX'
   }
 
+  if ($wrapRaw -notlike '*HERMES_HOME=C:\Users\ddewit\hermes-uat-a5-ns-20260926\hermes*') {
+    Stop-A5 8 'WRAPPER_HOME_UNPINNED'
+  }
+
+  if ($wrapRaw -notlike '*LOCALAPPDATA=C:\Users\ddewit\AppData\Local*') {
+    Stop-A5 8 'WRAPPER_REDIRECTS_PROFILE'
+  }
+
+  if ($wrapRaw -like '*hermes-uat-a5-ns-20260926\localappdata*' -or $wrapRaw -like '*hermes-uat-a5-ns-20260926\appdata*' -or $wrapRaw -like '*hermes-uat-a5-ns-20260926\home*') {
+    Stop-A5 8 'WRAPPER_REDIRECTS_PROFILE'
+  }
+
   if ($wrapRaw -like '*uat-password*' -or $wrapRaw -like '*BOOT_FAKE=1*') {
     Stop-A5 8 'WRAPPER_UNSAFE'
   }
