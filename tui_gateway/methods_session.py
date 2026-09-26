@@ -1014,9 +1014,14 @@ def _(rid, params: dict) -> dict:
     with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5036)
+        from hermes_state_raw_delete import SessionLedgerProtectedError, protected_delete_refusal
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
             deleted = db.delete_session(target, sessions_dir=home / "sessions")
+        except SessionLedgerProtectedError as exc:
+            # 4023 is "active session", 4028/4029 are truncation consent. 4033 is this refusal.
+            message, code = protected_delete_refusal(exc)
+            return _err(rid, 4033, message, data={"code": code})
         except Exception as e:
             return _err(rid, 5036, f"delete failed: {e}")
     return _ok(rid, {"deleted": target}) if deleted else _err(rid, 4007, "session not found")

@@ -153,7 +153,7 @@ class _CursesBrowser:
             if key not in {ord("y"), ord("Y")}:
                 return False
             if not self.delete_fn(target["id"]):
-                self.flash = "Delete failed."
+                self.flash = getattr(self.delete_fn, "refusal", None) or "Delete failed."
                 return False
             self.sessions[:] = [s for s in self.sessions if s["id"] != target["id"]]
             self._refilter(reset_cursor=False)
@@ -236,6 +236,26 @@ def _fallback_picker(sessions: list) -> Optional[str]:
             return None
 
 
+def delete_browsed_session(session_db, session_id: str) -> tuple[bool, Optional[str]]:
+    """Delete one browsed row.
+
+    A ledger refusal is ``(False, message)``. Any other failure stays
+    ``(False, None)`` so the picker keeps its generic "Delete failed." flash.
+    """
+    from hermes_state_raw_delete import SessionLedgerProtectedError
+    try:
+        from hermes_cli.sessions_cmd import get_hermes_home
+        sessions_dir = get_hermes_home() / "sessions"
+    except Exception:
+        sessions_dir = None
+    try:
+        return bool(session_db.delete_session(session_id, sessions_dir=sessions_dir)), None
+    except SessionLedgerProtectedError as exc:
+        return False, str(exc)
+    except Exception:
+        return False, None
+
+
 def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
     """Curses session browser with live search; returns the selected session ID, or None if cancelled.
 
@@ -248,15 +268,9 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
     _annotate_session_statuses(sessions, session_db)
 
     def _delete_session(session_id: str) -> bool:
-        try:
-            from hermes_cli.sessions_cmd import get_hermes_home
-            sessions_dir = get_hermes_home() / "sessions"
-        except Exception:
-            sessions_dir = None
-        try:
-            return bool(session_db.delete_session(session_id, sessions_dir=sessions_dir))
-        except Exception:
-            return False
+        deleted, refusal = delete_browsed_session(session_db, session_id)
+        _delete_session.refusal = refusal
+        return deleted
     try:  # curses first; any failure (no curses module, odd terminal) falls back
         import curses
         browser = _CursesBrowser(curses, sessions, _delete_session if session_db is not None else None)

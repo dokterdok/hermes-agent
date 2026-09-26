@@ -612,7 +612,16 @@ def _prune_never_active_keyed(db, args):
                   "Use a bare number of days or a form like '2d' / '1w'.")
             return
         days = seconds / 86400.0
-    candidates = db.list_never_active_keyed_sessions(older_than_days=days)
+    preview_report = {}
+    candidates = db.list_never_active_keyed_sessions(
+        older_than_days=days, exclude_ledger_owned=True, report=preview_report)
+    skipped_preview = preview_report.get("skipped_protected") or 0
+    if not candidates and not skipped_preview:
+        print(f"No never-active keyed sessions older than {days:g} day(s).")
+        return
+    if skipped_preview and (args.dry_run or not args.yes or not candidates):
+        print(f"Skipped {skipped_preview} session(s) with retained runtime records; "
+              "delete them through the owning gateway.")
     if not candidates:
         print(f"No never-active keyed sessions older than {days:g} day(s).")
         return
@@ -630,10 +639,14 @@ def _prune_never_active_keyed(db, args):
     if not args.yes and not _confirm_prompt(f"Delete {len(candidates)} session(s)? [y/N] "):
         print("Aborted.")
         return
+    committed_report = {}
     deleted, routing_deleted = db.prune_never_active_keyed_sessions(
-        older_than_days=days, sessions_dir=_sessions_dir()
+        older_than_days=days, sessions_dir=_sessions_dir(), report=committed_report,
     )
     print(f"Deleted {deleted} never-active session(s) and {routing_deleted} stale routing entr(ies).")
+    if committed_report.get("skipped_protected"):
+        print(f"Skipped {committed_report['skipped_protected']} session(s) with retained runtime records; "
+              "delete them through the owning gateway.")
 
 
 def _note_pinned_skipped(db, filters, action):

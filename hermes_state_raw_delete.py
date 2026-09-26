@@ -53,6 +53,17 @@ def require_unowned_delete(conn, session_ids):
         raise SessionLedgerProtectedError()
 
 
+def protected_delete_refusal(exc):
+    """``(message, reason)`` when *exc* refuses a raw delete, else None.
+
+    Callers map the pair onto their own transport (HTTP 409, TUI 4033, CLI text).
+    Unrelated exceptions stay unmapped.
+    """
+    if isinstance(exc, SessionLedgerProtectedError):
+        return str(exc), exc.reason
+    return None
+
+
 def report_maintenance(report, *, skipped_protected, removed=None):
     """Only publish counts after the caller's transaction has succeeded."""
     if report is not None:

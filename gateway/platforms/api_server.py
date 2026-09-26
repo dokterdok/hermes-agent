@@ -3086,7 +3086,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
-        deleted = await asyncio.to_thread(db.delete_session, session_id)
+        try:
+            deleted = await asyncio.to_thread(db.delete_session, session_id)
+        except Exception as exc:
+            from hermes_state_raw_delete import protected_delete_refusal
+            refusal = protected_delete_refusal(exc)
+            if refusal is None:
+                raise
+            message, code = refusal
+            return _error_response(message, 409, code=code)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth
