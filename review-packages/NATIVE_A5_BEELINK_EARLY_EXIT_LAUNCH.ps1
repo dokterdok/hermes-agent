@@ -18,6 +18,10 @@
   If the output contains PROTOCOL_RESTORE_FAILED, import the PREIMAGE_REG file
   printed on the next line exactly once with reg.exe import. Do not reg delete.
   Do not start CUA after that line. Do not kill any process by image name.
+  Do not delete, rename, or launch C:\Users\ddewit\hermes-uat-a5-ns-20260926.
+  The only new folder is C:\Users\ddewit\hermes-uat-a5-ns2-20260926.
+  PsExec is the existing PsExec64.exe under AppData\Local\Temp\hermes-uat-live.
+  Do not download PsExec. Do not add it to PATH.
 
   This script never stops a process by image name. It never restarts daily Hermes.
   It never sets machine environment variables. It never grants ACLs. It never reboots.
@@ -38,8 +42,10 @@ $script:Launched = $false
 
 $UatExe = 'C:\Users\ddewit\hermes-uat-desktop-renderer-reuse-20260923\source\apps\desktop\release\win-unpacked\Hermes.exe'
 $DailyExe = 'C:\Users\ddewit\AppData\Local\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe'
-$Attempt = 'C:\Users\ddewit\hermes-uat-a5-ns-20260926'
+$Attempt = 'C:\Users\ddewit\hermes-uat-a5-ns2-20260926'
+$FrozenAttempt = 'C:\Users\ddewit\hermes-uat-a5-ns-20260926'
 $Evidence = 'C:\Users\ddewit\hermes-uat-a5-live-20260926'
+$KnownPsExec = 'C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\PsExec64.exe'
 $WindowsPort = 54573
 $RequiredFreeBytes = [int64]26439023616
 $DestFile = Join-Path $Attempt 'dest\uat-download.bin'
@@ -67,19 +73,77 @@ function Undo-UnlaunchedAttempt {
     return
   }
 
-  if (-not [string]::Equals($Attempt, 'C:\Users\ddewit\hermes-uat-a5-ns-20260926', [System.StringComparison]::OrdinalIgnoreCase)) {
+  $allowed = 'C:\Users\ddewit\hermes-uat-a5-ns2-20260926'
+
+  if (-not [string]::Equals($Attempt, $allowed, [System.StringComparison]::OrdinalIgnoreCase)) {
     Write-Output 'ROLLBACK_REFUSED'
     return
   }
 
-  if ([string]::Equals($Attempt, $Evidence, [System.StringComparison]::OrdinalIgnoreCase)) {
-    Write-Output 'ROLLBACK_REFUSED'
-    return
+  foreach ($forbidden in @(
+      $FrozenAttempt,
+      $Evidence,
+      'C:\Users\ddewit',
+      'C:\Users\ddewit\AppData',
+      'C:\Users\ddewit\AppData\Roaming',
+      'C:\Users\ddewit\AppData\Roaming\Hermes',
+      'C:\Users\ddewit\AppData\Local',
+      'C:\Users\ddewit\AppData\Local\hermes'
+    )) {
+    if ([string]::Equals($Attempt, $forbidden, [System.StringComparison]::OrdinalIgnoreCase)) {
+      Write-Output 'ROLLBACK_REFUSED'
+      return
+    }
   }
 
-  Remove-Item -LiteralPath $Attempt -Recurse -Force
+  Remove-Item -LiteralPath $allowed -Recurse -Force
   $script:CreatedAttempt = $false
   Write-Output 'UNLAUNCHED_ATTEMPT_REMOVED'
+}
+
+function Format-NativeArgument([string]$Value) {
+  if ($Value -notmatch '[\s"]') {
+    return $Value
+  }
+
+  return '"' + ($Value -replace '"', '\"') + '"'
+}
+
+function Invoke-Native {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$File,
+    [string[]]$ArgumentList = @()
+  )
+
+  $quoted = New-Object System.Collections.Generic.List[string]
+
+  foreach ($arg in $ArgumentList) {
+    $quoted.Add((Format-NativeArgument ([string]$arg)))
+  }
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $File
+  $psi.Arguments = ($quoted -join ' ')
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $false
+
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+
+  try {
+    [void]$proc.Start()
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    [void]$proc.WaitForExit()
+    $stdout = [string]$outTask.Result
+    $stderr = [string]$errTask.Result
+    return [pscustomobject]@{ Output = ($stdout + $stderr); ExitCode = [int]$proc.ExitCode }
+  } catch {
+    return [pscustomobject]@{ Output = [string]$_.Exception.Message; ExitCode = 9009 }
+  }
 }
 
 function Test-LogPhrase([string]$Path, [string]$Phrase) {
@@ -106,17 +170,17 @@ function Restore-HermesProtocol {
 
   $script:NeedRestore = $false
   $log = Join-Path $Attempt 'logs\protocol-restore.log'
-  $delete = & reg.exe delete 'HKCU\Software\Classes\hermes' /f 2>&1 | Out-String
-  Add-Content -LiteralPath $log -Value $delete -Encoding ascii
+  $deleteResult = Invoke-Native -File 'reg.exe' -ArgumentList @('delete', 'HKCU\Software\Classes\hermes', '/f')
+  Add-Content -LiteralPath $log -Value $deleteResult.Output -Encoding ascii
 
   if (Test-Path -LiteralPath $PreimageReg) {
     $imported = $false
 
     foreach ($attemptIndex in 1, 2) {
-      $import = & reg.exe import $PreimageReg 2>&1 | Out-String
-      Add-Content -LiteralPath $log -Value ("IMPORT_TRY_" + $attemptIndex + " " + $import) -Encoding ascii
+      $importResult = Invoke-Native -File 'reg.exe' -ArgumentList @('import', $PreimageReg)
+      Add-Content -LiteralPath $log -Value ("IMPORT_TRY_" + $attemptIndex + " exit=" + $importResult.ExitCode + " " + $importResult.Output) -Encoding ascii
 
-      if ($LASTEXITCODE -eq 0) {
+      if ($importResult.ExitCode -eq 0) {
         $imported = $true
         break
       }
@@ -205,7 +269,13 @@ function Stop-UatTree([uint32]$RootPid) {
     return
   }
 
-  & taskkill.exe /PID $RootPid /T /F | Out-Null
+  $kill = Invoke-Native -File 'taskkill.exe' -ArgumentList @('/PID', ([string]$RootPid), '/T', '/F')
+
+  if ($kill.ExitCode -ne 0) {
+    Write-Output ('KILL_ERROR pid=' + $RootPid + ' taskkill=' + $kill.ExitCode)
+    return
+  }
+
   Write-Output ('KILLED_UAT_TREE pid=' + $RootPid)
 }
 
@@ -243,6 +313,11 @@ function Assert-DailyStillAlive([uint32[]]$DailyPids) {
 function Invoke-Launch {
   Write-Output 'PHASE_LAUNCH'
   Write-Output 'DO_NOT_KILL_DAILY=1'
+  Write-Output ('FROZEN_ATTEMPT=' + $FrozenAttempt)
+  Write-Output 'DO_NOT_DELETE_FROZEN=1'
+  Write-Output 'DO_NOT_RENAME_FROZEN=1'
+  Write-Output 'DO_NOT_LAUNCH_FROZEN=1'
+  Write-Output ('NEW_ATTEMPT=' + $Attempt)
 
   if (Test-Path -LiteralPath $Attempt) {
     Stop-A5 5 'ATTEMPT_EXISTS'
@@ -301,8 +376,8 @@ function Invoke-Launch {
 
   $uatDir = $exeDir
   $dailyDir = Split-Path -Parent $DailyExe
-  $uatAcl = & icacls.exe $uatDir 2>&1 | Out-String
-  $dailyAcl = & icacls.exe $dailyDir 2>&1 | Out-String
+  $uatAcl = (Invoke-Native -File 'icacls.exe' -ArgumentList @($uatDir)).Output
+  $dailyAcl = (Invoke-Native -File 'icacls.exe' -ArgumentList @($dailyDir)).Output
   New-Item -ItemType Directory -Force -Path 'C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live' | Out-Null
   [System.IO.File]::WriteAllText('C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\icacls-uat.txt', $uatAcl)
   [System.IO.File]::WriteAllText('C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\icacls-daily.txt', $dailyAcl)
@@ -391,20 +466,38 @@ function Invoke-Launch {
     Stop-A5 8 'ACTIVE_PROFILE_BYTES'
   }
 
-  $psexecCmd = $null
+  $psexecPath = $null
 
-  foreach ($name in @('PsExec.exe', 'PsExec64.exe', 'psexec.exe')) {
-    $found = Get-Command $name -ErrorAction SilentlyContinue
+  foreach ($candidate in @(
+      $KnownPsExec,
+      'C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\PsExec.exe'
+    )) {
+    if (Test-Path -LiteralPath $candidate) {
+      $info = Get-Item -LiteralPath $candidate
 
-    if ($found) {
-      $psexecCmd = $found
-      break
+      if (-not $info.PSIsContainer -and $info.Length -gt 0) {
+        $psexecPath = $candidate
+        break
+      }
     }
   }
 
-  if (-not $psexecCmd) {
+  if (-not $psexecPath) {
+    foreach ($name in @('PsExec64.exe', 'PsExec.exe', 'psexec.exe')) {
+      $found = Get-Command $name -ErrorAction SilentlyContinue
+
+      if ($found -and $found.Source -and (Test-Path -LiteralPath $found.Source)) {
+        $psexecPath = $found.Source
+        break
+      }
+    }
+  }
+
+  if (-not $psexecPath) {
     Stop-A5 6 'PSEXEC_MISSING'
   }
+
+  Write-Output ('PSEXEC_PATH=' + $psexecPath)
 
   $wrapper = Join-Path $Attempt 'launch-uat.cmd'
   $idFile = Join-Path $Attempt 'logs\launch-identity.txt'
@@ -447,7 +540,7 @@ exit /b %RC%
     Stop-A5 8 'WRAPPER_MISSING_NO_SANDBOX'
   }
 
-  if ($wrapRaw -notlike '*HERMES_HOME=C:\Users\ddewit\hermes-uat-a5-ns-20260926\hermes*') {
+  if ($wrapRaw -notlike ('*HERMES_HOME=' + $Attempt + '\hermes*')) {
     Stop-A5 8 'WRAPPER_HOME_UNPINNED'
   }
 
@@ -455,7 +548,11 @@ exit /b %RC%
     Stop-A5 8 'WRAPPER_REDIRECTS_PROFILE'
   }
 
-  if ($wrapRaw -like '*hermes-uat-a5-ns-20260926\localappdata*' -or $wrapRaw -like '*hermes-uat-a5-ns-20260926\appdata*' -or $wrapRaw -like '*hermes-uat-a5-ns-20260926\home*') {
+  if ($wrapRaw -like ('*' + $Attempt + '\localappdata*') -or $wrapRaw -like ('*' + $Attempt + '\appdata*') -or $wrapRaw -like ('*' + $Attempt + '\home*')) {
+    Stop-A5 8 'WRAPPER_REDIRECTS_PROFILE'
+  }
+
+  if ($wrapRaw -like ('*' + $FrozenAttempt + '*') -or $wrapRaw -like ('*' + $Evidence + '*')) {
     Stop-A5 8 'WRAPPER_REDIRECTS_PROFILE'
   }
 
@@ -463,9 +560,10 @@ exit /b %RC%
     Stop-A5 8 'WRAPPER_UNSAFE'
   }
 
-  $export = & reg.exe export 'HKCU\Software\Classes\hermes' $PreimageReg /y 2>&1 | Out-String
+  $exportResult = Invoke-Native -File 'reg.exe' -ArgumentList @('export', 'HKCU\Software\Classes\hermes', $PreimageReg, '/y')
+  $export = $exportResult.Output
 
-  if ($LASTEXITCODE -ne 0) {
+  if ($exportResult.ExitCode -ne 0) {
     if ($export -match 'unable to find|cannot find') {
       Write-Output 'PROTOCOL_PREIMAGE=ABSENT'
       Remove-Item -LiteralPath $PreimageReg -ErrorAction SilentlyContinue
@@ -481,12 +579,13 @@ exit /b %RC%
   $script:NeedRestore = $true
   $script:Launched = $true
   $psexecLog = Join-Path $Attempt 'logs\psexec.txt'
-  & $psexecCmd.Source -accepteula -nobanner -i 1 -d -w $exeDir "$env:SystemRoot\System32\cmd.exe" /c $wrapper *> $psexecLog
-  $psexecText = ''
-
-  if (Test-Path -LiteralPath $psexecLog) {
-    $psexecText = [System.IO.File]::ReadAllText($psexecLog)
-  }
+  $psexecResult = Invoke-Native -File $psexecPath -ArgumentList @(
+    '-accepteula', '-nobanner', '-i', '1', '-d', '-w', $exeDir,
+    "$env:SystemRoot\System32\cmd.exe", '/c', $wrapper
+  )
+  [System.IO.File]::WriteAllText($psexecLog, [string]$psexecResult.Output)
+  Write-Output ('PSEXEC_EXIT=' + $psexecResult.ExitCode)
+  $psexecText = [string]$psexecResult.Output
 
   Write-Output 'PSEXEC_LOG_WRITTEN'
 
