@@ -147,6 +147,8 @@ class CanonicalOutputRetry:
                 completed_at REAL NOT NULL, valid_until REAL NOT NULL, metadata_json TEXT NOT NULL,
                 event_digest TEXT NOT NULL, operation TEXT NOT NULL,
                 PRIMARY KEY(room_id, task_id, execution_generation))''')
+            from gateway.session_hosted_output_secondary import ensure_secondary_publication_tables
+            ensure_secondary_publication_tables(conn)
             return all('metadata_json' in {r['name'] for r in conn.execute('PRAGMA table_info(' + table + ')')}
                        for table in ('hosted_room_artifact_retries', 'hosted_room_artifact_completions'))
         self._output_retry_ready = self.authority.db._execute_write(prepare)
@@ -478,3 +480,28 @@ class CanonicalOutputRetry:
         with self._output_status_read(room_id, state_read=state_read) as conn:
             return [dict(r) for r in conn.execute('SELECT task_id,execution_generation,member_id,attempts,next_attempt_at,'
                 'blocked,operation,reason_code FROM hosted_room_artifact_retries WHERE room_id=?', (room_id,))]
+
+    def publish_secondary_from_consent(self, task, consent):
+        # Consent is not an owner. This entry never reads the store or the pointer.
+        from gateway.session_hosted_output_secondary import publish_secondary_from_consent
+        return publish_secondary_from_consent(task, consent)
+
+    def register_secondary_publication(self, task, *, route=None):
+        from gateway.session_hosted_output_secondary import register_secondary_publication
+        return register_secondary_publication(self, task, route=route)
+
+    def publish_secondary_publication(self, task, publication_id):
+        from gateway.session_hosted_output_secondary import publish_secondary_publication
+        return publish_secondary_publication(self, task, publication_id)
+
+    def retry_secondary_publication(self, task, publication_id):
+        from gateway.session_hosted_output_secondary import retry_secondary_publication
+        return retry_secondary_publication(self, task, publication_id)
+
+    def record_secondary_publication_failure(self, task, publication_id, *, attempt, error):
+        from gateway.session_hosted_output_secondary import record_secondary_publication_failure
+        return record_secondary_publication_failure(self, task, publication_id, attempt=attempt, error=error)
+
+    def complete_secondary_publication(self, task, publication_id, *, attempt):
+        from gateway.session_hosted_output_secondary import complete_secondary_publication
+        return complete_secondary_publication(self, task, publication_id, attempt=attempt)
