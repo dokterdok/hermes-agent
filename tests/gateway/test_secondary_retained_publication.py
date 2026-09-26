@@ -66,6 +66,22 @@ def _secondary_counts(db):
         return registered, completed
 
 
+def _drop_secondary(db):
+    """Clear secondary rows so a contract case starts unregistered.
+
+    The post-settlement caller may already have published the settled task.
+    Dropping that row does not disable the caller and does not touch primary rows.
+    """
+    def clear(conn):
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for name in (
+                'hosted_room_secondary_publications',
+                'hosted_room_secondary_publication_completions'):
+            if name in tables:
+                conn.execute(f'DELETE FROM {name}')
+    db._execute_write(clear)
+
+
 async def _settled(tmp_path, monkeypatch):
     _bind_retention_safety()
     async with owner(tmp_path, monkeypatch) as (authority, service, runner):
@@ -94,6 +110,7 @@ async def _settled(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_unregistered_secondary_publication_fails_closed(tmp_path, monkeypatch):
     async for authority, service, runner, task in _settled(tmp_path, monkeypatch):
+        _drop_secondary(authority.db)
         before = _primary(authority.db)
         pointer = runner.session_authority
         with pytest.raises(RoomArtifactError, match='not registered'):
@@ -115,6 +132,7 @@ async def test_unregistered_secondary_publication_fails_closed(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_secondary_publish_retry_and_completion_keep_provenance(tmp_path, monkeypatch):
     async for authority, service, runner, task in _settled(tmp_path, monkeypatch):
+        _drop_secondary(authority.db)
         before = _primary(authority.db)
         pointer = runner.session_authority
         clock = {'now': time.time()}
@@ -167,6 +185,7 @@ async def test_secondary_publish_retry_and_completion_keep_provenance(tmp_path, 
 @pytest.mark.asyncio
 async def test_secondary_publication_rejects_unauthorized_and_stale_routes(tmp_path, monkeypatch):
     async for authority, service, runner, task in _settled(tmp_path, monkeypatch):
+        _drop_secondary(authority.db)
         with pytest.raises(RoomArtifactError, match='route is unauthorized'):
             service.register_secondary_publication(task, route='forged-route')
         assert _secondary_counts(authority.db) == (0, 0)

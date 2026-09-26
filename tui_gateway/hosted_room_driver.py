@@ -101,6 +101,7 @@ class HostedRoomRuntime:
         transport_resolver: MemberTransportResolver | None = None,
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
+        publish_settled_secondary: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0, poll_interval_seconds: float = 5.0,
@@ -126,6 +127,11 @@ class HostedRoomRuntime:
         self.db_path = Path(db_path)
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
+        # Settled invitation→NEW secondary publication. Not primary publish_terminal.
+        self.publish_settled_secondary = publish_settled_secondary
+        # Tags an exception raised by that callback so a committed settlement
+        # is not later recorded as an ambiguous observation.
+        self._secondary_notify_tls = threading.local()
         self.pending_action, self.clock = pending_action, clock
         for name, value in positive.items():
             setattr(self, name, float(value))
@@ -271,6 +277,25 @@ class HostedRoomRuntime:
             self.publish_terminal(binding, task)
         return task
 
+    def _notify_settled_secondary(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> None:
+        """After settlement, not from history, info, or primary publish_terminal."""
+        if self.publish_settled_secondary is None or task.get("status") != "settled":
+            return
+        identity = task.get("identity")
+        if identity is None:
+            return
+        try:
+            fresh = state.get_task(self.db_path, identity)
+        except state.TaskConflictError:
+            return
+        if fresh.get("status") != "settled":
+            return
+        try:
+            self.publish_settled_secondary(binding, fresh)
+        except Exception as exc:
+            self._secondary_notify_tls.error = exc
+            raise
+
     def _set_blocked(self, room_id: str, blocked: bool) -> None:
         with self._status_lock:
             (self._blocked_rooms.add if blocked else self._blocked_rooms.discard)(room_id)
@@ -282,7 +307,11 @@ class HostedRoomRuntime:
         """Run one lease-fenced state transition on ``task``; ``extra`` may override fences."""
         kwargs = {**_fences(task), "clock": self.clock, **extra}
         result = op(self.db_path, task["identity"], lease, **kwargs)
-        return self._publish(binding, result) if publish and binding is not None else result
+        if publish and binding is not None:
+            result = self._publish(binding, result)
+        if binding is not None:
+            self._notify_settled_secondary(binding, result)
+        return result
 
     def _requeue(
         self, requeue: Callable[..., dict[str, Any]], task: Mapping[str, Any],
@@ -602,11 +631,15 @@ class HostedRoomRuntime:
                     transport=transport, deadline_monotonic=deadline_monotonic)
                 if receipt is None:
                     return
-                state.settle_task(self.db_path, attempt, **asdict(receipt), clock=self.clock)
+                settled_task = state.settle_task(
+                    self.db_path, attempt, **asdict(receipt), clock=self.clock)
         except (state.StaleLeaseError, state.StaleTaskError) as exc:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
+            if getattr(self._secondary_notify_tls, "error", None) is exc:
+                self._secondary_notify_tls.error = None
+                raise
             if submit_attempted and bool(getattr(exc, "not_admitted", False)):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
@@ -623,6 +656,11 @@ class HostedRoomRuntime:
                 self._record_task_error(attempt, f"observation failed after submit: {exc}")
             else:
                 self._settle_failure_if_current(attempt, exc)
+        else:
+            # Outside the observation handler: a secondary failure must not
+            # mark a committed settlement ambiguous.
+            if settled_task is not None:
+                self._notify_settled_secondary(binding, settled_task)
         finally:
             with self._status_lock:
                 self._current_tasks.pop(binding.room_id, None)
@@ -649,26 +687,31 @@ class HostedRoomRuntime:
             or f"reply:{attempt.identity.task_id}:{attempt.execution_generation}",
             result=_bounded_terminal_result(receipt))
         try:
-            self._publish(
-                binding,
-                state.settle_task(self.db_path, attempt, **asdict(terminal), clock=self.clock))
-        except state.StaleTaskError:
-            with suppress(state.StaleLeaseError, state.StaleTaskError):
-                current = state.get_task(self.db_path, attempt.identity)
-                if current["status"] == "stopping":
-                    self._fenced(
-                        state.settle_stopping_task, binding, current, attempt.lease,
-                        **asdict(terminal),
-                        expected_execution_generation=attempt.execution_generation)
-        except state.StaleLeaseError:
-            # Cancellation, disband, or authority transfer won the durable race: the model
-            # result is discarded rather than turning a correct fence into a thread exception.
-            pass
-        except state.DriverStateError as exc:
-            # A malformed receipt must not escape the callback and hold the profile lock.
-            self._settle_failure_if_current(
-                attempt, RuntimeError(f"terminal result could not be committed: {exc}"))
-        self.wakeup()
+            try:
+                settled = state.settle_task(
+                    self.db_path, attempt, **asdict(terminal), clock=self.clock)
+                self._publish(binding, settled)
+            except state.StaleTaskError:
+                with suppress(state.StaleLeaseError, state.StaleTaskError):
+                    current = state.get_task(self.db_path, attempt.identity)
+                    if current["status"] == "stopping":
+                        self._fenced(
+                            state.settle_stopping_task, binding, current, attempt.lease,
+                            **asdict(terminal),
+                            expected_execution_generation=attempt.execution_generation)
+            except state.StaleLeaseError:
+                # Cancellation, disband, or authority transfer won the durable race: the model
+                # result is discarded rather than turning a correct fence into a thread exception.
+                pass
+            except state.DriverStateError as exc:
+                # A malformed receipt must not escape the callback and hold the profile lock.
+                self._settle_failure_if_current(
+                    attempt, RuntimeError(f"terminal result could not be committed: {exc}"))
+            else:
+                # After primary publication returns. Not inside publish_terminal.
+                self._notify_settled_secondary(binding, settled)
+        finally:
+            self.wakeup()
 
     def _wait_for_terminal(
         self, binding: HostedRoomBinding, *, profile: str, session_id: str,
@@ -858,8 +901,12 @@ class HostedRoomRuntime:
                 lease_generation=task["run_lease_generation"], expires_at=0.0))
         # Once the previous proof has expired there is deliberately no "trust this historical
         # output" escape hatch; fenced recovery leaves the task indeterminate for the user.
+        settled = None
         with suppress(state.StaleLeaseError, state.StaleTaskError):
-            state.settle_task(self.db_path, previous_attempt, **asdict(receipt), clock=self.clock)
+            settled = state.settle_task(
+                self.db_path, previous_attempt, **asdict(receipt), clock=self.clock)
+        if settled is not None:
+            self._notify_settled_secondary(binding, settled)
 
     def _tasks(self, binding: HostedRoomBinding, status: str) -> list[dict[str, Any]]:
         return state.list_tasks(self.db_path, room_id=binding.room_id, status=status)

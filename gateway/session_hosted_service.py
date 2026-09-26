@@ -18,6 +18,17 @@ class CanonicalHostedRoomService(CanonicalHostedOutputPublisher, HostedControls,
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
         super().__init__(None, db_path=authority.db.db_path)
+        self.runtime.publish_settled_secondary = self.publish_settled_invitation_secondary
+
+    def publish_settled_invitation_secondary(self, binding, task):
+        """Invitation→NEW settlement calls the secondary consumer.
+
+        Primary ``publish_terminal`` does not call this. History and info do not.
+        Send-consent is not supplied.
+        """
+        from gateway.session_hosted_output_secondary_caller import (
+            call_settled_invitation_secondary)
+        return call_settled_invitation_secondary(self, binding, task)
 
     def _make_rpc(self, server):
         # Member-specific canonical transports retain exact durable history. They
