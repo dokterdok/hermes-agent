@@ -1388,6 +1388,79 @@ def test_legacy_import_is_a_one_shot_and_skips_driver_liveness_state(tmp_path):
     assert rooms.list_rooms(store) == []
 
 
+def test_legacy_import_survives_a_quarantine_the_lineage_trigger_also_writes(tmp_path):
+    """An unfenced claim in the old store still imports, and stays non-executable.
+
+    Copying the claim fires the quarantine trigger, then the quarantine table
+    itself is copied. A plain second INSERT aborts the upgrade and drops the room.
+    """
+    legacy = tmp_path / "state.db"
+    _create(legacy)
+    claimed = json.dumps({"promoted_from_replica": True}, separators=(",", ":"))
+    with sqlite3.connect(legacy) as conn:
+        conn.execute(
+            """INSERT INTO hosted_room_events
+               (room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at)
+               VALUES ('room-1', 1, 'claim-1', 'authority.claimed', ?, 2, ?, 11)""",
+            (json.dumps(GATEWAY_A), claimed),
+        )
+        conn.execute("UPDATE hosted_rooms SET next_seq=2, authority_epoch=2 WHERE room_id='room-1'")
+        assert conn.execute(
+            "SELECT reason FROM hosted_room_quarantine WHERE room_id='room-1'"
+        ).fetchone() == ("unsafe_replica_promotion",)
+
+    store = tmp_path / "shared-state.db"
+    assert [room["room_id"] for room in rooms.list_rooms(store)] == ["room-1"]
+    with sqlite3.connect(store) as conn:
+        assert conn.execute(
+            "SELECT reason FROM hosted_room_quarantine WHERE room_id='room-1'"
+        ).fetchone() == ("unsafe_replica_promotion",)
+    with pytest.raises(rooms.RoomQuarantinedError):
+        _append(
+            store,
+            room_id="room-1",
+            event_id="after-import",
+            kind="message.user",
+            actor=USER,
+            payload={"text": "must stay non-executable"},
+            authority_epoch=2,
+            now=12,
+        )
+
+
+def test_legacy_import_replays_a_reservation_that_has_no_room_row(tmp_path):
+    """A reserved id with no room or replica row still blocks reuse after the copy.
+
+    Room and replica inserts recreate their own reservations through triggers.
+    A leftover fence has no insert to do that, so the one-shot copy replays it
+    without replacing a trigger-owned row.
+    """
+    legacy = tmp_path / "state.db"
+    _create(legacy)
+    with sqlite3.connect(legacy) as conn:
+        conn.execute(
+            """INSERT INTO hosted_room_id_reservations (room_id, owner_kind, reserved_at)
+               VALUES ('held-id', 'replica', 10)"""
+        )
+
+    store = tmp_path / "shared-state.db"
+    assert [room["room_id"] for room in rooms.list_rooms(store)] == ["room-1"]
+    with sqlite3.connect(store) as conn:
+        owners = dict(conn.execute(
+            "SELECT room_id, owner_kind FROM hosted_room_id_reservations ORDER BY room_id"))
+    assert owners["room-1"] == "authority"
+    assert owners["held-id"] == "replica"
+    with pytest.raises(sqlite3.IntegrityError, match="already reserved"):
+        rooms.create_room(
+            store,
+            room_id="held-id",
+            name="Reuse",
+            members=[{"profile": "ops", "handle": "ops"}],
+            authority_gateway_id="gateway-a",
+            now=12,
+        )
+
+
 def test_legacy_import_skips_a_room_this_store_already_owns_as_a_unit(tmp_path):
     """A room id present in both stores keeps THIS store's history intact and appendable.
 
