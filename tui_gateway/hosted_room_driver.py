@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+from tui_gateway.hosted_room_secondary_catchup import (
+    forget_awaiting_primary, load_awaiting_primary, remember_awaiting_primary)
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -133,8 +135,10 @@ class HostedRoomRuntime:
         # is not later recorded as an ambiguous observation.
         self._secondary_notify_tls = threading.local()
         # Tasks whose notify returned before primary terminal events existed.
-        # Process-local. Not scanned from prepare_room or publish_terminal.
-        self._secondary_awaiting_primary: set[tuple[state.TaskIdentity, int]] = set()
+        # Durable across process restart. Not a scan of settled tasks, and not
+        # read from prepare_room or publish_terminal.
+        self._secondary_awaiting_primary: set[tuple[state.TaskIdentity, int]] = (
+            load_awaiting_primary(self.db_path))
         self.pending_action, self.clock = pending_action, clock
         for name, value in positive.items():
             setattr(self, name, float(value))
@@ -304,7 +308,9 @@ class HostedRoomRuntime:
         """Keep a no-op notify until primary terminal evidence exists.
 
         Any other result drops the task. A raised callback does not reach here,
-        so a failed publish stays pending.
+        so a failed publish stays pending. The key is written to the driver
+        database before the in-memory set changes. A durability failure keeps
+        the in-memory key and does not mark the room ambiguous.
         """
         from gateway.session_hosted_output_secondary_caller import SecondaryAwaitingPrimary
         identity = task.get("identity")
@@ -312,22 +318,39 @@ class HostedRoomRuntime:
         if identity is None or isinstance(generation, bool) or not isinstance(generation, int):
             return
         key = (identity, generation)
+        awaiting = type(result) is SecondaryAwaitingPrimary
+        persisted = self._write_secondary_catchup(identity, generation, present=awaiting)
         with self._status_lock:
-            if type(result) is SecondaryAwaitingPrimary:
+            if awaiting:
                 self._secondary_awaiting_primary.add(key)
-            else:
+            elif persisted:
                 self._secondary_awaiting_primary.discard(key)
 
+    def _write_secondary_catchup(
+            self, identity: state.TaskIdentity, generation: int, *, present: bool) -> bool:
+        try:
+            if present:
+                remember_awaiting_primary(self.db_path, identity, generation)
+            else:
+                forget_awaiting_primary(self.db_path, identity, generation)
+        except Exception as exc:
+            self._record_error(
+                f"room {identity.room_id} secondary catch-up durability failed: {exc}")
+            return False
+        return True
+
     def _forget_secondary_catchup(self, identity: state.TaskIdentity, generation: int) -> None:
-        with self._status_lock:
-            self._secondary_awaiting_primary.discard((identity, generation))
+        if self._write_secondary_catchup(identity, generation, present=False):
+            with self._status_lock:
+                self._secondary_awaiting_primary.discard((identity, generation))
 
     def _catch_up_secondary_after_primary(self, binding: HostedRoomBinding) -> None:
-        """Retry no-op notifies once primary terminal evidence can exist.
+        """Retry remembered no-op notifies once primary terminal evidence can exist.
 
-        Not called from ``publish_terminal`` or ``prepare_room``. Does not
-        publish primary events and does not pass send-consent. A missing
-        contract is recorded and writes nothing; the task stays pending.
+        Reads the pending-key set only. Does not scan settled tasks. Not called
+        from ``publish_terminal`` or ``prepare_room``. Does not publish primary
+        events and does not pass send-consent. A missing contract is recorded
+        and writes nothing; the task stays pending.
         """
         if self.publish_settled_secondary is None:
             return
