@@ -3472,12 +3472,14 @@ class GatewayRunner(
 
     def _session_state(self, session_key: str) -> "SessionState":
         """Get-or-create the :class:`SessionState` for ``session_key``."""
-        sessions = self._sessions_map()
-        state = sessions.get(session_key)
-        if state is None:
-            state = SessionState()
-            sessions[session_key] = state
-        return state
+        from gateway.session_state import selection_lock
+        with selection_lock(self):
+            sessions = self._sessions_map()
+            state = sessions.get(session_key)
+            if state is None:
+                state = SessionState()
+                sessions[session_key] = state
+            return state
 
     def _peek_session_state(self, session_key: str) -> Optional["SessionState"]:
         """Return the SessionState for ``session_key`` without creating one."""
@@ -4585,6 +4587,9 @@ def _start_gateway_housekeeping(
         # PID alive — the thread (or a chore blocked on the loop) wedged (#113372). Runs first so a
         # wedged chore stops the NEXT stamp instead of a slow one delaying this tick's.
         (1, "Runtime heartbeat", _write_runtime_status_quiet)]
+    if runner is not None:
+        from gateway.run_input_reclamation import collect_gateway_input_copies
+        chores.append((5, "Working-copy collection", lambda: collect_gateway_input_copies(runner)))
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
