@@ -84,10 +84,12 @@ def test_room_binding_exact_retry_terminal_history_and_unknown(owner):
     recover_session_inputs(authority.db, epoch=authority.epoch)
     with pytest.raises(RuntimeStoreError, match='unknown_execution') as exc:
         adapter().submit(**args, on_terminal=callbacks.append)
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='unknown', expected_execution_generation=True)
     with pytest.raises(RuntimeStoreError, match='unknown_execution'):
-        rpc.interrupt(**coords, session_id=sid, expected_task_id='unknown')
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='unknown', expected_execution_generation=1)
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
-        rpc.interrupt(**coords, session_id=sid, expected_task_id='task')
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1)
     assert not getattr(exc.value, 'not_admitted', False)
     assert len(list_session_admissions(authority.db, session_id=sid, pending_only=False)) == 2
     allowed[0] = False
@@ -120,10 +122,14 @@ def test_controls_are_exact_current_admission_and_loop_safe(owner):
     assert not answers
     assert rpc.approve(session_id=sid, request_id='approve-me', choice='once')['status'] == 'resolved'
     assert answers == [('approval', 'approve-me', 'once')]
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=True)
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
-        rpc.interrupt(**coords, session_id=sid, expected_task_id='other')
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=2)
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='other', expected_execution_generation=1)
     assert not agent.interrupted
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task') == {
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1) == {
         'interrupted': False, 'status': 'running'}
     assert agent.interrupted
     assert rpc.info(**coords, session_id=sid)['status'] == 'started'
@@ -164,9 +170,15 @@ def test_started_stop_request_waits_for_real_producer_settlement(owner, monkeypa
         assert entered.wait(5)
         before, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
         assert before['status'] == 'started' and before['generation'] != 17
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            rpc.interrupt(**coords, expected_task_id='task', expected_execution_generation=None)
+        assert not agent.interrupted
         with pytest.raises(RuntimeStoreError, match='stale_generation'):
-            rpc.interrupt(**coords, expected_task_id='other')
-        response = rpc.interrupt(**coords, expected_task_id='task')
+            rpc.interrupt(**coords, expected_task_id='task', expected_execution_generation=16)
+        assert not agent.interrupted
+        with pytest.raises(RuntimeStoreError, match='stale_generation'):
+            rpc.interrupt(**coords, expected_task_id='other', expected_execution_generation=17)
+        response = rpc.interrupt(**coords, expected_task_id='task', expected_execution_generation=17)
         assert response.get('interrupted') is not True
         assert response.get('status') not in {'interrupted', 'cancelled'}
         assert agent.interrupted
@@ -182,7 +194,7 @@ def test_started_stop_request_waits_for_real_producer_settlement(owner, monkeypa
     assert receipts[0]['settlement_id'] == before['admission_id']
     assert rpc.history(**coords)[-1]['settlement_id'] == before['admission_id']
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
-        rpc.interrupt(**coords, expected_task_id='task')
+        rpc.interrupt(**coords, expected_task_id='task', expected_execution_generation=17)
 
 
 async def _new_event():
@@ -304,7 +316,8 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(owne
     sid = rpc.create(**coords, title='Group: room')['session_id']
     receipts = []
     rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'), execution_generation=1, on_terminal=receipts.append)
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task')['interrupted']
+    assert rpc.interrupt(
+        **coords, session_id=sid, expected_task_id='task', expected_execution_generation=1)['interrupted']
     history = rpc.history(**coords, session_id=sid)
     assert history[-1]['status'] == 'cancelled'
     assert history[-1]['task_id'] == 'task'

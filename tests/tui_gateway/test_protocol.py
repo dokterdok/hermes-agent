@@ -139,6 +139,69 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
     assert calls == ["hard" if kind == "hard-only" else "legacy"]
 
 
+def test_hosted_stop_is_exact_task_and_generation(server, monkeypatch):
+    """User Stop still interrupts. A hosted fence interrupts only the matching pair."""
+    calls = []
+
+    class _Legacy:
+        def interrupt(self):
+            calls.append("legacy")
+
+    def session_for():
+        return {
+            "agent": _Legacy(),
+            "history_lock": threading.Lock(),
+            "running": True,
+            "queued_prompt": "later",
+            "queued_prompts": ["later"],
+            "session_key": "session-key",
+            "_run_thread": None,
+            "_hosted_room_task": {"task_id": "task-a", "execution_generation": 4},
+        }
+
+    hosted = session_for()
+    user = session_for()
+    sessions = {"hosted": hosted, "user": user}
+
+    def resolve(params, _rid):
+        return sessions[params["session_id"]], None
+
+    monkeypatch.setattr(server, "_tts_stream_stop", lambda: None)
+    monkeypatch.setattr(server, "_sess_nowait", resolve)
+    monkeypatch.setattr(server, "_sess", resolve)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+
+    def stop(session_id, **params):
+        return server._methods["session.interrupt"](
+            "stop", {"session_id": session_id, **params})
+
+    user_stop = stop("user")
+    assert user_stop["result"]["status"] == "interrupted"
+    assert calls == ["legacy"]
+    assert user["queued_prompt"] is None
+
+    task_only = stop("hosted", expected_hosted_task_id="task-a")
+    assert task_only["result"] == {"status": "not_interrupted", "interrupted": False}
+    generation_only = stop("hosted", expected_hosted_execution_generation=4)
+    assert generation_only["result"]["status"] == "not_interrupted"
+    wrong_generation = stop(
+        "hosted", expected_hosted_task_id="task-a", expected_hosted_execution_generation=5)
+    assert wrong_generation["result"]["status"] == "not_interrupted"
+    invalid = stop(
+        "hosted", expected_hosted_task_id="task-a", expected_hosted_execution_generation=True)
+    assert invalid["error"]["code"] == 4002
+    assert calls == ["legacy"]
+    assert hosted["queued_prompt"] == "later"
+    assert hosted["running"] is True
+
+    exact = stop(
+        "hosted", expected_hosted_task_id="task-a", expected_hosted_execution_generation=4)
+    assert exact["result"]["status"] == "interrupted"
+    assert calls == ["legacy", "legacy"]
+    assert hosted["queued_prompt"] is None
+
+
 # ── write_json ────────────────────────────────────────────────
 
 

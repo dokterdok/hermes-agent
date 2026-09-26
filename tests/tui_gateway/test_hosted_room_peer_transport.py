@@ -158,6 +158,27 @@ def test_peer_transport_dispatches_full_fenced_coordinates_and_exact_stop():
             session_id="group-session",
             source=ROOM_SESSION_SOURCE,
             expected_task_id="other-task",
+            expected_execution_generation=3,
+        )
+        is None
+    )
+    assert (
+        transport.interrupt(
+            profile="reviewer",
+            session_id="group-session",
+            source=ROOM_SESSION_SOURCE,
+            expected_task_id="task-1",
+            expected_execution_generation=4,
+        )
+        is None
+    )
+    assert (
+        transport.interrupt(
+            profile="reviewer",
+            session_id="group-session",
+            source=ROOM_SESSION_SOURCE,
+            expected_task_id="task-1",
+            expected_execution_generation=True,
         )
         is None
     )
@@ -166,9 +187,49 @@ def test_peer_transport_dispatches_full_fenced_coordinates_and_exact_stop():
         session_id="group-session",
         source=ROOM_SESSION_SOURCE,
         expected_task_id="task-1",
+        expected_execution_generation=3,
     )
     assert stopped["status"] == "cancelled"
     assert len([call for call in client.calls if call[0] == "stop"]) == 1
+
+
+def test_restart_stop_uses_caller_generation_not_remembered_generation():
+    client = FakePeerClient()
+    receipts = []
+
+    def stop_receipt(**kwargs):
+        receipts.append(kwargs)
+        return {"status": "cancelled"}
+
+    client.stop_receipt = stop_receipt
+    transport = PeerHostedRoomTransport(
+        binding=BINDING,
+        route=ROUTE,
+        client=client,
+        task_id="task-1",
+        execution_generation=9,
+    )
+    stopped = transport.interrupt(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        expected_task_id="task-1",
+        expected_execution_generation=3,
+    )
+    assert stopped["status"] == "cancelled"
+    assert receipts == [{
+        "task_id": "task-1",
+        "execution_generation": 3,
+        "grant": ROUTE.grant,
+    }]
+    assert transport.interrupt(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        expected_task_id="task-2",
+        expected_execution_generation=3,
+    ) is None
+    assert len(receipts) == 1
 
 
 def test_peer_transport_carries_each_turns_real_source_event_sequence():

@@ -95,6 +95,13 @@ class FailoverHostedRoomPeerClient:
     prepare, dispatch, history, status, stop = map(_delegate, ("prepare", "dispatch", "history", "status", "stop"))
     del _delegate
 
+    def quarantine_lease_loss(self, *, task_id: str, execution_generation: int) -> None:
+        """Quarantine this generation on every link. Failover must not re-admit it elsewhere."""
+        for candidate in self.candidates:
+            quarantine = getattr(candidate.client, "quarantine_lease_loss", None)
+            if callable(quarantine):
+                quarantine(task_id=task_id, execution_generation=execution_generation)
+
     def bind_room_scope(self, **kwargs):
         for candidate in self.candidates:
             if callable(bind := getattr(candidate.client, "bind_room_scope", None)):
@@ -219,18 +226,32 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         self._validate_coordinates(profile=profile, source=source)
         return self.client.status(**self._scoped(profile=profile, session_id=session_id))
 
+    def quarantine_lease_loss(self, *, task_id: str, execution_generation: int) -> None:
+        """Record lease loss on the cached client. This transport is rebuilt on the next resolve."""
+        quarantine = getattr(self.client, "quarantine_lease_loss", None)
+        if callable(quarantine):
+            quarantine(task_id=task_id, execution_generation=execution_generation)
+
     def interrupt(
-        self, *, profile: str, session_id: str, source: str, expected_task_id: str
+        self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_execution_generation: int,
     ) -> Mapping[str, Any] | None:
         self._validate_coordinates(profile=profile, source=source)
+        if (
+            not isinstance(expected_task_id, str) or not expected_task_id
+            or type(expected_execution_generation) is not int or expected_execution_generation < 1
+        ):
+            return None
         dispatch = self._dispatch
         if dispatch is not None:
-            if dispatch.task_id != expected_task_id:
+            if (
+                dispatch.task_id != expected_task_id
+                or dispatch.execution_generation != expected_execution_generation
+            ):
                 return None
             return self.client.stop(dispatch=dispatch.as_mapping(), grant=self.route.grant)
-        if (self.task_id != expected_task_id or not self.execution_generation
-                or not hasattr(self.client, "stop_receipt")):
+        if self.task_id != expected_task_id or not hasattr(self.client, "stop_receipt"):
             return None
         return self.client.stop_receipt(
-            task_id=expected_task_id, execution_generation=self.execution_generation,
+            task_id=expected_task_id, execution_generation=expected_execution_generation,
             grant=self.route.grant)

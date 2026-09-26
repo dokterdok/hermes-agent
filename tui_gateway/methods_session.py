@@ -6,6 +6,7 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
 
+from .hosted_stop_fence import EXACT, INVALID, classify_hosted_stop
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -2127,11 +2128,23 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    if expected := _str_param(params, "expected_hosted_task_id"):
+    raw_generation = params.get("expected_hosted_execution_generation")
+    generation_supplied = (
+        "expected_hosted_execution_generation" in params and raw_generation is not None)
+    if _str_param(params, "expected_hosted_task_id") or generation_supplied:
         with session["history_lock"]:
-            task = session.get("_hosted_room_task")
-            if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
-                return _ok(rid, {"status": "not_interrupted", "interrupted": False})
+            decision = classify_hosted_stop(
+                expected_task_id=params.get("expected_hosted_task_id"),
+                expected_execution_generation=raw_generation,
+                generation_supplied=generation_supplied,
+                running=bool(session.get("running")),
+                hosted_task=session.get("_hosted_room_task")
+                if isinstance(session.get("_hosted_room_task"), dict) else None,
+            )
+        if decision == INVALID:
+            return _err(rid, 4002, "hosted stop requires an exact task and execution generation")
+        if decision != EXACT:
+            return _ok(rid, {"status": "not_interrupted", "interrupted": False})
     sid = str(params.get("session_id") or "")
     if _session_uses_compute_host(session):
         try:
