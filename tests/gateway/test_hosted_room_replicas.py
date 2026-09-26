@@ -228,7 +228,7 @@ def test_promote_refuses_when_room_exists_locally(tmp_path, monkeypatch):
         assert "already reserved" in str(exc)
         safety = _safety_reservation(db, "room-1")
         assert safety is not None and safety["owner"] == "authority"
-        assert rooms.room_state(db, room_id="room-1")["authority"]["gateway_id"] == AUTH_A
+        assert rooms.room_state(db, room_id="room-1")["authority_gateway_id"] == AUTH_A
         with pytest.raises(replicas.ReplicaError):
             replicas.replica_state(db, room_id="room-1")
         with pytest.raises(replicas.ReplicaError):
@@ -236,6 +236,58 @@ def test_promote_refuses_when_room_exists_locally(tmp_path, monkeypatch):
         return
     with pytest.raises(rooms.RoomConflictError):
         replicas.promote_replica(db, room_id="room-1")
+
+
+def test_promote_moves_events_under_the_shared_budget(tmp_path, monkeypatch):
+    """A replica that already fits must still promote once the safety budget trigger is installed.
+
+    Copying events before deleting the replica copy counts the same bytes twice and
+    aborts above half the shared budget. Without that trigger the small promote test
+    covers the move.
+    """
+    adb = _authority_db(tmp_path)
+    rooms.create_room(
+        adb, room_id="probe", name="Field Room", members=MEMBERS, authority_gateway_id=AUTH_A
+    )
+    with sqlite3.connect(adb) as conn:
+        budget_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_event_budget'"
+        ).fetchone()
+    if budget_table is None:
+        return
+    # Just over half of the 16MiB ordinary budget, so a doubled copy cannot fit.
+    payload = {"text": "x" * 200_000}
+    rooms.create_room(
+        adb, room_id="room-1", name="Field Room", members=MEMBERS, authority_gateway_id=AUTH_A
+    )
+    for index in range(42):
+        rooms.append_event(
+            adb, room_id="room-1", event_id=f"e{index}", kind="message.user", actor=USER,
+            payload=payload, authority_gateway_id=AUTH_A, authority_epoch=1,
+        )
+    page = rooms.read_events(adb, room_id="room-1", since_seq=0, limit=100)
+    rdb = _replica_db(tmp_path)
+    replicas.ingest_page(
+        rdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
+    )
+    monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
+    promoted = replicas.promote_replica(rdb, room_id="room-1")
+    assert promoted["authority_epoch"] == 2
+    with sqlite3.connect(rdb) as conn:
+        budget = conn.execute(
+            "SELECT event_bytes FROM hosted_room_event_budget WHERE singleton=1"
+        ).fetchone()[0]
+        hosted = conn.execute(
+            """SELECT COALESCE(SUM(
+                   LENGTH(CAST(event_id AS BLOB)) + LENGTH(CAST(kind AS BLOB)) +
+                   LENGTH(CAST(actor_json AS BLOB)) + LENGTH(CAST(payload_json AS BLOB))
+               ), 0) FROM hosted_room_events"""
+        ).fetchone()[0]
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_replica_events"
+        ).fetchone()[0]
+    assert remaining == 0
+    assert budget == hosted
 
 
 def test_promote_refuses_when_already_authority(tmp_path, monkeypatch):

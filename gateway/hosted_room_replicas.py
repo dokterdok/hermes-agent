@@ -285,12 +285,17 @@ def promote_replica(
             (
                 room_id, replica["name"], replica["members_json"], local_gateway, target_epoch, claim_seq + 1,
                 int(replica["event_bytes"]) + utf8_len(*claim), now, now))
-        conn.execute(
-            f"""INSERT INTO hosted_room_events {_EVENT_COLUMNS}
-               SELECT room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at
-                 FROM hosted_room_replica_events WHERE room_id=?""", (room_id,))
-        _append_control_event(conn, room_id, claim_seq, target_epoch, claim, now)
+        # Drop the replica copy from the shared safety budget before the authority
+        # copy is inserted. Copy-then-delete counts the same bytes twice and the
+        # budget trigger aborts a replica that already fits.
+        copied = [
+            tuple(row) for row in conn.execute(
+                f"""SELECT room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at
+                      FROM hosted_room_replica_events WHERE room_id=? ORDER BY seq""",
+                (room_id,))]
         conn.execute("DELETE FROM hosted_room_replica_events WHERE room_id=?", (room_id,))
+        conn.executemany(_INSERT_ROOM_EVENT, copied)
+        _append_control_event(conn, room_id, claim_seq, target_epoch, claim, now)
         conn.execute("DELETE FROM hosted_room_replicas WHERE room_id=?", (room_id,))
     return {
         "room_id": room_id, "authority_gateway_id": local_gateway, "authority_epoch": target_epoch,
