@@ -1,10 +1,12 @@
 import { skillInvocationText } from '@hermes/shared'
+import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
+import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
   type DesktopActionId,
@@ -15,15 +17,22 @@ import {
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
-import { setComposerDraft } from '@/store/composer'
-import { enqueueQueuedPrompt } from '@/store/composer-queue'
+import { markCompressDeferred } from '@/store/compaction'
+import { $composerAttachments, setComposerDraft } from '@/store/composer'
 import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  captureNewChatSource,
+  ensureGatewayProfile,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   $connection,
   $sessions,
@@ -55,11 +64,13 @@ import type {
   SlashExecResponse
 } from '../../../types'
 
+import { preparedSubmissionKey, readPreparedSubmission } from './prepared-submissions'
+import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
+import { captureSubmissionDestination } from './submission-destination'
 import {
   type GatewayRequest,
   isSessionIdCandidate,
-  isTargetSessionBusy,
   renderCommandsCatalog,
   renderRpcResult,
   slashStatusText,
@@ -68,9 +79,13 @@ import {
 } from './utils'
 
 // Manual compression is LLM-bound and routinely outlives the desktop's 30s
-// default WS request timeout on large sessions — give it the TUI client's
-// 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
-const SESSION_COMPRESS_TIMEOUT_MS = 120_000
+// default WS request timeout on large sessions. The gateway blocks its own
+// compute-host wait for up to compression.context_total_ceiling_seconds + 30s
+// (capped at 630s, tui_gateway/server.py _COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS)
+// and then answers `status: 'pending'` rather than an error, so this budget
+// must sit above that cap or the desktop reports a false timeout while the
+// host is still compressing (#97948).
+export const SESSION_COMPRESS_TIMEOUT_MS = 660_000
 const WAKE_START_TIMEOUT_MS = 180_000
 
 const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
@@ -166,7 +181,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     handoffSession,
     openMemoryGraph,
     refreshSessions,
-    requestGateway,
+    requestGateway: ambientRequestGateway,
     resumeStoredSession,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
@@ -177,7 +192,46 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
+    async (rawCommand: string, options?: SubmitTextOptions & { recordInput?: boolean }) => {
+      const initialRuntimeId = options?.sessionId ?? activeSessionIdRef.current
+      const initialSelectedId = selectedStoredSessionIdRef.current
+      const initialRoutedId = getRoutedStoredSessionId()
+
+      let submitted = true
+
+      const initialStoredId =
+        options?.storedSessionId ??
+        (options?.sessionId
+          ? ($sessionStates.get()[options.sessionId]?.storedSessionId ?? null)
+          : (initialRoutedId ?? initialSelectedId))
+
+      const destination =
+        options?.destination ?? captureSubmissionDestination(initialStoredId ?? initialRuntimeId, ambientRequestGateway)
+
+      const requestGateway = destination.requestGateway
+      const retryOptions = { ...options, retryText: rawCommand }
+
+      try {
+        const prepared = await readPreparedSubmission(preparedSubmissionKey(
+          resolveComposerSessionKey(initialStoredId ?? initialRuntimeId, $sessions.get()),
+          destination, rawCommand, options?.attachments ?? $composerAttachments.get(), retryOptions
+        ))
+
+        if (prepared) {
+          return await submitPromptText(prepared.text, {
+            ...retryOptions, sessionId: initialRuntimeId ?? undefined,
+            storedSessionId: initialStoredId, displayText: prepared.displayText,
+            submission_id: prepared.id, destination
+          })
+        }
+      } catch (err) {
+        notifyError(err, copy.promptFailed)
+
+        return false
+      }
+
+      const submissionId = options?.submission_id ?? crypto.randomUUID()
+
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -189,13 +243,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // goal" for a goal that was live on the real chat.
       const ensureSessionId = async (sessionHint?: string, preview?: null | string) =>
         resolveTargetSessionId({
-          activeRuntimeId: activeSessionIdRef.current,
+          activeRuntimeId: initialRuntimeId,
           createSession: () => createBackendSessionForSend(preview),
           explicitRuntimeId: sessionHint,
           getRuntimeIdForStoredSession,
           requestGateway,
-          routedStoredSessionId: getRoutedStoredSessionId(),
-          selectedStoredSessionId: selectedStoredSessionIdRef.current
+          routedStoredSessionId: initialRoutedId,
+          selectedStoredSessionId: initialSelectedId
         })
 
       // Resolve the target session plus a writer for inline slash output, or
@@ -224,7 +278,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // to updateSessionState re-keyed the tile's cache entry onto the
         // primary's stored session. Fall back to the selection only for a
         // session with no published state yet (a draft this call just created).
-        const storedSessionId = $sessionStates.get()[sessionId]?.storedSessionId ?? selectedStoredSessionIdRef.current
+        const storedSessionId = $sessionStates.get()[sessionId]?.storedSessionId ?? initialStoredId ??
+          (!initialRuntimeId && activeSessionIdRef.current === sessionId ? selectedStoredSessionIdRef.current : null)
 
         // Header carries the command token only. The full invocation would
         // duplicate long args — `/goal <prose>` echoed the whole goal in the
@@ -335,25 +390,28 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat
           // is on screen, while this command runs against the session
           // resolveTargetSessionId picked, routinely a different one.
-          if (isTargetSessionBusy($sessionStates.get(), sessionId, busyRef.current)) {
-            // The backend already executed the command — for `/goal <text>`
-            // the goal is set and `message` is its kickoff prompt. Dropping
-            // it here loses the kickoff silently (the goal exists but the
-            // agent never hears about it, #63352). Queue it on the composer
-            // queue instead: it fires when the running turn settles, and the
-            // queue panel above the composer shows it in the meantime.
-            //
-            // Park it on the same stored session the output writer is bound to
-            // rather than re-reading the globals here — a session switch between
-            // dispatch and this branch would otherwise queue the kickoff on
-            // whichever chat is now in front.
-            const queueKey = resolveComposerSessionKey(storedSessionId, $sessions.get()) || storedSessionId || sessionId
+          //
+          // Parked on the same stored session the output writer is bound to
+          // rather than re-reading the globals — a session switch between
+          // dispatch and this branch would otherwise queue the kickoff on
+          // whichever chat is now in front (#63352).
+          const queued = options?.fromQueue
+            ? 'idle'
+            : queueKickoffIfSessionBusy({
+                displayText,
+                foregroundBusy: busyRef.current,
+                id: submissionId,
+                sessionId,
+                storedSessionId,
+                text: message
+              })
 
-            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message, displayText })) {
-              renderSlashOutput('session busy — message queued to send when the current turn finishes')
-            } else {
-              renderSlashOutput('session busy — /interrupt the current turn before sending this command')
-            }
+          if (queued !== 'idle') {
+            renderSlashOutput(
+              queued === 'queued'
+                ? 'session busy — message queued to send when the current turn finishes'
+                : 'session busy — /interrupt the current turn before sending this command'
+            )
 
             return
           }
@@ -366,7 +424,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // its kickoff as a user message into whatever conversation was on
           // screen. Every other target the dispatcher serves (tile, background
           // queue drain, a session created by this very call) had the same leak.
-          await submitPromptText(message, { sessionId, storedSessionId, displayText })
+          submitted = await submitPromptText(message, {
+            ...retryOptions,
+            sessionId,
+            storedSessionId,
+            displayText,
+            submission_id: submissionId,
+            destination
+          })
         }
 
         try {
@@ -417,12 +482,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await handleDispatch(dispatch)
         } catch (err) {
-          // "not a quick/plugin/skill command" just means the fallback had
-          // nothing to add — the slash.exec failure (worker timeout, crash) is
+          // "not a quick/plugin/bundle/skill command" (older gateways: without
+          // "bundle/") just means the fallback had nothing to add — the slash.exec failure (worker timeout, crash) is
           // the real error, so don't bury it under the routing noise.
           const dispatchMessage = err instanceof Error ? err.message : String(err)
 
-          if (slashExecError && /not a quick\/plugin\/skill command/i.test(dispatchMessage)) {
+          if (slashExecError && /not a quick\/plugin\/(?:bundle\/)?skill command/i.test(dispatchMessage)) {
             const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
             renderSlashOutput(`error: /${name} failed: ${original}`)
 
@@ -486,10 +551,104 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
         new: async () => {
+          prepareDefaultNewSession()
           startFreshSessionDraft()
         },
         branch: async () => {
           await branchCurrentSession()
+        },
+        // Desktop owns the active turn, while the historical slash worker
+        // only stops background terminal processes. Interrupt the exact chat
+        // first (the same backend path as the composer Stop button), then keep
+        // the existing process cleanup so /stop retains both meanings.
+        stop: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId: initialSessionId, storedSessionId } = resolved
+          const lines: string[] = []
+
+          try {
+            await withSessionNotFoundResume(
+              initialSessionId,
+              storedSessionId,
+              liveId => requestGateway('session.interrupt', { session_id: liveId }),
+              {
+                requestGateway,
+                onRecovered: recoveredId => {
+                  if (activeSessionIdRef.current === initialSessionId) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
+                }
+              }
+            )
+            lines.push('Stopped the active turn.')
+          } catch (err) {
+            lines.push(`Could not stop the active turn: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          try {
+            const result = await requestGateway<unknown>('process.stop', {})
+            const processMessage = renderRpcResult(result, ctx.name)
+
+            if (processMessage) {
+              lines.push(processMessage)
+            }
+          } catch (err) {
+            lines.push(`Could not stop background processes: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          renderSlashOutput(lines.join('\n'))
+        },
+        // /btw uses prompt.btw (the TUI's path). It must NOT go through
+        // runExec: the slash worker prints the answer after process_command
+        // returns, past the stdout capture window (#99065). The RPC replies
+        // with a task id; the answer arrives later as btw.complete.
+        btw: async ctx => {
+          const question = ctx.arg.trim()
+
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if (!question) {
+            renderSlashOutput(
+              'Usage: /btw <question> — answered from a snapshot of this conversation without interrupting it.'
+            )
+
+            return
+          }
+
+          try {
+            const result = await requestGateway<{ task_id?: string }>('prompt.btw', {
+              session_id: sessionId,
+              text: question
+            })
+
+            renderSlashOutput(
+              result.task_id
+                ? `btw ${result.task_id} — answering from a conversation snapshot`
+                : 'btw — answering from a conversation snapshot'
+            )
+          } catch (err) {
+            // Older gateways without the dedicated RPC still have the
+            // slash-worker route — same compatibility fallback as runRpc.
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
         },
         // /compress (alias /compact) runs the gateway's dedicated
         // session.compress RPC — the TUI's path
@@ -566,6 +725,21 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             )
 
             sessionId = liveSessionId
+
+            // The gateway's compute-host wait expired but compression is still
+            // running there; it pushes session.info + a `compacted` status edge
+            // when the host finishes. Not an error (#97948).
+            if (result?.status === 'pending') {
+              // Hand the completion off to the status edge: this reply carries
+              // no summary and the host is still working, so nothing below
+              // runs for a deferred compress.
+              markCompressDeferred(sessionId)
+
+              const pendingMessage = result.message || 'compression still running in the background'
+              notify({ durationMs: 8_000, id: noticeId, kind: 'info', message: pendingMessage })
+
+              return
+            }
 
             // Replace the transcript with the post-compress history so the
             // summarized bubbles actually disappear. `messages` is the same
@@ -655,6 +829,46 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           } finally {
             compressInFlightRef.current.delete(sessionId)
+          }
+        },
+        // /reasoning runs the gateway's `config.set key=reasoning` — the Ink
+        // TUI's path. Through slash.exec the display words only reached
+        // config.yaml and the Thinking gate ($showReasoning) waited for the
+        // next config refresh; the effort level was set on a throwaway CLI.
+        reasoning: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+          const params = reasoningSlashParams(ctx.arg, sessionId)
+
+          try {
+            if (!params) {
+              const current = await requestGateway<{ display?: string; value?: string }>('config.get', {
+                key: 'reasoning',
+                session_id: sessionId
+              })
+
+              renderSlashOutput(`reasoning: ${current.value || 'medium'} · display ${current.display || 'hide'}`)
+
+              return
+            }
+
+            const result = await requestGateway<{ value?: string }>('config.set', params)
+
+            applyReasoningSlashResult(result.value)
+            renderSlashOutput(`reasoning: ${result.value || params.value}`)
+          } catch (err) {
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
         // /yolo maps to the status-bar YOLO control — a per-session approval
@@ -802,6 +1016,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
             $newChatProfile.set(key)
             await ensureGatewayProfile(key)
+            // Capture the source the swap landed on (null on the v1 profile path)
+            // so the draft's owner matches the socket that will mint it.
+            captureNewChatSource()
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
             notifyError(err, copy.setProfileFailed)
@@ -1101,7 +1318,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
       }
 
-      await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true)
+      await runSlash(rawCommand, options?.sessionId ?? undefined, options?.recordInput ?? true)
+
+      return submitted
     },
     [
       activeSessionIdRef,
@@ -1116,7 +1335,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       handoffSession,
       openMemoryGraph,
       refreshSessions,
-      requestGateway,
+      ambientRequestGateway,
       resumeStoredSession,
       selectedStoredSessionIdRef,
       startFreshSessionDraft,

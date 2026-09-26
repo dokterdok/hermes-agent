@@ -1,24 +1,26 @@
-import { registryBackendScopeKey } from '@hermes/shared'
+import { type GatewayEvent, registryBackendScopeKey } from '@hermes/shared'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { acceptExecutionEvent } from '@/lib/execution-authority'
 import {
   approvalReplaySessionId,
   resolveGatewayEventSessionId,
   UNSCOPED_STREAM_EVENT_TYPES
 } from '@/lib/gateway-events'
-import { setSessionCompacting } from '@/store/compaction'
+import { reconcileSessionCompacting } from '@/store/compaction'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { replayPendingApproval } from '@/store/prompts'
 import { setSessionProviderWait } from '@/store/provider-wait'
+import { isSessionGone } from '@/store/session-gone-latch'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
-import type { RpcEvent } from '@/types/hermes'
 
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageStreamEvent } from './message-stream'
+import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
 import { handleToolEvent } from './tools'
@@ -44,7 +46,6 @@ const DRAFT_SUPERSEDING_EVENT_TYPES = new Set([
   'reasoning.delta',
   'thinking.delta',
   'tool.complete',
-  'tool.progress',
   'tool.start'
 ])
 
@@ -59,7 +60,6 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'moa.progress',
   'moa.phase',
   'tool.start',
-  'tool.progress',
   'tool.generating',
   'tool.complete'
 ])
@@ -74,7 +74,6 @@ const PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES = new Set([
   'reasoning.delta',
   'tool.complete',
   'tool.generating',
-  'tool.progress',
   'tool.start'
 ])
 
@@ -83,6 +82,7 @@ const PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES = new Set([
 const HANDLERS: GatewayEventHandler[] = [
   handleLifecycleEvent,
   handleSessionInfoEvent,
+  handleControlEvent,
   handleMessageStreamEvent,
   handleToolEvent,
   handleInputRequestEvent,
@@ -92,6 +92,7 @@ const HANDLERS: GatewayEventHandler[] = [
 
 /** The gateway-event dispatcher, extracted from useMessageStream. */
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
+  const executionAuthorities = useRef(new Map())
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
   const unscopedStreamSessionIdRef = useRef<string | null>(null)
@@ -132,7 +133,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   )
 
   return useCallback(
-    (event: RpcEvent) => {
+    (event: GatewayEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
 
       // "From the active profile" must mean "from the active SOURCE": every
@@ -167,6 +168,20 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       const sessionId = route.sessionId
+      const authorityKey = `${registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null)}\u0000${sessionId}`
+
+      const previousAuthority = executionAuthorities.current.get(authorityKey)
+
+      if (sessionId && !acceptExecutionEvent(executionAuthorities.current, authorityKey, event.type, event)) {return}
+
+      const authority = executionAuthorities.current.get(authorityKey)
+
+      if (sessionId && previousAuthority && authority && !authority.terminal &&
+          (authority.epoch !== previousAuthority.epoch || authority.generation > previousAuthority.generation)) {
+        // Stop belongs to the cancelled execution, not the shared session.
+        // Only an accepted newer owner start/snapshot may retire its latch.
+        deps.updateSessionState(sessionId, state => state.interrupted ? { ...state, interrupted: false } : state)
+      }
 
       // Late stragglers: an unscoped stream event attributed via the
       // active-session fallback (no pin) to a session that has no live turn
@@ -195,7 +210,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
-      const replaySessionId = approvalReplaySessionId(event.type, activeSessionIdRef.current, sessionId)
+      const replaySessionId = approvalReplaySessionId(event.type, activeSessionIdRef.current, sessionId, {
+        explicit: Boolean(explicitSid),
+        isGone: isSessionGone
+      })
 
       if (replaySessionId) {
         void replayPendingApproval($gateway.get(), replaySessionId).catch(() => undefined)
@@ -206,7 +224,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // turn has resumed, so retire the phase label without waiting for the
       // whole turn to complete.
       if (sessionId && COMPACTION_RESUME_EVENT_TYPES.has(event.type) && compactedTurnRef.current.has(sessionId)) {
-        setSessionCompacting(sessionId, false)
+        reconcileSessionCompacting(sessionId, 'resumed')
       }
 
       if (sessionId && DRAFT_SUPERSEDING_EVENT_TYPES.has(event.type)) {
@@ -249,6 +267,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       deps.failAssistantMessage,
       deps.finalizeInterimAssistantMessage,
       deps.flushQueuedDeltas,
+      deps.dropQueuedDeltas,
       deps.hydrateFromStoredSession,
       deps.lastCwdInfoSessionRef,
       deps.nativeSubagentSessionsRef,
