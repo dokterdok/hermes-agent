@@ -2,6 +2,7 @@
 stale-authority demotion for hosted Group Chat rooms."""
 
 import json
+import sqlite3
 
 import pytest
 
@@ -21,6 +22,36 @@ def _authority_db(tmp_path, name="authority.db"):
 
 def _replica_db(tmp_path, name="replica.db"):
     return tmp_path / name
+
+
+def _safety_reservation(db, room_id):
+    """Reservation/quarantine row when Retention safety schema is installed, else None."""
+    with sqlite3.connect(db) as conn:
+        present = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_id_reservations'"
+        ).fetchone()
+        if present is None:
+            return None
+        owner = conn.execute(
+            "SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id=?", (room_id,)
+        ).fetchone()
+        quarantine = conn.execute(
+            "SELECT reason FROM hosted_room_quarantine WHERE room_id=?", (room_id,)
+        ).fetchone()
+        triggers = {
+            name for (name,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name IN (?, ?)",
+                (
+                    "trg_hosted_rooms_reject_reserved_insert",
+                    "trg_hosted_replicas_reject_reserved_insert",
+                ),
+            )
+        }
+    return {
+        "owner": None if owner is None else owner[0],
+        "quarantine": None if quarantine is None else quarantine[0],
+        "triggers": triggers,
+    }
 
 
 def _seed_room(db, *, gateway_id=AUTH_A, n_events=3, room_id="room-1"):
@@ -173,15 +204,36 @@ def test_promote_replica_continues_room_at_next_epoch(tmp_path, monkeypatch):
     with pytest.raises(replicas.ReplicaError):
         replicas.replica_state(rdb, room_id="room-1")
 
+    safety = _safety_reservation(rdb, "room-1")
+    if safety is not None:
+        assert safety["owner"] == "authority"
+        assert safety["quarantine"] is None
+        assert safety["triggers"] == {
+            "trg_hosted_rooms_reject_reserved_insert",
+            "trg_hosted_replicas_reject_reserved_insert",
+        }
+
 
 def test_promote_refuses_when_room_exists_locally(tmp_path, monkeypatch):
     db = _authority_db(tmp_path)
     page = _seed_room(db)
-    # Same DB also holds a replica row for the same id — conflict must win.
-    replicas.ingest_page(
-        db, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
-    )
     monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
+    try:
+        # Same DB also holds a replica row for the same id — conflict must win.
+        replicas.ingest_page(
+            db, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
+        )
+    except rooms.RoomConflictError as exc:
+        # Retention reservation triggers refuse a replica beside a live authority room.
+        assert "already reserved" in str(exc)
+        safety = _safety_reservation(db, "room-1")
+        assert safety is not None and safety["owner"] == "authority"
+        assert rooms.room_state(db, room_id="room-1")["authority"]["gateway_id"] == AUTH_A
+        with pytest.raises(replicas.ReplicaError):
+            replicas.replica_state(db, room_id="room-1")
+        with pytest.raises(replicas.ReplicaError):
+            replicas.promote_replica(db, room_id="room-1")
+        return
     with pytest.raises(rooms.RoomConflictError):
         replicas.promote_replica(db, room_id="room-1")
 
