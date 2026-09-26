@@ -20,7 +20,10 @@ def test_maintenance_steps_renew_the_armed_watchdog_lease(tmp_path, monkeypatch)
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         # Maintenance is throttled by state_meta; a fresh DB has never run it.
-        monkeypatch.setattr(db, "prune_sessions", lambda **kw: 120)  # VACUUM only runs after a real prune
+        def completed_prune(**kwargs):
+            kwargs['report']['skipped_protected'] = 0
+            return 120  # VACUUM only runs after a real prune
+        monkeypatch.setattr(db, "prune_sessions", completed_prune)
         monkeypatch.setattr(db, "sweep_orphaned_sessions", lambda **kw: [])
         monkeypatch.setattr(db, "_freelist_ratio", lambda: 1.0)
         monkeypatch.setattr(db, "vacuum", lambda: None)

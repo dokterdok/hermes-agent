@@ -261,7 +261,8 @@ class SessionAuthority:
     async def recover_native_sessions(self, bindings):
         """Bind only server-observed native routes; unknown work stays paused."""
         from collections import Counter
-        from gateway.session_envelope import check_native_route
+        from copy import deepcopy
+        from gateway.session_envelope import _preflight_native_route, _validate_native_route
         bindings = list(bindings)
         counts = Counter(sid for sid, _, _ in bindings)
         results = {}
@@ -274,17 +275,50 @@ class SessionAuthority:
                 if not native:
                     raise RuntimeStoreError('not_found')
                 target = self.physical_target(SessionRef(self.profile_id, sid))
-                source, route = await check_native_route(self.runner, native[-1]['payload'], target,
-                                                    available_source, adapter)
+                # Snapshot local policy before any role I/O. Ledger reads decode
+                # fresh JSON payloads; no caller shares these captured row dicts.
+                policy_config = deepcopy(self.runner.config)
+                if adapter is None:
+                    raise RuntimeStoreError('not_found')
+                adapter_config = deepcopy(adapter.config)
+                (source, route), last_receipt = await _preflight_native_route(
+                    self.runner, native[-1]['payload'], target, available_source, adapter)
+                checked = [(native[-1], last_receipt)]
                 for row in rows:
                     if row['status'] == 'queued':
                         if 'native_text_v1' not in row['payload']:
                             raise RuntimeStoreError('invalid_params')
-                        await check_native_route(self.runner, row['payload'], target, available_source, adapter)
+                        _, receipt = await _preflight_native_route(
+                            self.runner, row['payload'], target, available_source, adapter)
+                        checked.append((row, receipt))
                 self._require_admission_open()
-                self.sessions.setdefault(sid, LiveSession(source, route))
-                if any(row['status'] == 'unknown' for row in rows):
+                current = list_session_admissions(self.db, session_id=sid, pending_only=False)
+                registry = getattr(self.runner, 'session_authorities', None)
+                owned = (registry.for_home(self.profile_id) if registry is not None
+                         else getattr(self.runner, 'session_authority', None))
+                if (current != rows or self.runner.config != policy_config
+                        or adapter.config != adapter_config
+                        or owned is not self
+                        or self.physical_target(SessionRef(self.profile_id, sid)) != target):
+                    raise RuntimeStoreError('admission_conflict')
+                # Synchronously revalidate the entire captured batch after all
+                # awaited role checks, before a paused bind or scheduler effect.
+                for row, receipt in checked:
+                    _validate_native_route(self.runner, row['payload'], target,
+                                           available_source, adapter, receipt)
+                live = self.sessions.get(sid)
+                if live is None:
+                    # Keep public paused observational bindings for unknown work,
+                    # but never install one before the whole-batch fence.
+                    live = self.sessions[sid] = LiveSession(source, route)
+                if any(row['status'] == 'unknown' for row in current):
                     raise RuntimeStoreError('unknown_execution')
+                if (any(row['status'] == 'started' for row in current)
+                        or live.task is not None and not live.task.done()):
+                    results[sid] = 'active'
+                    continue
+                # Preserve controls and subscribers of the existing paused binding.
+                live.source, live.route = source, route
                 self._schedule(SessionRef(self.profile_id, sid))
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:

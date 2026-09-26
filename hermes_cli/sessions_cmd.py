@@ -16,6 +16,7 @@ from pathlib import Path
 
 from hermes_cli.cli_output import print_truncated
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+from hermes_state_raw_delete import SessionLedgerProtectedError
 
 
 def get_hermes_home():
@@ -611,7 +612,16 @@ def _prune_never_active_keyed(db, args):
                   "Use a bare number of days or a form like '2d' / '1w'.")
             return
         days = seconds / 86400.0
-    candidates = db.list_never_active_keyed_sessions(older_than_days=days)
+    preview_report = {}
+    candidates = db.list_never_active_keyed_sessions(
+        older_than_days=days, exclude_ledger_owned=True, report=preview_report)
+    skipped_preview = preview_report.get("skipped_protected") or 0
+    if not candidates and not skipped_preview:
+        print(f"No never-active keyed sessions older than {days:g} day(s).")
+        return
+    if skipped_preview and (args.dry_run or not args.yes or not candidates):
+        print(f"Skipped {skipped_preview} session(s) with retained runtime records; "
+              "delete them through the owning gateway.")
     if not candidates:
         print(f"No never-active keyed sessions older than {days:g} day(s).")
         return
@@ -629,10 +639,14 @@ def _prune_never_active_keyed(db, args):
     if not args.yes and not _confirm_prompt(f"Delete {len(candidates)} session(s)? [y/N] "):
         print("Aborted.")
         return
+    committed_report = {}
     deleted, routing_deleted = db.prune_never_active_keyed_sessions(
-        older_than_days=days, sessions_dir=_sessions_dir()
+        older_than_days=days, sessions_dir=_sessions_dir(), report=committed_report,
     )
     print(f"Deleted {deleted} never-active session(s) and {routing_deleted} stale routing entr(ies).")
+    if committed_report.get("skipped_protected"):
+        print(f"Skipped {committed_report['skipped_protected']} session(s) with retained runtime records; "
+              "delete them through the owning gateway.")
 
 
 def _note_pinned_skipped(db, filters, action):
@@ -681,7 +695,9 @@ def _cmd_prune_or_archive(db, args, action):
     filters["lineage_tips_only"] = not prune
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
-    candidates = db.list_prune_candidates(**filters)
+    preview_report = {}
+    candidates = db.list_prune_candidates(
+        **filters, **({'exclude_ledger_owned': True, 'report': preview_report} if prune else {}))
     # Archive expands each matched tip to its compression lineage, so a direct-open count would
     # misdescribe its effect.
     skipped_open = db.count_open_prune_matches(**filters) if prune else 0
@@ -689,6 +705,9 @@ def _cmd_prune_or_archive(db, args, action):
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "
               "will be skipped because prune only deletes ended sessions. Use `hermes sessions delete <id>` "
               "to remove one explicitly.")
+    if prune and preview_report.get('skipped_protected') and (args.dry_run or not args.yes or not candidates):
+        print(f"Skipped {preview_report['skipped_protected']} session(s) with retained runtime records; "
+              "delete them through the owning gateway.")
     if not candidates:
         print(f"No sessions match ({describe_filters(filters)}).")
         return
@@ -715,7 +734,12 @@ def _cmd_prune_or_archive(db, args, action):
         print("Cancelled.")
         return
     if prune:
-        print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), **filters)} session(s).")
+        committed_report = {}
+        removed = db.prune_sessions(sessions_dir=_sessions_dir(), report=committed_report, **filters)
+        print(f"Pruned {removed} session(s).")
+        if committed_report['skipped_protected']:
+            print(f"Skipped {committed_report['skipped_protected']} session(s) with retained runtime records; "
+                  "delete them through the owning gateway.")
     else:
         print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
               "but fully recoverable (nothing was deleted).")
@@ -1066,6 +1090,9 @@ def cmd_sessions(args, sessions_parser=None):
                 return 1
         try:
             return handler(db, args)
+        except SessionLedgerProtectedError as e:
+            print(f"Refused: {e}")
+            return 1
         except sqlite3.OperationalError as e:
             from hermes_state_repair import _schema_not_built
 

@@ -74,6 +74,8 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
 
     class FakeDB:
         def list_prune_candidates(self, **kwargs):
+            assert kwargs.pop('exclude_ledger_owned') is True
+            kwargs.pop('report')['skipped_protected'] = 0
             seen.update(kwargs)
             return rows
 
@@ -85,6 +87,7 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
             return len(rows)
 
         def prune_sessions(self, **kwargs):
+            kwargs.pop('report')['skipped_protected'] = 0
             return len(rows)
 
         def close(self):

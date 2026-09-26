@@ -4,7 +4,8 @@ import pytest
 from hermes_state import SessionDB
 
 
-def test_prune_sessions_respects_touch_session_activity(tmp_path):
+@pytest.mark.parametrize("exclude_ledger_owned", [False, True])
+def test_prune_sessions_respects_touch_session_activity(tmp_path, exclude_ledger_owned):
     with closing(SessionDB(tmp_path / "state.db")) as db:
         now = time.time()
         old_time = now - 100 * 86400  # 100 days ago
@@ -32,12 +33,14 @@ def test_prune_sessions_respects_touch_session_activity(tmp_path):
         db._conn.commit()
 
         # Check dry-run candidates
-        candidates = db.list_prune_candidates(older_than_days=10)
+        candidates = db.list_prune_candidates(
+            older_than_days=10, exclude_ledger_owned=exclude_ledger_owned)
         candidate_ids = [c["id"] for c in candidates]
         assert "active_by_heartbeat" not in candidate_ids
         assert "truly_old" in candidate_ids
 
-        candidate_map = {c["id"]: c for c in db.list_prune_candidates(older_than_days=None)}
+        candidate_map = {c["id"]: c for c in db.list_prune_candidates(
+            older_than_days=None, exclude_ledger_owned=exclude_ledger_owned)}
         assert candidate_map["active_by_heartbeat"]["last_active"] == pytest.approx(recent_time, abs=1.0)
 
         # Pruning sessions older than 10 days should spare active_by_heartbeat

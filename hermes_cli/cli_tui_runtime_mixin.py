@@ -24,6 +24,23 @@ from rich.markup import escape as _escape
 logger = logging.getLogger("cli")
 
 
+def exit_delete_outcome(session_db, session_id: str) -> tuple[str, str]:
+    """Result of ``/exit --delete``: ``deleted``, ``missing``, or ``refused``.
+
+    A ledger refusal is returned, not swallowed. Any other exception propagates
+    so shutdown can log it without presenting it as a runtime-history refusal.
+    """
+    from hermes_state_raw_delete import SessionLedgerProtectedError
+    try:
+        removed = session_db.delete_session(
+            session_id, sessions_dir=get_hermes_home() / "sessions")
+    except SessionLedgerProtectedError as exc:
+        return "refused", str(exc)
+    if removed:
+        return "deleted", session_id
+    return "missing", session_id
+
+
 class CLITuiRuntimeMixin:
     """Classic-TUI run loop phases: input processing, after-turn bookkeeping, startup banner/prewarm/maintenance, prompt_toolkit application build, signal handlers and shutdown."""
 
@@ -487,8 +504,11 @@ class CLITuiRuntimeMixin:
                 # /exit --delete: remove transcripts + SQLite history.
                 try:
                     _sid = self.agent.session_id
-                    if self._session_db.delete_session(_sid, sessions_dir=get_hermes_home() / "sessions"):
+                    _outcome, _detail = exit_delete_outcome(self._session_db, _sid)
+                    if _outcome == "deleted":
                         _cprint(f"  {_DIM}✓ Session {_escape(_sid)} deleted{_RST}")
+                    elif _outcome == "refused":
+                        _cprint(f"  {_DIM}Refused: {_escape(_detail)}{_RST}")
                     else:
                         _cprint(f"  {_DIM}✗ Session {_escape(_sid)} not found for deletion{_RST}")
                 except (Exception, KeyboardInterrupt) as e:

@@ -318,7 +318,10 @@ class SessionGatewayMixin:
         rows = self._read_all("SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?", (scope,))
         return {r["session_key"]: r["entry_json"] for r in rows}
 
-    def list_never_active_keyed_sessions(self, *, older_than_days: float) -> List[Dict[str, Any]]:
+    def list_never_active_keyed_sessions(
+        self, *, older_than_days: float, exclude_ledger_owned: bool = False,
+        report: Optional[dict] = None,
+    ) -> List[Dict[str, Any]]:
         """Keyed, still-open rows with no evidence of a single turn (no messages, tokens, tool/API calls,
         activity, or title): leaked fixtures or chats routed but never answered. Safe to drop — the gateway
         mints a fresh session on the next message. Needs its own selector because ``bulk prune``/``archive``
@@ -326,16 +329,19 @@ class SessionGatewayMixin:
 
         That is exactly the shape of a leaked test fixture (#82770) — and also of a chat that was routed but
         never answered.
+
+        Prune previews pass *exclude_ledger_owned* so retained runtime rows stay out of the
+        candidate list. *report* then receives ``skipped_protected``. The unfiltered selector
+        (callers that are not a prune preview) is unchanged.
         """
         if older_than_days < 0:
             raise ValueError(
                 f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
                 "retention builds a future cutoff that matches every never-active keyed row.")
         cutoff = time.time() - (float(older_than_days) * 86400.0)
-        rows = self._read_all(
-            """
+        sql = """
             SELECT s.id, s.session_key, s.source, s.chat_id,
-                   s.chat_type, s.user_id, s.started_at
+                   s.chat_type, s.user_id, s.started_at{protection}
               FROM sessions s
              WHERE s.session_key IS NOT NULL
                AND s.ended_at IS NULL
@@ -354,10 +360,22 @@ class SessionGatewayMixin:
                        SELECT 1 FROM messages m WHERE m.session_id = s.id
                    )
              ORDER BY s.started_at
-            """,
-            (cutoff,),
-        )
-        return [dict(r) for r in rows]
+            """
+        if not exclude_ledger_owned:
+            return [dict(r) for r in self._read_all(sql.format(protection=""), (cutoff,))]
+        from hermes_state_raw_delete import preview_ledger_references, report_maintenance
+
+        def read(conn):
+            protection = (
+                ", " + preview_ledger_references(conn, read_only=self.read_only).format(session_id="s.id")
+                + " AS _ledger_owned"
+            )
+            return [dict(row) for row in conn.execute(sql.format(protection=protection), (cutoff,)).fetchall()]
+
+        rows = self._read_retrying_ioerr(read)
+        eligible = [row for row in rows if not row.pop("_ledger_owned")]
+        report_maintenance(report, skipped_protected=len(rows) - len(eligible))
+        return eligible
 
     def gateway_routing_entry_for_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """The routing entry (any scope) whose current owner is *session_id*, or None. The id lives
@@ -371,11 +389,10 @@ class SessionGatewayMixin:
                 return entry
         return None
 
-    def _delete_routing_entries_for_sessions(self, session_ids: Set[str]) -> int:
-        """Drop ``gateway_routing`` rows pointing at any of *session_ids*; the target id
-        lives only inside ``entry_json``, so matching is done in Python over all scopes."""
+    def _routing_targets_for_sessions(self, session_ids: Set[str]) -> List[Tuple[str, str]]:
+        """``(scope, session_key)`` rows whose ``entry_json`` names one of *session_ids*."""
         if not session_ids:
-            return 0
+            return []
         doomed: List[Tuple[str, str]] = []
         for row in self._read_all("SELECT scope, session_key, entry_json FROM gateway_routing"):
             try:
@@ -384,23 +401,60 @@ class SessionGatewayMixin:
                 continue
             if isinstance(entry, dict) and entry.get("session_id") in session_ids:
                 doomed.append((row["scope"], row["session_key"]))
+        return doomed
+
+    def _delete_routing_entries_for_sessions(self, session_ids: Set[str]) -> int:
+        """Drop ``gateway_routing`` rows pointing at any of *session_ids*; the target id
+        lives only inside ``entry_json``, so matching is done in Python over all scopes."""
+        doomed = self._routing_targets_for_sessions(session_ids)
         if not doomed:
             return 0
         self._write_sql("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?", doomed, many=True)
         return len(doomed)
 
     def prune_never_active_keyed_sessions(
-        self, *, older_than_days: float, sessions_dir: Optional[Path] = None) -> Tuple[int, int]:
+        self, *, older_than_days: float, sessions_dir: Optional[Path] = None,
+        report: Optional[dict] = None,
+    ) -> Tuple[int, int]:
         """Delete never-active keyed rows and the routing entries naming them; returns
-        ``(sessions_deleted, routing_entries_deleted)``. Routing entries go first: a stale
-        entry outliving its target would have the gateway resume a nonexistent id.
-        Deletion goes through :meth:`delete_session` (delegate cascade, FTS, transcripts)."""
+        ``(sessions_deleted, routing_entries_deleted)``.
+
+        This is an ordinary sweep, so a runtime ledger reference is skipped rather than
+        refusing the batch. Routing for a skipped row is left in place: dropping it would
+        detach retained history from the gateway. Routing for a removed row is deleted
+        only after :meth:`delete_session` commits, so a refusal cannot orphan a route.
+        *report* receives ``removed`` / ``skipped_protected`` after the sweep.
+        """
+        from hermes_state_raw_delete import (
+            SessionLedgerProtectedError, protected_session_ids, report_maintenance,
+        )
         candidates = self.list_never_active_keyed_sessions(older_than_days=older_than_days)
-        if not candidates:
+        ids = [str(row["id"]) for row in candidates]
+        if not ids:
+            report_maintenance(report, skipped_protected=0, removed=0)
             return (0, 0)
-        ids = {str(row["id"]) for row in candidates}
-        routing_deleted = self._delete_routing_entries_for_sessions(ids)
-        deleted = sum(1 for sid in ids if self.delete_session(sid, sessions_dir=sessions_dir))
+        protected = self._read_retrying_ioerr(lambda conn: protected_session_ids(conn, ids))
+        deleted = 0
+        routing_deleted = 0
+        raced = 0
+        for sid in ids:
+            if sid in protected:
+                continue
+            # delete_session's retire_routes drops these after the ledger guard.
+            # Count them first so a refusal can leave the route in place.
+            pending_routes = len(self._routing_targets_for_sessions({sid}))
+            try:
+                removed = self.delete_session(sid, sessions_dir=sessions_dir)
+            except SessionLedgerProtectedError:
+                raced += 1
+                continue
+            if removed:
+                deleted += 1
+                routing_deleted += pending_routes
+            else:
+                # The row was already gone. Drop a route that would resume it.
+                routing_deleted += self._delete_routing_entries_for_sessions({sid})
+        report_maintenance(report, skipped_protected=len(protected) + raced, removed=deleted)
         return (deleted, routing_deleted)
 
     def list_gateway_sessions(
