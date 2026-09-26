@@ -19,7 +19,11 @@
   printed on the next line exactly once with reg.exe import. Do not reg delete.
   Do not start CUA after that line. Do not kill any process by image name.
   Do not delete, rename, or launch C:\Users\ddewit\hermes-uat-a5-ns-20260926.
-  The only new folder is C:\Users\ddewit\hermes-uat-a5-ns2-20260926.
+  Do not delete, rename, or launch C:\Users\ddewit\hermes-uat-a5-ns2-20260926.
+  The only new folder is C:\Users\ddewit\hermes-uat-a5-ns3-20260926.
+  This Launch starts Hermes once. It also starts a read-only window probe
+  on session 1. That probe is part of this Launch. It is not a second Launch.
+  Do not start the probe yourself.
   PsExec is the existing PsExec64.exe under AppData\Local\Temp\hermes-uat-live.
   Do not download PsExec. Do not add it to PATH.
 
@@ -39,11 +43,17 @@ $script:ExitCode = 99
 $script:NeedRestore = $false
 $script:CreatedAttempt = $false
 $script:Launched = $false
+$script:LeaveUatRunning = $false
+$script:LeaveAnnounced = $false
+$script:UatPid = [uint32]0
+$script:ProbePid = [uint32]0
+$script:ProbeStopFile = $null
 
 $UatExe = 'C:\Users\ddewit\hermes-uat-desktop-renderer-reuse-20260923\source\apps\desktop\release\win-unpacked\Hermes.exe'
 $DailyExe = 'C:\Users\ddewit\AppData\Local\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe'
-$Attempt = 'C:\Users\ddewit\hermes-uat-a5-ns2-20260926'
+$Attempt = 'C:\Users\ddewit\hermes-uat-a5-ns3-20260926'
 $FrozenAttempt = 'C:\Users\ddewit\hermes-uat-a5-ns-20260926'
+$FrozenNs2 = 'C:\Users\ddewit\hermes-uat-a5-ns2-20260926'
 $Evidence = 'C:\Users\ddewit\hermes-uat-a5-live-20260926'
 $KnownPsExec = 'C:\Users\ddewit\AppData\Local\Temp\hermes-uat-live\PsExec64.exe'
 $WindowsPort = 54573
@@ -68,12 +78,26 @@ function Stop-A5([int]$Code, [string]$Reason) {
   throw (New-Object System.InvalidOperationException($Reason))
 }
 
+function Publish-LeaveRunning([uint32]$RootPid) {
+  $script:LeaveUatRunning = $true
+  $script:UatPid = $RootPid
+
+  if (-not $script:LeaveAnnounced) {
+    $script:LeaveAnnounced = $true
+    Write-Output ('LEAVE_UAT_RUNNING pid=' + $RootPid)
+  }
+}
+
+function Use-IntentionalUatStop {
+  $script:LeaveUatRunning = $false
+}
+
 function Undo-UnlaunchedAttempt {
   if ($script:Launched -or -not $script:CreatedAttempt) {
     return
   }
 
-  $allowed = 'C:\Users\ddewit\hermes-uat-a5-ns2-20260926'
+  $allowed = 'C:\Users\ddewit\hermes-uat-a5-ns3-20260926'
 
   if (-not [string]::Equals($Attempt, $allowed, [System.StringComparison]::OrdinalIgnoreCase)) {
     Write-Output 'ROLLBACK_REFUSED'
@@ -82,6 +106,7 @@ function Undo-UnlaunchedAttempt {
 
   foreach ($forbidden in @(
       $FrozenAttempt,
+      $FrozenNs2,
       $Evidence,
       'C:\Users\ddewit',
       'C:\Users\ddewit\AppData',
@@ -305,9 +330,530 @@ function Assert-DailyStillAlive([uint32[]]$DailyPids) {
     }
 
     if (-not $still) {
+      Use-IntentionalUatStop
       Stop-A5 16 'DAILY_HERMES_DIED'
     }
   }
+}
+
+function Get-A5WindowDecision {
+  param(
+    [int]$ProbeSession,
+    [string]$ProbeOwner,
+    [bool]$ProbeFresh,
+    [int]$Visible,
+    [int]$Hidden,
+    [double]$VisibleSeconds,
+    [bool]$ProfileOk,
+    [bool]$MainAlive,
+    [bool]$PastNoWindow,
+    [bool]$PastHardStop,
+    [int]$Small = 0,
+    [string]$ProbeDesktop = ''
+  )
+
+  $ownerOk = [string]::Equals([string]$ProbeOwner, 'ddewit', [System.StringComparison]::OrdinalIgnoreCase)
+  $desktopOk = [string]::Equals([string]$ProbeDesktop, 'Default', [System.StringComparison]::OrdinalIgnoreCase)
+
+  if (-not $ProbeFresh -or $ProbeSession -ne 1 -or -not $ownerOk -or -not $desktopOk) {
+    return 'probe-bad'
+  }
+
+  if ($Visible -ge 1 -and $VisibleSeconds -ge 15 -and $ProfileOk -and $MainAlive) {
+    return 'stable'
+  }
+
+  if ($PastHardStop -and $Visible -ge 1) {
+    return 'unstable'
+  }
+
+  $noLarge = ($Visible -eq 0 -and $Hidden -eq 0)
+  $noWindows = ($noLarge -and $Small -le 0)
+
+  if (-not $ProfileOk -and ($PastHardStop -or ($PastNoWindow -and $noWindows))) {
+    return 'profile'
+  }
+
+  if ($PastHardStop -and $Hidden -ge 1) {
+    return 'hidden'
+  }
+
+  if ($PastHardStop -and $noLarge -and $Small -ge 1) {
+    return 'unstable'
+  }
+
+  if (($PastHardStop -or $PastNoWindow) -and $noWindows -and $ProfileOk) {
+    return 'no-window'
+  }
+
+  return 'wait'
+}
+
+function Test-A5WindowKill([string]$Decision) {
+  return @('hidden', 'no-window', 'profile') -contains $Decision
+}
+
+function Read-A5ProbeText {
+  param([string]$Text)
+
+  $seen = @{}
+  $complete = $false
+
+  foreach ($line in ($Text -split "`r?`n")) {
+    if ($line -eq 'END') {
+      $complete = $true
+      break
+    }
+
+    if ($line -notmatch '^([A-Z0-9_]+)=(.*)$') {
+      continue
+    }
+
+    $key = [string]$Matches[1]
+    $value = [string]$Matches[2]
+
+    if (-not $seen.ContainsKey($key)) {
+      $seen[$key] = $value
+    }
+  }
+
+  $result = [pscustomobject]@{
+    Complete = $false
+    Ok = $false
+    Session = -1
+    Owner = ''
+    ProbePid = [uint32]0
+    Visible = 0
+    Hidden = 0
+    VisiblePid = ''
+    HiddenPid = ''
+    Title = ''
+    Rect = ''
+    Small = 0
+    Desktop = ''
+  }
+
+  if (-not $complete) {
+    return $result
+  }
+
+  $takeInt = {
+    param([hashtable]$Map, [string]$Name)
+
+    if (-not $Map.ContainsKey($Name)) {
+      return $null
+    }
+
+    $raw = [string]$Map[$Name]
+
+    if ($raw -notmatch '^\d+$') {
+      return $null
+    }
+
+    return [int]$raw
+  }
+
+  $ok = & $takeInt $seen 'PROBE_OK'
+  $session = & $takeInt $seen 'PROBE_SESSION'
+  $visible = & $takeInt $seen 'VISIBLE'
+  $hidden = & $takeInt $seen 'HIDDEN'
+  $probePid = & $takeInt $seen 'PROBE_PID'
+
+  if ($null -eq $ok -or $null -eq $session -or $null -eq $visible -or $null -eq $hidden) {
+    return $result
+  }
+
+  $rect = ''
+
+  if ($seen.ContainsKey('VISIBLE_RECT') -and ([string]$seen['VISIBLE_RECT'] -match '^-?\d+,-?\d+,\d+,\d+$')) {
+    $rect = [string]$seen['VISIBLE_RECT']
+  }
+
+  $small = 0
+  $smallRaw = & $takeInt $seen 'SMALL'
+
+  if ($null -ne $smallRaw) {
+    $small = [int]$smallRaw
+  }
+
+  $pidValue = [uint32]0
+
+  if ($null -ne $probePid) {
+    $pidValue = [uint32]$probePid
+  }
+
+  return [pscustomobject]@{
+    Complete = $true
+    Ok = ($ok -eq 1)
+    Session = $session
+    Owner = [string]$seen['PROBE_OWNER']
+    ProbePid = $pidValue
+    Visible = $visible
+    Hidden = $hidden
+    VisiblePid = [string]$seen['VISIBLE_PID']
+    HiddenPid = [string]$seen['HIDDEN_PID']
+    Title = [string]$seen['VISIBLE_TITLE']
+    Rect = $rect
+    Small = $small
+    Desktop = [string]$seen['DESKTOP']
+  }
+}
+
+function Format-A5MarkerText([string]$Raw) {
+  if ($null -eq $Raw) {
+    return 'unread'
+  }
+
+  $text = $Raw.Trim()
+
+  if ($text.Length -gt 500) {
+    $text = $text.Substring(0, 500)
+  }
+
+  $builder = New-Object System.Text.StringBuilder
+
+  foreach ($ch in $text.ToCharArray()) {
+    if ([int]$ch -lt 32) {
+      [void]$builder.Append(' ')
+    } else {
+      [void]$builder.Append($ch)
+    }
+  }
+
+  return $builder.ToString()
+}
+
+function Get-A5SampleAge($LastWriteUtc) {
+  if ($null -eq $LastWriteUtc) {
+    return 999.0
+  }
+
+  $stamp = [datetime]$LastWriteUtc
+
+  if ($stamp.Kind -eq [DateTimeKind]::Unspecified) {
+    $stamp = [datetime]::SpecifyKind($stamp, [DateTimeKind]::Utc)
+  }
+
+  return ((Get-Date).ToUniversalTime() - $stamp.ToUniversalTime()).TotalSeconds
+}
+
+function Write-CappedFile([string]$Label, [string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    Write-Output ($Label + '=absent')
+    return
+  }
+
+  try {
+    $raw = [System.IO.File]::ReadAllText($Path)
+    Write-Output ($Label + '=' + (Format-A5MarkerText $raw))
+  } catch {
+    Write-Output ($Label + '=unread')
+  }
+}
+
+function Stop-WindowProbe {
+  if ($script:ProbeStopFile) {
+    try {
+      $stopDir = Split-Path -Parent $script:ProbeStopFile
+
+      if ($stopDir -and (Test-Path -LiteralPath $stopDir)) {
+        [System.IO.File]::WriteAllText($script:ProbeStopFile, 'stop')
+      }
+    } catch {
+      Write-Output 'PROBE_STOP_WRITE_ERROR'
+    }
+  }
+
+  $rootPid = [uint32]$script:ProbePid
+
+  if ($rootPid -eq 0) {
+    return
+  }
+
+  $proc = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $rootPid)
+
+  if (-not $proc) {
+    return
+  }
+
+  $path = [string]$proc.ExecutablePath
+  $cmd = [string]$proc.CommandLine
+  $expected = Join-Path $Attempt 'logs\window-probe.ps1'
+  $powershell = $path -and ($path -like '*\powershell.exe')
+  $mentionsProbe = $cmd -like ('*' + $expected + '*')
+  $isHermes = $path -and (($path -ieq $UatExe) -or ($path -ieq $DailyExe))
+
+  if (-not $powershell -or -not $mentionsProbe -or $isHermes) {
+    Write-Output ('PROBE_KILL_REFUSED pid=' + $rootPid)
+    return
+  }
+
+  $kill = Invoke-Native -File 'taskkill.exe' -ArgumentList @('/PID', ([string]$rootPid), '/F')
+
+  if ($kill.ExitCode -ne 0) {
+    Write-Output ('PROBE_KILL_ERROR pid=' + $rootPid + ' taskkill=' + $kill.ExitCode)
+    return
+  }
+
+  Write-Output ('PROBE_STOPPED pid=' + $rootPid)
+}
+
+function Install-WindowProbe {
+  $probeScript = Join-Path $Attempt 'logs\window-probe.ps1'
+  $statusFile = Join-Path $Attempt 'logs\window-probe.txt'
+  $stopFile = Join-Path $Attempt 'logs\window-probe.stop'
+  $script:ProbeStopFile = $stopFile
+
+  if (Test-Path -LiteralPath $stopFile) {
+    Remove-Item -LiteralPath $stopFile -Force
+  }
+
+  if (Test-Path -LiteralPath $statusFile) {
+    Remove-Item -LiteralPath $statusFile -Force
+  }
+
+  $probeBody = @'
+$ErrorActionPreference = 'Stop'
+$uatExe = '__UAT_EXE__'
+$statusFile = '__STATUS_FILE__'
+$stopFile = '__STOP_FILE__'
+
+function Write-ProbeStatus([string]$Body) {
+  $dir = Split-Path -Parent $statusFile
+  $tmp = Join-Path $dir ('window-probe-' + [guid]::NewGuid().ToString('n') + '.tmp')
+  $utf8 = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText($tmp, $Body, $utf8)
+
+  if (Test-Path -LiteralPath $statusFile) {
+    [System.IO.File]::Replace($tmp, $statusFile, [NullString]::Value)
+  } else {
+    [System.IO.File]::Move($tmp, $statusFile)
+  }
+}
+
+try {
+  $session = [int](Get-Process -Id $PID).SessionId
+  $owner = [string]$env:USERNAME
+  $selfPid = [string]$PID
+
+  if ($session -ne 1 -or ($owner -ine 'ddewit')) {
+    Write-ProbeStatus ("PROBE_OK=0`r`nPROBE_SESSION=" + $session + "`r`nPROBE_OWNER=" + $owner + "`r`nPROBE_PID=" + $selfPid + "`r`nPROBE_ERROR=identity`r`nEND`r`n")
+    exit 1
+  }
+
+  Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public class A5WindowScan {
+  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+  [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint dwThreadId);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr hObj, int nIndex, IntPtr pvInfo, uint nLength, out uint lpnLengthNeeded);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int max);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  public class Row { public uint Pid; public bool Visible; public int Left; public int Top; public int Width; public int Height; public string Title; }
+  static List<Row> pending;
+  static EnumProc callback;
+  static bool Callback(IntPtr h, IntPtr l) {
+    uint pid;
+    GetWindowThreadProcessId(h, out pid);
+    RECT rect;
+    int width = 0;
+    int height = 0;
+    int left = 0;
+    int top = 0;
+    if (GetWindowRect(h, out rect)) {
+      left = rect.Left;
+      top = rect.Top;
+      width = rect.Right - rect.Left;
+      height = rect.Bottom - rect.Top;
+    }
+    var sb = new StringBuilder(180);
+    GetWindowText(h, sb, 180);
+    var clean = new StringBuilder();
+    string raw = sb.ToString();
+    for (int i = 0; i < raw.Length && clean.Length < 120; i++) {
+      char c = raw[i];
+      if (c < 32 || c == 127) clean.Append(' ');
+      else clean.Append(c);
+    }
+    var row = new Row();
+    row.Pid = pid;
+    row.Visible = IsWindowVisible(h) && !IsIconic(h);
+    row.Left = left;
+    row.Top = top;
+    row.Width = width;
+    row.Height = height;
+    row.Title = clean.ToString();
+    pending.Add(row);
+    return true;
+  }
+  public static List<Row> Scan() {
+    pending = new List<Row>();
+    if (callback == null) callback = Callback;
+    EnumWindows(callback, IntPtr.Zero);
+    return pending;
+  }
+  public static string Desktop() {
+    IntPtr desk = GetThreadDesktop(GetCurrentThreadId());
+    if (desk == IntPtr.Zero) return "";
+    uint needed;
+    GetUserObjectInformation(desk, 2, IntPtr.Zero, 0, out needed);
+    if (needed < 2 || needed > 512) return "";
+    IntPtr buf = Marshal.AllocHGlobal((int)needed);
+    try {
+      uint got;
+      if (!GetUserObjectInformation(desk, 2, buf, needed, out got)) return "";
+      string raw = Marshal.PtrToStringUni(buf);
+      if (raw == null) return "";
+      var clean = new StringBuilder();
+      for (int i = 0; i < raw.Length && clean.Length < 80; i++) {
+        char c = raw[i];
+        if (c >= 32 && c != 127) clean.Append(c);
+      }
+      return clean.ToString();
+    } finally {
+      Marshal.FreeHGlobal(buf);
+    }
+  }
+}
+"@
+
+  $desktopName = [string]([A5WindowScan]::Desktop())
+
+  if ($desktopName -ne 'Default') {
+    Write-ProbeStatus ("PROBE_OK=0`r`nPROBE_SESSION=" + $session + "`r`nPROBE_OWNER=" + $owner + "`r`nPROBE_PID=" + $selfPid + "`r`nPROBE_ERROR=desktop`r`nDESKTOP=" + $desktopName + "`r`nEND`r`n")
+    exit 1
+  }
+
+  $deadline = (Get-Date).AddSeconds(200)
+
+  while ((Get-Date) -lt $deadline) {
+    if (Test-Path -LiteralPath $stopFile) {
+      break
+    }
+
+    try {
+    $visible = 0
+    $hidden = 0
+    $small = 0
+    $visiblePid = ''
+    $hiddenPid = ''
+    $visibleTitle = ''
+    $visibleRect = ''
+    $uatPids = @{}
+
+    foreach ($proc in @(Get-CimInstance Win32_Process -Filter "Name = 'Hermes.exe'" -ErrorAction SilentlyContinue)) {
+      if ($proc.ExecutablePath -and ($proc.ExecutablePath -ieq $uatExe)) {
+        $uatPids[[string]([uint32]$proc.ProcessId)] = $true
+      }
+    }
+
+    foreach ($row in @([A5WindowScan]::Scan())) {
+      $pidKey = [string]([uint32]$row.Pid)
+
+      if (-not $uatPids.ContainsKey($pidKey)) {
+        continue
+      }
+
+      if ([int]$row.Width -lt 400 -or [int]$row.Height -lt 500) {
+        $small++
+        continue
+      }
+
+      if ($row.Visible) {
+        $visible++
+
+        if (-not $visiblePid) {
+          $visiblePid = $pidKey
+          $visibleTitle = [string]$row.Title
+          $visibleRect = ([string]([int]$row.Left) + ',' + [string]([int]$row.Top) + ',' + [string]([int]$row.Width) + ',' + [string]([int]$row.Height))
+        }
+      } else {
+        $hidden++
+
+        if (-not $hiddenPid) {
+          $hiddenPid = $pidKey
+        }
+      }
+    }
+
+    $lines = @(
+      'PROBE_OK=1',
+      ('PROBE_SESSION=' + $session),
+      ('PROBE_OWNER=' + $owner),
+      ('PROBE_PID=' + $selfPid),
+      ('DESKTOP=' + $desktopName),
+      ('VISIBLE=' + $visible),
+      ('HIDDEN=' + $hidden),
+      ('SMALL=' + $small),
+      ('VISIBLE_PID=' + $visiblePid),
+      ('HIDDEN_PID=' + $hiddenPid),
+      ('VISIBLE_RECT=' + $visibleRect),
+      ('VISIBLE_TITLE=' + $visibleTitle),
+      'END'
+    )
+    Write-ProbeStatus (($lines -join "`r`n") + "`r`n")
+    } catch {
+      Start-Sleep -Seconds 1
+      continue
+    }
+
+    Start-Sleep -Seconds 1
+  }
+} catch {
+  try {
+    $sessionText = '-1'
+    $ownerText = ''
+
+    try {
+      $sessionText = [string](Get-Process -Id $PID).SessionId
+      $ownerText = [string]$env:USERNAME
+    } catch {
+      $sessionText = '-1'
+    }
+
+    $err = 'scan'
+    $message = [string]$_.Exception.Message
+
+    if ($message -like '*Add-Type*' -or $message -like '*Compilation*') {
+      $err = 'addtype'
+    }
+
+    Write-ProbeStatus ("PROBE_OK=0`r`nPROBE_SESSION=" + $sessionText + "`r`nPROBE_OWNER=" + $ownerText + "`r`nPROBE_PID=" + [string]$PID + "`r`nPROBE_ERROR=" + $err + "`r`nEND`r`n")
+  } catch {
+    exit 1
+  }
+
+  exit 1
+}
+
+exit 0
+'@
+
+  $probeBody = $probeBody.Replace('__UAT_EXE__', $UatExe)
+  $probeBody = $probeBody.Replace('__STATUS_FILE__', $statusFile)
+  $probeBody = $probeBody.Replace('__STOP_FILE__', $stopFile)
+  $probeBody = $probeBody -replace "`r`n", "`n" -replace "`n", "`r`n"
+  $utf8 = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText($probeScript, $probeBody, $utf8)
+
+  if ($probeBody -like ('*' + $FrozenAttempt + '*') -or $probeBody -like ('*' + $FrozenNs2 + '*') -or $probeBody -like ('*' + $Evidence + '*')) {
+    Stop-A5 8 'WRAPPER_UNSAFE'
+  }
+
+  if ($probeBody -notlike ('*' + $UatExe + '*')) {
+    Stop-A5 8 'WRAPPER_UNSAFE'
+  }
+
+  return $probeScript
 }
 
 function Invoke-Launch {
@@ -317,7 +863,18 @@ function Invoke-Launch {
   Write-Output 'DO_NOT_DELETE_FROZEN=1'
   Write-Output 'DO_NOT_RENAME_FROZEN=1'
   Write-Output 'DO_NOT_LAUNCH_FROZEN=1'
+  Write-Output ('FROZEN_NS2=' + $FrozenNs2)
+  Write-Output 'DO_NOT_DELETE_NS2=1'
+  Write-Output 'DO_NOT_RENAME_NS2=1'
+  Write-Output 'DO_NOT_LAUNCH_NS2=1'
+  Write-Output 'ONE_LAUNCH_ONLY=1'
   Write-Output ('NEW_ATTEMPT=' + $Attempt)
+
+  foreach ($frozen in @($FrozenAttempt, $FrozenNs2, $Evidence)) {
+    if ([string]::Equals($Attempt, $frozen, [System.StringComparison]::OrdinalIgnoreCase)) {
+      Stop-A5 5 'FROZEN_ATTEMPT_SELECTED'
+    }
+  }
 
   if (Test-Path -LiteralPath $Attempt) {
     Stop-A5 5 'ATTEMPT_EXISTS'
@@ -352,6 +909,10 @@ function Invoke-Launch {
       Write-Output ($pair[0] + '=absent')
     }
   }
+
+  Write-CappedFile 'FROZEN_NS_MARKER' (Join-Path $FrozenAttempt 'user-data\windows-sandbox-fallback.json')
+  Write-CappedFile 'FROZEN_NS2_MARKER' (Join-Path $FrozenNs2 'user-data\windows-sandbox-fallback.json')
+  Write-Output 'FROZEN_MARKER_IS_NOT_A_LAUNCH_GRANT=1'
 
   if (-not (Test-Path -LiteralPath $UatExe)) {
     Stop-A5 4 'UAT_EXE_MISSING'
@@ -552,7 +1113,7 @@ exit /b %RC%
     Stop-A5 8 'WRAPPER_REDIRECTS_PROFILE'
   }
 
-  if ($wrapRaw -like ('*' + $FrozenAttempt + '*') -or $wrapRaw -like ('*' + $Evidence + '*')) {
+  if ($wrapRaw -like ('*' + $FrozenAttempt + '*') -or $wrapRaw -like ('*' + $FrozenNs2 + '*') -or $wrapRaw -like ('*' + $Evidence + '*')) {
     Stop-A5 8 'WRAPPER_REDIRECTS_PROFILE'
   }
 
@@ -672,17 +1233,54 @@ exit /b %RC%
   }
 
   Write-Output 'CMDLINE_OK'
+  $script:UatPid = $uatPid
+  $script:LeaveUatRunning = $true
 
-  $hardStop = (Get-Date).AddSeconds(120)
+  # MainWindowHandle enumerates the calling desktop only. This process is the
+  # SSH logon. Hermes was started with PsExec -i 1, on the interactive desktop.
+  # A zero handle in this process is not evidence that the window is absent.
+  $probeScript = Install-WindowProbe
+  $detectorSession = -1
+
+  try {
+    $detectorSession = [int](Get-Process -Id $PID).SessionId
+  } catch {
+    $detectorSession = -1
+  }
+
+  Write-Output ('DETECTOR_SESSION=' + $detectorSession)
+  $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+  if (-not (Test-Path -LiteralPath $powershellExe)) {
+    Publish-LeaveRunning $uatPid
+    Stop-A5 19 'WINDOW_PROBE_FAILED'
+  }
+
+  $probeLaunch = Invoke-Native -File $psexecPath -ArgumentList @(
+    '-accepteula', '-nobanner', '-i', '1', '-d',
+    $powershellExe, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $probeScript
+  )
+  Write-Output ('PROBE_PSEXEC_EXIT=' + $probeLaunch.ExitCode)
+  $probeStarted = Get-Date
+  $hardStop = (Get-Date).AddSeconds(180)
   $noWindowAfter = (Get-Date).AddSeconds(90)
   $stableSince = $null
   $profileOk = $false
   $announcedWindow = $false
+  $announcedHidden = $false
+  $announcedSmall = $false
+  $announcedProbe = $false
+  $lastGood = $null
+  $lastProbeWrite = $null
+  $lastParsed = $null
+  $decision = 'wait'
+  $statusFile = Join-Path $Attempt 'logs\window-probe.txt'
 
   while ((Get-Date) -lt $hardStop) {
     Assert-DailyStillAlive $dailyPids
 
     if ((Get-Stamp $DailyMarker) -ne $markerBefore -or (Get-Stamp $DailyConnection) -ne $connectionBefore) {
+      Use-IntentionalUatStop
       Stop-UatTree $uatPid
       Stop-UatTree $cmdPid
       Stop-A5 14 'DAILY_PROFILE_TOUCHED'
@@ -701,76 +1299,235 @@ exit /b %RC%
       Write-Output ('CHROME_GPU_GOODBYE=' + (Test-LogPhrase $chromeLog "GPU process isn't usable"))
       Write-Output ('ELECTRON_GPU_GOODBYE=' + (Test-LogPhrase $electronLog "GPU process isn't usable"))
       Write-Output ('PROFILE_ADOPTED=' + $(if ($profileOk) { 'yes' } else { 'no' }))
-
-      if (Test-Path -LiteralPath $markerPath) {
-        try {
-          $rawMarker = ([System.IO.File]::ReadAllText($markerPath)).Trim()
-
-          if ($rawMarker.Length -gt 500) {
-            $rawMarker = $rawMarker.Substring(0, 500)
-          }
-
-          Write-Output ('SANDBOX_MARKER=' + $rawMarker)
-        } catch {
-          Write-Output 'SANDBOX_MARKER=unread'
-        }
-      }
-
+      Write-CappedFile 'SANDBOX_MARKER' $markerPath
+      Use-IntentionalUatStop
       Stop-A5 9 'EARLY_EXIT'
     }
 
-    $window = $false
+    $parsed = $null
 
-    foreach ($proc in (Get-HermesProcesses)) {
-      if (-not $proc.ExecutablePath -or ($proc.ExecutablePath -ine $UatExe)) {
-        continue
+    if (Test-Path -LiteralPath $statusFile) {
+      try {
+        $parsed = Read-A5ProbeText ([System.IO.File]::ReadAllText($statusFile))
+      } catch {
+        $parsed = $null
+      }
+    }
+
+    if ($parsed -and $parsed.Complete) {
+      $write = $null
+
+      try {
+        $write = (Get-Item -LiteralPath $statusFile).LastWriteTimeUtc
+      } catch {
+        $write = $null
       }
 
-      $gp = Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue
+      $newWrite = $false
 
-      if ($gp -and $gp.MainWindowHandle -ne 0) {
-        $window = $true
+      if ($write -and (($null -eq $lastProbeWrite) -or ($write -ne $lastProbeWrite))) {
+        $newWrite = $true
+        $lastProbeWrite = $write
+        $lastGood = $write
+      }
 
-        if (-not $announcedWindow) {
-          $announcedWindow = $true
-          Write-Output ('UAT_WINDOW pid=' + $proc.ProcessId + ' title=' + $gp.MainWindowTitle)
+      if ($newWrite) {
+        $lastParsed = $parsed
+
+        if ($parsed.ProbePid -gt 0) {
+          $script:ProbePid = [uint32]$parsed.ProbePid
+        }
+
+        if (-not $announcedProbe) {
+          $announcedProbe = $true
+          Write-Output ('WINDOW_PROBE_SESSION=' + $parsed.Session)
+          Write-Output ('WINDOW_PROBE_OWNER=' + $parsed.Owner)
+          Write-Output ('WINDOW_PROBE_PID=' + $parsed.ProbePid)
+          Write-Output ('WINDOW_PROBE_DESKTOP=' + (Format-A5MarkerText ([string]$parsed.Desktop)))
+
+          if (-not $parsed.Ok) {
+            Write-Output 'WINDOW_PROBE_REJECTED=1'
+          }
+        }
+
+        if (-not $parsed.Ok) {
+          $decision = 'probe-bad'
+          break
         }
       }
     }
 
-    if ($window) {
+    $age = Get-A5SampleAge $lastGood
+
+    $probeFresh = $false
+    $visible = 0
+    $hidden = 0
+    $small = 0
+    $probeSession = -1
+    $probeOwner = ''
+    $probeDesktop = ''
+
+    if ($lastParsed -and $lastParsed.Complete -and $lastParsed.Ok -and $age -le 5) {
+      $probeFresh = $true
+      $visible = [int]$lastParsed.Visible
+      $hidden = [int]$lastParsed.Hidden
+      $small = [int]$lastParsed.Small
+      $probeSession = [int]$lastParsed.Session
+      $probeOwner = [string]$lastParsed.Owner
+      $probeDesktop = [string]$lastParsed.Desktop
+    }
+
+    if ($probeFresh -and $visible -ge 1) {
       if (-not $stableSince) {
         $stableSince = Get-Date
       }
 
-      $mainStill = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $uatPid)
-
-      if (((Get-Date) - $stableSince).TotalSeconds -ge 15 -and $profileOk -and $mainStill) {
-        Write-Output 'WINDOW_STABLE'
-        Write-Output ('UAT_MAIN_PID=' + $uatPid)
-        Write-Output ('UAT_EXE=' + $UatExe)
-        Write-Output ('ATTEMPT=' + $Attempt)
-        Write-Output ('DEST_FILE=' + $DestFile)
-        $script:ExitCode = 0
-        return
+      if (-not $announcedWindow) {
+        $announcedWindow = $true
+        $title = Format-A5MarkerText ([string]$lastParsed.Title)
+        Write-Output ('UAT_WINDOW pid=' + $lastParsed.VisiblePid + ' title=' + $title + ' rect=' + $lastParsed.Rect)
       }
     } else {
       $stableSince = $null
     }
 
-    if (-not $window -and (Get-Date) -gt $noWindowAfter) {
+    if ($probeFresh -and $visible -eq 0 -and $hidden -ge 1 -and -not $announcedHidden) {
+      $announcedHidden = $true
+      Write-Output ('UAT_WINDOW_HIDDEN pid=' + $lastParsed.HiddenPid + ' count=' + $hidden)
+    }
+
+    if ($probeFresh -and $visible -eq 0 -and [int]$lastParsed.Small -ge 1 -and -not $announcedSmall) {
+      $announcedSmall = $true
+      Write-Output ('UAT_WINDOW_SMALL count=' + $lastParsed.Small)
+    }
+
+    $visibleSeconds = 0.0
+
+    if ($stableSince) {
+      $visibleSeconds = ((Get-Date) - $stableSince).TotalSeconds
+    }
+
+    $mainStill = $null
+
+    try {
+      $mainStill = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $uatPid)
+    } catch {
+      $mainStill = $null
+    }
+
+    $pastNoWindow = (Get-Date) -gt $noWindowAfter
+    $decision = Get-A5WindowDecision -ProbeSession $probeSession -ProbeOwner $probeOwner -ProbeDesktop $probeDesktop -ProbeFresh:$probeFresh -Visible $visible -Hidden $hidden -Small $small -VisibleSeconds $visibleSeconds -ProfileOk:$profileOk -MainAlive:([bool]$mainStill) -PastNoWindow:$pastNoWindow -PastHardStop:$false
+
+    if ($decision -eq 'stable') {
+      Write-Output 'WINDOW_STABLE'
+      Write-Output ('UAT_MAIN_PID=' + $uatPid)
+      Write-Output ('UAT_EXE=' + $UatExe)
+      Write-Output ('ATTEMPT=' + $Attempt)
+      Write-Output ('DEST_FILE=' + $DestFile)
+      Write-Output 'ONE_LAUNCH_ONLY=1'
+      $script:ExitCode = 0
+      return
+    }
+
+    if ($decision -eq 'no-window' -or $decision -eq 'profile') {
       break
+    }
+
+    if ($decision -eq 'probe-bad') {
+      $startedAgo = ((Get-Date) - $probeStarted).TotalSeconds
+      $stale = $lastGood -and ((Get-A5SampleAge $lastGood) -gt 20)
+
+      if ((-not $lastGood -and $startedAgo -gt 30) -or $stale) {
+        break
+      }
     }
 
     Start-Sleep -Seconds 1
   }
 
-  if (-not $profileOk) {
+  if ($decision -eq 'wait') {
+    $age = Get-A5SampleAge $lastGood
+
+    $probeFresh = $false
+    $visible = 0
+    $hidden = 0
+    $small = 0
+    $probeSession = -1
+    $probeOwner = ''
+    $probeDesktop = ''
+
+    if ($lastParsed -and $lastParsed.Complete -and $lastParsed.Ok -and $age -le 5) {
+      $probeFresh = $true
+      $visible = [int]$lastParsed.Visible
+      $hidden = [int]$lastParsed.Hidden
+      $small = [int]$lastParsed.Small
+      $probeSession = [int]$lastParsed.Session
+      $probeOwner = [string]$lastParsed.Owner
+      $probeDesktop = [string]$lastParsed.Desktop
+    }
+
+    $visibleSeconds = 0.0
+
+    if ($stableSince) {
+      $visibleSeconds = ((Get-Date) - $stableSince).TotalSeconds
+    }
+
+    $mainStill = $null
+
+    try {
+      $mainStill = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $uatPid)
+    } catch {
+      $mainStill = $null
+    }
+
+    $decision = Get-A5WindowDecision -ProbeSession $probeSession -ProbeOwner $probeOwner -ProbeDesktop $probeDesktop -ProbeFresh:$probeFresh -Visible $visible -Hidden $hidden -Small $small -VisibleSeconds $visibleSeconds -ProfileOk:$profileOk -MainAlive:([bool]$mainStill) -PastNoWindow:$true -PastHardStop:$true
+  }
+
+  Write-CappedFile 'SANDBOX_MARKER' (Join-Path $UserData 'windows-sandbox-fallback.json')
+  Write-Output ('PROFILE_ADOPTED=' + $(if ($profileOk) { 'yes' } else { 'no' }))
+  Write-Output ('WINDOW_DECISION=' + $decision)
+
+  if ($decision -eq 'stable') {
+    Write-Output 'WINDOW_STABLE'
+    Write-Output ('UAT_MAIN_PID=' + $uatPid)
+    Write-Output ('UAT_EXE=' + $UatExe)
+    Write-Output ('ATTEMPT=' + $Attempt)
+    Write-Output ('DEST_FILE=' + $DestFile)
+    Write-Output 'ONE_LAUNCH_ONLY=1'
+    $script:ExitCode = 0
+    return
+  }
+
+  if ($decision -eq 'probe-bad' -or $decision -eq 'unstable' -or $decision -eq 'wait') {
+    Publish-LeaveRunning $uatPid
+
+    if ($decision -eq 'unstable' -or $decision -eq 'wait') {
+      Stop-A5 20 'WINDOW_UNSTABLE'
+    }
+
+    Stop-A5 19 'WINDOW_PROBE_FAILED'
+  }
+
+  if ($decision -eq 'profile') {
+    Use-IntentionalUatStop
     Stop-UatTree $uatPid
     Stop-UatTree $cmdPid
     Stop-A5 13 'PROFILE_NOT_ADOPTED'
   }
 
+  if ($decision -eq 'hidden') {
+    Use-IntentionalUatStop
+    Stop-UatTree $uatPid
+    Stop-UatTree $cmdPid
+    Stop-A5 18 'WINDOW_NOT_VISIBLE'
+  }
+
+  if ($decision -ne 'no-window') {
+    Publish-LeaveRunning $uatPid
+    Stop-A5 19 'WINDOW_PROBE_FAILED'
+  }
+
+  Use-IntentionalUatStop
   Stop-UatTree $uatPid
   Stop-UatTree $cmdPid
   Stop-A5 15 'NO_WINDOW'
@@ -809,30 +1566,44 @@ function Invoke-Hash {
   $script:ExitCode = 0
 }
 
-try {
-  if ($Phase -eq 'Launch') {
-    Invoke-Launch
-  } elseif ($Phase -eq 'AssertDestEmpty') {
-    Invoke-AssertDestEmpty
-  } else {
-    Invoke-Hash
-  }
-} catch {
-  if ($script:ExitCode -eq 99) {
-    Write-Stop 'UNCAUGHT'
-    Write-Output $_.Exception.Message
-  }
-} finally {
-  if ($Phase -eq 'Launch' -and $script:Launched -and $script:ExitCode -ne 0) {
-    try {
-      Stop-MatchingUat
-    } catch {
-      Write-Output 'KILL_ERROR'
+if ($MyInvocation.InvocationName -ne '.') {
+  try {
+    if ($Phase -eq 'Launch') {
+      Invoke-Launch
+    } elseif ($Phase -eq 'AssertDestEmpty') {
+      Invoke-AssertDestEmpty
+    } else {
+      Invoke-Hash
     }
+  } catch {
+    if ($script:ExitCode -eq 99) {
+      Write-Stop 'UNCAUGHT'
+      Write-Output $_.Exception.Message
+    }
+  } finally {
+    if ($Phase -eq 'Launch') {
+      try {
+        Stop-WindowProbe
+      } catch {
+        Write-Output 'PROBE_STOP_ERROR'
+      }
+    }
+
+    if ($Phase -eq 'Launch' -and $script:LeaveUatRunning -and $script:ExitCode -ne 0) {
+      Publish-LeaveRunning $script:UatPid
+    }
+
+    if ($Phase -eq 'Launch' -and $script:Launched -and $script:ExitCode -ne 0 -and -not $script:LeaveUatRunning) {
+      try {
+        Stop-MatchingUat
+      } catch {
+        Write-Output 'KILL_ERROR'
+      }
+    }
+
+    Restore-HermesProtocol
+    Undo-UnlaunchedAttempt
   }
 
-  Restore-HermesProtocol
-  Undo-UnlaunchedAttempt
+  exit $script:ExitCode
 }
-
-exit $script:ExitCode
