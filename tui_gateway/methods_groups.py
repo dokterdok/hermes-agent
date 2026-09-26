@@ -521,8 +521,9 @@ _passthrough(
 
 @_room_method("groups.promote", code=5118, room_code=4118, with_reason=False, db=True)
 def _(rid, params: dict, db_path) -> dict:
-    """Continue a replicated room on THIS gateway at ``epoch + 1``. Requires ``confirm:
-    true`` — the caller asserts the previous authority can no longer commit."""
+    """Copy a replicated room onto THIS gateway at ``epoch + 1``. Requires ``confirm:
+    true``, which only records the caller's assertion. It does not prove the previous
+    authority is fenced, and the copied room does not admit execution."""
     from gateway.hosted_room_replicas import promote_replica
     if params.get("confirm") is not True:
         return _err(rid, 4118, "promotion requires confirm=true acknowledging the previous "

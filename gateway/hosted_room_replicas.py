@@ -1,10 +1,11 @@
 """Replica store and takeover primitives for hosted Group Chat rooms.
 
 Non-authority gateways keep a durable local copy of the room log (``ingest_page()``: idempotent,
-gap- and epoch-regression-safe) plus fenced primitives to continue the room when the authority host
-dies: ``promote_replica()`` resumes locally at ``epoch + 1`` with a lineage-proving ``authority.claimed``
-event; ``demote_room()`` records ``authority.lost`` when a returning stale authority is shown a newer
-epoch. Storage primitives only: the caller decides *when* takeover is safe.
+gap- and epoch-regression-safe). ``promote_replica()`` copies that log locally at ``epoch + 1`` and
+records ``authority.claimed`` with ``promoted_from_replica`` so Retention can quarantine the takeover.
+It does not prove the previous host stopped, and it does not admit new events or driver tasks.
+``demote_room()`` records ``authority.lost`` when a returning stale authority is shown a newer epoch.
+This is not host-loss recovery.
 """
 
 from __future__ import annotations
@@ -131,6 +132,10 @@ def _store_replica(
     """INSERT the replica row for a new room, else UPDATE it (event_bytes accumulates)."""
     values = (room_name, members_json, authority["gateway_id"], authority["epoch"], new_last, max(latest_seq, new_last))
     if is_new:
+        # A live authority room, a retired replica, or any other owner already holds this id.
+        # The replica insert trigger aborts that collision; refuse before the double insert.
+        if _reservation_owner(conn, room_id) is not None:
+            raise RoomConflictError("room_id is already reserved")
         conn.execute("""INSERT INTO hosted_room_replicas (room_id, name, members_json,
                 authority_gateway_id, authority_epoch, last_seq, latest_seq, event_bytes,
                 created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -195,14 +200,53 @@ def replica_state(db_path: DbPath, *, room_id: Any) -> dict[str, Any]:
         "created_at": float(row["created_at"]), "updated_at": float(row["updated_at"])}
 
 
+def _reservation_owner(conn: sqlite3.Connection, room_id: str) -> str | None:
+    """Return the Retention reservation owner, or None when that table is absent."""
+    from gateway.hosted_rooms_common import table_exists
+    if not table_exists(conn, "hosted_room_id_reservations"):
+        return None
+    row = conn.execute(
+        "SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id=?", (room_id,)).fetchone()
+    return None if row is None else str(row["owner_kind"])
+
+
+def _release_consumed_replica_reservation(conn: sqlite3.Connection, room_id: str) -> None:
+    """Move a replica-owned id reservation out of the way of the authority insert.
+
+    ``trg_hosted_rooms_reject_reserved_insert`` aborts any ``hosted_rooms`` insert
+    while a reservation exists, and the safety schema never deletes that row when
+    the replica is consumed. Delete only ``owner_kind='replica'``. The room
+    insert's reserve trigger then records ``authority``. Any other owner stays.
+    """
+    owner = _reservation_owner(conn, room_id)
+    if owner is None:
+        return
+    if owner != "replica":
+        raise RoomConflictError("room_id is already reserved")
+    deleted = conn.execute(
+        "DELETE FROM hosted_room_id_reservations WHERE room_id=? AND owner_kind='replica'", (room_id,))
+    if deleted.rowcount != 1:
+        raise RoomConflictError("room_id is already reserved")
+
+
+def _raise_if_quarantined(conn: sqlite3.Connection, room_id: str) -> None:
+    """Honor Retention quarantine when that schema is installed. No-op otherwise."""
+    from importlib.util import find_spec
+    if find_spec("gateway.hosted_room_safety") is None:
+        return
+    from gateway.hosted_room_safety import _raise_if_quarantined as raise_quarantined
+    raise_quarantined(conn, room_id)
+
+
 def promote_replica(
     db_path: DbPath, *, room_id: Any, reason: Any = "authority-unreachable", now: float | None = None
 ) -> dict[str, Any]:
-    """Continue a replicated room on THIS gateway at ``epoch + 1``.
+    """Copy a replicated room onto this gateway at ``epoch + 1`` without executing it.
 
-    Copies the replica log into the authoritative store and appends a lineage-proving ``authority.claimed``
-    event, so wherever the claim replicates the old epoch is stale and every fenced primitive rejects it.
-    The caller decides takeover is safe; this makes it atomic and provable.
+    The claim keeps ``promoted_from_replica`` so Retention's unsafe-lineage trigger and
+    backfill quarantine the takeover. A confirmation flag, the new epoch, and releasing
+    the replica reservation are not proof the previous host is fenced. Admission stays
+    closed until that proof exists. This function does not implement host-loss recovery.
     """
     room_id = _room_id(room_id)
     if not isinstance(reason, str) or not reason or len(reason) > 200:
@@ -219,8 +263,21 @@ def promote_replica(
             raise RoomConflictError("room_id already exists in the local authoritative store")
         if conn.execute("SELECT 1 FROM hosted_room_retired_ids WHERE room_id=?", (room_id,)).fetchone():
             raise RoomConflictError("room_id belongs to a disbanded room")
+        _raise_if_quarantined(conn, room_id)
+        if "quarantine_reason" in replica.keys() and replica["quarantine_reason"] is not None:
+            from gateway.hosted_rooms import RoomQuarantinedError
+            raise RoomQuarantinedError(
+                "This Group Chat has an unverified authority takeover and is read-only "
+                f"until its history is reconciled ({replica['quarantine_reason']}).")
+        # The replica insert already reserved this id. Release that replica owner so
+        # the room insert can reserve it as authority. Do not clear any other owner.
+        _release_consumed_replica_reservation(conn, room_id)
         previous_gateway, previous_epoch = str(replica["authority_gateway_id"]), int(replica["authority_epoch"])
         target_epoch, claim_seq = previous_epoch + 1, int(replica["last_seq"]) + 1
+        # Retention classifies this fragment as an unverified takeover
+        # (trg_hosted_events_quarantine_unsafe_lineage and the safety backfill).
+        # Omitting it lets confirm=true become executable authority. claim_authority
+        # stays without the fragment: that path is a compare-and-swap on one store.
         claim = _control_event("claimed", target_epoch, {
             "previous_gateway_id": previous_gateway, "authority_gateway_id": local_gateway,
             "authority_epoch": target_epoch, "promoted_from_replica": True, "reason": reason})
@@ -231,17 +288,22 @@ def promote_replica(
             (
                 room_id, replica["name"], replica["members_json"], local_gateway, target_epoch, claim_seq + 1,
                 int(replica["event_bytes"]) + utf8_len(*claim), now, now))
-        conn.execute(
-            f"""INSERT INTO hosted_room_events {_EVENT_COLUMNS}
-               SELECT room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at
-                 FROM hosted_room_replica_events WHERE room_id=?""", (room_id,))
-        _append_control_event(conn, room_id, claim_seq, target_epoch, claim, now)
+        # Drop the replica copy from the shared safety budget before the authority
+        # copy is inserted. Copy-then-delete counts the same bytes twice and the
+        # budget trigger aborts a replica that already fits.
+        copied = [
+            tuple(row) for row in conn.execute(
+                f"""SELECT room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at
+                      FROM hosted_room_replica_events WHERE room_id=? ORDER BY seq""",
+                (room_id,))]
         conn.execute("DELETE FROM hosted_room_replica_events WHERE room_id=?", (room_id,))
+        conn.executemany(_INSERT_ROOM_EVENT, copied)
+        _append_control_event(conn, room_id, claim_seq, target_epoch, claim, now)
         conn.execute("DELETE FROM hosted_room_replicas WHERE room_id=?", (room_id,))
     return {
         "room_id": room_id, "authority_gateway_id": local_gateway, "authority_epoch": target_epoch,
         "previous_gateway_id": previous_gateway, "previous_epoch": previous_epoch, "claim_seq": claim_seq,
-        "latest_seq": claim_seq}
+        "latest_seq": claim_seq, "executable": False}
 
 
 def demote_room(
@@ -273,6 +335,9 @@ def demote_room(
             raise ReplicaEpochRegressionError("observed epoch does not supersede the stored authority")
         if current_gateway != local_gateway:
             raise ReplicaError("room is not locally authoritative; nothing to demote")
+        # An already-quarantined room cannot accept another authority.lost. The
+        # idempotent same-lineage return above stays available.
+        _raise_if_quarantined(conn, room_id)
         lost = _control_event("lost", observed_epoch, {
             "previous_gateway_id": current_gateway, "authority_gateway_id": observed_gateway_id,
             "authority_epoch": observed_epoch})

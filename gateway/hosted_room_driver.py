@@ -402,6 +402,8 @@ def _require_room_authority(conn: sqlite3.Connection, room_id: str, gateway_id: 
     room = _load_active_room(conn, room_id)
     if room["authority_gateway_id"] != gateway_id or int(room["authority_epoch"]) != epoch:
         raise StaleLeaseError("hosted room authority changed")
+    from gateway.hosted_rooms import raise_if_unfenced_replica_promotion
+    raise_if_unfenced_replica_promotion(conn, room_id, epoch)
     return room
 
 
@@ -626,7 +628,9 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
     normalized_payload, payload_json, payload_digest = _task_payload(payload)
     now = _timestamp(clock)
     with _transaction(db_path) as conn:
-        _load_active_room(conn, identity.room_id)
+        room = _load_active_room(conn, identity.room_id)
+        from gateway.hosted_rooms import raise_if_unfenced_replica_promotion
+        raise_if_unfenced_replica_promotion(conn, identity.room_id, int(room["authority_epoch"]))
         existing = _load_task(conn, identity, required=False)
         if existing is not None:
             if existing["payload_digest"] != payload_digest or existing["payload_json"] != payload_json:
