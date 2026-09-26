@@ -123,6 +123,7 @@ async def test_consumer_expiry_does_not_extend_the_grant(tmp_path, monkeypatch):
 async def test_consumer_blocked_authorization_stays_blocked(tmp_path, monkeypatch):
     _primary, _secondary_counts, _settled = _fixtures()
     async for authority, service, runner, task in _settled(tmp_path, monkeypatch):
+        before = _primary(authority.db)
         clock = {'now': time.time()}
         service._artifact_clock = lambda: clock['now']
         published = _consume(service, task)
@@ -132,18 +133,19 @@ async def test_consumer_blocked_authorization_stays_blocked(tmp_path, monkeypatc
             transport_error=RoomArtifactError('denied'))
         assert blocked['blocked'] is True
         assert blocked['reason_code'] == 'authorization_or_verification'
-        cleared = _consume(
+        later = _consume(
             service, task, publication_id=publication_id,
             transport_error=ConnectionError('reset'))
-        assert cleared['blocked'] is True
-        assert cleared['reason_code'] == 'authorization_or_verification'
+        assert later['blocked'] is True
+        assert later['reason_code'] == 'authorization_or_verification'
         clock['now'] = blocked['next_attempt_at'] + 1
         still = _consume(service, task, publication_id=publication_id)
         assert still['accepted'] is False and still['blocked'] is True
         assert still['reason_code'] == 'authorization_or_verification'
         with pytest.raises(RoomArtifactError, match='completion refused'):
             _consume(service, task, publication_id=publication_id, confirm=True)
-        assert _secondary_counts(authority.db)[1] == 0
+        assert _secondary_counts(authority.db) == (1, 0)
+        assert _primary(authority.db) == before
         assert runner.session_authority is authority
         assert authority.hosted_room_service is service
 
