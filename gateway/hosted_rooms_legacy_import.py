@@ -23,6 +23,14 @@ MARKER_TABLE = "hosted_room_legacy_imports"
 # Liveness state, never copied: a lease is a ~15s heartbeat plus a process generation, so a copied
 # lease names a process that is gone. The driver claims a fresh one instead.
 _SKIP_TABLES = frozenset({"hosted_room_driver_leases"})
+# The safety triggers write this row when the room or replica is inserted.
+# Copying it in table order either collides with that insert or reserves the
+# id early enough that the replica insert is rejected. Leftover fences that
+# have no parent row are replayed after the parents.
+_TRIGGER_OWNED_RESERVATIONS = "hosted_room_id_reservations"
+# Unsafe-lineage inserts already write this row. A second plain INSERT aborts
+# the upgrade. INSERT OR IGNORE keeps a source reason the trigger did not recreate.
+_TRIGGER_OWNED_QUARANTINE = "hosted_room_quarantine"
 # Sources this process could not import (unreadable file, rows the target refused). Every store open
 # re-checks readiness, so without this a broken legacy file would re-run the copy and re-warn on
 # every poll; the retry happens on the next process start instead.
@@ -72,9 +80,11 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
     A room id present in both stores is skipped as a unit: grafting the legacy events under this
     store's room would leave ``next_seq`` behind ``MAX(seq)`` and every later append colliding.
     Room-scoped tables therefore use a plain INSERT — a row the target refuses raises and aborts
-    the whole import rather than being dropped in silence. A table this store has not created yet
-    (the driver, policy and replica schemas are initialized by their own modules) is created from
-    the source's own DDL so its rows survive the upgrade too.
+    the whole import rather than being dropped in silence. Quarantine is the exception: the
+    unsafe-lineage trigger writes that primary key while events are copied, so a second plain
+    INSERT would roll the upgrade back. Reservations are replayed after the parents. A table this
+    store has not created yet (the driver, policy and replica schemas are initialized by their own
+    modules) is created from the source's own DDL so its rows survive the upgrade too.
     """
     from gateway.hosted_rooms import _EVENT_BYTES_BACKFILL
 
@@ -85,7 +95,8 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
             "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'hosted_room*'")]
         # Parents first: hosted_room_events carries a foreign key into hosted_rooms.
         for name in sorted(names, key=lambda name: (name != "hosted_rooms", name)):
-            if name in _SKIP_TABLES or name == MARKER_TABLE or name.endswith(("_next", "_migrating")):
+            if (name in _SKIP_TABLES or name in {MARKER_TABLE, _TRIGGER_OWNED_RESERVATIONS}
+                    or name.endswith(("_next", "_migrating"))):
                 continue
             if not table_exists(target, name):
                 target.execute(str(legacy.execute(
@@ -98,7 +109,9 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
             if "room_id" in columns:
                 room_index = columns.index("room_id")
                 rows = (row for row in rows if str(row[room_index]) not in existing)
-                verb = "INSERT"
+                # Quarantine is also written by the unsafe-lineage trigger while
+                # events are copied, which sorts before this table.
+                verb = "INSERT OR IGNORE" if name == _TRIGGER_OWNED_QUARANTINE else "INSERT"
             else:
                 verb = "INSERT OR IGNORE"
             if name == "hosted_rooms":
@@ -109,7 +122,24 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
         if copied_rooms and "event_bytes" not in table_columns(legacy, "hosted_rooms"):
             target.execute(
                 _EVENT_BYTES_BACKFILL.format(where=f"room_id IN ({', '.join('?' * len(copied_rooms))})"), copied_rooms)
+        _replay_untriggered_reservations(target, legacy)
     return len(copied_rooms)
+
+
+def _replay_untriggered_reservations(target: sqlite3.Connection, legacy: sqlite3.Connection) -> None:
+    """Keep id fences that no copied room or replica insert will recreate.
+
+    Trigger-owned rows are already present. ``INSERT OR IGNORE`` does not
+    replace them, including when the source owner kind disagrees.
+    """
+    if not table_exists(legacy, _TRIGGER_OWNED_RESERVATIONS) or not table_exists(target, _TRIGGER_OWNED_RESERVATIONS):
+        return
+    rows = legacy.execute(
+        f"SELECT room_id, owner_kind, reserved_at FROM {_TRIGGER_OWNED_RESERVATIONS}")
+    target.executemany(
+        f"""INSERT OR IGNORE INTO {_TRIGGER_OWNED_RESERVATIONS}
+            (room_id, owner_kind, reserved_at) VALUES (?, ?, ?)""",
+        rows)
 
 
 def import_legacy_rooms(conn: sqlite3.Connection, db_path: Path) -> None:
