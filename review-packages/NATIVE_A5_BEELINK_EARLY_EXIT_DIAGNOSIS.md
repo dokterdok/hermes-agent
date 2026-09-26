@@ -18,11 +18,13 @@ On 2026-09-26 the isolated UAT Desktop process started in session 1 as pid 37292
 
 A second start against `C:\Users\ddewit\hermes-uat-a5-live-20260926` failed with `attempt exists` before a new process was created. That string is the launcher guard, not an Electron exit.
 
-The attempt tree that remained contained the launcher-written `connection.json` and `active-profile.json` only. No `desktop.log` was found. Daily Hermes stayed up from:
+The attempt tree that remained contained launcher-written `user-data\connection.json` and `user-data\active-profile.json` only. It also contained empty redirected roots `appdata`, `home`, `localappdata`, and `localappdata\Microsoft\Windows`. No `Local State`, no `windows-sandbox-fallback.json`, and no `desktop.log`. After that exit, daily Hermes was still running from:
 
 `C:\Users\ddewit\AppData\Local\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe`
 
-with `--user-data-dir=C:\Users\ddewit\AppData\Roaming\Hermes`. The owned Files fixture on `127.0.0.1:54573` had returned HTTP 200. `HERMES_DESKTOP_BOOT_FAKE` was cleared. CUA doctor was already clean in session 1. None of that is re-opened here.
+with `--user-data-dir=C:\Users\ddewit\AppData\Roaming\Hermes`. Its main pid was 33048. A child pid 12856 was `--type=gpu-process` with that same user-data directory. The captured command line is truncated, so a later `--no-sandbox` on that child is not ruled out. What is ruled out is a host-wide GPU death at that moment: that gpu-process was still alive. Do not grant an AppContainer ACE on either install because of this crash. `UAT_ACE_S-1-15-2-2=no` and `DAILY_ACE_S-1-15-2-2=no` are prints, not repair steps.
+
+The owned Files fixture on `127.0.0.1:54573` had returned HTTP 200. `HERMES_DESKTOP_BOOT_FAKE` was cleared. CUA doctor was already clean in session 1. None of that is re-opened here.
 
 ## Verified in this tree
 
@@ -44,7 +46,7 @@ The save dialog implemented in this tree is titled `Save File`. Cancel returns w
 
 ## Ranked hypotheses
 
-**H1 — Chromium sandbox breakpoint, and the attempt directory was not the profile that crashed.** The exit code matches the in-tree constant. About 10 seconds matches the GPU retry before the browser abort. The attempt folder had no Chromium profile files in the uploaded listing, so `HERMES_DESKTOP_USER_DATA_DIR` was not effective for the process that exited, or the process died before that script wrote its marker. The previous launcher then refused a second start, so the two-strike `--no-sandbox` recovery never ran.
+**H1 — Chromium sandbox breakpoint, and the attempt directory was not the profile that crashed.** The exit code matches the in-tree constant. About 10 seconds matches the GPU retry before the browser abort. The attempt `user-data` directory had no Chromium profile files, so `HERMES_DESKTOP_USER_DATA_DIR` was not effective for the process that exited, or the process died before that script wrote its marker. The previous launcher then refused a second start, so the two-strike `--no-sandbox` recovery never ran. Daily Hermes's still-running gpu-process means this is not evidence that every sandboxed Hermes on the machine is dead. Do not repair the daily install.
 
 Falsify on the next launch, which passes `--no-sandbox` and `--user-data-dir` on argv and pins the real user `APPDATA` / `LOCALAPPDATA` / `USERPROFILE`:
 
@@ -54,7 +56,7 @@ Falsify on the next launch, which passes `--no-sandbox` and `--user-data-dir` on
 
 **H2 — Single-instance collision with daily Hermes.** Current source would exit 0, not -2147483645. Daily Hermes keeps its own user-data directory. The new command line must contain the attempt `--user-data-dir`. If `UAT_EXIT=0` and there is no `WINDOW_STABLE` line, stop. Do not type into the daily window. Do not treat exit 0 as success.
 
-**H3 — Redirected `LOCALAPPDATA` / `USERPROFILE` / `APPDATA`.** The admission recipe isolated those variables. The uploaded listing showed `localappdata\Microsoft\Windows` under the attempt, which is consistent with a redirected local app-data root being touched. AppContainer sandbox setup is a known way to die with `STATUS_BREAKPOINT`. The wrapper pins the real `C:\Users\ddewit` profile paths and does not create `attempt\localappdata`. This launch does not also perform a crashing A/B against H1. Do not add that launch.
+**H3 — Redirected `LOCALAPPDATA` / `USERPROFILE` / `APPDATA`.** The failed attempt contains `appdata`, `home`, `localappdata`, and `localappdata\Microsoft\Windows`, and it does not contain a Chromium profile. That is the previous launcher's redirected profile roots, not `Local State`. AppContainer sandbox setup against a fake local app-data root is a known way to die with `STATUS_BREAKPOINT`, and it fits the surviving daily gpu-process better than a broken host. The wrapper pins the real `C:\Users\ddewit` profile paths and does not create `attempt\appdata`, `attempt\home`, or `attempt\localappdata`. This launch does not also perform a crashing A/B against H1. Do not add that launch.
 
 **H4 — PsExec token is not `ddewit`.** The wrapper exits 77 before starting Hermes when `%USERNAME%` is not `ddewit`. The script then prints `WRONG_OWNER` and does not leave a Hermes process running as `SYSTEM`. That result confirms H4. Stop. Do not retry with a different account, and do not put a password on a `PsExec -u` command line.
 
@@ -70,7 +72,7 @@ Falsify on the next launch, which passes `--no-sandbox` and `--user-data-dir` on
 - Do not launch `C:\Users\ddewit\AppData\Local\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe`.
 - Do not delete or reuse `C:\Users\ddewit\hermes-uat-a5-live-20260926`. Do not invent another attempt folder name. The only new folder is `C:\Users\ddewit\hermes-uat-a5-ns-20260926`, and only the script may create it.
 - Do not run the launcher that printed `attempt exists`.
-- Do not `setx` anything. Do not grant ACLs. `icacls` in the script is read-only and has no `/grant` and no `/T`.
+- Do not `setx` anything. Do not grant ACLs. `icacls` in the script is read-only and has no `/grant` and no `/T`. `UAT_ACE_S-1-15-2-2=no` or `DAILY_ACE_S-1-15-2-2=no` does not authorize `icacls /grant`. Daily Hermes already had a live gpu-process.
 - Do not edit `HKCU\Software\Classes\hermes` by hand. Do not delete files under `C:\Users\ddewit\AppData\Roaming\Hermes`.
 - Do not set `HERMES_DESKTOP_BOOT_FAKE` or `HERMES_DESKTOP_BOOT_FAKE_ERROR`.
 - Do not click `Retry`, `Repair`, `Gateway settings`, or `Open logs`.
@@ -204,7 +206,7 @@ Checked and kept:
 - The evidence attempt is read-only. The new attempt name is one constant. Rollback `Remove-Item` runs only when this invocation created that exact path and PsExec was not started. It cannot target `C:\Users\ddewit` or the evidence folder.
 - `LOCALAPPDATA` is pinned to the real profile inside the wrapper, and only after `%USERNAME%` is `ddewit`, so a `SYSTEM` PsExec exit does not retarget the user profile and does not start Hermes.
 - `--no-sandbox` and `ELECTRON_DISABLE_SANDBOX=1` exist only in the UAT wrapper. There is no `setx` and no machine-wide sandbox disable.
-- `icacls` is a directory read with no `/grant` and no `/T`. AeDebug is printed and not written.
+- `icacls` is a directory read with no `/grant` and no `/T`. AeDebug is printed and not written. A `no` ACE line is not a grant. Daily's surviving gpu-process is why the runbook does not repair the host.
 - The protocol key is exported before launch. It is deleted and re-imported only by the script, and only after a successful export or an English "unable to find" result. Any other export failure stops before launch and does not delete the key. The script tries `reg.exe import` twice. If both fail it prints `PROTOCOL_RESTORE_FAILED` without hiding an earlier stop code. BarrX then imports that same preimage once and does not `reg delete`. Hash and dest-assert phases do not touch the key, so a later daily registration is not removed. A restore failure after `WINDOW_STABLE` leaves the UAT process running and does not start CUA.
 - Watched daily files are `windows-sandbox-fallback.json` and `connection.json` under `Roaming\Hermes`, by timestamp only. Their contents are not read and not deleted. A timestamp change stops the UAT tree and stops the procedure.
 - The password file is never read by the script. CUA is forbidden from echoing it or screenshotting the filled field. Login is not retried, because the fixture returns 429 on repeated failure.
