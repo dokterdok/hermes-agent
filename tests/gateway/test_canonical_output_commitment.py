@@ -98,7 +98,8 @@ async def test_publication_uses_admitted_recipients_and_exact_source(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_lost_exact_ack_response_replays_without_second_publication(tmp_path, monkeypatch):
+@pytest.mark.parametrize("delivery", ["direct", "scheduled"])
+async def test_lost_exact_ack_response_replays_without_second_publication(tmp_path, monkeypatch, delivery):
     async with owner(tmp_path, monkeypatch) as (authority, service, runner):
         path = tmp_path / "cache" / "result.txt"
         path.parent.mkdir(exist_ok=True)
@@ -121,20 +122,54 @@ async def test_lost_exact_ack_response_replays_without_second_publication(tmp_pa
             raise ConnectionError("inert lost ACK response")
 
         monkeypatch.setattr(RoomArtifactOutbox, "acknowledge", lose_response)
-        service.prepare_room(binding)
-        retry = authority.db._conn.execute('SELECT blocked,next_attempt_at FROM hosted_room_artifact_retries').fetchone()
-        assert retry is not None and retry['blocked'] == 0
+        # Direct calls report transport errors; scheduler calls retain the
+        # same retry obligation without turning an ordinary tick into failure.
+        if delivery == "direct":
+            with pytest.raises(ConnectionError, match="inert lost ACK response"):
+                service.prepare_room(binding)
+        else:
+            service._prepare_terminal_tasks(service._room("room"))
+        retry = authority.db._conn.execute(
+            'SELECT blocked,next_attempt_at,operation,reason_code FROM hosted_room_artifact_retries').fetchone()
+        assert retry is not None and (retry['blocked'], retry['operation'], retry['reason_code']) == (
+            0, 'ack', 'transient')
         message, = [e for e in service._events("room") if e["kind"] == "message.member"]
         assert calls == [(scope, [i["artifact_id"] for i in saved["result"]["artifacts"]["items"]],
                           message["event_id"])]
-        service._artifact_clock = lambda: retry['next_attempt_at']
-        service.prepare_room(binding)
-        assert [e for e in service._events("room") if e["kind"] == "message.member"] == [message]
-        assert len(calls) == 1
-        assert service.output_attachments.abort_unpublished_event(
-            room_id="room", event_id=message["event_id"]) is False
+        assert RoomArtifactOutbox(service.db_path).retirement_complete(scope)
         item = message["payload"]["attachments"][0]
-        assert service.output_attachments.read_viewer(
+        before = service.output_attachments.read_viewer(
             room_id="room", event_id=message["event_id"], attachment_id=item["attachment_id"],
             authority_gateway_id=scope.authority_gateway_id,
-            authority_epoch=scope.authority_epoch).data == path.read_bytes()
+            authority_epoch=scope.authority_epoch).data
+        assert before == path.read_bytes()
+        with authority.db._read_ctx() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM hosted_room_attachments WHERE state='committed'").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM hosted_room_artifact_completions").fetchone()[0] == 0
+        # Reopen the durable database as well as reconstructing the service.
+        # Keep the original owner epoch/instance: adopting another owner's
+        # retained Output is a different, separately fenced contract.
+        from hermes_state import SessionDB
+        authority.db.close()
+        reopened = SessionDB(tmp_path / "state.db")
+        runner.session_store._db = reopened
+        runner._session_db = reopened
+        authority.db = reopened
+        from gateway.session_hosted_service import CanonicalHostedRoomService
+        restarted = CanonicalHostedRoomService(authority, asyncio.get_running_loop())
+        authority.hosted_room_service = restarted
+        restarted._artifact_clock = lambda: retry['next_attempt_at']
+        restarted.prepare_room(binding)
+        assert [e for e in restarted._events("room") if e["kind"] == "message.member"] == [message]
+        assert len(calls) == 1
+        assert restarted.output_retry_status("room") == []
+        with authority.db._read_ctx() as conn:
+            completed = conn.execute("SELECT operation FROM hosted_room_artifact_completions").fetchall()
+            assert [row['operation'] for row in completed] == ['ack']
+            assert conn.execute("SELECT COUNT(*) FROM hosted_room_attachments WHERE state='committed'").fetchone()[0] == 1
+        assert restarted.output_attachments.abort_unpublished_event(
+            room_id="room", event_id=message["event_id"]) is False
+        assert restarted.output_attachments.read_viewer(
+            room_id="room", event_id=message["event_id"], attachment_id=item["attachment_id"],
+            authority_gateway_id=scope.authority_gateway_id,
+            authority_epoch=scope.authority_epoch).data == before
