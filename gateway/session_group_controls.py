@@ -250,7 +250,7 @@ def _execution_control(service, method, params):
 
 def _profiles(authority, actor, home, params):
     from hermes_cli.profiles import _profile_info, read_profile_meta
-    import yaml
+    import hermes_yaml as yaml
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
         raise RuntimeStoreError('invalid_params')
@@ -262,7 +262,7 @@ def _profiles(authority, actor, home, params):
            'description': profile.description or '', 'display_name': profile.display_name or '',
            'skill_count': profile.skill_count or 0}
     path = home / 'profile.yaml'
-    meta = yaml.safe_load(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    meta = yaml.safe_load(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
     meta = meta if isinstance(meta, dict) else {}
     revisions = meta.get('_ui_meta_revisions')
     row['ui_meta_revisions'] = {str(k): max(0, v) for k, v in revisions.items()
@@ -319,7 +319,7 @@ def _profiles(authority, actor, home, params):
                  'skill_count': 0}
         meta_path = target / 'profile.yaml'
         try:
-            meta = yaml.safe_load(meta_path.read_text(encoding='utf-8')) if meta_path.is_file() else {}
+            meta = yaml.safe_load(meta_path.read_text(encoding='utf-8-sig')) if meta_path.is_file() else {}
         except (OSError, yaml.YAMLError):
             meta = {}
         if isinstance(meta, dict):

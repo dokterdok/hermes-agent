@@ -8,17 +8,20 @@ from hermes_cli.gateway_client import GatewayClientError
 
 
 class GatewayChatView:
-    def __init__(self, client, snapshot, *, quiet=False, emitter=None):
+    def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
+        self.usage_file = usage_file
         self.client = client
         self.session_id = snapshot["stored_session_id"]
         self.generation = snapshot.get("execution_generation", 0)
         self.prompts = {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
         self.pending = snapshot.get("pending", [])
+        self.model = str((snapshot.get("info") or {}).get("model") or "Hermes").split("/")[-1]
         # ``--format stream-json``: stdout belongs to the JSONL protocol, so every human line is
         # replaced by an emitter event and the terminal record carries the exit code.
         self.emitter = emitter
         self.quiet = quiet or emitter is not None
         self.finite = False
+        self.unattended = False  # `-z`: the classic one-shot auto-approves; `-q` stays single-query
         self.streams = {}
         self.completions = {}
         self.changed = asyncio.Event()
@@ -133,7 +136,8 @@ class GatewayChatView:
     async def submit(self, text):
         return await self.client.rpc("prompt.submit", session_id=self.session_id,
                                      input_id=uuid.uuid4().hex, text=text,
-                                     **({"finite": True} if self.finite else {}))
+                                     **({"finite": True} if self.finite else {}),
+                                     **({"unattended": True} if self.finite and self.unattended else {}))
 
     async def command(self, text):
         command, _, rest = text.partition(" ")
@@ -195,6 +199,21 @@ class GatewayChatView:
             return self.emitter.emit_result({"failed": True, "error": message}, session_id=self.session_id, exit_code=3)
         return 3
 
+    async def _write_usage_file(self, admission, outcome):
+        """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote, read from the
+        result the owner committed with this admission's settlement (best-effort, never raises)."""
+        from hermes_cli.oneshot import _write_usage_file
+        result = {}
+        try:
+            receipt = await self.client.rpc("prompt.receipt", session_id=self.session_id,
+                                            admission_id=admission, include_result=True)
+            result = dict(receipt.get("result") or {})
+        except Exception:
+            pass
+        result.setdefault("session_id", self.session_id)
+        failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
+        _write_usage_file(self.usage_file, result, failure=failure)
+
     async def run(self, query=None, *, oneshot=False):
         self.quiet = self.quiet or oneshot
         self.finite = oneshot
@@ -223,6 +242,8 @@ class GatewayChatView:
                     await self.changed.wait()
                 terminal = self.completions[admission]
                 outcome = terminal.get("outcome")
+                if self.usage_file:
+                    await self._write_usage_file(admission, outcome)
                 if self.emitter is not None:
                     return self.emitter.emit_result(
                         {"final_response": terminal.get("text") or terminal.get("content") or "",
@@ -239,7 +260,9 @@ class GatewayChatView:
             from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
             welcome = "Welcome to Hermes Agent! Type your message or /help for commands."
             print(get_active_skin().get_branding("welcome", welcome), flush=True)
-            prompt = PromptSession(erase_when_done=True)
+            # The classic status bar's leading segments: model, then the attached session.
+            prompt = PromptSession(erase_when_done=True,
+                                   bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
             with patch_stdout():
                 while not self.failure:

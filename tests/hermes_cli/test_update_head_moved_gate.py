@@ -18,7 +18,6 @@ import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
-
 def _make_head_pinned_side_effect(sha="abc123"):
     """Simulate a detached checkout pinned to ``sha``: HEAD never moves."""
 
@@ -37,7 +36,6 @@ def _make_head_pinned_side_effect(sha="abc123"):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     return side_effect
-
 
 def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     """Patch the hermes_cli.main helpers ``_cmd_update_impl`` touches.
@@ -78,19 +76,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
-    from hermes_cli import update_cmd_fleet, update_inventory, update_receipt
-
-    monkeypatch.setattr(
-        update_inventory, "collect_runtime_inventory",
-        lambda: update_inventory.UpdatePlan(install_method="git", profiles=[], runtimes=[]),
-    )
-    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **kwargs: [])
-    monkeypatch.setattr(
-        update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None,
-    )
-    # These tests own only the HEAD gate, not installers or profile maintenance.
-    monkeypatch.setattr(update_cmd, "_sync_python_dependencies_after_pull", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_run_post_update_maintenance", lambda **kwargs: True)
+    # Short-circuit the long tail: dependency install + desktop build.
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
@@ -101,9 +87,8 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     # unsupported, so the phase is a clean no-op for both snapshots.
     import hermes_cli.gateway as hermes_gateway
 
-    monkeypatch.setattr(hermes_gateway, "_get_service_pids", lambda **kwargs: set())
     monkeypatch.setattr(
-        hermes_gateway, "find_gateway_pids", lambda **kwargs: []
+        hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
     )
     monkeypatch.setattr(
         hermes_gateway, "supports_systemd_services", lambda: False
@@ -111,9 +96,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
-
-
-
 
 def test_update_fails_loudly_when_head_pinned(monkeypatch, tmp_path, capsys):
     """A detached/pinned HEAD that never moves must fail loudly, not print
@@ -127,4 +109,3 @@ def test_update_fails_loudly_when_head_pinned(monkeypatch, tmp_path, capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "✓ Code updated!" not in out
-

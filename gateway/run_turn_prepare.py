@@ -53,9 +53,11 @@ class GatewayTurnPrepareMixin:
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
         from gateway.session_policy import policy_for_source
+        # Every exit path starts clean: a stale notice must never attach to another session's next
+        # turn (#74349). Set again below only when THIS resolution fell back.
+        self._pre_agent_fallback_notice = None
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
             from gateway.run import _runtime_agent_kwargs
             from gateway.session_policy import launch_key
             from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
@@ -70,15 +72,25 @@ class GatewayTurnPrepareMixin:
             if runtime is None:
                 if key is None:
                     key = frozen.get('model', {}).get('api_key')
-                runtime = resolve_runtime_provider(requested=policy.provider,
-                    explicit_api_key=key, explicit_base_url=policy.base_url, target_model=policy.model)
+                # Same resolution-time walker the in-process one-shot used (#81209): an AuthError from
+                # the frozen primary (expired token, Portal down, exhausted pool) tries the route's own
+                # ``fallback_providers`` before the turn is refused.
+                from hermes_cli.runtime_provider import resolve_runtime_with_fallback
+                # Only a launch-supplied URL is explicit (classic one-shot parity): config's own
+                # ``model.base_url`` is resolved by the provider chain, which keeps the credential pool
+                # an explicit URL would drop (no pool = no refresh/rotation on a 401).
+                runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=policy.provider,
+                    explicit_api_key=key, explicit_base_url=json.loads(policy.request_json).get('base_url'),
+                    target_model=policy.model)
+                if fallback_entry is not None:
+                    from hermes_cli.fallback_config import pre_agent_fallback_notice
+                    self._pre_agent_fallback_notice = pre_agent_fallback_notice(
+                        policy.provider or '', policy.model or '',
+                        runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
+                        fallback_entry.get('model') or 'default')
+                    return fallback_entry['model'], _runtime_agent_kwargs(runtime)
             return policy.model, _runtime_agent_kwargs(runtime)
         skey = self._resolve_session_key_or_none(source, session_key)
-        # Every exit path starts clean: the /model-override fast path returns before the pop below,
-        # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
-        # notice must never attach to another session's next turn (#74349).
-        self._pre_agent_fallback_notice = None
-
         model = _resolve_gateway_model(user_config)
         if skey:
             self._rehydrate_session_model_override(skey)
@@ -504,28 +516,21 @@ class GatewayTurnPrepareMixin:
         from gateway.run import _hermes_home, _home_target_env_var, _load_gateway_config
         if history:
             return
+        # LOCAL sessions (one-shot, chat -q, ACP, TUI attach) are the classic in-process CLI's
+        # surfaces: it never appended this note, and mark_seen would rewrite config.yaml under
+        # an ordinary launch that promises to leave the profile's files untouched.
+        if source.platform == Platform.LOCAL:
+            return
         if not await self.async_session_store.has_any_sessions():
-            _intro_note = (
-                "[System note: This is the user's very first message ever. "
-                "Briefly introduce yourself and mention that /help shows available commands. "
-                "Keep the introduction concise -- one or two sentences max.]"
+            # Same branch logic as the TUI (profile-build offer once when "ask", else plain intro);
+            # first_contact_turn_note already falls back to the plain intro on error.
+            from agent.onboarding import first_contact_turn_note
+            note = first_contact_turn_note(
+                _load_gateway_config(), _hermes_home / "config.yaml",
+                session_history_empty=True, install_has_prior_sessions=False,
             )
-            # onboarding.profile_build == "ask" (default) and not yet offered: swap the plain intro for
-            # a consent-gated profile-build directive. Fires at most once.
-            try:
-                from agent.onboarding import (
-                    PROFILE_BUILD_FLAG, is_seen, mark_seen, profile_build_directive,
-                    profile_build_mode,
-                )
-                _onb_cfg = _load_gateway_config()
-                if profile_build_mode(_onb_cfg) == "ask" and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG):
-                    turn_sidecar_notes.append(profile_build_directive().strip())
-                    mark_seen(_hermes_home / "config.yaml", PROFILE_BUILD_FLAG)
-                else:
-                    turn_sidecar_notes.append(_intro_note)
-            except Exception as _pb_err:
-                logger.debug("Profile-build onboarding directive failed, using plain intro: %s", _pb_err)
-                turn_sidecar_notes.append(_intro_note)
+            if note:
+                turn_sidecar_notes.append(note)
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
         if not source.platform or source.platform in (Platform.LOCAL, Platform.WEBHOOK):
@@ -635,7 +640,7 @@ class GatewayTurnPrepareMixin:
         # Rendering it here would make every surface hop of one durable session a system-prompt
         # (and prompt-cache) break.
         context_prompt = "" if source.platform == Platform.LOCAL else \
-            self._pinned_session_context_prompt(context, _redact_pii, session_key)
+            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=event.internal)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
