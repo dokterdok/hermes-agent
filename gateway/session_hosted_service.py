@@ -121,6 +121,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                         owner=owner, target_home=str(target_home))
                     if consent is not None:
                         result['owner_output_admission'] = consent
+        elif operation in {'secondary_deliver', 'secondary_chunk', 'secondary_receipt'}:
+            from gateway.session_hosted_secondary_delivery import source_secondary_attestation
+            result.update(source_secondary_attestation(self, selector, operation, params))
         return result
 
 

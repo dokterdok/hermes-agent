@@ -25,7 +25,8 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 _BINDING = 'gateway.hosted.transport.v1:'
 _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history',
                          'info', 'interrupt', 'discard', 'approve',
-                         'output_export', 'output_ack', 'output_discard'})
+                         'output_export', 'output_ack', 'output_discard',
+                         'secondary_deliver', 'secondary_receipt'})
 # One chunk per private-socket exchange. The response is a single JSON line capped at
 # gateway.control_socket._MAX_RESPONSE_BYTES (512 KiB) on both the POSIX socket and the
 # Windows pipe: 360 KiB raw -> 480 KiB base64, leaving 32 KiB for the envelope (owner
@@ -217,7 +218,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
         selected, params = select(envelope)
         if set(params) != {'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
-        if params['operation'] not in _OPERATIONS | {'execute', 'attachment'}:
+        if params['operation'] not in _OPERATIONS | {'execute', 'attachment', 'secondary_chunk'}:
             raise RuntimeStoreError('invalid_params')
         callback = attest if selected is authority else getattr(
             getattr(selected, 'hosted_room_service', None), 'attest', None)
@@ -286,6 +287,9 @@ def install_hosted_transport(server, authority, loop, *, attest):
             params['attachments'] = attested['attachments'] or None
             params['task'] = TaskIdentity(**params['task'])
             params['on_terminal'] = lambda value: None
+        if operation in {'secondary_deliver', 'secondary_receipt'}:
+            from gateway.session_hosted_secondary_delivery import target_secondary_operation
+            return target_secondary_operation(authority, binding, operation, params, attested)
         result = rpc._call(operation, **params)
         return result
 
