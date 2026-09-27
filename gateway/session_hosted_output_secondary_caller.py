@@ -45,6 +45,34 @@ def call_settled_invitation_secondary(service, binding, task):
             return SecondaryAwaitingPrimary()
     rpc = service._resolve_member_transport(binding, task)
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.session_hosted_transport import HostedRoomOwnerRPC
+    if type(rpc) is HostedRoomOwnerRPC:
+        # The named executor owns its outbox; the launch coordinator still owns
+        # the settled task, canonical events, and secondary publication writer.
+        if not result.get('owner_output_receipt'):
+            return None
+        current = service.consume_secondary_retained_publication(task)
+        if current.get('completed'):
+            return service.complete_secondary_publication(
+                task, current['publication_id'], attempt=current['attempt'])
+        if not current.get('accepted') or not current.get('published'):
+            return current
+        params = dict(publication_id=current['publication_id'], task_id=task['identity'].task_id,
+                      execution_generation=task['execution_generation'])
+        try:
+            receipt = rpc._call('secondary_deliver', **params)
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            # A lost reply may follow a durable target write. The next invocation
+            # reads the receipt before attempting another transfer.
+            try:
+                receipt = rpc._call('secondary_receipt', **params)
+            except (OSError, TimeoutError, RuntimeError):
+                service.record_secondary_publication_failure(
+                    task, current['publication_id'], attempt=current['attempt'], error=exc)
+                raise
+        from gateway.session_hosted_secondary_delivery import complete_after_recipient_receipt
+        return complete_after_recipient_receipt(service, task, current['publication_id'],
+                                               attempt=current['attempt'], receipt=receipt)
     if type(rpc) is not HostedRoomAuthorityRPC:
         return None
     caller = getattr(rpc, 'publish_secondary_retained', None)

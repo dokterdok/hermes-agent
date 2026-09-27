@@ -63,16 +63,11 @@ async def test_consumer_publish_retry_and_completion_keep_provenance(tmp_path, m
         assert retried['attempt'] == 2
         assert retried['provenance']['publication'] == published['provenance']['publication']
         assert retried['valid_until'] == published['valid_until']
-        completed = _consume(service, task, publication_id=publication_id, confirm=True)
-        assert completed['completed'] is True
-        assert completed['event_digest'] == published['provenance']['publication']
-        assert completed['valid_until'] == published['valid_until']
-        assert completed['provenance']['work'] == published['provenance']['work']
-        assert completed['provenance']['route'] == published['provenance']['route']
-        assert completed['provenance']['member_id'] == published['provenance']['member_id']
-        assert _secondary_counts(authority.db) == (0, 1)
+        with pytest.raises(RoomArtifactError, match='recipient is not served'):
+            _consume(service, task, publication_id=publication_id, confirm=True)
+        assert _secondary_counts(authority.db) == (1, 0)
         reopened = _consume(service, task)
-        assert reopened['completed'] is True and _secondary_counts(authority.db) == (0, 1)
+        assert reopened['completed'] is False and _secondary_counts(authority.db) == (1, 0)
         assert _primary(authority.db) == before
         assert runner.session_authority is pointer is authority
         assert authority.hosted_room_service is service
@@ -112,7 +107,7 @@ async def test_consumer_expiry_does_not_extend_the_grant(tmp_path, monkeypatch):
         assert expired['accepted'] is False and expired['published'] is False
         assert expired['blocked'] is True and expired['reason_code'] == 'expired_grant'
         assert expired['valid_until'] == horizon and expired['attempt'] == 1
-        with pytest.raises(RoomArtifactError, match='completion refused'):
+        with pytest.raises(RoomArtifactError, match='recipient is not served'):
             _consume(service, task, publication_id=publication_id, confirm=True)
         with pytest.raises(RoomArtifactError, match='lifetime expired'):
             _consume(service, task)
@@ -144,7 +139,7 @@ async def test_consumer_blocked_authorization_stays_blocked(tmp_path, monkeypatc
         still = _consume(service, task, publication_id=publication_id)
         assert still['accepted'] is False and still['blocked'] is True
         assert still['reason_code'] == 'authorization_or_verification'
-        with pytest.raises(RoomArtifactError, match='completion refused'):
+        with pytest.raises(RoomArtifactError, match='recipient is not served'):
             _consume(service, task, publication_id=publication_id, confirm=True)
         assert _secondary_counts(authority.db) == (1, 0)
         assert _primary(authority.db) == before

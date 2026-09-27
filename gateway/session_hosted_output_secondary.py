@@ -26,7 +26,8 @@ def ensure_secondary_publication_tables(conn):
         room_id TEXT NOT NULL, publication_id TEXT NOT NULL, task_id TEXT NOT NULL,
         execution_generation INTEGER NOT NULL, completed_at REAL NOT NULL,
         valid_until REAL NOT NULL, metadata_json TEXT NOT NULL, event_digest TEXT NOT NULL,
-        operation TEXT NOT NULL, attempt INTEGER NOT NULL,
+        operation TEXT NOT NULL, attempt INTEGER NOT NULL, write_attempt INTEGER,
+        write_attempts_json TEXT NOT NULL, receipt_digest TEXT NOT NULL,
         PRIMARY KEY(room_id, publication_id))''')
 
 
@@ -178,7 +179,18 @@ def record_secondary_publication_failure(service, task, publication_id, *, attem
     return _mutate(service, task, body)
 
 
-def complete_secondary_publication(service, task, publication_id, *, attempt):
+def complete_secondary_publication(service, task, publication_id, *, attempt, recipient_receipt=None):
+    with service._output_policy_read():
+        pass
+    from gateway.session_hosted_secondary_delivery import read_authenticated_recipient
+    observed = read_authenticated_recipient(service, task, publication_id)
+    if (recipient_receipt is not None and recipient_receipt != observed) or not observed.get('receipts'):
+        raise RoomArtifactError('Group Chat secondary recipient receipt changed')
+    write_attempts = [receipt.get('write_attempt') for receipt in observed['receipts']]
+    if any(type(value) is not int or not 1 <= value <= attempt for value in write_attempts):
+        raise RoomArtifactError('Group Chat secondary recipient write attempt changed')
+    # A scalar is truthful only when every file was written on that attempt.
+    write_attempt = write_attempts[0] if len(set(write_attempts)) == 1 else None
     def body(conn, key):
         _require_publication_id(publication_id)
         row = _registration(conn, key[0], publication_id)
@@ -188,16 +200,25 @@ def complete_secondary_publication(service, task, publication_id, *, attempt):
         metadata = _live_metadata(service, conn, key)
         events = _events(service, conn, key)
         now = _now(service)
+        if (observed['identity']['event_digest'] != events
+                or observed['identity']['publication_id'] != publication_id
+                or observed['identity']['task_id'] != key[1]
+                or observed['identity']['execution_generation'] != key[2]):
+            raise RoomArtifactError('Group Chat secondary recipient receipt changed')
         if done is not None:
             if row is not None:
                 raise RoomArtifactError('Group Chat secondary publication completion changed')
             completed = _existing_completion(service, done, metadata, events, now, key)
-            if int(done['attempt']) != attempt:
+            if (int(done['attempt']) != attempt or _write_attempts(done) != write_attempts
+                    or done['receipt_digest'] != observed['receipt_digest']):
                 raise RoomArtifactError('Group Chat output attempt changed')
             return completed
         if (row['operation'] != 'publish' or row['reason_code'] != 'pending'
                 or int(row['blocked']) or int(row['attempts']) != attempt):
             raise RoomArtifactError('Group Chat secondary publication completion refused')
+        # A later retry may adopt genuine earlier custody, never claim it wrote
+        # those bytes. Identity/event/route/grant/recipient/digest are rechecked
+        # here against the live source and by the target's immutable Files read.
         stored = _stored(row)
         _require_recorded_lifetime(row, stored)
         if _expired(stored, metadata, now) or not _same(stored, metadata) or stored.get('publication') != events:
@@ -208,9 +229,10 @@ def complete_secondary_publication(service, task, publication_id, *, attempt):
             raise RoomArtifactError('Group Chat secondary publication lifetime expired')
         conn.execute('''INSERT INTO hosted_room_secondary_publication_completions (
             room_id, publication_id, task_id, execution_generation, completed_at, valid_until,
-            metadata_json, event_digest, operation, attempt)
-            VALUES (?,?,?,?,?,?,?,?,?,?)''', (
-                key[0], publication_id, key[1], key[2], now, valid_until, encoded, events, 'publish', attempt))
+            metadata_json, event_digest, operation, attempt, write_attempt, write_attempts_json, receipt_digest)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+            key[0], publication_id, key[1], key[2], now, valid_until, encoded, events, 'publish', attempt,
+            write_attempt, json.dumps(write_attempts, separators=(',', ':')), observed['receipt_digest']))
         conn.execute('DELETE FROM hosted_room_secondary_publications WHERE room_id=? AND publication_id=?',
                      (key[0], publication_id))
         return _existing_completion(service, _completion(conn, key[0], publication_id), metadata, events, now, key)
@@ -340,6 +362,19 @@ def _completion(conn, room_id, publication_id):
         'SELECT * FROM hosted_room_secondary_publication_completions WHERE room_id=? AND publication_id=?',
         (room_id, publication_id)).fetchone()
 
+def _write_attempts(done):
+    try:
+        values = json.loads(done['write_attempts_json'])
+        attempt = int(done['attempt'])
+        scalar = done['write_attempt']
+        if (type(values) is not list or not 1 <= len(values) <= 8
+                or any(type(value) is not int or not 1 <= value <= attempt for value in values)
+                or scalar != (values[0] if len(set(values)) == 1 else None)):
+            raise ValueError('invalid write attempts')
+    except (ValueError, TypeError, KeyError) as exc:
+        raise RoomArtifactError('Group Chat secondary publication completion changed') from exc
+    return values
+
 
 def _delay(attempts):
     return min(60.0, 2.0 ** min(max(int(attempts), 1) - 1, 16))
@@ -368,11 +403,13 @@ def _block(conn, row, reason, now):
 
 def _existing_completion(service, done, metadata, events, now, key):
     stored = _stored(done)
+    write_attempts = _write_attempts(done)
     _require_owner_provenance(service, stored)
     _require_recorded_lifetime(done, stored)
     if (done['task_id'] != key[1] or int(done['execution_generation']) != key[2]
             or not _same(stored, metadata) or stored.get('publication') != events
-            or done['event_digest'] != events or done['event_digest'] != stored.get('publication')):
+            or done['event_digest'] != events or done['event_digest'] != stored.get('publication')
+            or not done['receipt_digest']):
         raise RoomArtifactError('Group Chat secondary publication completion changed')
     if now >= float(done['valid_until']) or now >= float(metadata['valid_until']) or now >= float(stored['valid_until']):
         raise RoomArtifactError('Group Chat secondary publication lifetime expired')
@@ -383,6 +420,8 @@ def _existing_completion(service, done, metadata, events, now, key):
         'publication_id': done['publication_id'],
         'operation': 'completed',
         'attempt': int(done['attempt']),
+        'write_attempt': done['write_attempt'],
+        'write_attempts': write_attempts,
         'blocked': False,
         'reason_code': 'completed',
         'valid_until': float(done['valid_until']),

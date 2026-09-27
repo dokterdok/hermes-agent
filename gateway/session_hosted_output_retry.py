@@ -502,6 +502,7 @@ class CanonicalOutputRetry:
         from gateway.session_hosted_output_secondary import record_secondary_publication_failure
         return record_secondary_publication_failure(self, task, publication_id, attempt=attempt, error=error)
 
-    def complete_secondary_publication(self, task, publication_id, *, attempt):
+    def complete_secondary_publication(self, task, publication_id, *, attempt, recipient_receipt=None):
         from gateway.session_hosted_output_secondary import complete_secondary_publication
-        return complete_secondary_publication(self, task, publication_id, attempt=attempt)
+        return complete_secondary_publication(self, task, publication_id, attempt=attempt,
+                                              recipient_receipt=recipient_receipt)

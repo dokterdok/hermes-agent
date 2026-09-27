@@ -117,7 +117,7 @@ async def test_unregistered_secondary_publication_fails_closed(tmp_path, monkeyp
             service.publish_secondary_publication(task, 'missing')
         with pytest.raises(RoomArtifactError, match='not registered'):
             service.retry_secondary_publication(task, 'missing')
-        with pytest.raises(RoomArtifactError, match='not registered'):
+        with pytest.raises(RoomArtifactError, match='recipient is not served'):
             service.complete_secondary_publication(task, 'missing', attempt=1)
         changes = authority.db._conn.total_changes
         with pytest.raises(RoomArtifactError, match='send consent is not publication authority'):
@@ -167,16 +167,13 @@ async def test_secondary_publish_retry_and_completion_keep_provenance(tmp_path, 
         assert retried['accepted'] is True and retried['attempt'] == 2
         assert retried['provenance']['publication'] == published['provenance']['publication']
         assert retried['valid_until'] == registered['valid_until']
-        completed = service.complete_secondary_publication(
-            task, registered['publication_id'], attempt=2)
-        assert completed['completed'] is True
-        assert completed['event_digest'] == published['provenance']['publication']
-        assert completed['valid_until'] == registered['valid_until']
-        assert _secondary_counts(authority.db) == (0, 1)
+        with pytest.raises(RoomArtifactError, match='recipient is not served'):
+            service.complete_secondary_publication(task, registered['publication_id'], attempt=2)
+        assert _secondary_counts(authority.db) == (1, 0)
         reopened = service.publish_secondary_publication(task, registered['publication_id'])
-        assert reopened['completed'] is True and _secondary_counts(authority.db) == (0, 1)
+        assert reopened['completed'] is False and _secondary_counts(authority.db) == (1, 0)
         denied = service.retry_secondary_publication(task, registered['publication_id'])
-        assert denied['completed'] is True and _secondary_counts(authority.db) == (0, 1)
+        assert denied['completed'] is False and _secondary_counts(authority.db) == (1, 0)
         assert _primary(authority.db) == before
         assert runner.session_authority is pointer is authority
         assert authority.hosted_room_service is service
@@ -211,7 +208,7 @@ async def test_secondary_publication_rejects_unauthorized_and_stale_routes(tmp_p
         assert refused['accepted'] is False and refused['blocked'] is True
         assert refused['reason_code'] == 'stale_binding' and refused['published'] is False
         assert refused['attempt'] == 0 and refused['valid_until'] == registered['valid_until']
-        with pytest.raises(RoomArtifactError, match='completion refused'):
+        with pytest.raises(RoomArtifactError, match='recipient is not served'):
             service.complete_secondary_publication(task, registered['publication_id'], attempt=1)
         assert _secondary_counts(authority.db) == (1, 0)
         assert runner.session_authority is authority
@@ -236,7 +233,7 @@ async def test_secondary_publication_expires_without_extending_the_grant(tmp_pat
         retried = service.retry_secondary_publication(task, registered['publication_id'])
         assert retried['accepted'] is False and retried['blocked'] is True
         assert retried['reason_code'] == 'expired_grant' and retried['attempt'] == 1
-        with pytest.raises(RoomArtifactError, match='completion refused'):
+        with pytest.raises(RoomArtifactError, match='recipient is not served'):
             service.complete_secondary_publication(task, registered['publication_id'], attempt=1)
         with pytest.raises(RoomArtifactError, match='lifetime expired'):
             service.register_secondary_publication(task)
@@ -265,7 +262,7 @@ async def test_secondary_publication_lifetime_and_owner_fail_closed(tmp_path, mo
         clock['now'] = blocked['next_attempt_at'] + 1
         still = service.retry_secondary_publication(task, registered['publication_id'])
         assert still['accepted'] is False and still['blocked'] is True
-        with pytest.raises(RoomArtifactError, match='completion refused'):
+        with pytest.raises(RoomArtifactError, match='recipient is not served'):
             service.complete_secondary_publication(task, registered['publication_id'], attempt=published['attempt'])
 
         pointer = runner.session_authority
