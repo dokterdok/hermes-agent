@@ -31,6 +31,15 @@ def records(conn, room_id, *, pending_limit=None):
 
 
 class CanonicalOutputLifecycle:
+    def _acknowledge_stopped_native_input(self, conn, binding, completed):
+        # Only newly completed writer transitions acknowledge Input custody.
+        # Existing completed metadata is not proof that this callback ran.
+        if binding.get('admission') is None or 'input_binding' not in binding:
+            return
+        from hermes_state_input_custody import acknowledge_stopped_native_input
+        acknowledge_stopped_native_input(conn, epoch=self._output_epoch,
+            binding=binding, completion=completed)
+
     def _unadmitted_inventory(self, conn, snapshot):
         """Require an initialized empty exact scope, or a wholly absent store."""
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' "
@@ -378,8 +387,13 @@ class CanonicalOutputLifecycle:
                 except OutputCleanupUnavailable:
                     record['reason_code'] = 'inventory_unavailable'
             if record['state'] == 'completed':
+                completed_binding = record['binding']
                 record = compact_completed(record)
+            else:
+                completed_binding = None
             conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, json.dumps(record, sort_keys=True)))
+            if completed_binding is not None:
+                self._acknowledge_stopped_native_input(conn, completed_binding, record)
             return record
         record = self._cleanup_write(stage)
         if record is None:
@@ -396,6 +410,7 @@ class CanonicalOutputLifecycle:
                 record['items'], record['blobs'], authorize=lambda c: self._require_cleanup_binding(c, task, record['binding'], terminal=True))
             done = compact_completed(dict(record, state='completed', blobs=[], reason_code='completed', next_attempt_at=0))
             conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(done, sort_keys=True), key))
+            self._acknowledge_stopped_native_input(conn, record['binding'], done)
         try:
             self._cleanup_write(complete)
         except Exception as exc:
@@ -453,6 +468,7 @@ class CanonicalOutputLifecycle:
         done = compact_completed(dict(record, state='completed', reason_code='completed',
                     completion=dict(metadata=metadata, operation=operation), next_attempt_at=0))
         conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(done, sort_keys=True), key))
+        self._acknowledge_stopped_native_input(conn, current, done)
 
     def _require_completed_identity(self, conn, task, record):
         current, _ = self._cleanup_snapshot(conn, task, identity_only=True)
