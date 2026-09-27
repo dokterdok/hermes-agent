@@ -170,6 +170,11 @@ def record_secondary_publication_failure(service, task, publication_id, *, attem
         if error is None:
             raise RoomArtifactError('Group Chat secondary publication failure is missing')
         reason, blocked = ('transient', 0) if retryable(error) else ('authorization_or_verification', 1)
+        # Multiple callbacks can fail the same published attempt. Its first
+        # durable transient failure owns the retry deadline; a late duplicate
+        # must not postpone it after another caller has observed that deadline.
+        if reason == 'transient' and row['reason_code'] == 'transient':
+            return _view(row, accepted=False, published=False, completed=False)
         delay = _delay(int(row['attempts']))
         conn.execute('''UPDATE hosted_room_secondary_publications
             SET blocked=?, reason_code=?, updated_at=?, next_attempt_at=?

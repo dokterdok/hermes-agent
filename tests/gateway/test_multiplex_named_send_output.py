@@ -16,7 +16,7 @@ from tests.gateway.test_hosted_mux_runtime import mux  # noqa: F401; real regist
 
 
 @pytest.mark.live_system_guard_bypass
-def test_named_send_two_files_adopt_partial_delivery_on_next_attempt(mux, monkeypatch):
+def test_named_send_two_files_adopt_partial_delivery_on_next_attempt(mux, monkeypatch, request):
     from gateway import hosted_room_driver as tasks
     from gateway.session_authority import SessionAuthority
     from gateway.session_authorities import owner_scope
@@ -66,11 +66,11 @@ def test_named_send_two_files_adopt_partial_delivery_on_next_attempt(mux, monkey
     monkeypatch.setattr(files, 'retain_recipient_bytes', interrupt_second)
     from gateway import session_hosted_transport as private
     from hermes_state_runtime import RuntimeStoreError
-    request = private.owner_request
+    owner_request = private.owner_request
 
     def interrupt_response(home, verb, params, **kwargs):
         try:
-            return request(home, verb, params, **kwargs)
+            return owner_request(home, verb, params, **kwargs)
         except RuntimeStoreError as exc:
             if (interrupted and verb == 'hosted-producer'
                     and params.get('operation') in {'secondary_deliver', 'secondary_receipt'}):
@@ -82,6 +82,23 @@ def test_named_send_two_files_adopt_partial_delivery_on_next_attempt(mux, monkey
         service = source.hosted_room_service
         clock = {'now': time.time()}
         service._artifact_clock = lambda: clock['now']
+        delayed, release, recorded = threading.Event(), threading.Event(), threading.Event()
+        request.addfinalizer(release.set)
+        failure_calls = []
+        failure_lock = threading.Lock()
+        original_failure = service.record_secondary_publication_failure
+        def delay_first_failure(*args, **kwargs):
+            with failure_lock:
+                failure_calls.append((threading.current_thread().name, kwargs['attempt']))
+                first_call = len(failure_calls) == 1
+            if first_call:
+                delayed.set()
+                assert release.wait(8), 'first failure callback was not released'
+            result = original_failure(*args, **kwargs)
+            if first_call:
+                recorded.set()
+            return result
+        monkeypatch.setattr(service, 'record_secondary_publication_failure', delay_first_failure)
         service.runtime.poll_interval_seconds = .05
         service.runtime.active_poll_interval_seconds = .05
         service.authorize_room('alice', 'two-file-room', create=True)
@@ -90,6 +107,12 @@ def test_named_send_two_files_adopt_partial_delivery_on_next_attempt(mux, monkey
             {'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
         service.send(room_id='two-file-room', event_id='input',
                      payload={'text': '@helper Share two reports', 'thread_id': 'thread'})
+    # Hold the first failure before its durable write, then run the runtime's
+    # genuine pending-primary catch-up while that callback is still in flight.
+    assert delayed.wait(8), f'initial callback did not reach failure: {service.runtime.status()}'
+    catchup = threading.Thread(target=lambda: service.runtime._catch_up_secondary_after_primary(
+        service.bindings()[0]), name='forced-secondary-catchup')
+    catchup.start()
     # The real worker may already have claimed this task after send returns.
     queued, = tasks.list_tasks(source.db.db_path, room_id='two-file-room')
     deadline = time.monotonic() + 15
@@ -112,12 +135,22 @@ def test_named_send_two_files_adopt_partial_delivery_on_next_attempt(mux, monkey
         first, = conn.execute('SELECT * FROM hosted_room_recipient_receipts').fetchall()
         assert first['write_attempt'] == 1
         assert conn.execute('SELECT COUNT(*) FROM hosted_room_attachment_blobs').fetchone()[0] == 1
+    clock['now'] = rows[0]['next_attempt_at'] + .01
+    release.set()
+    assert recorded.wait(8), f'late first-attempt failure never recorded: {failure_calls}'
+    catchup.join(8)
+    assert not catchup.is_alive()
+    assert len(failure_calls) >= 2 and all(attempt == 1 for _, attempt in failure_calls[:2]), failure_calls
+    with source.db._read_ctx() as conn:
+        after, = conn.execute('SELECT * FROM hosted_room_secondary_publications').fetchall()
+    assert after['attempts'] == 1 and after['reason_code'] == 'transient'
+    assert after['next_attempt_at'] == rows[0]['next_attempt_at'], (
+        'late failure moved an already published retry deadline', dict(rows[0]), dict(after), failure_calls)
     with owner_scope(source):
-        service._artifact_clock = lambda: rows[0]['next_attempt_at'] + .01
         # This is the production caller: retry Output, transfer the missing file
         # through the served recipient, then complete from authenticated custody.
         done = service.publish_settled_invitation_secondary(service.bindings()[0], settled)
-        assert done['completed'] and done['attempt'] == 2
+        assert done['completed'] and done['attempt'] == 2, (done, failure_calls, service.runtime.status())
         assert done['write_attempts'] == [1, 2]
         assert done['write_attempt'] is None
         again = service.complete_secondary_publication(
@@ -226,23 +259,34 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
                 assert release.wait(8)
             return original_target(authority, binding, operation, params, attested)
         monkeypatch.setattr(delivery, 'target_secondary_operation', held_target)
+    retry_responses = threading.Event()
     if lose_response:
         from gateway import session_hosted_transport as private
         request = private.owner_request
         dropped = []
+        lost_operations = set()
+        lost_lock = threading.Lock()
         def lose_after_target_write(home, verb, params, **kwargs):
             if (lose_response == 'refuse' and verb == 'hosted-producer'
                     and params.get('operation') in {'secondary_deliver', 'secondary_receipt'}):
                 raise ConnectionError('recipient unavailable before write')
             result = request(home, verb, params, **kwargs)
+            # Keep the transport outage active until this test explicitly
+            # starts recovery. A parallel catch-up callback must not recover
+            # merely because another callback consumed a one-shot exception.
+            if (verb == 'hosted-producer'
+                    and params.get('operation') in {'secondary_deliver', 'secondary_receipt'}
+                    and lose_response in {'later-retry', 'later-retry-revoke'}
+                    and not retry_responses.is_set()):
+                with lost_lock:
+                    if params['operation'] not in lost_operations:
+                        lost_operations.add(params['operation'])
+                        dropped.append(True)
+                raise TimeoutError('response unavailable until explicit recipient recovery')
             if (verb == 'hosted-producer' and params.get('operation') == 'secondary_deliver'
-                    and lose_response in (True, 'later-retry', 'later-retry-revoke', 'target-read-close') and not dropped):
+                    and lose_response in (True, 'target-read-close') and not dropped):
                 dropped.append(True)
                 raise TimeoutError('response lost after recipient write')
-            if (verb == 'hosted-producer' and params.get('operation') == 'secondary_receipt'
-                    and lose_response in {'later-retry', 'later-retry-revoke'} and len(dropped) == 1):
-                dropped.append(True)
-                raise TimeoutError('receipt response lost after recipient write')
             return result
         monkeypatch.setattr(private, 'owner_request', lose_after_target_write)
     with owner_scope(source):
@@ -313,7 +357,8 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
             completed = conn.execute('SELECT * FROM hosted_room_secondary_publication_completions').fetchall()
         if (lose_response in {'refuse', 'source-revoke', 'target-close', 'target-read-close', 'target-replace'} and settled['status'] == 'settled'
                 and len(events) == len(secondary) == len(executions) == 1
-                and service.runtime.status()['last_error']):
+                and (secondary[0]['reason_code'] == 'transient' if lose_response == 'refuse'
+                     else service.runtime.status()['last_error'])):
             break
         if (lose_response in {'later-retry', 'later-retry-revoke'} and settled['status'] == 'settled'
                 and len(events) == len(secondary) == len(executions) == 1
@@ -349,6 +394,7 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
         # receipt or confirmation is supplied. The authenticated target is read again.
         retry_at = secondary[0]['next_attempt_at'] + .01
         service._artifact_clock = lambda: retry_at
+        retry_responses.set()
         with owner_scope(source):
             retried = service.consume_secondary_retained_publication(settled)
             assert retried['attempt'] == 2 and retried['published']
