@@ -402,6 +402,87 @@ class HostedRoomAttachmentStore:
         store._initialize(conn)
         return store
 
+    def _recipient_table(self, conn):
+        # Unshipped receipt shape: creation belongs only to an admitted Files writer.
+        conn.execute('''CREATE TABLE IF NOT EXISTS hosted_room_recipient_receipts (
+            receipt_key TEXT PRIMARY KEY, identity_json TEXT NOT NULL,
+            manifest_json TEXT NOT NULL, blob_id TEXT NOT NULL,
+            sha256 TEXT NOT NULL, size INTEGER NOT NULL,
+            valid_until REAL NOT NULL, write_attempt INTEGER NOT NULL CHECK(write_attempt > 0),
+            FOREIGN KEY(blob_id) REFERENCES hosted_room_attachment_blobs(blob_id))''')
+        conn.execute('''CREATE INDEX IF NOT EXISTS idx_hosted_room_recipient_expiry
+            ON hosted_room_recipient_receipts(valid_until)''')
+
+    def prune_recipient_receipts(self, conn, *, now):
+        """Reclaim only expired recipient custody inside its admitted writer."""
+        rows = conn.execute('''SELECT receipt_key, blob_id FROM hosted_room_recipient_receipts
+            WHERE valid_until<=? ORDER BY valid_until LIMIT 256''', (now,)).fetchall()
+        removed = []
+        for row in rows:
+            blob = conn.execute('SELECT ref_count FROM hosted_room_attachment_blobs WHERE blob_id=?',
+                                (row['blob_id'],)).fetchone()
+            if blob is None or int(blob['ref_count']) < 1:
+                raise AttachmentIntegrityError('recipient blob reference changed')
+            conn.execute('DELETE FROM hosted_room_recipient_receipts WHERE receipt_key=?', (row['receipt_key'],))
+            if int(blob['ref_count']) == 1:
+                conn.execute('DELETE FROM hosted_room_attachment_blobs WHERE blob_id=?', (row['blob_id'],))
+                removed.append(row['blob_id'])
+            else:
+                conn.execute('UPDATE hosted_room_attachment_blobs SET ref_count=ref_count-1 WHERE blob_id=?',
+                             (row['blob_id'],))
+        return len(rows), removed
+
+    def retain_recipient(self, conn, *, key, encoded, manifest_json, digest, data, valid_until, attempt, now):
+        """Files-owned quota, dedup, and immutable write provenance in a held owner transaction."""
+        self._recipient_table(conn)
+        _, removed = self.prune_recipient_receipts(conn, now=now)
+        old = conn.execute('SELECT * FROM hosted_room_recipient_receipts WHERE receipt_key=?', (key,)).fetchone()
+        if old is not None:
+            if (old['identity_json'] != encoded or old['manifest_json'] != manifest_json
+                    or old['sha256'] != digest or old['size'] != len(data)
+                    or float(old['valid_until']) != valid_until or int(old['write_attempt']) > attempt
+                    or self._read_blob(blob_id=old['blob_id'], size=old['size'], sha256=old['sha256']) != data):
+                raise AttachmentConflictError('recipient receipt changed')
+            return removed
+        count = conn.execute('''SELECT (SELECT COUNT(*) FROM hosted_room_attachments) +
+            (SELECT COUNT(*) FROM hosted_room_recipient_receipts)''').fetchone()[0]
+        if count >= self.gateway_quota_count:
+            raise AttachmentQuotaError('gateway attachment count quota exceeded')
+        blob = conn.execute('SELECT * FROM hosted_room_attachment_blobs WHERE sha256=?', (digest,)).fetchone()
+        if blob is None:
+            physical = conn.execute('SELECT COALESCE(SUM(size),0) FROM hosted_room_attachment_blobs').fetchone()[0]
+            if physical + len(data) > self.gateway_quota_bytes:
+                raise AttachmentQuotaError('recipient blob quota exceeded')
+            blob_id = 'blob_' + secrets.token_hex(16)
+            self._write_blob(self._blob_path(blob_id), data)
+            conn.execute('INSERT INTO hosted_room_attachment_blobs VALUES (?,?,?,?,?)',
+                         (blob_id, digest, len(data), 1, now))
+        else:
+            blob_id = blob['blob_id']
+            if blob['size'] != len(data) or self._read_blob(
+                    blob_id=blob_id, size=len(data), sha256=digest) != data:
+                raise AttachmentIntegrityError('recipient blob changed')
+            conn.execute('UPDATE hosted_room_attachment_blobs SET ref_count=ref_count+1 WHERE blob_id=?', (blob_id,))
+        conn.execute('''INSERT INTO hosted_room_recipient_receipts
+            (receipt_key,identity_json,manifest_json,blob_id,sha256,size,valid_until,write_attempt)
+            VALUES (?,?,?,?,?,?,?,?)''',
+            (key, encoded, manifest_json, blob_id, digest, len(data), valid_until, attempt))
+        return removed
+
+    def read_recipient(self, conn, *, key, encoded, manifest_json, digest, size, valid_until, attempt, now):
+        """Cold read has no schema, sweep, or pathname initialization side effects."""
+        table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_recipient_receipts'").fetchone()
+        row = (conn.execute('SELECT * FROM hosted_room_recipient_receipts WHERE receipt_key=?', (key,)).fetchone()
+               if table is not None else None)
+        if (row is None or row['identity_json'] != encoded or row['manifest_json'] != manifest_json
+                or row['sha256'] != digest or row['size'] != size
+                or float(row['valid_until']) != valid_until or now >= valid_until
+                or type(attempt) is not int or int(row['write_attempt']) > attempt):
+            raise AttachmentIntegrityError('recipient receipt unavailable or changed')
+        data = self._read_blob(blob_id=row['blob_id'], size=row['size'], sha256=row['sha256'])
+        return {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data),
+                'receipt_key': key, 'write_attempt': int(row['write_attempt'])}
+
     def _prepare_private_root(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.blob_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1264,6 +1345,10 @@ class HostedRoomAttachmentStore:
                             WHERE blob_id=?""",
                         (count, blob_id),
                     )
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_recipient_receipts'").fetchone():
+                receipt_count, receipt_blobs = self.prune_recipient_receipts(conn, now=now)
+                removed += receipt_count
+                removed_blob_ids.extend(receipt_blobs)
             if removed_blob_ids:
                 conn.executemany(
                     "DELETE FROM hosted_room_attachment_blobs WHERE blob_id=?",
