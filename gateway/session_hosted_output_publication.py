@@ -149,6 +149,15 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
 
     def _publish_one_output(self, room, task, progress):
         room_id, local_profiles = str(room['room_id']), self.local_profiles()
+        # Imported rooms retain historical readiness metadata. Reconstruction
+        # compares the frozen executable roster to the current room's identities;
+        # only strict publication planning consumes the frozen projection.
+        publication_members = task['payload'].get('publication_members')
+        publication_room = ({**room, 'members': publication_members}
+                            if publication_members is not None else room)
+        publication_profiles = tuple(local_profiles) + tuple(
+            member['profile'] for member in (publication_members or ())
+            if member.get('target', {}).get('kind') == 'local')
         cursor = int(room['latest_seq'])
         status, generation = task["status"], int(task["execution_generation"])
         output = self._output_source(room, task)
@@ -170,7 +179,8 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
         task_events = self.policy_checkpoint.events_for_task(
             room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
             input_context=task["payload"].get("input_context"), task_id=task["identity"].task_id)
-        plan = discussion.reconstruct_task_plan(room, task_events, task, local_profiles=local_profiles)
+        plan = discussion.reconstruct_task_plan(
+            room, task_events, task, local_profiles=local_profiles)
         message_id = "dmessage:" + task["identity"].task_id.removeprefix("dtask:")
         existing_message = next((e for e in task_events
                                  if e["event_id"] == message_id and e["kind"] == "message.member"), None)
@@ -191,8 +201,8 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
         # Determine that before byte reads so a lost discard reply can replay
         # even after the target has physically removed its private output.
         initial = discussion.plan_publication(
-            room, task_events, plan, status=status, result=result,
-            execution_generation=generation if status == "deferred" else None, local_profiles=local_profiles)
+            publication_room, task_events, plan, status=status, result=result,
+            execution_generation=generation if status == "deferred" else None, local_profiles=publication_profiles)
         named_owner = False
         if output is not None:
             from gateway.session_hosted_output_rpc import ServedNamedOutputCustody
@@ -225,8 +235,8 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
             result = {**result, "attachments": attachments,
                       "recipient_member_ids": task["payload"].get("recipient_member_ids")}
         publication = discussion.plan_publication(
-            room, task_events, plan, status=status, result=result,
-            execution_generation=generation if status == "deferred" else None, local_profiles=local_profiles)
+            publication_room, task_events, plan, status=status, result=result,
+            execution_generation=generation if status == "deferred" else None, local_profiles=publication_profiles)
         try:
             for event in publication.events:
                 appended = hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id),

@@ -1,6 +1,7 @@
 """Owner-local output through the real FIFO, tool registry and publication path."""
 
 import asyncio
+from copy import deepcopy
 from contextlib import asynccontextmanager
 import json
 import time
@@ -19,15 +20,22 @@ from tools.registry import registry
 
 
 @asynccontextmanager
-async def owner(tmp_path, monkeypatch):
+async def owner(tmp_path, monkeypatch, *, imported=False):
     from gateway import run
     import hermes_state
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     reviewer = tmp_path / "profiles" / "reviewer"
     reviewer.mkdir(parents=True)
+    (reviewer / "profile.yaml").write_text("name: reviewer\n")
+    profiles = {"reviewer": str(reviewer)}
+    if imported:
+        observer = tmp_path / "profiles" / "observer"
+        observer.mkdir(parents=True)
+        (observer / "profile.yaml").write_text("name: observer\n")
+        profiles["observer"] = str(observer)
     config = {"model": {"default": "fixture"}, "platform_toolsets": {"cli": []},
-              "hosted_rooms": {"profiles": {"reviewer": str(reviewer)}}}
+              "hosted_rooms": {"profiles": profiles}}
     monkeypatch.setattr(run, "_load_gateway_config", lambda: config)
     monkeypatch.setattr(run, "_resolve_gateway_model", lambda _: "fixture")
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -49,10 +57,19 @@ async def owner(tmp_path, monkeypatch):
     monkeypatch.setattr(HostedRoomRuntime, "start", forbidden_start)
     service = CanonicalHostedRoomService(authority, asyncio.get_running_loop())
     authority.hosted_room_service = service
-    service.authorize_room("alice", "room", create=True)
-    service.create_room(room_id="room", name="Files", members=[
-        dict(member_id="writer", profile="default", handle="writer"),
-        dict(member_id="reviewer", profile="reviewer", handle="reviewer")])
+    if imported:
+        service.import_shipped_group_history(
+            actor_subject="alice", room_id="room", name="Files", source_id="shipped-room",
+            members=[dict(source_member_id=name, name=name, handle=name, profile=profile,
+                          remote_source=False) for name, profile in (
+                              ("writer", "default"), ("reviewer", "reviewer"),
+                              ("observer", "observer"))],
+            history=[], held_work=[])
+    else:
+        service.authorize_room("alice", "room", create=True)
+        service.create_room(room_id="room", name="Files", members=[
+            dict(member_id="writer", profile="default", handle="writer"),
+            dict(member_id="reviewer", profile="reviewer", handle="reviewer")])
     try:
         yield authority, service, runner
     finally:
@@ -185,3 +202,44 @@ async def test_output_publication_fences_the_actual_attempt_in_append_transactio
                 authority_gateway_id=scope.authority_gateway_id, authority_epoch=scope.authority_epoch,
                 expected_output=expected)
         assert not any(e["event_id"] == "late-output" for e in service._events("room"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current_change", ["missing", "profile", "handle", "display_name",
+                                             "readiness", "unchanged"])
+async def test_imported_output_refuses_current_frozen_member_identity_drift(
+        tmp_path, monkeypatch, current_change):
+    from gateway.hosted_room_discussion import DiscussionReconstructionError
+
+    async with owner(tmp_path, monkeypatch, imported=True) as (authority, service, runner):
+        async def text_only(event):
+            return "Text-only report ready."
+        runner._handle_message = text_only
+        _, _, _, admitted, _ = await execute_group_turn(
+            authority, service, defer_publication=True)
+        settled = tasks.get_task(service.db_path, admitted["identity"])
+        assert settled["status"] == "settled"
+        assert "artifacts" not in settled["result"]
+        frozen = settled["payload"]["publication_members"]
+        assert len(frozen) == 3
+        assert settled["payload"]["target_member_id"] != next(
+            m["member_id"] for m in frozen if m["profile"] == "observer")
+        current = deepcopy(service._room("room"))
+        observer = next(m for m in current["members"] if m["profile"] == "observer")
+        if current_change == "missing":
+            current["members"].remove(observer)
+        elif current_change in {"profile", "handle", "display_name"}:
+            observer[current_change] = "changed-identity"
+        elif current_change == "readiness":
+            observer["availability"] = {"state": "unavailable", "reason": "offline"}
+        before = service._events("room")
+        assert not any(e["kind"] == "message.member" for e in before)
+        if current_change in {"missing", "profile", "handle", "display_name"}:
+            with pytest.raises(DiscussionReconstructionError, match="frozen publication member"):
+                service._publish_one_output(current, settled, [None])
+            assert service._events("room") == before  # no actor, reply, or publication event
+        else:
+            assert service._publish_one_output(current, settled, [None]) is True
+            replies = [e for e in service._events("room") if e["kind"] == "message.member"]
+            assert len(replies) == 1
+            assert replies[0]["payload"]["text"] == "Text-only report ready."
