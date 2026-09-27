@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from gateway.hosted_room_driver import TaskIdentity
+from gateway import hosted_room_driver as tasks
 from gateway.hosted_room_input_preparation import (
     prepare_hosted_input, reconstruct_accepted_payload, reconstruct_attested_payload,
 )
@@ -307,5 +308,162 @@ async def test_native_only_legacy_document_inventory_drains_after_positive_retir
         assert db._conn.execute('SELECT count(*) FROM gateway_legacy_input_paths').fetchone()[0] == 0
         initialize_working_copies(db, epoch=owner.epoch)
         assert collect_legacy_input_aliases(db, epoch=owner.epoch)['removed'] == 0
+    finally:
+        close(db, tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('claim_wins', [False, True], ids=['queued-cancel', 'claim-wins-failure'])
+@pytest.mark.parametrize('probe', ['foreign', 'completed'])
+async def test_cancelled_mixed_native_release_tracks_exact_stopped_output_obligation(tmp_path, monkeypatch, claim_wins, probe):
+    """Admitted image survives release before capture and becomes collectible."""
+    import json
+    import time
+    from dataclasses import asdict
+    from gateway.hosted_room_input_custody import custody_holds
+    from hermes_state_input_custody import admission_input_refs
+    from gateway.session_ingress_media import release_admission_media
+    from hermes_state_runtime import cancel_session_input
+
+    db, owner = owned(tmp_path, monkeypatch)
+    try:
+        rpc, bound = rpc_files(tmp_path, owner, count=2, image=True)
+        identity = TaskIdentity('room', 'task', 'thread', 'turn')
+        tasks.admit_task(db.db_path, identity, payload=dict(target_profile='default', prompt='read',
+            source_event_seq=1, attachments=[item for item, _ in bound]), clock=time.time)
+        lease = tasks.acquire_lease(db.db_path, room_id='room', gateway_id='home',
+            authority_epoch=1, process_generation='one', ttl_seconds=60, clock=time.time)
+        attempt = tasks.start_task(db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
+        submitted = await rpc._submit(dict(task=identity, execution_generation=attempt.execution_generation,
+            prompt='read', attachments=[item for item, _ in bound], on_terminal=lambda value: None))
+        admission = get_session_admission(db, admission_id=submitted['admission_id'])
+        image_ref, = admission['payload']['attachments_v1']['media']
+        image = Path(image_ref['path'])
+        assert image.read_bytes() == bound[-1][1]
+        stopping = tasks.begin_task_cancel(db.db_path, identity, cancel_id='stop',
+            expected_cancel_generation=0, clock=time.time)
+        assert stopping['status'] == 'stopping'
+        if not claim_wins:
+            assert cancel_session_input(db, epoch=owner.epoch, admission_id=submitted['admission_id'])['outcome'] == 'cancelled'
+        with db._read_ctx() as conn:
+            raw_admission = dict(conn.execute('SELECT * FROM session_admissions WHERE admission_id=?',
+                (submitted['admission_id'],)).fetchone())
+            consumed, = list(conn.execute("SELECT * FROM input_custody_preparations WHERE admission_id=? AND state='consumed'",
+                (submitted['admission_id'],)))
+            documents = admission_input_refs(conn, raw_admission) or []
+        if not claim_wins:
+            assert release_admission_media(db, submitted['admission_id']) == 0
+            assert image.read_bytes() == bound[-1][1]
+            completed_driver = tasks.complete_task_cancel(db.db_path, identity, cancel_id='stop',
+                expected_cancel_generation=1, clock=time.time)
+            assert completed_driver['status'] == 'cancelled'
+            with db._read_ctx() as conn:
+                assert not list(conn.execute("SELECT key FROM state_meta WHERE key LIKE 'gateway.hosted.output_cleanup.v1:%'"))
+            # The worker can terminalize in the independent transaction before
+            # capture_stopping starts: release must not infer capture from status.
+            assert release_admission_media(db, submitted['admission_id']) == 0
+            assert image.read_bytes() == bound[-1][1]
+        # Contract fixture for the consumer's exact waiting intent; real Output
+        # execution is verified independently in the composed journey.
+        key = 'gateway.hosted.output_cleanup.v1:' + hashlib.sha256(json.dumps(
+            [asdict(identity), attempt.execution_generation], sort_keys=True).encode()).hexdigest()
+        binding = dict(room_id='room', task_id='task', execution_generation=attempt.execution_generation,
+            identity=asdict(identity), cancel_id='stop', cancel_generation=1,
+            admission={field: raw_admission[field] for field in ('admission_id', 'principal_id',
+                'target_session_id', 'request_id', 'payload_digest', 'owner_epoch', 'generation', 'intent', 'payload_json')},
+            input_binding={'payload': admission['payload'],
+                'payload_digest': raw_admission['payload_digest'], 'copies': documents, 'preparations': [
+                {field: consumed[field] for field in ('preparation_id', 'owner_epoch',
+                    'principal_id', 'target_session_id', 'request_id', 'intent',
+                    'payload_digest', 'admission_id')}]})
+        record = dict(state='waiting', room_id='room', task_id='task',
+            execution_generation=attempt.execution_generation, binding=binding)
+        def save(conn, value):
+            conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, json.dumps(value)))
+        db._execute_write(lambda c: save(c, record))
+        if claim_wins:
+            assert raw_admission['generation'] is None
+            claimed = claim_session_input(db, epoch=owner.epoch, session_id=rpc.ref.session_id)
+            assert claimed is not None and claimed['admission_id'] == submitted['admission_id']
+            assert settle_session_input(db, epoch=owner.epoch, admission_id=submitted['admission_id'],
+                generation=claimed['generation'], outcome='failed')['outcome'] == 'failed'
+            # Output has not reconciled its saved NULL-generation projection.
+            with db._read_ctx() as conn:
+                saved = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0])
+                assert saved['binding']['admission']['generation'] is None
+            assert release_admission_media(db, submitted['admission_id']) == 0
+            assert image.read_bytes() == bound[-1][1]
+            if probe == 'foreign':
+                assert tasks.settle_stopping_task(db.db_path, identity, lease,
+                    expected_execution_generation=attempt.execution_generation,
+                    expected_cancel_generation=1, settlement_id='failed-after-stop',
+                    status='failed', result={}, clock=time.time)['status'] == 'failed'
+            else:
+                assert tasks.complete_task_cancel(db.db_path, identity, cancel_id='stop',
+                    expected_cancel_generation=1, clock=time.time)['status'] == 'cancelled'
+        with db._read_ctx() as conn:
+            assert custody_holds(conn, db.db_path, image_ref)
+        for change in (({'cancel_id': 'foreign'}, {'execution_generation': 2},
+                       {'admission': {**binding['admission'], 'request_id': 'foreign'}},
+                       {'input_binding': {**binding['input_binding'], 'preparations': [
+                           {**binding['input_binding']['preparations'][0], 'preparation_id': 'foreign'}]}},
+                       {'input_binding': {**binding['input_binding'], 'copies': [
+                           {**binding['input_binding']['copies'][0], 'copy_id': 'foreign'}]}}) if probe == 'foreign' else ()):
+            db._execute_write(lambda c: save(c, dict(record, binding={**binding, **change})))
+            assert release_admission_media(db, submitted['admission_id']) == 0
+            assert image.read_bytes() == bound[-1][1]
+        if claim_wins and probe == 'foreign':
+            for foreign_generation in (claimed['generation'] + 1, True):
+                db._execute_write(lambda c: save(c, dict(record, binding={**binding,
+                    'admission': {**binding['admission'], 'generation': foreign_generation}})))
+                assert release_admission_media(db, submitted['admission_id']) == 0
+                assert image.read_bytes() == bound[-1][1]
+        for malformed_payload in ([], 3, {'attachments_v1': []},
+                                  {'attachments_v1': {'media': 7}}):
+            from hermes_state_input_custody import stopped_native_output_holds
+            with db._read_ctx() as conn:
+                native, = list(conn.execute("SELECT * FROM input_custody_copies WHERE namespace='native'"))
+                assert not stopped_native_output_holds(conn, native, consumed, {
+                    **raw_admission, 'payload_json': json.dumps(malformed_payload)})
+        db._execute_write(lambda c: save(c, record))
+        for malformed in ([], 17, {'state': []}, {'state': 'waiting', 'binding': []},
+                          dict(record, binding={**binding, 'admission': []}),
+                          dict(record, binding={**binding, 'admission': {}}),
+                          dict(record, binding={**binding, 'input_binding': 7}),
+                          dict(record, binding={**binding, 'input_binding': {
+                              **binding['input_binding'], 'payload': []}}),
+                          dict(record, binding={**binding, 'input_binding': {
+                              **binding['input_binding'], 'copies': {'invalid': 'shape'}}}),
+                          dict(record, binding={**binding, 'input_binding': {
+                              **binding['input_binding'], 'preparations': [7]}})):
+            db._execute_write(lambda c: save(c, malformed))
+            assert release_admission_media(db, submitted['admission_id']) == 0
+            assert image.read_bytes() == bound[-1][1]
+        db._execute_write(lambda c: c.execute('UPDATE state_meta SET value=? WHERE key=?',
+                                            ('{broken', key)))
+        assert release_admission_media(db, submitted['admission_id']) == 0
+        assert image.read_bytes() == bound[-1][1]
+        db._execute_write(lambda c: save(c, record))
+        assert release_admission_media(db, submitted['admission_id']) == 0
+        assert image.read_bytes() == bound[-1][1]
+        db._execute_write(lambda c: save(c, dict(record, state='completed')))
+        assert release_admission_media(db, submitted['admission_id']) == 0
+        assert image.read_bytes() == bound[-1][1]
+        with db._read_ctx() as conn:
+            current = conn.execute('SELECT * FROM session_admissions WHERE admission_id=?',
+                                   (submitted['admission_id'],)).fetchone()
+        assert current is not None
+        completion = dict(version=2, state='completed', room_id='room', task_id='task',
+            execution_generation=attempt.execution_generation,
+            admission={key: current[key] for key in ('admission_id', 'request_id',
+                'principal_id', 'target_session_id', 'owner_epoch', 'generation',
+                'payload_digest', 'intent')},
+            binding_digest='a' * 64, completion_identity='b' * 64,
+            disposition_digest='c' * 64)
+        db._execute_write(lambda c: save(c, completion))
+        assert release_admission_media(db, submitted['admission_id']) == 0
+        assert image.read_bytes() == bound[-1][1]
+        # Reading a completed-looking Output record is never an Input ack.
+        # Actual producer acknowledgement/collection is covered in Output tests.
     finally:
         close(db, tmp_path)
