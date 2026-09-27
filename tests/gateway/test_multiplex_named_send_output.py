@@ -90,7 +90,8 @@ def test_named_send_two_files_adopt_partial_delivery_on_next_attempt(mux, monkey
             {'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
         service.send(room_id='two-file-room', event_id='input',
                      payload={'text': '@helper Share two reports', 'thread_id': 'thread'})
-    queued, = tasks.list_tasks(source.db.db_path, room_id='two-file-room', status='queued')
+    # The real worker may already have claimed this task after send returns.
+    queued, = tasks.list_tasks(source.db.db_path, room_id='two-file-room')
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         settled = tasks.get_task(source.db.db_path, queued['identity'])
@@ -268,7 +269,7 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
         assert admissions(target.db) == []
         service.send(room_id='named-room', event_id='input',
                      payload={'text': '@helper Share the report', 'thread_id': 'thread'})
-    queued, = tasks.list_tasks(source.db.db_path, room_id='named-room', status='queued')
+    queued, = tasks.list_tasks(source.db.db_path, room_id='named-room')
     if lose_response in {'source-revoke', 'target-close', 'target-read-close', 'target-replace'}:
         assert entered.wait(12), 'real byte read / target Files boundary never reached'
         from gateway.hosted_room_attachments import default_attachment_root
