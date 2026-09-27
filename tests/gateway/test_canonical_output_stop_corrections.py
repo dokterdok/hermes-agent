@@ -729,3 +729,45 @@ async def test_legacy_completed_fact_compacts_without_reconstructing_input(tmp_p
         with authority.db._read_ctx() as conn:
             compact = dict(records(conn, 'room'))[key_for(task)]
         assert compact == done and 'binding' not in compact
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fails', [False, True], ids=['completed', 'failed'])
+async def test_unattended_finite_admission_keeps_hosted_output_capture(monkeypatch, fails):
+    """Finite approval policy and exact Output capture share one admitted turn."""
+    from contextlib import contextmanager
+    from gateway import session_finite, session_hosted_output, session_ingress
+
+    observed = []
+    output = object()
+
+    @contextmanager
+    def scope(authority, ref, row):
+        observed.append(('scope', authority, ref))
+        yield output
+
+    async def execute(authority, ref, row):
+        observed.append(('execute', session_finite.finite_turn_required(),
+                         session_finite.unattended_turn()))
+        if fails:
+            raise ValueError('driver failed')
+        return 'completed response'
+
+    monkeypatch.setattr(session_hosted_output, 'hosted_output_scope', scope)
+    monkeypatch.setattr(session_hosted_output, 'capture_output_result',
+                        lambda authority, row, result: observed.append(('success', result)))
+    monkeypatch.setattr(session_hosted_output, 'capture_failed_output',
+                        lambda authority, row, result: observed.append(('failure', result)) or 'pending-1')
+    monkeypatch.setattr(session_ingress, 'execute_admission', execute)
+    authority, ref = object(), object()
+    row = {'payload': {'finite': True, 'unattended': True}}
+    if fails:
+        with pytest.raises(ValueError, match='driver failed') as raised:
+            await session_finite.execute_finite_admission(authority, ref, row)
+        assert 'pending-1' in str(raised.value.__notes__)
+    else:
+        assert await session_finite.execute_finite_admission(authority, ref, row) == 'completed response'
+    assert observed == [('scope', authority, ref), ('execute', True, True),
+                        ('failure' if fails else 'success', output)]
+    assert session_finite.finite_turn_required() is None
+    assert session_finite.unattended_turn() is False

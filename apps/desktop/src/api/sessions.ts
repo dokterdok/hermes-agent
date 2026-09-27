@@ -30,13 +30,30 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
     return {}
   }
 
-  const scoped = capabilityScoped(scope)
+  // Session reads keep the ambient dial default (main's background): the
+  // cross-profile probe that resolves a remembered/404'd session id walks every
+  // other profile (resolveStoredSession) and must not cold-start each one on the
+  // pool's reserved foreground slot. The tag belongs to the scope selectors
+  // (Settings, Capabilities, Messaging), not to session lookups.
+  const { priority: _priority, ...scoped } = capabilityScoped(scope)
 
   if (typeof scope === 'object' && scope.connectionId?.trim() === 'local') {
     return { ...scoped, connectionId: 'local' }
   }
 
   return scoped
+}
+
+/**
+ * The profile a session WRITE must name in its body. The PATCH handler reads
+ * its target DB from `body.profile` alone (`_with_db(body.profile, ...)`), and
+ * under multiplex-only there is no per-profile backend whose HERMES_HOME could
+ * stand in for it: an unnamed owner lands the rename/pin/archive/mark-read on
+ * the shared backend's own state.db. "Unnamed" therefore means "the profile I
+ * am looking at", not "whatever home the backend was launched in".
+ */
+function sessionWriteProfile(profile?: null | string): string | undefined {
+  return String(profile ?? '').trim() || getApiRequestProfile() || undefined
 }
 
 function sessionScopeQuery(scope?: ProfileScope): string {
@@ -159,6 +176,12 @@ export interface SidebarSessionSlice {
   /** Per-profile tokens and spend over every session, not just this window.
    *  Absent from the legacy per-slice endpoint, which has no aggregate. */
   profiles_usage?: Record<string, { cost_usd: number; tokens: number }>
+  /** This slice is a failed load, not a successful empty session list. */
+  failed?: boolean
+  /** Ask the sidebar to offer Retry instead of rendering "No sessions yet". */
+  retry?: boolean
+  /** Profiles whose scan failed while a sibling profile still returned rows. */
+  profiles_failed?: Record<string, { failed?: boolean; retry?: boolean; error?: string }>
   /** Profiles whose scan for THIS slice failed. Batched `/sidebar` stamps the
    *  same profile errors on every slice (one DB open). Legacy per-slice calls
    *  stamp only the slice that actually failed, so a cron I/O error cannot
@@ -168,16 +191,17 @@ export interface SidebarSessionSlice {
 
 /** Which profiles filled their per-profile window in a returned page. The
  *  legacy per-slice endpoint doesn't report this, so derive it from the rows:
- *  a profile at (or over) the cap still has more on disk. Pinned rows are
- *  discounted — they're back-filled past the LIMIT, so counting them fakes a
- *  full page and leaves a "Load more" that can never resolve. */
+ *  a profile at (or over) the cap still has more on disk. Pinned rows count
+ *  like any other: they occupy LIMIT slots, and a short list has nothing past
+ *  the page for the pin back-fill to add, so pins cannot fake a full page
+ *  (#81484). */
 function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<string, boolean> {
   const counts = new Map<string, number>()
 
   for (const session of sessions) {
     const key = session.profile || 'default'
 
-    counts.set(key, (counts.get(key) ?? 0) + (session.pinned ? 0 : 1))
+    counts.set(key, (counts.get(key) ?? 0) + 1)
   }
 
   return Object.fromEntries([...counts].map(([name, count]) => [name, count >= cap]))
@@ -188,6 +212,11 @@ export interface SidebarSessionsResponse {
   cron: SidebarSessionSlice
   messaging: SidebarSessionSlice
   errors?: Array<{ profile: string; error: string }>
+  /** Profiles that failed while another profile's rows are still in the slices. */
+  profiles_failed?: Record<string, { failed?: boolean; retry?: boolean; error?: string }>
+  /** `{profile: 'corrupt'}` for each profile whose state.db the backend has found
+   *  structurally damaged. Absent from older backends. */
+  storage?: Record<string, 'corrupt'>
 }
 
 export interface SidebarSessionsRequest {
@@ -236,7 +265,9 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   const cronErrors = cron.errors ?? []
   const messagingErrors = messaging.errors ?? []
 
-  return {
+  const storage = { ...recents.storage, ...cron.storage, ...messaging.storage }
+
+  const response: SidebarSessionsResponse = {
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
       sessions: recents.sessions,
@@ -251,6 +282,12 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
       ...(messagingErrors.length ? { errors: messagingErrors } : {})
     }
   }
+
+  if (Object.keys(storage).length > 0) {
+    response.storage = storage
+  }
+
+  return response
 }
 
 /** The PR each of these sessions opened, recovered from its own transcript —
@@ -327,14 +364,18 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
       sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
-    errors: result.errors
+    errors: result.errors,
+    profiles_failed: result.profiles_failed,
+    storage: result.storage
   }
 }
 
 const runSessionMutation = createSessionMutationClient()
 
 function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
-  const scope = { connectionId: getApiRequestConnection() || 'local', ...sessionScoped(profile) }
+  // Null is the window's v1 route (its primary, local or remote); defaulting it to
+  // the registry's 'local' source would pin a remote primary's edits to this machine.
+  const scope = { connectionId: getApiRequestConnection(), ...sessionScoped(profile) }
   const path = `/api/sessions/${encodeURIComponent(id)}`
   const query = new URLSearchParams(scope.profile ? { profile: scope.profile } : {})
   const suffix = query.size ? `?${query}` : ''
@@ -357,15 +398,15 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
 }
 
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { archived }, profile)
+  return mutateSessionHttp(id, 'PATCH', { archived }, sessionWriteProfile(profile))
 }
 
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { pinned }, profile)
+  return mutateSessionHttp(id, 'PATCH', { pinned }, sessionWriteProfile(profile))
 }
 
 export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { unread }, profile)
+  return mutateSessionHttp(id, 'PATCH', { unread }, sessionWriteProfile(profile))
 }
 
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
@@ -594,5 +635,5 @@ export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok:
 }
 
 export function renameSession(id: string, title: string, profile?: string | null): Promise<{ ok: boolean; title: string }> {
-  return mutateSessionHttp(id, 'PATCH', { title }, profile)
+  return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteProfile(profile))
 }

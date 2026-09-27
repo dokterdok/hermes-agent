@@ -51,6 +51,13 @@ def make_cron_provider():
 
 
 @pytest.fixture(autouse=True)
+def _no_managed_store(tmp_path, monkeypatch):
+    """Point PM's store at an empty dir: script runs must not select the host install's
+    dependency venv (POSIX cron scripts run on it when a store is committed)."""
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "no-pm-store"))
+
+
+@pytest.fixture(autouse=True)
 def _default_cron_test_model(monkeypatch):
     """Pin a default HERMES_MODEL so cron run_job tests have a resolvable model."""
     monkeypatch.setenv("HERMES_MODEL", "test-cron-default-model")
@@ -113,7 +120,10 @@ def cron_owner(monkeypatch):
                     raise
             assert current_execution() is previous
             assert not authority._cron_cancellations
-            return tuple(authority.pending_results[identity]["result"]["cron_result"])
+            saved = authority.pending_results[identity]["result"]
+            # The transport carries run-side verdicts back like run_canonical_job's status poll.
+            job.update(saved.get("cron_job_flags") or {})
+            return tuple(saved["cron_result"])
 
         try:
             return asyncio.run(execute_job())

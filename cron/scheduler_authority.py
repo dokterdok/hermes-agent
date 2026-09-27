@@ -27,7 +27,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     journal = journal_path(params['job_id'], params['request_id'])
     record = {'params': params, 'receipt': None}
     if journal.exists():
-        record = json.loads(journal.read_text(encoding='utf-8'))
+        record = json.loads(journal.read_text(encoding='utf-8-sig'))
         if record['params'] != params:
             raise CronExecutionUnknown('cron admission identity conflict')
     attempted = journal.exists()
@@ -49,6 +49,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 await call('cancel', receipt)
             state = await call('status', receipt)
             if state['status'] == 'terminal':
+                job.update(state.get('job_flags') or {})
                 return tuple(state['result'])
             if state['status'] == 'unknown':
                 raise CronExecutionUnknown('unknown_execution: cron admission was not replayed')
@@ -89,7 +90,7 @@ def reconcile_pending():
     root = get_hermes_home() / 'cron' / 'admissions'
     for journal in sorted(root.glob('*.json')):
         try:
-            record = json.loads(journal.read_text(encoding='utf-8'))
+            record = json.loads(journal.read_text(encoding='utf-8-sig'))
             params = record['params']
             if journal != journal_path(params['job_id'], params['request_id']):
                 raise ValueError('cron journal identity conflict')
