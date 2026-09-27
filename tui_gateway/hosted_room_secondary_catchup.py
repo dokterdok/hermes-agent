@@ -1,9 +1,10 @@
-"""Durable keys for secondary catch-up after a no-op notify.
+"""Durable keys for secondary catch-up after terminal settlement.
 
-The runtime remembers ``(task identity, execution_generation)`` when a settled
-invitation notify returns before primary terminal events exist. This table is
-that set. It is not a scan of settled tasks, not a publication, and not
-send-consent. ``publish_terminal`` and ``prepare_room`` do not read or write it.
+The driver inserts ``(task identity, execution_generation)`` in the same
+transaction as a settled task, before primary or secondary callbacks run.
+A definitive secondary result clears it; no-op/failed callbacks retain it.
+It is not a scan of settled tasks, publication, or send-consent.
+``publish_terminal`` and ``prepare_room`` do not read or write it.
 """
 
 from __future__ import annotations

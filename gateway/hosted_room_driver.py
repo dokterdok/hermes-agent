@@ -20,7 +20,7 @@ from typing import Any, Callable, Literal, get_args
 
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
-    transaction)
+    transaction, table_exists)
 
 Clock = Callable[[], float]
 TaskStatus = Literal["queued", "running", "settled", "failed", "cancelled", "indeterminate", "deferred", "stopping"]
@@ -49,6 +49,9 @@ _TASK_COLUMN_ORDER = (
     "terminal_at", "indeterminate_at")
 _TASK_COLUMNS = frozenset(_TASK_COLUMN_ORDER)
 _TASK_ORDER = "ORDER BY source_event_seq, created_at, task_id"
+SECONDARY_CATCHUP_TABLE = "hosted_room_secondary_awaiting_primary"
+_SECONDARY_CATCHUP_COLUMNS = frozenset({
+    "room_id", "task_id", "thread_id", "turn_id", "execution_generation"})
 _SELECT_LEASE = "SELECT * FROM hosted_room_driver_leases WHERE room_id=?"
 _SELECT_TASK = "SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND task_id=?"
 _TASK_INDEX_SQL = """CREATE INDEX {if_not_exists}idx_hosted_room_driver_tasks_status
@@ -482,12 +485,30 @@ def _require_cancel_generation(row: sqlite3.Row, expected_cancel_generation: int
     if int(row["cancel_generation"]) != expected_cancel_generation:
         raise StaleTaskError("task cancellation generation changed")
 
+def record_secondary_catchup_locked(conn: sqlite3.Connection, identity: TaskIdentity, generation: int) -> None:
+    """Record a replayable obligation inside the caller's settlement transaction."""
+    if table_exists(conn, SECONDARY_CATCHUP_TABLE):
+        if table_columns(conn, SECONDARY_CATCHUP_TABLE) != _SECONDARY_CATCHUP_COLUMNS:
+            raise DriverStateError("unsupported secondary catch-up schema; recreate the catch-up table")
+    else:
+        conn.execute(f"""CREATE TABLE {SECONDARY_CATCHUP_TABLE} (
+            room_id TEXT NOT NULL, task_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            execution_generation INTEGER NOT NULL CHECK (execution_generation >= 0),
+            PRIMARY KEY (room_id, task_id, execution_generation))""")
+    conn.execute(f"""INSERT INTO {SECONDARY_CATCHUP_TABLE} (
+        room_id, task_id, thread_id, turn_id, execution_generation) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(room_id, task_id, execution_generation) DO UPDATE SET
+            thread_id=excluded.thread_id, turn_id=excluded.turn_id""",
+        (identity.room_id, identity.task_id, identity.thread_id, identity.turn_id, generation))
+
 
 def _transition(
     db_path: DbPath, identity: TaskIdentity, *, sql: str, set_params: tuple[Any, ...], fence_params: tuple[Any, ...],
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
-    guard: Callable[[sqlite3.Row], None] | None = None) -> dict[str, Any]:
+    guard: Callable[[sqlite3.Row], None] | None = None,
+    pending_secondary: bool = False) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
@@ -506,15 +527,21 @@ def _transition(
         if guard is not None:
             guard(row)
         fenced_update(conn, sql, params, StaleTaskError(stale))
+        updated_row = _load_task(conn, identity)
+        assert updated_row is not None  # the fenced UPDATE just matched this row
+        updated = _task_from_row(updated_row)
+        if pending_secondary and updated["status"] == "settled":
+            record_secondary_catchup_locked(conn, identity, updated["execution_generation"])
         from gateway.hosted_room_work_records import capture_transition_locked
         capture_transition_locked(conn, identity.room_id)
-        return _task_from_row(_load_task(conn, identity))
+        return updated
 
 
 def _generation_transition(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, execution_generation: int,
     cancel_generation: int, *, now: float, set_params: tuple[Any, ...],
-    replay: Callable[[sqlite3.Row], Any] | None = None) -> dict[str, Any]:
+    replay: Callable[[sqlite3.Row], Any] | None = None,
+    pending_secondary: bool = False) -> dict[str, Any]:
     """Lease-first transition from ``_GENERATION_TRANSITIONS`` fenced on status + both generations."""
     status, set_clause, generation_stale, stale = _GENERATION_TRANSITIONS[name]
     def guard(row: sqlite3.Row) -> None:
@@ -522,7 +549,8 @@ def _generation_transition(
             raise StaleTaskError(generation_stale)
     return _transition(
         db_path, identity, lease=lease, now=now, replay=replay, guard=guard, sql=_generation_update(set_clause, status),
-        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale)
+        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale,
+        pending_secondary=pending_secondary)
 
 
 def _run_fence_transition(
@@ -686,18 +714,21 @@ def start_task(
 
 
 def settle_task(
-    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    pending_secondary: bool = False,
 ) -> dict[str, Any]:
     """Commit one terminal result if every lease and task fence still matches."""
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _run_fence_transition(
         db_path, attempt, guard_stale="task attempt is stale or cancelled", lease_first=False, now=now, replay=replay,
-        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement")
+        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement",
+        pending_secondary=pending_secondary)
 
 
 def settle_stopping_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    pending_secondary: bool = False,
 ) -> dict[str, Any]:
     """Commit a completion that won the race with an unacknowledged Stop."""
     _terminal_settlement_id(settlement_id, status)  # settlement errors take precedence over generation errors
@@ -707,19 +738,20 @@ def settle_stopping_task(
     return _transition(
         db_path, identity, lease=lease, lease_first=False, now=now, replay=replay, sql=_SETTLE_STOPPING_SQL,
         set_params=set_params, fence_params=(expected_execution_generation, expected_cancel_generation),
-        stale="task completion lost the stop race")
+        stale="task completion lost the stop race", pending_secondary=pending_secondary)
 
 
 def resolve_indeterminate_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    pending_secondary: bool = False,
 ) -> dict[str, Any]:
     """Commit a verified historical receipt under the current room lease."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _generation_transition(
         db_path, identity, lease, "resolve", expected_execution_generation, expected_cancel_generation, now=now,
-        replay=replay, set_params=set_params)
+        replay=replay, set_params=set_params, pending_secondary=pending_secondary)
 
 
 def resolve_indeterminate_cancellation(

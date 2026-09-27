@@ -2382,7 +2382,150 @@ def test_restarted_catch_up_still_waits_for_prepare_room(db: Path):
     assert pending not in reloaded._secondary_awaiting_primary
 
 
-def test_catch_up_durability_failure_keeps_the_key_without_marking_the_room_ambiguous(
+@pytest.mark.parametrize("interrupted_at", ["primary", "secondary"])
+def test_settlement_obligation_survives_crash_before_secondary_key_write(
+        db: Path, interrupted_at: str):
+    """The settlement and exact catch-up key must commit together, before callbacks."""
+    from tui_gateway.hosted_room_secondary_catchup import load_awaiting_primary
+
+    identity = _identity()
+    _admit(db, identity)
+    lease = state.acquire_lease(
+        db, room_id=ROOM_ID, gateway_id=BINDING.gateway_id,
+        authority_epoch=BINDING.authority_epoch, process_generation="original",
+        ttl_seconds=30, clock=lambda: 100.0)
+    attempt = state.start_task(
+        db, identity, lease, expected_cancel_generation=0, clock=lambda: 100.0)
+    primary_calls = []
+    secondary_calls = []
+
+    def primary(_binding, _task):
+        primary_calls.append(True)
+        if interrupted_at == "primary":
+            raise SystemExit("crash after settlement, before secondary callback")
+
+    def secondary(_binding, task):
+        secondary_calls.append(task["identity"])
+        if interrupted_at == "secondary":
+            raise SystemExit("crash before secondary callback returned")
+        return {"published": True}
+
+    original = _runtime(
+        db, FakeSessionRPC(auto_complete=False), clock=lambda: 100.0, publish_terminal=primary,
+        publish_settled_secondary=secondary)
+    with pytest.raises(SystemExit, match="crash"):
+        original._on_terminal(BINDING, attempt, {
+            "status": "settled", "settlement_id": "reply-once", "text": "done"})
+    assert state.get_task(db, identity)["status"] == "settled"
+    pending = (identity, attempt.execution_generation)
+    assert pending in load_awaiting_primary(db)
+    assert _catchup_rows(db) == {(ROOM_ID, identity.task_id, attempt.execution_generation)}
+
+    retried = []
+    restarted = _runtime(
+        db, FakeSessionRPC(auto_complete=False),
+        prepare_room=lambda _binding: None,
+        publish_terminal=lambda _binding, _task: primary_calls.append("republished"),
+        publish_settled_secondary=lambda _binding, task: retried.append(
+            (task["identity"], task["execution_generation"])) or {"published": True})
+    assert pending in restarted._secondary_awaiting_primary
+    restarted._run_cycle()
+    restarted._run_cycle()
+    assert retried == [pending]
+    assert "republished" not in primary_calls
+    assert pending not in load_awaiting_primary(db)
+    assert _catchup_rows(db) == set()
+
+
+def test_initial_secondary_exception_retries_only_original_generation(db: Path):
+    """A callback error before a no-op result is still a durable obligation."""
+    identity = _identity()
+    _admit(db, identity)
+    calls = []
+
+    def unavailable(_binding, task):
+        calls.append((task["identity"], task["execution_generation"]))
+        raise RuntimeError("secondary unavailable")
+
+    original = _runtime(db, FakeSessionRPC(), publish_settled_secondary=unavailable)
+    original._run_cycle()
+    task = state.get_task(db, identity)
+    pending = (identity, task["execution_generation"])
+    assert task["status"] == "settled"
+    assert calls == [pending]
+    assert _catchup_rows(db) == {(ROOM_ID, identity.task_id, pending[1])}
+    assert ROOM_ID not in original._ambiguous_rooms
+
+    unrelated = _identity("unrelated-task")
+    _admit(db, unrelated, source_event_seq=2)
+    retried = []
+    restarted = _runtime(
+        db, FakeSessionRPC(auto_complete=False),
+        publish_settled_secondary=lambda _binding, settled: retried.append(
+            (settled["identity"], settled["execution_generation"])) or {"published": True})
+    restarted._catch_up_secondary_after_primary(BINDING)
+    assert retried == [pending]
+    assert not _catchup_rows(db)
+    assert state.get_task(db, unrelated)["status"] == "queued"
+
+
+def test_catchup_insert_failure_rolls_back_terminal_settlement(db: Path):
+    """Storage failure cannot commit a settled task with no replayable key."""
+    import sqlite3
+
+    from tui_gateway.hosted_room_secondary_catchup import TABLE_NAME, remember_awaiting_primary
+
+    identity = _identity()
+    _admit(db, identity)
+    lease = state.acquire_lease(
+        db, room_id=ROOM_ID, gateway_id=BINDING.gateway_id,
+        authority_epoch=BINDING.authority_epoch, process_generation="original",
+        ttl_seconds=30, clock=lambda: 100.0)
+    attempt = state.start_task(
+        db, identity, lease, expected_cancel_generation=0, clock=lambda: 100.0)
+    unrelated = state.TaskIdentity("other-room", "other-task", "other-thread", "other-turn")
+    remember_awaiting_primary(db, unrelated, 2)
+    with sqlite3.connect(db) as conn:
+        conn.execute(f"""CREATE TRIGGER fail_secondary_key BEFORE INSERT ON {TABLE_NAME}
+            WHEN NEW.room_id = '{ROOM_ID}' BEGIN SELECT RAISE(FAIL, 'key unavailable'); END""")
+    runtime = _runtime(
+        db, FakeSessionRPC(auto_complete=False), clock=lambda: 100.0,
+        publish_settled_secondary=lambda _binding, _task: {"published": True})
+    with pytest.raises(sqlite3.IntegrityError, match="key unavailable"):
+        runtime._on_terminal(BINDING, attempt, {
+            "status": "settled", "settlement_id": "reply-once", "text": "done"})
+    assert state.get_task(db, identity)["status"] == "running"
+    assert _catchup_rows(db) == {(unrelated.room_id, unrelated.task_id, 2)}
+
+
+def test_cancelled_attempt_cannot_leave_a_secondary_obligation(db: Path):
+    identity = _identity()
+    _admit(db, identity)
+    lease = state.acquire_lease(
+        db, room_id=ROOM_ID, gateway_id=BINDING.gateway_id,
+        authority_epoch=BINDING.authority_epoch, process_generation="original",
+        ttl_seconds=30, clock=lambda: 100.0)
+    attempt = state.start_task(
+        db, identity, lease, expected_cancel_generation=0, clock=lambda: 100.0)
+    state.begin_task_cancel(
+        db, identity, cancel_id="cancel-original", expected_cancel_generation=0,
+        clock=lambda: 100.0)
+    state.complete_task_cancel(
+        db, identity, cancel_id="cancel-original", expected_cancel_generation=1,
+        clock=lambda: 100.0)
+    called = []
+    runtime = _runtime(
+        db, FakeSessionRPC(auto_complete=False), clock=lambda: 100.0,
+        publish_settled_secondary=lambda _binding, _task: called.append(True))
+    runtime._on_terminal(BINDING, attempt, {
+        "status": "settled", "settlement_id": "late-reply", "text": "too late"})
+    assert state.get_task(db, identity)["status"] == "cancelled"
+    assert called == []
+    assert _catchup_rows(db) == set()
+    assert _runtime(db, FakeSessionRPC(auto_complete=False))._secondary_awaiting_primary == set()
+
+
+def test_noop_does_not_need_a_second_key_write_after_durable_settlement(
         db: Path, monkeypatch):
     from gateway.session_hosted_output_secondary_caller import SecondaryAwaitingPrimary
 
@@ -2393,7 +2536,7 @@ def test_catch_up_durability_failure_keeps_the_key_without_marking_the_room_ambi
         raise OSError("catch-up store unavailable")
 
     monkeypatch.setattr(
-        "tui_gateway.hosted_room_driver.remember_awaiting_primary", boom)
+        "tui_gateway.hosted_room_secondary_catchup.remember_awaiting_primary", boom)
 
     def secondary(binding, task):
         del binding, task
@@ -2405,8 +2548,9 @@ def test_catch_up_durability_failure_keeps_the_key_without_marking_the_room_ambi
     assert (identity, generation) in runtime._secondary_awaiting_primary
     assert state.get_task(db, identity)["status"] == "settled"
     assert ROOM_ID not in runtime._ambiguous_rooms
-    assert "durability failed" in (runtime.status()["last_error"] or "")
-    assert _catchup_rows(db) == set()
+    assert _catchup_rows(db) == {(ROOM_ID, identity.task_id, generation)}
+    restarted = _runtime(db, FakeSessionRPC(auto_complete=False), publish_settled_secondary=secondary)
+    assert (identity, generation) in restarted._secondary_awaiting_primary
 
 
 def test_corrupt_catchup_table_refuses_to_start(db: Path):
