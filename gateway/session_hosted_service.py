@@ -315,7 +315,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                         if t['identity'] == identity and t['execution_generation'] == generation)
             rpc = self._resolve_member_transport(HostedRoomBinding(identity.room_id,
                 room['authority_gateway_id'], room['authority_epoch']), task)
-            if (getattr(rpc, 'ref', None) != ref or task['status'] != 'running'
+            # A queued preclaim still requires a running task. Stop may set the
+            # driver to stopping after this exact admission started, before
+            # its Output scope reconstructs the producer identity.
+            permissible = ({'running'} if row['status'] == 'queued'
+                           else {'running', 'stopping'} if row['status'] == 'started' else set())
+            if (getattr(rpc, 'ref', None) != ref or task['status'] not in permissible
                     or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'))
                     or rpc.authorizer('execute', identity, generation) is not True):
                 raise ValueError('changed hosted binding')

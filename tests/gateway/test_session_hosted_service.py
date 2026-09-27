@@ -87,7 +87,7 @@ def test_hosted_dequeue_checks_exact_task_member_and_frozen_input(tmp_path, monk
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
             db._execute_write(lambda conn: rpc.authorize_admission_write(
                 conn, tasks.TaskIdentity('room', 'task', 'different', 'turn'), task['execution_generation']))
-        row = {'principal_id': 'alice', 'request_id': 'hosted:' + json.dumps([asdict(identity), task['execution_generation']]),
+        row = {'status': 'queued', 'principal_id': 'alice', 'request_id': 'hosted:' + json.dumps([asdict(identity), task['execution_generation']]),
                'payload': {'text': 'frozen'}}
         assert service.check_admission(rpc.ref, row) == task
         for bad in ({**row, 'principal_id': 'bob'}, {**row, 'payload': {'text': 'changed'}},
@@ -106,7 +106,9 @@ def test_hosted_dequeue_checks_exact_task_member_and_frozen_input(tmp_path, monk
 
 def test_stop_revokes_submit_and_writer_but_keeps_control_visible(tmp_path, monkeypatch):
     """A running task's Stop intent denies new work; controls can still inspect it."""
+    import json
     import time
+    from dataclasses import asdict
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from gateway import hosted_room_driver as tasks
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
@@ -141,6 +143,31 @@ def test_stop_revokes_submit_and_writer_but_keeps_control_visible(tmp_path, monk
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
             db._execute_write(lambda conn: rpc.authorize_admission_write(
                 conn, identity, attempt.execution_generation))
+        row = {'status': 'started', 'principal_id': 'alice',
+               'request_id': 'hosted:' + json.dumps([asdict(identity), attempt.execution_generation]),
+               'payload': {'text': 'frozen'}}
+        stopped_task = tasks.get_task(db.db_path, identity)
+        assert service.check_admission(rpc.ref, row) == stopped_task
+        # A stopped task cannot supply the producer to a queued, terminal, or
+        # unknown admission, only to the previously claimed exact admission.
+        for status in ('queued', 'terminal', 'unknown'):
+            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                service.check_admission(rpc.ref, {**row, 'status': status})
+        for invalid in (
+            {**row, 'principal_id': 'bob'},
+            {**row, 'payload': {'text': 'changed'}},
+            {**row, 'request_id': 'hosted:' + json.dumps([asdict(identity), attempt.execution_generation + 1])},
+            {**row, 'request_id': 'hosted:' + json.dumps([asdict(tasks.TaskIdentity('room', 'other', 'thread', 'turn')), attempt.execution_generation])},
+        ):
+            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                service.check_admission(rpc.ref, invalid)
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            service.check_admission(object(), row)
+        terminal = tasks.complete_task_cancel(db.db_path, identity, cancel_id='stop',
+                                              expected_cancel_generation=1, clock=time.time)
+        assert terminal['status'] == 'cancelled'
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            service.check_admission(rpc.ref, row)
 
 
 @pytest.mark.asyncio
