@@ -20,7 +20,7 @@ from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
 from tui_gateway.hosted_room_secondary_catchup import (
-    forget_awaiting_primary, load_awaiting_primary, remember_awaiting_primary)
+    forget_awaiting_primary, load_awaiting_primary)
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -134,9 +134,8 @@ class HostedRoomRuntime:
         # Tags an exception raised by that callback so a committed settlement
         # is not later recorded as an ambiguous observation.
         self._secondary_notify_tls = threading.local()
-        # Tasks whose notify returned before primary terminal events existed.
-        # Durable across process restart. Not a scan of settled tasks, and not
-        # read from prepare_room or publish_terminal.
+        # Unresolved settlements, journaled atomically before either callback.
+        # Not a scan of settled tasks or read by prepare_room/publish_terminal.
         self._secondary_awaiting_primary: set[tuple[state.TaskIdentity, int]] = (
             load_awaiting_primary(self.db_path))
         self.pending_action, self.clock = pending_action, clock
@@ -305,13 +304,7 @@ class HostedRoomRuntime:
         self._remember_secondary_awaiting_primary(fresh, result)
 
     def _remember_secondary_awaiting_primary(self, task: Mapping[str, Any], result: Any) -> None:
-        """Keep a no-op notify until primary terminal evidence exists.
-
-        Any other result drops the task. A raised callback does not reach here,
-        so a failed publish stays pending. The key is written to the driver
-        database before the in-memory set changes. A durability failure keeps
-        the in-memory key and does not mark the room ambiguous.
-        """
+        """Retain a no-op; clear the settlement key only after a definitive result."""
         from gateway.session_hosted_output_secondary_caller import SecondaryAwaitingPrimary
         identity = task.get("identity")
         generation = task.get("execution_generation")
@@ -319,20 +312,25 @@ class HostedRoomRuntime:
             return
         key = (identity, generation)
         awaiting = type(result) is SecondaryAwaitingPrimary
-        persisted = self._write_secondary_catchup(identity, generation, present=awaiting)
-        with self._status_lock:
-            if awaiting:
+        if awaiting:
+            with self._status_lock:
                 self._secondary_awaiting_primary.add(key)
-            elif persisted:
+            return
+        persisted = self._write_secondary_catchup(identity, generation)
+        with self._status_lock:
+            if persisted:
                 self._secondary_awaiting_primary.discard(key)
 
+    def _track_settlement(self, task: Mapping[str, Any]) -> None:
+        if self.publish_settled_secondary is not None and task.get("status") == "settled":
+            with self._status_lock:
+                self._secondary_awaiting_primary.add(
+                    (task["identity"], task["execution_generation"]))
+
     def _write_secondary_catchup(
-            self, identity: state.TaskIdentity, generation: int, *, present: bool) -> bool:
+            self, identity: state.TaskIdentity, generation: int) -> bool:
         try:
-            if present:
-                remember_awaiting_primary(self.db_path, identity, generation)
-            else:
-                forget_awaiting_primary(self.db_path, identity, generation)
+            forget_awaiting_primary(self.db_path, identity, generation)
         except Exception as exc:
             self._record_error(
                 f"room {identity.room_id} secondary catch-up durability failed: {exc}")
@@ -340,7 +338,7 @@ class HostedRoomRuntime:
         return True
 
     def _forget_secondary_catchup(self, identity: state.TaskIdentity, generation: int) -> None:
-        if self._write_secondary_catchup(identity, generation, present=False):
+        if self._write_secondary_catchup(identity, generation):
             with self._status_lock:
                 self._secondary_awaiting_primary.discard((identity, generation))
 
@@ -386,7 +384,11 @@ class HostedRoomRuntime:
     ) -> dict[str, Any]:
         """Run one lease-fenced state transition on ``task``; ``extra`` may override fences."""
         kwargs = {**_fences(task), "clock": self.clock, **extra}
+        if op in (state.settle_stopping_task, state.resolve_indeterminate_task):
+            kwargs["pending_secondary"] = self.publish_settled_secondary is not None
         result = op(self.db_path, task["identity"], lease, **kwargs)
+        if op in (state.settle_stopping_task, state.resolve_indeterminate_task):
+            self._track_settlement(result)
         if publish and binding is not None:
             result = self._publish(binding, result)
         if binding is not None:
@@ -717,7 +719,9 @@ class HostedRoomRuntime:
                 if receipt is None:
                     return
                 settled_task = state.settle_task(
-                    self.db_path, attempt, **asdict(receipt), clock=self.clock)
+                    self.db_path, attempt, **asdict(receipt), clock=self.clock,
+                    pending_secondary=self.publish_settled_secondary is not None)
+                self._track_settlement(settled_task)
         except (state.StaleLeaseError, state.StaleTaskError) as exc:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
@@ -774,7 +778,9 @@ class HostedRoomRuntime:
         try:
             try:
                 settled = state.settle_task(
-                    self.db_path, attempt, **asdict(terminal), clock=self.clock)
+                    self.db_path, attempt, **asdict(terminal), clock=self.clock,
+                    pending_secondary=self.publish_settled_secondary is not None)
+                self._track_settlement(settled)
                 self._publish(binding, settled)
             except state.StaleTaskError:
                 with suppress(state.StaleLeaseError, state.StaleTaskError):
@@ -989,7 +995,9 @@ class HostedRoomRuntime:
         settled = None
         with suppress(state.StaleLeaseError, state.StaleTaskError):
             settled = state.settle_task(
-                self.db_path, previous_attempt, **asdict(receipt), clock=self.clock)
+                self.db_path, previous_attempt, **asdict(receipt), clock=self.clock,
+                pending_secondary=self.publish_settled_secondary is not None)
+            self._track_settlement(settled)
         if settled is not None:
             self._notify_settled_secondary(binding, settled)
 
