@@ -191,9 +191,13 @@ def test_named_send_two_files_adopt_partial_delivery_on_next_attempt(mux, monkey
 
 
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.parametrize('lose_response', [False, True, 'refuse', 'later-retry', 'later-retry-revoke',
-                                           'source-revoke', 'target-close', 'target-read-close', 'target-replace'])
-def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, lose_response):
+@pytest.mark.parametrize('lose_response, follow_up', [
+    (False, False), (False, True), (True, False), ('refuse', False),
+    ('later-retry', False), ('later-retry-revoke', False), ('source-revoke', False),
+    ('target-close', False), ('target-read-close', False), ('target-replace', False),
+], ids=['baseline', 'subsequent-turn', 'lost-response', 'refuse', 'later-retry',
+        'later-retry-revoke', 'source-revoke', 'target-close', 'target-read-close', 'target-replace'])
+def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, lose_response, follow_up):
     from gateway import hosted_room_driver as tasks
     from gateway.session_authority import SessionAuthority
     from gateway.session_authorities import owner_scope
@@ -222,6 +226,9 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
     content = b'named executor retained output bytes\n'
     output = target_home / 'report.txt'
     output.write_bytes(content)
+    second_content = b'named executor second output bytes\n'
+    second_output = target_home / 'followup.txt'
+    second_output.write_bytes(second_content)
     executions = []
 
     async def finite(event):
@@ -229,11 +236,15 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
         assert binding is not None
         executions.append((str(get_hermes_home()), binding.authority.profile_id,
                            binding.scope.as_mapping(), event.message_id))
-        value = json.loads(registry.dispatch('share_group_file', {'path': str(output)}))
+        raw = registry.dispatch('share_group_file', {
+            'path': str(output if len(executions) == 1 else second_output)})
+        assert isinstance(raw, str)
+        value = json.loads(raw)
         assert value['ok'] is True, value
         execution_result.get()['result'] = {
-            'final_response': 'Named report ready.', 'messages': [], 'completed': True}
-        return 'Named report ready.'
+            'final_response': 'Named report ready.' if len(executions) == 1 else 'Follow-up report ready.',
+            'messages': [], 'completed': True}
+        return 'Named report ready.' if len(executions) == 1 else 'Follow-up report ready.'
 
     runner._handle_message = finite
     for authority in runner.session_authorities:
@@ -529,6 +540,57 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
                 assert conn.execute('SELECT COUNT(*) FROM hosted_room_recipient_receipts').fetchone()[0] == 2
                 assert conn.execute('SELECT ref_count FROM hosted_room_attachment_blobs').fetchone()[0] == 2
                 assert conn.execute('SELECT COUNT(*) FROM hosted_room_attachment_blobs').fetchone()[0] == 1
+    if follow_up:
+        # Submit a real second user event after retained-file completion, not
+        # after the deliberate integrity corruption in the baseline fixture.
+        with owner_scope(source):
+            service.send(room_id='named-room', event_id='followup',
+                         payload={'text': '@helper Share a follow-up report', 'thread_id': 'thread'})
+        task_ids = {identity.task_id}
+        all_tasks = []
+        second_task = None
+        second_events = []
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            all_tasks = tasks.list_tasks(source.db.db_path, room_id='named-room')
+            successors = [task for task in all_tasks if task['identity'].task_id not in task_ids]
+            if len(successors) == 1:
+                second_task = successors[0]
+                second_events = [e for e in service._events('named-room')
+                                 if e['kind'] == 'message.member'
+                                 and e['payload'].get('task_id') == second_task['identity'].task_id]
+                with source.db._read_ctx() as conn:
+                    completions = conn.execute('SELECT * FROM hosted_room_secondary_publication_completions').fetchall()
+                if (second_task['status'] == 'settled' and len(second_events) == 1
+                        and len(completions) == len(executions) == 2):
+                    break
+            time.sleep(.05)
+        else:
+            pytest.fail(f'subsequent named turn did not complete: {service.runtime.status()}, '
+                        f'tasks={all_tasks}, executions={executions}')
+        assert second_task is not None
+        assert second_task['identity'] != identity
+        assert second_task['result']['owner_output_receipt']['target_session_id'] in target.sessions
+        assert executions[1][:2] == (str(target_home), str(target_home))
+        assert executions[1][2]['task_id'] == second_task['identity'].task_id
+        assert second_task['result']['artifact_scope'] == executions[1][2]
+        second_admissions = list_session_admissions(target.db,
+            session_id=second_task['result']['owner_output_receipt']['target_session_id'],
+            pending_only=False)
+        assert len(second_admissions) == 2
+        assert all(row['status'] == 'terminal' and row['outcome'] == 'completed'
+                   for row in second_admissions), second_admissions
+        second_event, = second_events
+        assert second_event['payload']['text'] == 'Follow-up report ready.'
+        second_attachment, = second_event['payload']['attachments']
+        second_download = dispatch_group_files(service, viewer, 'groups.attachment.download', {
+            'room_id': 'named-room', 'event_id': second_event['event_id'],
+            'attachment_id': second_attachment['attachment_id']})
+        assert base64.b64decode(second_download['data_base64']) == second_content
+        first_download = dispatch_group_files(service, viewer, 'groups.attachment.download', {
+            'room_id': 'named-room', 'event_id': event['event_id'],
+            'attachment_id': attachment['attachment_id']})
+        assert base64.b64decode(first_download['data_base64']) == content
     with owner_scope(source):
         again = service.complete_secondary_publication(
             settled, publication['publication_id'], attempt=publication['attempt'])
@@ -544,14 +606,17 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
         service.publish_settled_invitation_secondary(service.bindings()[0], settled)
     with target.db._read_ctx() as conn:
         rows = conn.execute('SELECT * FROM hosted_room_output_artifacts').fetchall()
-        assert len(rows) == 1 and rows[0]['artifact_id'] == item['artifact_id']
-        assert rows[0]['acknowledged_at'] is not None
+        assert len(rows) == (2 if follow_up else 1)
+        first_artifact, = [row for row in rows if row['artifact_id'] == item['artifact_id']]
+        assert first_artifact['acknowledged_at'] is not None
+        if follow_up:
+            assert all(row['acknowledged_at'] is not None for row in rows)
     before = service.runtime.status()['cycles']
     deadline = time.monotonic() + 5
     while service.runtime.status()['cycles'] < before + 2 and time.monotonic() < deadline:
         time.sleep(.05)
     assert service.runtime.status()['cycles'] >= before + 2
-    assert len(executions) == 1
+    assert len(executions) == (2 if follow_up else 1)
     assert len([e for e in service._events('named-room') if e['kind'] == 'message.member'
                 and e['payload'].get('task_id') == identity.task_id]) == 1
-    assert len(admissions(target.db)) == 1
+    assert len(admissions(target.db)) == (2 if follow_up else 1)
