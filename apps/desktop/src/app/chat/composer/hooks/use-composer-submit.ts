@@ -289,7 +289,9 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
-      scope.attachments.clear()
+      // Keep blob: previews alive for the optimistic bubble; revoke when that
+      // consumer is discarded/replaced (not here — clear would race the clone).
+      scope.attachments.clear({ retainPreviewUrls: true })
       dispatchSubmit(text, submittedAttachments)
     }
 
@@ -313,21 +315,27 @@ export function useComposerSubmit({
 
     const submittedScope = activeQueueSessionKeyRef.current
 
-    const restore = () => {
-      loadIntoComposer(text, [])
-      stashAt(submittedScope, text, [])
+    // The draft is already cleared, so a refused or failed redirect must keep the only copy
+    // (#68927): the canonical queue when the server owns it, the local queue otherwise, or the
+    // composer itself when there is no queue yet (a new chat busy before its first session).
+    const canonical = serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)
+    const keep = () => {
+      if (!activeQueueSessionKey) {
+        loadIntoComposer(text, [])
+        stashAt(submittedScope, text, [])
+      } else if (canonical) {
+        dispatchSubmit(text, [], undefined, { fromQueue: true, sessionId: sessionId ?? null, storedSessionId: activeQueueSessionKey })
+      } else {
+        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+      }
     }
 
-    const canonical = serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)
     void Promise.resolve().then(() => onSteer(text, mode)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
-        if (canonical) {
-          dispatchSubmit(text, [], undefined, { fromQueue: true, sessionId: sessionId ?? null, storedSessionId: activeQueueSessionKey })
-        } else {
-          enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
-        }
+      if (!accepted) {
+        keep()
       }
-    }).catch(restore)
+    }).catch(keep)
+
   }
 
   const queueDraft = () => {

@@ -30,12 +30,13 @@ from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import canonicalize_replay_history
+from agent.reasoning_effort import clamp_effort, route_supported_efforts
 from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
 from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
-from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
+from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (  # noqa: F401
@@ -131,6 +132,11 @@ def _resolve_ws_orphan_reap_grace() -> float:
 
 
 _WS_ORPHAN_REAP_GRACE_S = _resolve_ws_orphan_reap_grace()
+# A reap Timer whose wall-clock wait outlasted its awake-time (monotonic) wait by more than
+# this fired early because the host slept through it (#44183); re-arm for the remaining
+# awake grace instead of reaping. Large enough to ignore timer jitter and NTP slew, small
+# relative to any real sleep.
+_WS_ORPHAN_REAP_SLEEP_SLACK_S = 0.5
 # A detached RUNNING turn is interrupted only once its activity clock (API waits, stream tokens, tool
 # heartbeats) idled this long; 600s = the turn-liveness watchdog so "wedged" means the same. 0 disables.
 _WS_ORPHAN_ACTIVITY_STALE_S = _ws_orphan_setting("HERMES_TUI_WS_ORPHAN_ACTIVITY_STALE_S", "ws_orphan_activity_stale_s", 600.0)
@@ -226,12 +232,18 @@ def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None):
+    def __init__(self, session_key: str, model: str, profile_home: str | None = None,
+                 provider: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] + (["--model", model] if model else [])
+        # ``--provider`` pins the child to the parent agent's virtual provider: without it the
+        # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
+        # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
+            + (["--model", model] if model else []) \
+            + (["--provider", provider] if provider else [])
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
@@ -239,12 +251,17 @@ class _SlashWorker:
         # worker must resolve config/skills/state against the session's profile home, not the gateway's
         # launch HERMES_HOME (#40677).
         from tools.environments.local import served_profile_child_env
+        from agent.secret_scope import is_multiplex_active
 
         # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
         # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and
         # none of the launch profile's .env / TERMINAL_* residue, exactly what a standalone
-        # `hermes -p X` would load itself.
-        env = _prepend_tool_paths(served_profile_child_env(target_home=profile_home, inherit_credentials=True))
+        # `hermes -p X` would load itself. The launch profile is a profile too: once the process hosts
+        # a second home (multiplex flipped), its worker must name its own home or the fail-closed
+        # no-target/no-scope path raises UnscopedSecretError (#115427).
+        env = _prepend_tool_paths(served_profile_child_env(
+            target_home=profile_home or (_hermes_home if is_multiplex_active() else None),
+            inherit_credentials=True))
         # Internal slash workers must import the same checkout as their parent.
         module_root = str(Path(__file__).resolve().parent.parent)
         env["PYTHONPATH"] = os.pathsep.join(
@@ -340,7 +357,7 @@ def _load_interim_assistant_messages() -> bool:
 
 def _shutdown_sessions() -> None:
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
-    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner):
+    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):
         with contextlib.suppress(Exception):
             step()
     with _sessions_lock:
@@ -376,15 +393,21 @@ _start_idle_reaper()
 # ── Plumbing ──────────────────────────────────────────────────────────
 
 
-def _launch_state_db_path() -> Path:
-    """Launch profile's ``state.db`` at call time: the patched ``_hermes_home`` when a test changed
+def _launch_home() -> Path:
+    """The launch profile's home at call time: the patched ``_hermes_home`` when a test changed
     it, else the live process home — resolved through :func:`get_process_hermes_home`, which honours
     ``HERMES_HOME`` but ignores the context-local override. The desktop multiplex cron ticker sets
-    that override per profile at startup, and a first touch inside a foreign window would bind this
-    process-wide handle to another profile's ``state.db`` (#102526). Resolving here rather than at
-    import time lets a harness that redirects ``HERMES_HOME`` after import be honoured (#112692)."""
+    that override per profile at startup, and a first touch inside a foreign window would bind
+    process-wide launch state (the shared ``state.db`` handle, the launch ``.env`` secrets) to
+    another profile (#102526). Resolving here rather than at import time lets a harness that
+    redirects ``HERMES_HOME`` after import be honoured (#112692)."""
     home = _hermes_home if _hermes_home != _HERMES_HOME_AT_IMPORT else get_process_hermes_home()
-    return Path(home) / "state.db"
+    return Path(home)
+
+
+def _launch_state_db_path() -> Path:
+    """Launch profile's ``state.db`` (see :func:`_launch_home`)."""
+    return _launch_home() / "state.db"
 
 
 def _get_db():
@@ -435,6 +458,20 @@ def _open_profile_session_db(profile_home):
         raise RuntimeError(f"profile session store unavailable: {db_path}: {exc}") from exc
 
 
+def _bootstrap_served_profile_store(db_path: Path) -> None:
+    """A served profile whose first RPC is a read (Bot Chat registry lookup on a fresh bot) has no
+    ``state.db`` yet. Browsing never creates a store, but THIS process is the profile's session
+    owner (``_open_profile_session_db`` acquires the writer for every agent build), so it seeds the
+    store it is about to own instead of answering ``storage_unavailable`` until a turn happens."""
+    try:
+        if db_path.stat().st_size > 0:
+            return
+    except FileNotFoundError:
+        pass
+    from hermes_state_registry import acquire, release_or_close
+    release_or_close(acquire(db_path))
+
+
 @contextlib.contextmanager
 def _profile_db(params: dict | None = None, *, writer: bool = False):
     """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
@@ -455,6 +492,7 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
                 db = acquire(Path(profile_home) / "state.db")
             else:
                 from hermes_cli.web_server_sessions import _open_session_db_at_path
+                _bootstrap_served_profile_store(Path(profile_home) / "state.db")
                 db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
             owns = True
         except Exception as exc:
@@ -553,10 +591,21 @@ def _profile_scoped(handler):
     systemd / ``op run`` injection); once multiplexing is active it binds its own scope from the env
     frozen at activation (``_session_profile_runtime_scope``), never ambient state a secondary context
     might have poisoned (#107422).
+
+    No ``profile`` param but a ``session_id`` naming a live session: that session's ``profile_home``
+    is the scope. The TUI and the Desktop's ambient dispatcher send session-bound RPCs with the
+    session id alone, so a ``config.set`` from a focused worker session otherwise persisted into the
+    LAUNCH profile's config.yaml while the worker's stayed unchanged (#85669).
     """
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-        with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
+        p = params if isinstance(params, dict) else {}
+        if str(p.get("profile") or "").strip():
+            home = _profile_home(p.get("profile"))
+            profile_home = str(home) if home else None
+        else:
+            session = _sessions.get(str(p.get("session_id") or ""))
+            profile_home = session.get("profile_home") if isinstance(session, dict) else None
+        with _session_profile_runtime_scope({"profile_home": profile_home or None}):
             return handler(rid, params)
     return wrapper
 
@@ -577,9 +626,9 @@ def _configured_cwd_from_cfg(cfg: dict | None) -> str | None:
 
 
 def _profile_configured_cwd(profile_home: Path | None) -> str | None:
-    """A non-launch profile's ``terminal.cwd`` from ITS config.yaml (fail-open → None): the process-global
+    """A profile's ``terminal.cwd`` from ITS config.yaml (fail-open → None): the process-global
     ``TERMINAL_CWD`` belongs to the *launch* profile, and load_config() resolves the ACTIVE profile, so
-    read that file through the same effective-config pipeline as ``_load_cfg``.
+    read the requested file through the same effective-config pipeline as ``_load_cfg``.
 
     A new session bound to another profile must take its workspace from THAT profile's config, not the stale
     env var (issue #40334). Returns an absolute, existing directory, or None for placeholders / missing /
@@ -597,9 +646,9 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
 def _launch_configured_cwd() -> str | None:
     """Launch profile's ``terminal.cwd`` from config.yaml: the dashboard's in-memory gateway gets no bridged
     ``TERMINAL_CWD`` env (only the Node PTY child does), so a fresh /chat would otherwise start in ``os.getcwd()``."""
-    with contextlib.suppress(Exception):
-        return _configured_cwd_from_cfg(_load_cfg())
-    return None
+    # Read the launch file by path. ``_load_cfg`` follows the active HERMES_HOME
+    # override, which may belong to a different profile-scoped RPC.
+    return _profile_configured_cwd(Path(_hermes_home))
 
 
 def _default_session_cwd() -> str:
@@ -635,18 +684,27 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
+    from agent.notification_presentation import event_presentation_muted
+    if event_presentation_muted(event, sid):
+        return False
     return write_json(_event_frame(event, sid, payload))
 
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
-_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
+_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
+                            lambda sid: _session_client_answers_requests(sid))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
 _live_transports: set[Transport] = set()
 _live_transports_lock = threading.Lock()
+# True only when real stdout IS the JSON-RPC client channel (``tui_gateway.entry.main``, the stdio TUI).
+# `hermes serve` / dashboard processes speak JSON-RPC over WS only: their stdout is captured into
+# desktop.log, so a peer-less global broadcast (the change watcher keeps ticking after the last WS client
+# leaves) must be dropped there, not printed.
+_stdio_is_rpc_channel = False
 
 
 def register_live_transport(transport: Transport | None) -> None:
@@ -660,15 +718,20 @@ def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
     with _live_transports_lock:
         _live_transports.discard(transport)
+    _server_requests.forget(transport)
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
-    emitters bottom out at stdio in ``write_json``'s ladder. No registered transports (stdio TUI, tests) → ``_emit``."""
+    emitters bottom out at stdio in ``write_json``'s ladder. No registered transports → ``_emit`` when stdout is the
+    stdio TUI's JSON-RPC channel, else dropped (nobody is listening; stdout is a log sink)."""
     with _live_transports_lock:
         targets = list(_live_transports)
     if not targets:
-        return _emit(event, "", payload)
+        if _stdio_is_rpc_channel:
+            return _emit(event, "", payload)
+        logger.debug("global-event broadcast dropped (no connected client) type=%s", event)
+        return None
     frame = _event_frame(event, "", payload)
     for transport in targets:
         try:
@@ -715,7 +778,8 @@ def _pending_connection_request_payload(sid: str) -> dict | None:
     from tools.connectors import live
 
     session = _sessions.get(sid)
-    operation = live.current(str(session.get("session_key") or "")) if session else None
+    operation = (live.current(str(session.get("session_key") or ""), profile_home=session.get("profile_home"))
+                 if session else None)
     return operation.request_payload() if operation is not None else None
 
 
@@ -745,15 +809,25 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
 
     def on_result(result: dict | None) -> None:
-        if result is None:  # withdrawn: the queue entry resolves on its own path
+        if result is None:
+            # No client can answer this prompt: the request was never sent (the only attached client predates
+            # server→client requests) or the client answered -32601 (no handler). Without withdrawing the
+            # queue entry the agent would idle for the whole approvals.timeout with no prompt anywhere
+            # (#112548). A withdrawal, not a deny: nobody refused the command.
+            if request_id:
+                _approval.withdraw_gateway_approval(session_key, request_id,
+                                                    "the attached client cannot answer approval requests "
+                                                    "(update the Hermes app)")
             return
         choice = str(result.get("choice") or "deny")
         _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
                                            request_id=request_id or None)
 
     settle = server_requests.send_async("approval", sid, payload, on_result)
-    if request_id:
-        _approval.register_gateway_settle(session_key, request_id, settle)
+    # The wait can end between the frame going out and the hook attaching (the client answered by RPC, another
+    # surface resolved it): withdraw now, or the request stays in ``open_requests`` for every later resume.
+    if request_id and not _approval.register_gateway_settle(session_key, request_id, settle):
+        settle("resolved")
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -818,33 +892,6 @@ def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
     return rid, method, params if params is not None else {}
 
 
-def handle_request(req: dict) -> dict | None:
-    normalized = _normalize_request(req)
-    if isinstance(normalized, dict):
-        return normalized
-    rid, method, params = normalized
-    if not (fn := _methods.get(method)):
-        return _err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
-                    "(different versions); run `hermes update` and restart both")
-    # Test doubles register straight into ``_methods`` without a contract; every production
-    # handler comes through ``register_method`` and therefore has one.
-    contract = _contracts.METHODS.get(method)
-    if contract is not None:
-        params, problem = _contracts.validate_params(contract, params)
-        if problem is not None:
-            return _err(rid, 4000, problem)
-    token = _current_rpc_method.set(method)
-    try:
-        response = fn(rid, params)
-    except ProfileUnavailableError as exc:
-        return _err(rid, 4064, str(exc))
-    finally:
-        _current_rpc_method.reset(token)
-    if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
-        _contracts.check_params_accepted(contract, params)
-        _contracts.check_result(contract, response["result"])
-    return response
-
 
 def _current_session_steer_authority(session_id: str) -> tuple[Transport | None, dict | None]:
     """Unforgeable steering authority for this RPC context: the public session id is only a lookup
@@ -865,41 +912,6 @@ def _current_session_steer_authority(session_id: str) -> tuple[Transport | None,
             return None, None
         return transport, session
 
-
-def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
-    """Route inbound RPCs — long handlers to the pool (returns None; the worker writes its own
-    response via the bound transport), everything else inline (returns the response dict).
-    *transport* pins every write of this request — events included — to that transport;
-    omitted → the module stdio transport (``tui_gateway.entry`` behaviour)."""
-    t = transport or _stdio_transport
-    token = bind_transport(t)
-    try:
-        from tui_gateway import server_requests
-        if server_requests.is_response_frame(req):
-            # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
-            if not server_requests.resolve_response(req) and not _relay_compute_host_response(req):
-                logger.debug("dropping response for unknown server request id=%r", req.get("id"))
-            return None
-        normalized = _normalize_request(req)
-        if isinstance(normalized, dict):
-            return normalized
-        if normalized[1] not in _LONG_HANDLERS:
-            return handle_request(req)
-        ctx = contextvars.copy_context()  # the pool worker must see the bound transport
-        if normalized[1] in _CONNECTOR_RPC_METHODS:
-            ctx.run(_capture_connector_rpc_owner, normalized[2])
-
-        def run():
-            try:
-                resp = handle_request(req)
-            except Exception as exc:
-                resp = _err(req.get("id"), -32000, f"handler error: {exc}")
-            if resp is not None:
-                t.write(resp)
-        _pool.submit(lambda: ctx.run(run))
-        return None
-    finally:
-        reset_transport(token)
 
 
 
@@ -947,18 +959,20 @@ def _load_cfg_raw() -> dict:
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
     global _cfg_cache, _cfg_sig, _cfg_path
-    with contextlib.suppress(Exception):
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.config_read_errors import FailedConfigRead
+    try:
         p = _active_config_path()
         sig = file_signature(p.stat()) if p.exists() else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
-        from hermes_cli.config import read_user_config_raw
         data = read_user_config_raw(p) if p.exists() else {}
-        with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
-            _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
-        return data
-    return {}
+    except Exception as exc:
+        return FailedConfigRead(error=exc)  # readable as {}, refused by _save_cfg
+    with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
+        _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
+    return data
 
 
 def _load_cfg() -> dict:
@@ -974,11 +988,9 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from utils import atomic_roundtrip_yaml_save
+    from hermes_cli.config import atomic_config_write
     path = _active_config_path()
-    # Comment-, ordering- and Unicode-preserving write (a plain safe_dump clobbered hand-written configs);
-    # fails closed on an unreadable existing config.yaml like atomic_config_write.
-    atomic_roundtrip_yaml_save(path, cfg)
+    atomic_config_write(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
@@ -1001,12 +1013,15 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
         # callers that know the workspace pass it.
         resolved = cwd if cwd is not None else (str(sess.get("cwd") or "") if sess is not None else "")
         source = _resolve_session_platform()
+        profile = _current_profile_name()
         browser_control_principal = browser_control_transport_family = ""
         # Live conversation id for subprocess HERMES_SESSION_ID: an explicitly empty contextvar is authoritative
         # (no os.environ fallback), so never leave it "" — agent's durable session_id, then session_key.
         session_id = session_key
         if sess is not None:
             source = _session_source(sess)
+            # App-global backends multiplex profiles: prefer the live session's own home.
+            profile = profile_name_for_home(sess.get("profile_home")) or profile
             session_id = getattr(sess.get("agent"), "session_id", None) or session_key
             identity = getattr(sess.get("transport"), "auth_identity", None)
             if _methods_browser_control._is_authenticated_identity(identity):
@@ -1014,6 +1029,7 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
                 browser_control_transport_family = _methods_browser_control._CLOUD_TRANSPORT_FAMILY
         return set_session_vars(
             session_key=session_key, session_id=session_id, source=source,
+            profile=profile,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family, cwd=resolved,
             ui_session_id=ui_session_id, cron_session="")
@@ -1194,7 +1210,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         "metadata when answering questions about what model/provider is active.]")
     # A user message, not system: strict OpenAI-compatible providers (vLLM, Qwen) reject non-leading system messages.
     # See #48338.
-    entry = {"role": "user", "content": marker, "display_kind": "model_switch"}
+    entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch"}
     with session.get("history_lock") or contextlib.nullcontext():
         history = session.setdefault("history", [])
         history[:] = [h for h in history if not _is_model_switch_marker(h)]
@@ -1207,7 +1223,10 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             _ensure_session_db_row(session)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
-                db.append_message(session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                from agent.context_compressor import _DB_PERSISTED_MARKER
+                entry["_row_id"] = db.append_message(
+                    session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                entry[_DB_PERSISTED_MARKER] = True
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
 
@@ -1251,7 +1270,8 @@ def _restart_slash_worker(sid: str, session: dict):
         worker.close()
     try:
         new_worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
-                                  profile_home=session.get("profile_home"))
+                                  profile_home=session.get("profile_home"),
+                                  provider=getattr(session.get("agent"), "provider", None) or None)
     except Exception:
         session["slash_worker"] = None
         return
@@ -1345,12 +1365,14 @@ def _current_profile_name() -> str:
 
 
 # Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
-# one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
-# v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
+# one-click "update to align" prompt. The desktop also warns in the reverse direction: a backend reporting
+# MORE than the GUI's required value means the GUI build predates this backend (e.g. a long-running app
+# across a backend update) and should be updated. Bump whenever the desktop's backend contract changes.
+# v2 file.attach; v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
 # backend still emits `<kind>.request` notifications the renderer no longer listens for.
-DESKTOP_BACKEND_CONTRACT = 7
+DESKTOP_BACKEND_CONTRACT = 8
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -1381,6 +1403,38 @@ def _turn_started_at(session: dict | None) -> float | None:
     """Epoch seconds the current turn started, or None when idle (desktop keeps the elapsed timer across switches)."""
     inflight = (session or {}).get("inflight_turn")
     return float(inflight["started_at"]) if isinstance(inflight, dict) and inflight.get("started_at") else None
+
+
+def _live_session_identity(session: dict) -> tuple[str, str]:
+    """``(model, provider)`` the live session actually runs — the same precedence ``_session_info`` reports:
+    a switch queued mid-turn, the metadata mirror, the built agent, the composer override a deferred record
+    carries. The profile default is the LAST resort, never the answer for a chat that made its own pick."""
+    pending = session.get("pending_model_switch") or {}
+    mirror = _metadata_mirror(session)
+    agent = session.get("agent")
+    override = session.get("model_override") or {}
+    model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
+             or getattr(agent, "model", "") or override.get("model") or _session_default_model(session))
+    provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
+                or getattr(agent, "provider", "") or override.get("provider") or "")
+    return str(model), str(provider or "")
+
+
+def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -> bool:
+    """Whether a priority tier reaches this session's route. Every request builder asks the same gate, so a
+    profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
+    report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
+    belongs to the old route."""
+    from hermes_cli.models import resolve_fast_mode_overrides
+    base_url = None
+    if route_known and agent is not None:
+        if getattr(agent, "api_mode", None) == "anthropic_messages":
+            base_url = getattr(agent, "_anthropic_base_url", None)
+        base_url = base_url or getattr(agent, "base_url", None)
+    try:
+        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url) is not None
+    except Exception:
+        return False
 
 
 def _session_info(agent, session: dict | None = None) -> dict:
@@ -1417,10 +1471,20 @@ def _session_info(agent, session: dict | None = None) -> dict:
         # Broadcast/resume callers need not be bound to this session's profile.
         with _profile_build_scope(sess.get("profile_home") or _hermes_home):
             provider = _runtime_model_config(agent).get("provider", provider)
+    model = pending_model or mirror.get("model", getattr(agent, "model", ""))
+    # The level the route's entry clamp actually sends (== reasoning_effort when verbatim), so the
+    # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a
+    # Hermes-internal step (#61634) as a wire level the route does not have.
+    reasoning_effort_wire = ""
+    if reasoning_effort and reasoning_effort != "none":
+        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
     info: dict = {
-        "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
+        "model": model,
         "provider": pending_provider or provider,
-        "reasoning_effort": reasoning_effort, "service_tier": service_tier, "fast": service_tier == "priority",
+        "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
+        "service_tier": service_tier,
+        "fast": service_tier == "priority" and _fast_tier_applies(agent, model, pending_provider or provider,
+                                                                  route_known=not pending_provider),
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
@@ -1434,8 +1498,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
     }
     with contextlib.suppress(Exception):
-        from hermes_cli import __version__, __release_date__
-        info.update(version=__version__, release_date=__release_date__)
+        from hermes_cli import __release_date__
+        from hermes_cli.version_info import get_version_info
+
+        info.update(version=get_version_info().base_version, release_date=__release_date__)
     live_agent = agent is not None and not sess.get("_compute_host_active")
     if live_agent:
         with contextlib.suppress(Exception):
@@ -1551,9 +1617,14 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
             if row and row.get("cwd"):
+                # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
+                # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
+                remote = _cwd_is_remote(profile_home)
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
+                        if remote:
+                            _sessions[sid]["explicit_cwd"] = True
             elif hasattr(db, "update_session_cwd"):
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
@@ -1802,7 +1873,7 @@ def _append_spawn_tree_index(session_dir, entry: dict) -> None:
 def _read_spawn_tree_index(session_dir) -> list[dict]:
     out: list[dict] = []
     try:
-        with (session_dir / _SPAWN_TREE_INDEX).open("r", encoding="utf-8") as f:
+        with (session_dir / _SPAWN_TREE_INDEX).open("r", encoding="utf-8-sig") as f:
             for line in f:
                 if line := line.strip():
                     with contextlib.suppress(json.JSONDecodeError):
@@ -1952,6 +2023,8 @@ from . import (  # noqa: E402
     session_registry as _session_registry, agent_factory as _agent_factory,
     methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
+    plugin_inject as _plugin_inject,
+    rpc_dispatch as _rpc_dispatch,
     agent_callbacks as _agent_callbacks, session_history as _session_history,
     prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
     tool_progress as _tool_progress, change_watcher as _change_watcher,
@@ -1967,17 +2040,20 @@ from . import (  # noqa: E402
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
-    methods_connectors as _methods_connectors)
+    methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
+    methods_display as _methods_display, methods_display_watch as _methods_display_watch,
+    methods_onboarding as _methods_onboarding)
 
 for _m in (
     _session_registry, _agent_factory,
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
-    _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
+    _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
-    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors):
+    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
+    _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding):
     _m.register(sys.modules[__name__])
 del _m

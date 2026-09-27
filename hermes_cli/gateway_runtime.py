@@ -7,10 +7,17 @@ import ipaddress
 import math
 import os
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlsplit
 
-from gateway.runtime_contract import RuntimeState
+if TYPE_CHECKING:
+    from gateway.runtime_contract import RuntimeState
+
+# Total startup deadline a client waits for a cold daemon. A cold boot imports the whole
+# runtime, seeds the skill library and warms the turn machinery: ~10-20 s on a loaded
+# 32-core CI runner with dozens of sibling boots, where 30 s tipped every attaching client
+# of a parallel e2e shard into `starting: deadline`. A minute is still a verdict, not a hang.
+DEFAULT_ENSURE_TIMEOUT = 60.0
 
 
 @dataclass(frozen=True)
@@ -167,7 +174,7 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
         return GatewayDiscovery("inaccessible", reason_code="invalid_control_peer")
 
 
-def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = 30.0) -> GatewayDiscovery:
+def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT_ENSURE_TIMEOUT) -> GatewayDiscovery:
     """Ensure once, never install/replace; pending remains pending at deadline.
 
     A successful service command or Popen is not session readiness. After an
@@ -212,9 +219,14 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = 30.0) -
                 # A named profile the default multiplexer serves has no daemon of its own: start
                 # (or await) the MULTIPLEXER. A per-profile spawn here would become a second owner
                 # that blocks the multiplexer's next all-or-nothing reserve.
-                from hermes_cli.gateway_runtime_multiplex import multiplexer_serves_home
+                from hermes_cli.gateway_runtime_multiplex import implied_host_root, multiplexer_serves_home
                 target = multiplexer_serves_home(home) or home
                 service = discover_existing_gateway_service(target, deadline=deadline)
+                if service is None and target == home and (host := implied_host_root(home)) is not None:
+                    # Main's guard refuses a named profile a gateway of its own unless it is standalone
+                    # or already installed; with no multiplexer evidence yet, the host is still its owner.
+                    target = host
+                    service = discover_existing_gateway_service(target, deadline=deadline)
                 # Runtime locks settle races remaining after this second probe.
                 observed = discover_gateway_endpoint(home, timeout=remaining(deadline))
                 if observed.state != "absent":

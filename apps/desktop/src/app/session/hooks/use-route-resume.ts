@@ -67,7 +67,7 @@ function rawHashLooksLikeSession(): boolean {
 
   return (
     !hash.startsWith('/settings') &&
-    !hash.startsWith('/skills') &&
+    !hash.startsWith('/capabilities') &&
     !hash.startsWith('/messaging') &&
     !hash.startsWith('/artifacts')
   )
@@ -197,6 +197,15 @@ export function useRouteResume({
         }
       }
 
+      return
+    }
+
+    // A sleep/wake WS reconnect can reopen on a new-chat route while the active
+    // runtime session is still the user's current chat. The gateway re-opened;
+    // nothing navigated. Forcing a fresh draft here is what turned every
+    // Windows/macOS sleep/wake cycle into a brand-new session and parked the
+    // previous chat in the sidebar (#53374). Preserve the active chat instead.
+    if (isNewChatRoute(locationPathname) && gatewayBecameOpen && activeSessionId && !freshDraftReady) {
       return
     }
 
