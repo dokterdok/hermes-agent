@@ -18,6 +18,10 @@ class CanonicalHostedRoomService(CanonicalHostedOutputPublisher, HostedControls,
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
         super().__init__(None, db_path=authority.db.db_path)
+        # Output callbacks consume the captured Stop and exact local admission state.
+        self.runtime.capture_stopping = self._capture_stopping_output
+        self.runtime.acknowledge_unadmitted_stop = self._acknowledge_unadmitted_stop
+        self.runtime.reconcile_cancelled_terminal = self._reconcile_stopped_output
         self.runtime.publish_settled_secondary = self.publish_settled_invitation_secondary
 
     def publish_settled_invitation_secondary(self, binding, task):

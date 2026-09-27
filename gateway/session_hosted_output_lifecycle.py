@@ -31,6 +31,44 @@ def records(conn, room_id, *, pending_limit=None):
 
 
 class CanonicalOutputLifecycle:
+    def _unadmitted_inventory(self, conn, snapshot):
+        """Require an initialized empty exact scope, or a wholly absent store."""
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('hosted_room_output_artifacts','hosted_room_output_generation_fences')")}
+        if not names:
+            return None  # No producer store initialized; no Output rows can exist.
+        outbox = RoomArtifactOutbox.borrow_existing(self.authority.db, conn)
+        scope = RoomArtifactScope.from_mapping(snapshot['scope'])
+        if conn.execute('SELECT 1 FROM hosted_room_output_artifacts WHERE scope_key=? LIMIT 1',
+                        (scope.key,)).fetchone() is not None:
+            return False
+        return outbox
+
+    def _acknowledge_unadmitted_stop(self, task):
+        """Only the exact captured, admission-free local Stop can bypass idle info."""
+        if task['status'] != 'stopping':
+            return False
+        def prove(conn):
+            saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key_for(task),)).fetchone()
+            if saved is None:
+                return False
+            record = json.loads(saved[0])
+            snapshot, admission = self._cleanup_snapshot(conn, task)
+            if (record['state'] != 'waiting' or record['binding'] != snapshot
+                    or snapshot.get('unavailable') != 'admission_unavailable' or admission is not None):
+                return False
+            row = conn.execute('SELECT status FROM hosted_room_driver_tasks WHERE room_id=? AND task_id=?',
+                (task['identity'].room_id, task['identity'].task_id)).fetchone()
+            if row is None or row['status'] != 'stopping':
+                return False
+            request = 'hosted:' + json.dumps([asdict(task['identity']),
+                task['execution_generation']], sort_keys=True, separators=(',', ':'))
+            if conn.execute('SELECT 1 FROM session_admissions WHERE request_id=?',
+                            (request,)).fetchone() is not None:
+                return False
+            return self._unadmitted_inventory(conn, snapshot) is not False
+        return self._cleanup_write(prove)
+
     def prepare_room(self, *args, **kwargs):
         # Refuse before inherited pathname-based room/policy helpers can run.
         with self._output_policy_read():
@@ -64,10 +102,16 @@ class CanonicalOutputLifecycle:
         return result
 
     def _capture_room_cancel(self, task, cancel_id):
+        # Preserve Route's capture-only cancellation and its forwarding result.
         captured = super()._capture_room_cancel(task, cancel_id)
-        if captured['execution_generation'] > 0:
-            self._reconcile_stopped_output(captured, capture_only=True)
-        return captured
+        return self._capture_stopping_output(captured, cancel_id)
+
+    def _capture_stopping_output(self, task, cancel_id):
+        # Driver has already committed the exact stopping intent. Capture the
+        # Output obligation before the canonical interrupt/claim race advances.
+        if task['execution_generation'] > 0:
+            self._reconcile_stopped_output(task, capture_only=True)
+        return task
 
     def _cleanup_snapshot(self, conn, task, *, identity_only=False):
         if self.authority.db is not self._output_db:
@@ -299,7 +343,31 @@ class CanonicalOutputLifecycle:
                                 'proof': snapshot['named_owner_discard']},
                 )
             elif snapshot.get('unavailable'):
-                record['reason_code'] = snapshot['unavailable']
+                if (snapshot['unavailable'] == 'admission_unavailable'
+                        and old is not None and old['binding'] == snapshot
+                        and task['status'] == 'cancelled'):
+                    # The durable capture preceded exact cancellation. New
+                    # admissions are excluded by the shared SQLite write lock.
+                    terminal_task = conn.execute('SELECT status FROM hosted_room_driver_tasks '
+                        'WHERE room_id=? AND task_id=?',
+                        (task['identity'].room_id, task['identity'].task_id)).fetchone()
+                    if terminal_task is None or terminal_task['status'] != 'cancelled':
+                        raise RoomArtifactError('Group Chat cleanup terminal changed')
+                    request = 'hosted:' + json.dumps([asdict(task['identity']),
+                        task['execution_generation']], sort_keys=True, separators=(',', ':'))
+                    if conn.execute('SELECT 1 FROM session_admissions WHERE request_id=?',
+                                    (request,)).fetchone() is not None:
+                        raise RoomArtifactError('Group Chat cleanup admission changed')
+                    outbox = self._unadmitted_inventory(conn, snapshot)
+                    if outbox is False:
+                        record['reason_code'] = 'unclaimed_output_inventory'
+                    elif not capture_only:
+                        if outbox is not None:
+                            outbox._retire_generation(conn, RoomArtifactScope.from_mapping(snapshot['scope']))
+                        record.update(state='completed', reason_code='completed',
+                            completion={'operation': 'never_admitted'})
+                else:
+                    record['reason_code'] = snapshot['unavailable']
             elif admission['status'] != 'terminal':
                 record['reason_code'] = 'unknown_execution' if admission['status'] == 'unknown' else 'waiting_for_terminal'
             elif record['state'] == 'waiting' and not capture_only:
