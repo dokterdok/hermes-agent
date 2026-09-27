@@ -315,13 +315,26 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                         if t['identity'] == identity and t['execution_generation'] == generation)
             rpc = self._resolve_member_transport(HostedRoomBinding(identity.room_id,
                 room['authority_gateway_id'], room['authority_epoch']), task)
+            attachments = task['payload'].get('attachments')
+            from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+            if type(rpc) is HostedRoomAuthorityRPC and attachments:
+                from gateway.session_ingress_media import _ATTACHMENT_MIMES
+                if any(item['mime'] not in _ATTACHMENT_MIMES for item in attachments):
+                    # Input owns accepted document paths and their durable custody
+                    # checks. Import it only for canonical document submissions.
+                    from gateway.hosted_room_input_preparation import reconstruct_accepted_payload
+                    committed = reconstruct_accepted_payload(rpc, task['payload']['prompt'], attachments, row)
+                else:
+                    committed = committed_submission_payload(rpc, task['payload']['prompt'], attachments)
+            else:
+                committed = committed_submission_payload(rpc, task['payload']['prompt'], attachments)
             # A queued preclaim still requires a running task. Stop may set the
             # driver to stopping after this exact admission started, before
             # its Output scope reconstructs the producer identity.
             permissible = ({'running'} if row['status'] == 'queued'
                            else {'running', 'stopping'} if row['status'] == 'started' else set())
             if (getattr(rpc, 'ref', None) != ref or task['status'] not in permissible
-                    or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'))
+                    or row['payload'] != committed
                     or rpc.authorizer('execute', identity, generation) is not True):
                 raise ValueError('changed hosted binding')
             return task
