@@ -1,5 +1,6 @@
 """Authority-bound hosted service; no legacy session server is constructed."""
 import asyncio
+import json
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -257,14 +258,40 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                     from gateway.hosted_room_driver import list_tasks
                     return any(t['identity'] == identity and t['execution_generation'] == generation
                                and t['payload'].get('target_profile') == profile
-                               and t['status'] in {'running', 'stopping'}
+                               and t['status'] in ({'running'} if operation == 'submit' else {'running', 'stopping'})
                                for t in list_tasks(self.db_path, room_id=binding.room_id))
                 return True
+            def authorize_admission_write(conn, identity, generation):
+                # The driver Stop and the new admission share this SQLite writer.
+                # This check runs in the admission's BEGIN IMMEDIATE transaction,
+                # after preparation and before INSERT, closing the cross-thread gap.
+                row = conn.execute('SELECT status,execution_generation,thread_id,turn_id,payload_json '
+                    'FROM hosted_room_driver_tasks WHERE room_id=? AND task_id=?',
+                    (binding.room_id, identity.task_id)).fetchone()
+                room_row = conn.execute('SELECT members_json,authority_gateway_id,authority_epoch,disbanded_at '
+                    'FROM hosted_rooms WHERE room_id=?', (binding.room_id,)).fetchone()
+                owned = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                    (_OWNER + binding.room_id,)).fetchone()
+                if (row is None or identity.room_id != binding.room_id
+                        or row['thread_id'] != identity.thread_id or row['turn_id'] != identity.turn_id
+                        or row['execution_generation'] != generation or row['status'] != 'running'
+                        or owned is None or owned[0] != owner or room_row is None
+                        or room_row['disbanded_at'] is not None
+                        or (room_row['authority_gateway_id'], room_row['authority_epoch']) != (
+                            binding.gateway_id, binding.authority_epoch)
+                        or not any(m.get('member_id') == member and m.get('profile') == profile
+                                   for m in json.loads(room_row['members_json']))):
+                    raise RuntimeStoreError('permission_denied')
+                payload = json.loads(row['payload_json'])
+                if (payload.get('target_profile') != profile
+                        or payload.get('target_member_id', profile) != member):
+                    raise RuntimeStoreError('permission_denied')
             principal = Principal(owner, self.authority.profile_id,
                 frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}),
                 'hosted:' + binding.room_id + ':' + member)
             self.member_rpcs[key] = HostedRoomAuthorityRPC(self.authority, self.loop,
-                room_id=binding.room_id, member_id=member, profile=profile, principal=principal, authorize=authorize)
+                room_id=binding.room_id, member_id=member, profile=profile, principal=principal,
+                authorize=authorize, authorize_admission_write=authorize_admission_write)
         return self.member_rpcs[key]
 
     def check_admission(self, ref, row):
