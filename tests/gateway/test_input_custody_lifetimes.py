@@ -119,41 +119,102 @@ async def test_refused_mixed_preparation_native_bytes_are_collectible(tmp_path, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('damaged_proof', ['absent', 'foreign'])
-async def test_interrupted_consumed_native_image_waits_for_exact_raw_retirement(tmp_path, monkeypatch, damaged_proof):
+async def test_interrupted_consumed_native_image_waits_for_exact_raw_retirement(tmp_path, monkeypatch, request, damaged_proof):
     from gateway.hosted_room_input_custody import custody_holds
     from gateway.session_ingress_media import release_admission_media
     from hermes_state_mutation_retirement import retire_prunable
     from hermes_state_terminal import ADMISSION_PREFIX
 
-    db, owner = owned(tmp_path, monkeypatch)
-    try:
-        rpc, bound = rpc_files(tmp_path, owner, count=2, image=True)
-        prepared = prepare_hosted_input(rpc, request_id='hosted:interrupted', prompt='read',
-                                        attachments=[item for item, _ in bound])
-        assert isinstance(prepared.handle, PreparedInputHandle)
-        receipt = await owner.submit(rpc.principal, Submission('hosted:interrupted', rpc.ref,
-            prepared.payload, 'queue'), _input_custody=prepared.handle)
-        admission = get_session_admission(db, admission_id=receipt.admission_id)
+    import time
+    from gateway.hosted_room_artifacts import RoomArtifactOutbox
+    from gateway import hosted_room_driver as tasks
+    from gateway.session_hosted_output_lifecycle import records
+    from tests.gateway.test_canonical_hosted_outputs import owner as output_owner
+    from tests.gateway.test_canonical_output_stop_corrections import initialize_inputs
+
+    async with output_owner(tmp_path, monkeypatch) as (authority, service, runner):
+        initialize_inputs(authority, tmp_path, request)
+        from hermes_state import SessionDB
+        from typing import cast
+        db = cast(SessionDB, authority.db)
+        from tests.gateway.test_api_media_retention import PNG
+        image_bytes = PNG
+        document = service.attachments.put(room_id='room', upload_id='document',
+            name='notes.txt', kind='file', mime='text/plain', data=b'original document')
+        image_upload = service.attachments.put(room_id='room', upload_id='image',
+            name='pixel.png', kind='image', mime='image/png', data=image_bytes)
+        manifest = [{k: item[k] for k in ('attachment_id', 'name', 'kind', 'mime', 'size')}
+                    for item in (document, image_upload)]
+        service.send(room_id='room', event_id='interrupted', payload=dict(
+            thread_id='interrupted', text='@writer Read', attachments=manifest))
+        queued, = tasks.list_tasks(service.db_path, room_id='room', status='queued')
+        binding = service.bindings()[0]
+        lease = tasks.acquire_lease(service.db_path, room_id='room',
+            gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+            process_generation=service.runtime.process_generation, ttl_seconds=60, clock=time.time)
+        attempt = tasks.start_task(service.db_path, queued['identity'], lease,
+            expected_cancel_generation=0, clock=time.time)
+        rpc = service._resolve_member_transport(binding, queued)
+        sid = (await asyncio.to_thread(rpc.create, profile='default', source='bot_room',
+                                       title='Group: room'))['session_id']
+        receipt = await asyncio.to_thread(rpc.submit, profile='default', source='bot_room',
+            session_id=sid, prompt=queued['payload']['prompt'], task=attempt.identity,
+            execution_generation=attempt.execution_generation,
+            attachments=queued['payload']['attachments'], on_terminal=lambda _: None)
+        admission = get_session_admission(db, admission_id=receipt['admission_id'])
         assert admission is not None
         reference, = admission['payload']['attachments_v1']['media']
         image = Path(reference['path'])
-        claimed = claim_session_input(db, epoch=owner.epoch, session_id=rpc.ref.session_id)
-        assert claimed is not None and claimed['admission_id'] == receipt.admission_id
-        terminal = settle_session_input(db, epoch=owner.epoch, admission_id=receipt.admission_id,
+        assert image.read_bytes() == image_bytes
+        claimed = claim_session_input(db, epoch=authority.epoch, session_id=rpc.ref.session_id)
+        assert claimed is not None and claimed['admission_id'] == receipt['admission_id']
+        terminal = settle_session_input(db, epoch=authority.epoch, admission_id=receipt['admission_id'],
             generation=claimed['generation'], outcome='interrupted')
         assert terminal['status'] == 'terminal' and terminal['outcome'] == 'interrupted'
+        with db._read_ctx() as conn:
+            prepared, = conn.execute('SELECT preparation_id FROM input_custody_preparations WHERE admission_id=?',
+                                     (receipt['admission_id'],)).fetchall()
         db._execute_write(lambda conn: conn.execute(
             'UPDATE input_custody_preparations SET expires_at=0 WHERE preparation_id=?',
-            (prepared.handle.preparation_id,)))
+            (prepared['preparation_id'],)))
         with db._read_ctx() as conn:
             assert custody_holds(conn, db.db_path, reference)
-        assert release_admission_media(db, receipt.admission_id) == 0
-        assert collect_legacy_input_aliases(db, epoch=owner.epoch)['removed'] == 0
-        assert image.read_bytes() == bound[-1][1]
+        assert release_admission_media(db, receipt['admission_id']) == 0
+        assert collect_legacy_input_aliases(db, epoch=authority.epoch)['removed'] == 0
+        assert image.read_bytes() == image_bytes
 
-        # The lower raw-retirement operation, not a completed Output task, emits proof.
-        assert db._execute_write(lambda conn: retire_prunable(conn, [rpc.ref.session_id])) == [rpc.ref.session_id]
-        key = ADMISSION_PREFIX + receipt.admission_id
+        # Retirement first refuses the still-running driver; Output must finish its
+        # physical obligation through its own lifecycle before the raw writer can retire.
+        assert db._execute_write(lambda conn: retire_prunable(conn, [sid])) == []
+        stopping = tasks.begin_task_cancel(service.db_path, attempt.identity,
+            cancel_id='interrupted-stop', expected_cancel_generation=0, clock=time.time)
+        assert stopping['status'] == 'stopping'
+        RoomArtifactOutbox(service.db_path)
+        service._capture_stopping_output(stopping, 'interrupted-stop')
+        with db._read_ctx() as conn:
+            pending, = [record for _, record in records(conn, 'room')]
+            assert pending['state'] == 'waiting'
+        assert release_admission_media(db, receipt['admission_id']) == 0
+        assert image.read_bytes() == image_bytes
+        assert db._execute_write(lambda conn: retire_prunable(conn, [sid])) == []
+        driver_terminal = tasks.complete_task_cancel(service.db_path, attempt.identity,
+            cancel_id='interrupted-stop', expected_cancel_generation=1, clock=time.time)
+        assert driver_terminal['status'] == 'cancelled'
+        assert service._reconcile_stopped_output(driver_terminal)
+        service.prepare_room(binding)
+        with db._read_ctx() as conn:
+            completed, = [record for _, record in records(conn, 'room')]
+            assert completed['state'] == 'completed'
+            assert custody_holds(conn, db.db_path, reference)
+        assert release_admission_media(db, receipt['admission_id']) == 0
+        assert image.read_bytes() == image_bytes
+
+        # Completed Output is not raw retirement; only this writer emits the proof.
+        assert db._execute_write(lambda conn: retire_prunable(conn, [sid])) == [sid]
+        with db._read_ctx() as conn:
+            assert conn.execute('SELECT 1 FROM session_admissions WHERE admission_id=?',
+                                (receipt['admission_id'],)).fetchone() is None
+        key = ADMISSION_PREFIX + receipt['admission_id']
         with db._read_ctx() as conn:
             saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0]
         def damage(conn):
@@ -164,16 +225,14 @@ async def test_interrupted_consumed_native_image_waits_for_exact_raw_retirement(
         db._execute_write(damage)
         with db._read_ctx() as conn:
             assert custody_holds(conn, db.db_path, reference)
-        assert collect_legacy_input_aliases(db, epoch=owner.epoch)['removed'] == 0
-        assert image.read_bytes() == bound[-1][1]
+        assert collect_legacy_input_aliases(db, epoch=authority.epoch)['removed'] == 0
+        assert image.read_bytes() == image_bytes
         db._execute_write(lambda conn: conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
                                                    (key, saved)))
         with db._read_ctx() as conn:
             assert not custody_holds(conn, db.db_path, reference)
-        assert collect_legacy_input_aliases(db, epoch=owner.epoch)['removed'] == 1
+        assert collect_legacy_input_aliases(db, epoch=authority.epoch)['removed'] == 1
         assert not image.exists()
-    finally:
-        close(db, tmp_path)
 
 
 @pytest.mark.asyncio
