@@ -13,6 +13,45 @@ import pytest
 from tests.gateway.test_hosted_mux_runtime import mux  # noqa: F401; real registered owners/socket fixture
 
 
+@pytest.mark.live_system_guard_bypass
+def test_output_owner_requires_exact_registered_home_and_open_authority(mux):
+    from gateway.session_authorities import authority_for_home, owner_scope
+    from gateway.session_hosted_service import ensure_hosted_service
+    from gateway.hosted_room_artifacts import RoomArtifactError
+    from hermes_state_runtime import RuntimeStoreError
+
+    runner, homes, _, call = mux
+    call(ensure_hosted_service(runner))
+    registry = runner.session_authorities
+    launch = registry.require(homes['default'])
+    named = registry.require(homes['alpha'])
+    assert runner.session_authority is launch and named is not launch
+    assert authority_for_home(runner, named.profile_id) is named
+    assert named.hosted_room_service is not None
+    for authority in (launch, named):
+        with owner_scope(authority), authority.db._read_ctx() as conn:
+            authority.hosted_room_service._output_owner(conn)
+    removed = registry.remove(homes['alpha'])
+    assert removed is named and authority_for_home(runner, named.profile_id) is None
+    try:
+        with owner_scope(named), named.db._read_ctx() as conn:
+            with pytest.raises(RoomArtifactError, match='output owner changed'):
+                named.hosted_room_service._output_owner(conn)
+        registry.add(homes['alpha'], launch, name='alpha')
+        assert authority_for_home(runner, named.profile_id) is launch
+        with owner_scope(named), named.db._read_ctx() as conn:
+            with pytest.raises(RoomArtifactError, match='output owner changed'):
+                named.hosted_room_service._output_owner(conn)
+    finally:
+        registry.remove(homes['alpha'])
+        registry.add(homes['alpha'], named, name='alpha')
+    runner._draining = True
+    try:
+        with owner_scope(named), named.db._read_ctx() as conn:
+            with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+                named.hosted_room_service._output_owner(conn)
+    finally:
+        runner._draining = False
 
 
 @pytest.mark.live_system_guard_bypass
@@ -191,13 +230,16 @@ def test_named_send_two_files_adopt_partial_delivery_on_next_attempt(mux, monkey
 
 
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.parametrize('lose_response, follow_up', [
-    (False, False), (False, True), (True, False), ('refuse', False),
-    ('later-retry', False), ('later-retry-revoke', False), ('source-revoke', False),
-    ('target-close', False), ('target-read-close', False), ('target-replace', False),
+@pytest.mark.parametrize('coordinator, lose_response, follow_up', [
+    ('default', False, False), ('default', False, True), ('default', True, False),
+    ('default', 'refuse', False), ('default', 'later-retry', False),
+    ('default', 'later-retry-revoke', False), ('default', 'source-revoke', False),
+    ('default', 'target-close', False), ('default', 'target-read-close', False),
+    ('default', 'target-replace', False), ('alpha', False, False), ('alpha', False, True),
 ], ids=['baseline', 'subsequent-turn', 'lost-response', 'refuse', 'later-retry',
-        'later-retry-revoke', 'source-revoke', 'target-close', 'target-read-close', 'target-replace'])
-def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, lose_response, follow_up):
+        'later-retry-revoke', 'source-revoke', 'target-close', 'target-read-close', 'target-replace',
+        'named-coordinator-baseline', 'named-coordinator-subsequent-turn'])
+def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, coordinator, lose_response, follow_up):
     from gateway import hosted_room_driver as tasks
     from gateway.session_authority import SessionAuthority
     from gateway.session_authorities import owner_scope
@@ -218,10 +260,12 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
             return [tuple(row) for row in conn.execute('SELECT * FROM session_admissions ORDER BY admission_id')]
 
     runner, homes, _, call = mux
-    root, target_home = homes['default'], homes['beta']
+    root, target_home = homes[coordinator], homes['beta']
     source = runner.session_authorities.require(root)
     target = runner.session_authorities.require(target_home)
-    assert source is runner.session_authority and source is not target
+    assert source is not target
+    assert runner.session_authority is runner.session_authorities.require(homes['default'])
+    assert (source is runner.session_authority) == (coordinator == 'default')
     assert source.db is not target.db and Path(target.db.db_path).parent == target_home
     content = b'named executor retained output bytes\n'
     output = target_home / 'report.txt'
@@ -306,21 +350,21 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
         service.runtime.active_poll_interval_seconds = .05
         service.authorize_room('alice', 'named-room', create=True)
         service.create_room(room_id='named-room', name='Named send', members=[
-            {'member_id': 'host', 'profile': 'default', 'handle': 'host'},
+            {'member_id': 'host', 'profile': coordinator, 'handle': 'host'},
             {'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
-        default_before = admissions(source.db)
-        # A target profile label on the launch socket never becomes its authority.
+        coordinator_before = admissions(source.db)
+        # A target profile label on the coordinator's socket never becomes its authority.
         wrong = HostedRoomOwnerRPC(home=root, source_home=root,
             room_id='named-room', member_id='helper', profile='beta')
         with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
             wrong.create(profile='beta', source='bot_room', title='Group: named-room')
-        unserved = root / 'profiles' / 'unserved'
+        unserved = homes['default'] / 'profiles' / 'unserved'
         unserved.mkdir()
         with pytest.raises(RuntimeStoreError, match='runtime_draining|profile_mismatch'):
             HostedRoomOwnerRPC(home=unserved, source_home=root,
                 room_id='named-room', member_id='helper', profile='unserved').create(
                     profile='unserved', source='bot_room', title='Group: named-room')
-        assert admissions(source.db) == default_before
+        assert admissions(source.db) == coordinator_before
         assert admissions(target.db) == []
         service.send(room_id='named-room', event_id='input',
                      payload={'text': '@helper Share the report', 'thread_id': 'thread'})
@@ -457,7 +501,7 @@ def test_named_send_finite_execution_and_retained_publication(mux, monkeypatch, 
     row, = list_session_admissions(target.db, session_id=settled['result']['owner_output_receipt']['target_session_id'], pending_only=False)
     assert row['status'] == 'terminal' and row['outcome'] == 'completed'
     assert row['target_session_id'] == settled['result']['owner_output_receipt']['target_session_id']
-    assert admissions(source.db) == default_before
+    assert admissions(source.db) == coordinator_before
     event, = events
     assert event['payload']['recipient_member_ids'] == ['host', 'helper']
     attachment, = event['payload']['attachments']

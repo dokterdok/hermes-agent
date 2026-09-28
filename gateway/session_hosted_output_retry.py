@@ -15,6 +15,7 @@ import time
 
 from gateway.hosted_room_artifacts import RoomArtifactError, RoomArtifactScope
 from gateway.hosted_room_output_fence import require_output_task, require_peer_output_receipt
+from gateway.session_authorities import authority_for_home
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
 
@@ -175,7 +176,7 @@ class CanonicalOutputRetry:
 
     def _output_owner(self, conn):
         a = self.authority
-        if (a.hosted_room_service is not self or a.runner.session_authority is not a
+        if (a.hosted_room_service is not self or authority_for_home(a.runner, a.profile_id) is not a
                 or (a.epoch, a.instance_id) != (self._output_epoch, self._output_instance)
                 or a.db._db_file_was_replaced()):
             raise RoomArtifactError('Group Chat output owner changed')
