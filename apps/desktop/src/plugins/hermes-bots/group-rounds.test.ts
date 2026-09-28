@@ -1381,6 +1381,124 @@ describe('stopGroupThread (#91868/#94569)', () => {
     expect(interrupts[0].params.session_id).toBe('live-alpha-sid')
   })
 
+  it('uses the active queue thread instead of a newer queued activity thread and clears pending work', async () => {
+    let finish!: (reply: string) => void
+    const held = new Promise<string>(resolve => { finish = resolve })
+    const member: GroupMember = { name: 'alpha', title: '' }
+    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const activeThread = room.rounds.sendToGroupChat('Room', [member], 'Active work')!
+
+    await drain(() => room.gateway.calls.length < 1)
+    const activeSession = room.gateway.calls[0].stored
+    const queuedThread = room.rounds.sendToGroupChat('Room', [member], 'Queued work')!
+    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>
+    const queuedSession = await request('session.create', { profile: 'alpha', title: 'Queued session' })
+    const unrelatedSession = await request('session.create', { profile: 'alpha', title: 'Unrelated session' })
+
+    room.chat.updateGroupChat('Room', current => ({
+      ...current,
+      sessions: {
+        ...(current.sessions || {}),
+        [`thread:${queuedThread}::alpha`]: String(queuedSession.stored_session_id),
+        'thread:unrelated::alpha': String(unrelatedSession.stored_session_id)
+      }
+    }))
+    await room.rounds.stopGroupThread('Room', queuedThread, [member])
+
+    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual([activeSession])
+    expect(room.gateway.rpcFor('session.interrupt')[0]?.params.session_id).not.toBe(queuedSession.stored_session_id)
+    expect(room.gateway.rpcFor('session.interrupt')[0]?.params.session_id).not.toBe(unrelatedSession.stored_session_id)
+    const stopped = room.chat.$groupChats.get().Room
+    expect(stopped.holds?.alpha?.thread).toBe(activeThread)
+    expect(stopped.running).toBe(false)
+    expect(stopped.turn).toBeNull()
+
+    finish('LATE_ACTIVE_REPLY')
+    await drain(() => room.gateway.refcount() > 0)
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(log(room, 'Room').map(entry => entry.text)).not.toContain('LATE_ACTIVE_REPLY')
+  })
+
+  it('uses the exact thread-scoped session and falls back to a bare session only for an unmigrated member', async () => {
+    const room = await loadRoom()
+    const member = STOP_MEMBERS[0]
+
+    room.chat.$groupChats.set({
+      Room: {
+        epoch: 3,
+        holds: {},
+        log: [],
+        members: [member],
+        running: true,
+        sessions: {
+          alpha: 'legacy-alpha',
+          'thread:t1::alpha': 'thread-alpha',
+          'thread:t2::alpha': 'newer-alpha'
+        },
+        turn: member,
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+    await room.rounds.stopGroupThread('Room', 't1', [member])
+    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual(['thread-alpha'])
+
+    room.gateway.rpc.splice(0)
+    room.chat.$groupChats.set({
+      Room: {
+        epoch: 3,
+        holds: {},
+        log: [],
+        members: [member],
+        running: true,
+        sessions: { alpha: 'legacy-alpha', 'thread:t2::alpha': 'newer-alpha' },
+        turn: member,
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+    await room.rounds.stopGroupThread('Room', 't1', [member])
+    expect(room.gateway.rpcFor('session.interrupt')).toHaveLength(0)
+
+    seedRoom(room)
+    await room.rounds.stopGroupThread('Room', 't1', [member])
+    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual(['live-alpha-sid'])
+  })
+
+  it('follows active queue identity through rename and ignores a retired room drive', async () => {
+    let finish!: (reply: string) => void
+    const held = new Promise<string>(resolve => { finish = resolve })
+    const member: GroupMember = { name: 'alpha', title: '' }
+    const room = await loadRoom({ turn: () => held })
+
+    room.chat.$groupChats.set({
+      Before: { epoch: 0, log: [], members: [member], roomId: 'room-old', sessions: {}, watermarks: {} }
+    })
+    const activeThread = room.rounds.sendToGroupChat('Before', [member], 'Before rename')!
+    await drain(() => room.gateway.calls.length < 1)
+    const activeSession = room.gateway.calls[0].stored
+    const activeRoom = room.chat.$groupChats.get().Before
+    room.chat.$groupChats.set({ Renamed: activeRoom })
+    await room.rounds.stopGroupThread('Renamed', activeThread, [member])
+    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual([activeSession])
+
+    finish('(pass)')
+    await drain(() => room.gateway.refcount() > 0)
+    room.gateway.rpc.splice(0)
+    room.chat.$groupChats.set({
+      Renamed: {
+        epoch: 0,
+        log: [],
+        members: [member],
+        roomId: 'room-new',
+        running: true,
+        sessions: { 'thread:new-thread::alpha': 'new-session' },
+        turn: member,
+        watermarks: {}
+      }
+    })
+    await room.rounds.stopGroupThread('Renamed', 'new-thread', [member])
+    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual(['new-session'])
+  })
+
   it('stops a room with nobody on turn without any interrupt RPC', async () => {
     const room = await loadRoom()
     seedRoom(room, null)

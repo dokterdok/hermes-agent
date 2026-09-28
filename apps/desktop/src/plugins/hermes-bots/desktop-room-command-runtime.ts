@@ -24,11 +24,11 @@ import type { GroupCommandFence } from './group-command-fence'
 import { desktopCommandResult, settleDesktopCommand } from './group-command-receipts'
 import type { DesktopCommandResult } from './group-command-receipts'
 import { classicAuthorityClaim } from './group-desktop-authority'
-import { groupChatBotsFromDescriptors, groupChatMemberBots } from './group-membership'
-import { cancelGroupThreadForLeaseLoss, sendToGroupChat, stopGroupThread } from './group-rounds'
+import { followGroupChat, groupChatBotsFromDescriptors, groupChatMemberBots } from './group-membership'
+import { cancelGroupThreadForLeaseLoss, groupChatCommandInFlight, removePendingGroupChatCommand, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { groupChatContinuityReady } from './hosted-room-runtime'
 import { shippedGroupAdoptionOwnsExecution } from './types'
-import type { GroupMember, ProfileRoute } from './types'
+import type { GroupChat, GroupMember, ProfileRoute } from './types'
 
 const DESKTOP_ROOM_COMMAND_INTERVAL_MS = 60_000
 const DESKTOP_ROOM_PRESENCE_INTERVAL_MS = 30_000
@@ -197,7 +197,8 @@ function frozenRecipients(value: unknown): GroupMember[] {
 }
 
 async function waitForDesktopRoomCommandSettlement(
-  group: string,
+  currentRoom: () => GroupChat | null,
+  commandInFlight: () => boolean,
   commandId: string,
   signal: AbortSignal | null,
   fence: GroupCommandFence
@@ -212,7 +213,7 @@ async function waitForDesktopRoomCommandSettlement(
       throw retryableDesktopRoomCommand('The command moved to another Desktop.')
     }
 
-    const room = $groupChats.get()[group]
+    const room = currentRoom()
 
     if (!room) {
       throw new Error('This Group Chat is no longer available.')
@@ -222,7 +223,7 @@ async function waitForDesktopRoomCommandSettlement(
       return true
     }
 
-    if (!room.running) {
+    if (!room.running && !commandInFlight()) {
       return false
     }
 
@@ -267,9 +268,42 @@ export async function executeDesktopRoomCommand(
     throw new Error('This Group Chat is no longer available on this Desktop.')
   }
 
-  const [group, room] = entry
+  // A rename preserves immutable room authority; removal/recreation retires
+  // this invocation even if a later room reuses its id or display name.
+  const binding = followGroupChat(entry[0], () => undefined)
+  const currentEntry = () => binding.isLive() ? desktopRoomEntry(roomId, descriptors) : null
+
+  try {
+    return await executeBoundDesktopRoomCommand(command, entry, currentEntry, signal, leaseValid, assertLiveLease)
+  } finally {
+    binding.dispose()
+  }
+}
+
+async function executeBoundDesktopRoomCommand(
+  command: DesktopRoomCommand,
+  entry: NonNullable<ReturnType<typeof desktopRoomEntry>>,
+  currentEntry: () => ReturnType<typeof desktopRoomEntry>,
+  signal: AbortSignal | null,
+  leaseValid: () => boolean,
+  assertLiveLease: () => void
+) {
+  let [group, room] = entry
+  const roomId = String(command.room_id || '')
   const commandId = String(command.command_id || '')
-  const roomValid = () => desktopRoomEntry(roomId, descriptors)?.[0] === group
+
+  const roomValid = () => {
+    const current = currentEntry()
+
+    if (!current) {
+      return false
+    }
+
+    group = current[0]
+    room = current[1]
+
+    return true
+  }
 
   const assertCurrentRoom = () => {
     assertLiveLease()
@@ -336,7 +370,7 @@ export async function executeDesktopRoomCommand(
     const fence = beginGroupCommandFence(roomId, commandId, leaseValid, roomValid)
 
     const cancelTurn = () => {
-      if (localAbort.signal.reason !== 'room-stop') {
+      if (localAbort.signal.reason !== 'room-stop' && roomValid()) {
         cancelGroupThreadForLeaseLoss(group, members, fence)
       }
     }
@@ -391,7 +425,13 @@ export async function executeDesktopRoomCommand(
           active.threadId = thread
         }
 
-        if (await waitForDesktopRoomCommandSettlement(group, commandId, localAbort.signal, fence)) {
+        if (await waitForDesktopRoomCommandSettlement(
+          () => roomValid() ? room : null,
+          () => groupChatCommandInFlight(group, fence),
+          commandId,
+          localAbort.signal,
+          fence
+        )) {
           await persistDesktopCommandState()
           assertCurrentRoom()
 
@@ -430,6 +470,10 @@ export async function executeDesktopRoomCommand(
 
       throw error
     } finally {
+      if (roomValid()) {
+        removePendingGroupChatCommand(group, fence)
+      }
+
       releaseGroupCommandFence(fence)
       localAbort.signal.removeEventListener('abort', cancelTurn)
       signal?.removeEventListener('abort', onLeaseAbort)

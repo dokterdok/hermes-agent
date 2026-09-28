@@ -604,12 +604,27 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 
   const roster = Array.isArray(members) && members.length ? members : room.members || []
   const onTurn = room.turn || null
-  groupChatDrives.get(groupChatRoomKey(group, room))?.pending.clear()
+  const drive = liveGroupChatDrive(group, room)
+  const activeThread = drive?.active?.thread || thread
+
+  // Stop retires the command itself, not just its presentation epoch. It must
+  // not become a fresh retry when its interrupted backend finally unwinds.
+  if (drive?.active?.fence) {
+    cancelGroupCommandFence(drive.active.fence)
+  }
+
+  for (const pending of drive?.pending.values() || []) {
+    if (pending.fence) {
+      cancelGroupCommandFence(pending.fence)
+    }
+  }
+
+  drive?.pending.clear()
 
   const stamp: GroupHoldStamp = {
     at: Date.now(),
     byMessageId: null,
-    thread: thread || null
+    thread: activeThread || null
   }
 
   updateGroupChat(group, (r: GroupChatRoom) => {
@@ -643,7 +658,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   recordGroupActivity(group, {
     kind: 'stopped',
     member: 'You',
-    thread: thread || null
+    thread: activeThread || null
   })
 
   // The captured descriptor owns routing even if the roster has changed.
@@ -653,7 +668,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   const onTurnKey = onTurn ? groupMemberKey(onTurn) : ''
 
   const sessionId = onTurn
-    ? sessions[groupSessionKey(thread || 'legacy', onTurn)] ||
+    ? sessions[groupSessionKey(activeThread || 'legacy', onTurn)] ||
       (hasThreadScopedGroupSession(sessions, onTurnKey) ? null : sessions[onTurnKey])
     : null
 
@@ -674,9 +689,19 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMember[] | null, fence: GroupCommandFence) {
   cancelGroupCommandFence(fence)
   const room = $groupChats.get()[group] || {}
+  const drive = liveGroupChatDrive(group, room)
 
-  // A later user send or replacement room owns a different drive. Cancelling
-  // this command must not interrupt it or change its running/hold state.
+  // A fence waiting behind another queue item owns no live room state. Remove
+  // only its exact pending item; the active local/mailbox turn keeps its epoch,
+  // turn descriptor and backend session.
+  const removedPending = removePendingGroupChatCommand(group, fence)
+
+  if (removedPending || !drive?.active || drive.active.fence !== fence) {
+    return
+  }
+
+  // Only the exact active queue item may invalidate room execution state. A
+  // rename keeps this drive binding live; replacement/disband retires it.
   if (
     (fence.roomValid && !fence.roomValid()) ||
     desktopRoomIdentity(group, room) !== fence.roomId ||
@@ -687,6 +712,7 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
   }
 
   const onTurn = room.turn || null
+  const activeThread = drive.active.thread
 
   updateGroupChat(group, current => ({
     ...current,
@@ -695,7 +721,13 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
     turn: null
   }))
 
-  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  const sessions = room.sessions || {}
+  const onTurnKey = onTurn ? groupMemberKey(onTurn) : ''
+
+  const sessionId = onTurn
+    ? sessions[groupSessionKey(activeThread || 'legacy', onTurn)] ||
+      (hasThreadScopedGroupSession(sessions, onTurnKey) ? null : sessions[onTurnKey])
+    : null
 
   if (onTurn && sessionId) {
     void Promise.resolve()
@@ -1171,21 +1203,21 @@ export function sendToGroupChat(
 
       const existingThread = existing.thread || 'legacy'
 
-      if (roomBeforeSend?.desktopCommandSettled?.[externalId] || roomBeforeSend?.running) {
+      if (
+        roomBeforeSend?.desktopCommandSettled?.[externalId] ||
+        (fence ? groupChatCommandInFlight(group, fence) : roomBeforeSend?.running)
+      ) {
         return existingThread
       }
 
       updateGroupChat(group, current => ({
         ...current,
-        members: durableGroupChatMembers(members),
-        epoch: (current.epoch || 0) + 1,
-        running: true
+        members: durableGroupChatMembers(members)
       }))
       recordGroupActivity(group, { kind: 'queued', member: userName, thread: existingThread })
-      bindGroupCommandFence(fence, existingThread, $groupChats.get()[group].epoch || 0)
-      void runGroupChatRounds(group, members, existingThread, fence).catch(() => {
-        updateGroupChat(group, current => ({ ...current, running: false }))
-      })
+      // Reclaimed durable messages own an ordinary queue item too. A direct
+      // round bypasses the active identity used by both Stop and lease loss.
+      queueGroupChatDrive(group, members, existingThread, fence)
 
       return existingThread
     }
@@ -1250,9 +1282,18 @@ export function sendToGroupChat(
   return target
 }
 
+interface GroupChatQueueItem {
+  fence?: GroupCommandFence
+  members: GroupMember[]
+  thread: string
+}
+
 interface GroupChatDrive {
+  active: null | GroupChatQueueItem
   failedMembers: Set<string>
-  pending: Map<string, { members: GroupMember[]; fence?: GroupCommandFence }>
+  // Local replies coalesce by thread; mailbox claims coalesce only by their
+  // fence generation. Neither owner may overwrite the other on the same thread.
+  pending: Map<string | symbol, GroupChatQueueItem>
   binding: ReturnType<typeof followGroupChat>
 }
 
@@ -1260,14 +1301,46 @@ interface GroupChatDrive {
 // rename follows the room identity; disband retires the binding permanently.
 const groupChatDrives = new Map<string, GroupChatDrive>()
 
+function liveGroupChatDrive(group: string, room: GroupChatRoom) {
+  const drive = groupChatDrives.get(groupChatRoomKey(group, room))
+
+  return drive?.binding.isLive() ? drive : null
+}
+
+/** Queue ownership outlives the presentation's running flag after cancellation. */
+export function groupChatCommandInFlight(group: string, fence: GroupCommandFence) {
+  const drive = liveGroupChatDrive(group, $groupChats.get()[group] || {})
+
+  return drive?.active?.fence === fence || [...(drive?.pending.values() || [])].some(item => item.fence === fence)
+}
+
+/** Release only this claimant's pending work, never another queue item. */
+export function removePendingGroupChatCommand(group: string, fence: GroupCommandFence) {
+  const drive = liveGroupChatDrive(group, $groupChats.get()[group] || {})
+  let removed = false
+
+  for (const [owner, pending] of drive?.pending || []) {
+    if (pending.fence === fence) {
+      drive?.pending.delete(owner)
+      removed = true
+    }
+  }
+
+  return removed
+}
+
 function queueGroupChatDrive(group: string, members: GroupMember[], thread: string, fence?: GroupCommandFence) {
   let key = groupChatRoomKey(group, $groupChats.get()[group])
   const active = groupChatDrives.get(key)
+  const owner = fence?.generation ?? thread
+  const item = { fence, members, thread }
+  bindGroupCommandFence(fence, thread, $groupChats.get()[group]?.epoch || 0)
 
   if (active?.binding.isLive()) {
     // Only a new user action AFTER failure authorizes another attempt.
     active.failedMembers.clear()
-    active.pending.set(thread, { members, fence })
+    bindGroupCommandFence(fence, thread, $groupChats.get()[group]?.epoch || 0)
+    active.pending.set(owner, item)
 
     return
   }
@@ -1279,7 +1352,12 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
     groupChatDrives.set(key, drive)
   })
 
-  const drive: GroupChatDrive = { pending: new Map([[thread, { members, fence }]]), failedMembers: new Set(), binding }
+  const drive: GroupChatDrive = {
+    active: null,
+    pending: new Map([[owner, item]]),
+    failedMembers: new Set(),
+    binding
+  }
   groupChatDrives.set(key, drive)
   // Queued threads share the activity epoch, so draining one cannot hide
   // unresolved failures from the preceding thread. Stop still invalidates it.
@@ -1290,12 +1368,39 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
 
     try {
       while (binding.isLive() && drive.pending.size) {
-        const [nextThread, nextMembers] = drive.pending.entries().next().value!
+        const [nextOwner, next] = drive.pending.entries().next().value!
+        const nextThread = next.thread
         currentThread = nextThread
-        drive.pending.delete(nextThread)
+        drive.pending.delete(nextOwner)
+
+        if (!groupCommandFenceMatches(next.fence, desktopRoomIdentity(group, $groupChats.get()[group]), nextThread)) {
+          continue
+        }
+
+        // Lease loss invalidates the predecessor's epoch, not later claimants.
+        // Explicit Stop removes pending items before they can be rebound here.
+        const activeEpoch = $groupChats.get()[group]?.epoch || 0
+        bindGroupCommandFence(next.fence, nextThread, activeEpoch)
+        const active = next
+        drive.active = active
         updateGroupChat(group, room => ({ ...room, running: true }))
-        bindGroupCommandFence(nextMembers.fence, nextThread, $groupChats.get()[group].epoch || 0)
-        await runGroupChatRounds(group, nextMembers.members, nextThread, nextMembers.fence, drive.failedMembers)
+
+        try {
+          await runGroupChatRounds(group, next.members, nextThread, next.fence, drive.failedMembers)
+        } finally {
+          if (drive.active === active) {
+            if (
+              binding.isLive() &&
+              groupChatDrives.get(key) === drive &&
+              (!next.fence?.roomValid || next.fence.roomValid()) &&
+              ($groupChats.get()[group]?.epoch || 0) === activeEpoch
+            ) {
+              updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
+            }
+
+            drive.active = null
+          }
+        }
       }
     } catch (error) {
       if (binding.isLive()) {
@@ -1309,6 +1414,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
         updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
       }
     } finally {
+      drive.active = null
       binding.dispose()
 
       if (groupChatDrives.get(key) === drive) {

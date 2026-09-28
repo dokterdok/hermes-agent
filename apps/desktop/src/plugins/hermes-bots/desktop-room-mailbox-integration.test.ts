@@ -1181,28 +1181,24 @@ describe('classic Desktop mailbox with the real room engine', () => {
   )
 
 
-  it('does not stop or overwrite a newer user thread when the older mailbox lease is lost', async () => {
-    const loaded = await load()
-    const room = seed(loaded)
-    const controller = new AbortController()
+  it('removes only a pending mailbox command when its lease is lost behind an active local thread', async () => {
     let release!: (value: string) => void
+    const held = new Promise<string>(resolve => { release = resolve })
+    const loaded = await load({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const room = seed(loaded)
+    const activeThread = loaded.rounds.sendToGroupChat('Workshop', members, 'Local work')!
 
-    const late = new Promise<string>(resolve => {
-      release = resolve
-    })
-
-    const turns = await import('./group-turns')
-
-    const turn = vi
-      .spyOn(turns, 'runGroupChatMemberTurn')
-      .mockImplementation(async (_group, _member, _prompt, _thread, _images, fence) => (fence ? late : '(pass)'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.calls).toHaveLength(1)
+    const activeSession = loaded.gateway.calls[0].stored
+    const controller = new AbortController()
 
     const result = loaded.runtime.executeDesktopRoomCommand(
       {
         action: 'send',
-        command_id: 'telegram:old',
+        command_id: 'telegram:pending',
         room_id: 'room-1',
-        payload: { message: 'Old work', recipients: members }
+        payload: { message: 'Queued mailbox work', recipients: members }
       },
       loaded.client.desktopRoomDescriptors({ Workshop: room }),
       { consumerId: 'desktop:one', request: async () => ({}), route, signal: controller.signal }
@@ -1210,23 +1206,412 @@ describe('classic Desktop mailbox with the real room engine', () => {
 
     const outcome = result.catch(error => error as { retryable: boolean })
 
-    try {
-      await vi.advanceTimersByTimeAsync(0)
-      expect(turn).toHaveBeenCalledTimes(1)
-      const thread = loaded.rounds.sendToGroupChat('Workshop', members, 'New unrelated work')
-      const newEpoch = loaded.chat.$groupChats.get().Workshop.epoch
-      controller.abort('lease-lost')
-      release('OLD_REPLY')
-      await vi.advanceTimersByTimeAsync(1_000)
-      expect(await outcome).toMatchObject({ retryable: true })
-      expect(loaded.chat.$groupChats.get().Workshop.epoch).toBe(newEpoch)
-      expect(loaded.chat.$groupChats.get().Workshop.log.map(entry => entry.text)).not.toContain('OLD_REPLY')
-      expect(loaded.chat.$groupChats.get().Workshop.log.some(entry => entry.thread === thread)).toBe(true)
-      expect(loaded.chat.$groupChats.get().Workshop.holds || {}).toEqual({})
-      expect(loaded.gateway.rpcFor('session.interrupt')).toHaveLength(0)
-      expect(turn).toHaveBeenCalledTimes(2)
-    } finally {
-      turn.mockRestore()
+    await vi.advanceTimersByTimeAsync(0)
+    const beforeLoss = loaded.chat.$groupChats.get().Workshop
+    expect(beforeLoss.turn).toEqual(members[0])
+    expect(beforeLoss.sessions?.[`thread:${activeThread}::reviewer`]).toBe(activeSession)
+    const activeEpoch = beforeLoss.epoch
+    const activeSessions = structuredClone(beforeLoss.sessions)
+
+    controller.abort('lease-lost')
+    await vi.advanceTimersByTimeAsync(0)
+    const afterLoss = loaded.chat.$groupChats.get().Workshop
+    expect(afterLoss.epoch).toBe(activeEpoch)
+    expect(afterLoss.running).toBe(true)
+    expect(afterLoss.turn).toEqual(members[0])
+    expect(afterLoss.sessions).toEqual(activeSessions)
+    expect(loaded.gateway.rpcFor('session.interrupt')).toHaveLength(0)
+
+    release('(pass)')
+
+    for (let index = 0; index < 120 && loaded.chat.$groupChats.get().Workshop.running; index += 1) {
+      await vi.advanceTimersByTimeAsync(250)
+    }
+
+    expect(await outcome).toMatchObject({ retryable: true })
+    expect(loaded.gateway.calls).toHaveLength(1)
+    expect(loaded.chat.$groupChats.get().Workshop.running).toBe(false)
+  })
+
+  it('interrupts only the active mailbox thread when its lease is lost and preserves a later local thread', async () => {
+    let release!: (value: string) => void
+    const held = new Promise<string>(resolve => { release = resolve })
+    const loaded = await load({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const room = seed(loaded)
+    const controller = new AbortController()
+
+    const result = loaded.runtime.executeDesktopRoomCommand(
+      {
+        action: 'send',
+        command_id: 'telegram:active',
+        room_id: 'room-1',
+        payload: { message: 'Mailbox work', recipients: members }
+      },
+      loaded.client.desktopRoomDescriptors({ Workshop: room }),
+      { consumerId: 'desktop:one', request: async () => ({}), route, signal: controller.signal }
+    )
+
+    const outcome = result.catch(error => error as { retryable: boolean })
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.calls).toHaveLength(1)
+    const activeThread = loaded.chat.$groupChats.get().Workshop.log.find(entry => entry.id === 'telegram:active')?.thread
+    const activeSession = loaded.gateway.calls[0].stored
+    const laterThread = loaded.rounds.sendToGroupChat('Workshop', members, 'Later local work')!
+    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>
+    const idle = await request('session.create', { profile: 'reviewer', title: 'Idle later thread' })
+    const unrelated = await request('session.create', { profile: 'reviewer', title: 'Unrelated thread' })
+
+    loaded.chat.updateGroupChat('Workshop', current => ({
+      ...current,
+      sessions: {
+        ...(current.sessions || {}),
+        [`thread:${laterThread}::reviewer`]: String(idle.stored_session_id),
+        'thread:unrelated::reviewer': String(unrelated.stored_session_id)
+      }
+    }))
+    controller.abort('lease-lost')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual([activeSession])
+    expect(loaded.gateway.rpcFor('session.interrupt')[0]?.params.session_id).not.toBe(idle.stored_session_id)
+    expect(loaded.gateway.rpcFor('session.interrupt')[0]?.params.session_id).not.toBe(unrelated.stored_session_id)
+    expect(await settle(outcome)).toMatchObject({ retryable: true })
+
+    release('OLD_REPLY')
+
+    for (let index = 0; index < 120 && loaded.gateway.calls.length < 2; index += 1) {
+      await vi.advanceTimersByTimeAsync(250)
+    }
+
+    for (let index = 0; index < 20; index += 1) {
+      await Promise.resolve()
+    }
+
+    expect(loaded.gateway.calls).toHaveLength(2)
+    expect(loaded.gateway.calls[1]).toMatchObject({ stored: idle.stored_session_id })
+    expect(loaded.gateway.calls[1].prompt).toContain('Later local work')
+    const afterLoss = loaded.chat.$groupChats.get().Workshop
+    expect(afterLoss.log.map(entry => entry.text)).not.toContain('OLD_REPLY')
+    expect(afterLoss.log.some(entry => entry.thread === activeThread)).toBe(true)
+    expect(afterLoss.log.some(entry => entry.thread === laterThread)).toBe(true)
+    expect(afterLoss.holds || {}).toEqual({})
+    expect(afterLoss.running).toBe(true)
+    expect(afterLoss.turn).toEqual(members[0])
+  })
+
+  it.each(['local first', 'recovery first'] as const)('preserves independent same-thread owners with %s', async ordering => {
+    let release!: (text: string) => void
+    const held = new Promise<string>(resolve => { release = resolve })
+    const loaded = await load({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    seed(loaded)
+    const descriptors = loaded.client.desktopRoomDescriptors(loaded.chat.$groupChats.get())
+
+    const command = {
+      action: 'send' as const, command_id: 'telegram:same-thread-recovery', room_id: 'room-1',
+      payload: { message: 'Original same-thread work', recipients: members }
+    }
+
+    const firstLease = new AbortController()
+
+    const first = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
+      consumerId: 'desktop:one', request: async () => ({}), route, signal: firstLease.signal
+    }).catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.calls).toHaveLength(1)
+    const thread = loaded.chat.$groupChats.get().Workshop.log.find(entry => entry.id === command.command_id)!.thread!
+    firstLease.abort('lease-lost')
+    expect(await settle(first)).toMatchObject({ retryable: true })
+
+    if (ordering === 'local first') {
+      expect(loaded.rounds.sendToGroupChat('Workshop', members, 'Local reply on the same thread', thread)).toBe(thread)
+    }
+
+    const recoveryLease = new AbortController()
+
+    const recovery = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
+      consumerId: 'desktop:two', request: async () => ({}), route, signal: recoveryLease.signal
+    }).catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(0)
+
+    if (ordering === 'local first') {
+      recoveryLease.abort('lease-lost')
+    } else {
+      expect(loaded.rounds.sendToGroupChat('Workshop', members, 'Local reply on the same thread', thread)).toBe(thread)
+      await loaded.rounds.stopGroupThread('Workshop', thread, members)
+    }
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    release('ABANDONED_SAME_THREAD')
+    const outcome = await settle(recovery)
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    const room = loaded.chat.$groupChats.get().Workshop
+    expect(room.running).toBe(false)
+    expect(room.turn).toBeNull()
+    expect(room.log.filter(entry => entry.id === command.command_id)).toHaveLength(1)
+    expect(room.log.map(entry => entry.text)).not.toContain('ABANDONED_SAME_THREAD')
+    expect(loaded.gateway.rpcFor('session.interrupt')).toHaveLength(1)
+    expect(outcome).toMatchObject({ retryable: true })
+
+    if (ordering === 'local first') {
+      expect(loaded.gateway.calls).toHaveLength(2)
+      expect(loaded.gateway.calls[1].prompt).toContain('Local reply on the same thread')
+    } else {
+      expect(loaded.gateway.calls).toHaveLength(1)
+      expect(room.desktopCommandSettled?.[command.command_id]).toBeUndefined()
+    }
+  })
+
+  it.each(['completion', 'lease abort', 'expired lease'] as const)('keeps recovery queued behind a cancelled predecessor through %s', async completion => {
+    let release!: (text: string) => void
+    const held = new Promise<string>(resolve => { release = resolve })
+    const loaded = await load({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    seed(loaded)
+    const descriptors = loaded.client.desktopRoomDescriptors(loaded.chat.$groupChats.get())
+
+    const command = {
+      action: 'send' as const,
+      command_id: 'telegram:overlapping-recovery',
+      room_id: 'room-1',
+      payload: { message: 'Recover while predecessor unwinds', recipients: members }
+    }
+
+    const firstLease = new AbortController()
+
+    const first = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
+      consumerId: 'desktop:one', request: async () => ({}), route, signal: firstLease.signal
+    }).catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.calls).toHaveLength(1)
+    const firstSession = loaded.gateway.calls[0].stored
+    firstLease.abort('lease-lost')
+    expect(await settle(first)).toMatchObject({ retryable: true })
+    expect(loaded.chat.$groupChats.get().Workshop.running).toBe(false)
+
+    const secondLease = new AbortController()
+    let leaseLive = true
+    let recoveryReturned = false
+
+    const second = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
+      consumerId: 'desktop:two', request: async () => ({}), route, signal: secondLease.signal,
+      leaseValid: () => leaseLive
+    }).catch(error => error).finally(() => { recoveryReturned = true })
+
+    // Hold the interrupted backend past both old bounded drive attempts.
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(recoveryReturned).toBe(false)
+    expect(loaded.gateway.calls).toHaveLength(1)
+    const laterThread = loaded.rounds.sendToGroupChat('Workshop', members, 'Unrelated later work')!
+
+    if (completion === 'lease abort') {
+      secondLease.abort('lease-lost')
+      expect(await settle(second)).toMatchObject({ retryable: true })
+    } else if (completion === 'expired lease') {
+      // No abort callback or settlement poll runs before the queue drains.
+      leaseLive = false
+    }
+
+    release('ABANDONED_PREDECESSOR')
+    const result = await settle(second)
+
+    for (let index = 0; index < 120 && loaded.chat.$groupChats.get().Workshop.running; index += 1) {
+      await vi.advanceTimersByTimeAsync(250)
+    }
+
+    const current = loaded.chat.$groupChats.get().Workshop
+    expect(current.running).toBe(false)
+    expect(current.turn).toBeNull()
+    expect(current.log.filter(entry => entry.id === command.command_id)).toHaveLength(1)
+    expect(current.log.map(entry => entry.text)).not.toContain('ABANDONED_PREDECESSOR')
+    expect(current.log.some(entry => entry.thread === laterThread)).toBe(true)
+    expect(loaded.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual([firstSession])
+
+    if (completion === 'completion') {
+      expect(result).toMatchObject({ room_name: 'Workshop' })
+      expect(current.desktopCommandSettled?.[command.command_id]).toBeDefined()
+      expect(loaded.gateway.calls).toHaveLength(3)
+      expect(loaded.gateway.calls[1].stored).toBe(firstSession)
+    } else {
+      expect(result).toMatchObject({ retryable: true })
+      expect(current.desktopCommandSettled?.[command.command_id]).toBeUndefined()
+      expect(loaded.gateway.calls).toHaveLength(2)
+    }
+
+    expect(loaded.gateway.calls.at(-1)?.prompt).toContain('Unrelated later work')
+
+    // A fresh reclaim must remain usable after either activation or removal.
+    const fresh = loaded.runtime.executeDesktopRoomCommand({
+      ...command,
+      command_id: 'telegram:after-overlapping-recovery',
+      payload: { message: 'Fresh work after recovery', recipients: members }
+    }, descriptors, {
+      consumerId: 'desktop:three', request: async () => ({}), route, signal: null
+    })
+
+    expect(await settle(fresh)).toMatchObject({ room_name: 'Workshop' })
+    expect(loaded.gateway.calls.at(-1)?.prompt).toContain('Fresh work after recovery')
+    expect(loaded.chat.$groupChats.get().Workshop.running).toBe(false)
+  })
+
+  it('queues recovered work behind an unrelated active thread instead of trusting room.running', async () => {
+    const releases: Array<(text: string) => void> = []
+
+    const loaded = await load({
+      turn: ({ n }) => n <= 2 ? new Promise<string>(resolve => releases.push(resolve)) : '(pass)'
+    })
+
+    seed(loaded)
+    const descriptors = loaded.client.desktopRoomDescriptors(loaded.chat.$groupChats.get())
+
+    const command = {
+      action: 'send' as const, command_id: 'telegram:recover-beside-local', room_id: 'room-1',
+      payload: { message: 'Recover after local starts', recipients: members }
+    }
+
+    const firstLease = new AbortController()
+
+    const first = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
+      consumerId: 'desktop:one', request: async () => ({}), route, signal: firstLease.signal
+    }).catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(0)
+    const originalSession = loaded.gateway.calls[0].stored
+    firstLease.abort('lease-lost')
+    expect(await settle(first)).toMatchObject({ retryable: true })
+    loaded.rounds.sendToGroupChat('Workshop', members, 'Local work before reclaim')
+    releases[0]('ABANDONED_FIRST')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.calls).toHaveLength(2)
+    expect(loaded.chat.$groupChats.get().Workshop.running).toBe(true)
+
+    let returned = false
+
+    const recovery = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
+      consumerId: 'desktop:two', request: async () => ({}), route, signal: null
+    }).finally(() => { returned = true })
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(returned).toBe(false)
+    expect(loaded.gateway.calls).toHaveLength(2)
+    releases[1]('(pass)')
+    expect(await settle(recovery)).toMatchObject({ room_name: 'Workshop' })
+    expect(loaded.gateway.calls).toHaveLength(3)
+    expect(loaded.gateway.calls[2].stored).toBe(originalSession)
+    expect(loaded.chat.$groupChats.get().Workshop.running).toBe(false)
+    expect(loaded.chat.$groupChats.get().Workshop.log.filter(entry => entry.id === command.command_id)).toHaveLength(1)
+  })
+
+  it.each(['lease loss', 'UI Stop'] as const)('interrupts recovered mailbox work on %s through its active queue identity', async cancellation => {
+    const releases: Array<(text: string) => void> = []
+    const loaded = await load({ turn: () => new Promise<string>(resolve => releases.push(resolve)) })
+    seed(loaded)
+    const descriptors = loaded.client.desktopRoomDescriptors(loaded.chat.$groupChats.get())
+
+    const command = {
+      action: 'send' as const,
+      command_id: 'telegram:recover-active',
+      room_id: 'room-1',
+      payload: { message: 'Recover this work', recipients: members }
+    }
+
+    const firstLease = new AbortController()
+
+    const first = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
+      consumerId: 'desktop:one', request: async () => ({}), route, signal: firstLease.signal
+    }).catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.calls).toHaveLength(1)
+    firstLease.abort('lease-lost')
+    await vi.advanceTimersByTimeAsync(0)
+    releases[0]('ABANDONED_FIRST')
+    await settle(first)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(loaded.chat.$groupChats.get().Workshop.running).toBe(false)
+    expect(loaded.chat.$groupChats.get().Workshop.desktopCommandSettled?.[command.command_id]).toBeUndefined()
+
+    const secondLease = new AbortController()
+
+    const second = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
+      consumerId: 'desktop:two', request: async () => ({}), route, signal: secondLease.signal
+    }).catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.calls).toHaveLength(2)
+    const activeSession = loaded.gateway.calls[1].stored
+    const priorInterrupts = loaded.gateway.rpcFor('session.interrupt').length
+    expect(loaded.chat.$groupChats.get().Workshop.log.filter(entry => entry.id === command.command_id)).toHaveLength(1)
+
+    if (cancellation === 'lease loss') {
+      secondLease.abort('lease-lost')
+    } else {
+      await loaded.rounds.stopGroupThread('Workshop', null, members)
+    }
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.rpcFor('session.interrupt').slice(priorInterrupts).map(call => call.params.session_id))
+      .toEqual([activeSession])
+    releases[1]('ABANDONED_RECOVERY')
+    await settle(second)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(loaded.gateway.calls).toHaveLength(2)
+    expect(loaded.chat.$groupChats.get().Workshop.log.map(entry => entry.text)).not.toContain('ABANDONED_RECOVERY')
+  })
+
+  it.each(['lease loss', 'UI Stop', 'mailbox Stop', 'settlement'] as const)('follows an in-flight mailbox rename through %s without losing its session', async completion => {
+    let release!: (text: string) => void
+    const loaded = await load({ turn: () => new Promise<string>(resolve => { release = resolve }) })
+    seed(loaded)
+    const descriptors = loaded.client.desktopRoomDescriptors(loaded.chat.$groupChats.get())
+    const lease = new AbortController()
+    const commandId = 'telegram:rename-active'
+
+    const outcome = loaded.runtime.executeDesktopRoomCommand({
+      action: 'send', command_id: commandId, room_id: 'room-1',
+      payload: { message: 'Work across rename', recipients: members }
+    }, descriptors, {
+      consumerId: 'desktop:one', request: async () => ({}), route, signal: lease.signal
+    }).catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.calls).toHaveLength(1)
+    const activeSession = loaded.gateway.calls[0].stored
+    loaded.chat.$groupChats.set({ Renamed: loaded.chat.$groupChats.get().Workshop })
+
+    if (completion === 'lease loss') {
+      lease.abort('lease-lost')
+    } else if (completion === 'UI Stop') {
+      await loaded.rounds.stopGroupThread('Renamed', null, members)
+    } else if (completion === 'mailbox Stop') {
+      await loaded.runtime.executeDesktopRoomCommand({
+        action: 'stop', command_id: 'telegram:rename-stop', room_id: 'room-1',
+        payload: { target_command_id: commandId }
+      }, descriptors, { consumerId: 'desktop:one', request: async () => ({}), route, signal: null })
+    }
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loaded.gateway.rpcFor('session.interrupt').map(call => call.params.session_id))
+      .toEqual(completion === 'settlement' ? [] : [activeSession])
+    release('(pass)')
+    const result = await settle(outcome)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(loaded.gateway.calls).toHaveLength(1)
+    expect(loaded.chat.$groupChats.get().Workshop).toBeUndefined()
+    expect(loaded.chat.$groupChats.get().Renamed.running).toBe(false)
+
+    if (completion === 'lease loss' || completion === 'UI Stop') {
+      expect(result).toMatchObject({ retryable: true })
+      expect(loaded.chat.$groupChats.get().Renamed.desktopCommandSettled?.[commandId]).toBeUndefined()
+
+      if (completion === 'UI Stop') {
+        expect(loaded.chat.$groupChats.get().Renamed.holds?.reviewer).toBeDefined()
+      }
+    } else {
+      expect(result).toMatchObject({ room_name: 'Renamed' })
+      expect(loaded.chat.$groupChats.get().Renamed.desktopCommandSettled?.[commandId]).toBeDefined()
     }
   })
 

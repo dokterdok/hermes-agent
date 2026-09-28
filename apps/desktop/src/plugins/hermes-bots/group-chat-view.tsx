@@ -1091,14 +1091,14 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
 
   // #94570 shell rewired onto the real primitive (#91868/#94569): the button
   // must stop the ROUND, not just spray per-member interrupts — without the
-  // epoch bump + holds the loop marched on to the next member. Thread scope:
-  // the run being stopped is the one the latest activity belongs to.
+  // epoch bump + holds the loop marched on to the next member. The room engine
+  // retains the exact active queue thread; activity ordering is display-only.
   const stopRoomRun = async () => {
     if (!canStop) {
       return
     }
 
-    await stopGroupThread(group, latestActivity?.thread || null, memberDescriptors())
+    await stopGroupThread(group, null, memberDescriptors())
     host.notify({
       kind: 'success',
       message: b.group.stopped(group)

@@ -2,6 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import type * as groupRoundsModule from './group-rounds'
+const { stopGroupThread } = vi.hoisted(() => ({ stopGroupThread: vi.fn(async () => undefined) }))
+
 import { translateBots } from './i18n-test-helper'
 
 // Room bodies go through the shell's message renderer (the 1:1 chat's code
@@ -49,6 +52,10 @@ vi.mock('./group-chat-parts', () => ({
   GroupClarifyCard: () => null,
   GroupImageControls: () => null,
   GroupMentionInput: () => null
+}))
+vi.mock('./group-rounds', async importOriginal => ({
+  ...(await importOriginal<typeof groupRoundsModule>()),
+  stopGroupThread
 }))
 afterEach(cleanup)
 
@@ -119,4 +126,41 @@ it('removes Stop controls from historical working rows after the room settles', 
   expect(screen.getByText('builder replied')).toBeTruthy()
   expect(screen.getByText('turn settled')).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+})
+
+it('does not pass the latest display activity thread as Stop authority', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  stopGroupThread.mockClear()
+  const { $groupChats } = await import('./group-chat')
+  const { $groupActivity } = await import('./group-activity')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+  const members = [{ name: 'reviewer', title: 'Reviewer' }]
+
+  $groupChats.set({
+    Room: {
+      epoch: 4,
+      log: [
+        { id: 'a', thread: 'thread-a', from: { kind: 'user', name: 'You' }, text: 'Active', at: 1 },
+        { id: 'b', thread: 'thread-b', from: { kind: 'user', name: 'You' }, text: 'Queued', at: 2 }
+      ],
+      members,
+      running: true,
+      sessions: {},
+      watermarks: {}
+    }
+  })
+  $groupActivity.set({
+    Room: {
+      events: [
+        { at: 1, epoch: 4, kind: 'working', member: 'reviewer', thread: 'thread-a' },
+        { at: 2, epoch: 4, kind: 'queued', member: 'You', thread: 'thread-b' }
+      ]
+    }
+  })
+  const { getByRole } = render(<GroupChatWorkspace group="Room" members={members} />)
+
+  await waitFor(() => expect(getByRole('button', { name: 'Stop' })).toBeTruthy())
+  fireEvent.click(getByRole('button', { name: 'Stop' }))
+  await waitFor(() => expect(stopGroupThread).toHaveBeenCalledTimes(1))
+  expect(stopGroupThread).toHaveBeenCalledWith('Room', null, expect.any(Array))
 })

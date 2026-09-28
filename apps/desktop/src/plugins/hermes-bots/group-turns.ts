@@ -1099,7 +1099,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     // Ordinary newer sends bump only `epoch`, so their late work still reaches
     // the #93127 commit check below.
     if (!leaseLive()) {
-      if (context.fence) {
+      if (context.fence && binding.isLive() && context.fence.roomValid?.() !== false && $groupChats.get()[context.group]) {
         clearGroupTurnMarker(context.group, member, context.turn)
       }
 
