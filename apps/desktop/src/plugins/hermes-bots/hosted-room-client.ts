@@ -310,6 +310,7 @@ function isMissingCapabilityMethod(error: unknown): boolean {
 function isExplicitAuthenticationFailure(error: unknown): boolean {
   const outer = record(error)
   const inner = record(outer?.error)
+
   const status = outer?.statusCode ?? outer?.status_code ?? outer?.status ??
     inner?.statusCode ?? inner?.status_code ?? inner?.status
 

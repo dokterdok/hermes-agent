@@ -136,6 +136,7 @@ async function requestDesktopCommandGateway(route: ProfileRoute, method: string,
   if (method === 'groups.desktop.claim' || method === 'groups.desktop.presence') {
     const forSend =
       method === 'groups.desktop.claim' && Array.isArray(params.actions) && params.actions.includes('send')
+
     const expected = desktopRoomDescriptors(desktopCommandEligibleRooms(forSend))
     await persistDesktopCommandState()
 

@@ -1,6 +1,8 @@
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as roundsModule from './group-rounds'
 import { translateBots } from './i18n-test-helper'
 import type { Attachment, GroupMember } from './types'
 
@@ -15,7 +17,7 @@ const { host, sendToGroupChatDurably } = vi.hoisted(() => ({
 }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
-  const sdk = await importOriginal<typeof import('@hermes/plugin-sdk')>()
+  const sdk = await importOriginal<typeof HermesSdk>()
   const { pluginSdkMock } = await import('./group-test-utils')
   const base = await pluginSdkMock(host)
 
@@ -52,7 +54,7 @@ vi.mock('./group-chat-parts', () => ({
 }))
 
 vi.mock('./group-rounds', async importOriginal => ({
-  ...(await importOriginal<typeof import('./group-rounds')>()),
+  ...(await importOriginal<typeof roundsModule>()),
   sendToGroupChatDurably,
   stopGroupThread: vi.fn()
 
@@ -71,6 +73,7 @@ beforeEach(() => {
       if (method === 'groups.capabilities') {
         return { driver: false, persistent_process: false }
       }
+
       throw new Error(`Unexpected RPC: ${method}`)
     })
   })

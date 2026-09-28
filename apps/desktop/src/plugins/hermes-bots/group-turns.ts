@@ -9,9 +9,12 @@
 import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
+import { desktopRoomIdentity } from './desktop-room-command-client'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import { groupCommandFenceLive, groupCommandFenceMatches } from './group-command-fence'
+import type { GroupCommandFence } from './group-command-fence'
 import {
   failedTurnBoundaryRow,
   groupTranscriptRowText,
@@ -27,9 +30,6 @@ import {
   hasThreadScopedGroupSession
 } from './group-membership'
 import { GROUP_PROMPT_HEADER_PREFIX } from './group-round-prompt'
-import { desktopRoomIdentity } from './desktop-room-command-client'
-import { groupCommandFenceLive, groupCommandFenceMatches } from './group-command-fence'
-import type { GroupCommandFence } from './group-command-fence'
 import { approveHostedGroupChat } from './hosted-room-runtime'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'

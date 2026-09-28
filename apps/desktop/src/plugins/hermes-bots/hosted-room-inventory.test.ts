@@ -153,6 +153,7 @@ describe('capability reply freshness', () => {
       if (method === 'groups.capabilities') {throw failure}
       throw new Error(`unexpected method: ${method}`)
     })
+
     loaded.chat.$groupChats.set({
       Classic: projected({ hosted: 'install:home', hostedConnectionId: 'local', hostedEpoch: 1 })
     })

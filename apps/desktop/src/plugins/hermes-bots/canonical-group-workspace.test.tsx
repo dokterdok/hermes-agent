@@ -1,14 +1,15 @@
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { useStore } from '@nanostores/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type { ComponentProps, ReactNode } from 'react'
-import type * as HermesSdk from '@hermes/plugin-sdk'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const { request, routes } = vi.hoisted(() => ({
   request: vi.fn(),
   routes: { value: [] as Array<Record<string, unknown>> }
 }))
+
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
@@ -170,6 +171,7 @@ it('renders mixed-gateway recovery in the registered canonical workspace and run
     { connectionId: 'gateway-a', mode: 'remote', profile: 'default', targetProfile: 'default' },
     { connectionId: 'gateway-b', mode: 'remote', profile: 'default', targetProfile: 'default' }
   ]
+
   const members = [
     { handle: 'research', member_id: 'research', profile: 'research' },
     {
@@ -180,6 +182,7 @@ it('renders mixed-gateway recovery in the registered canonical workspace and run
       target: { installation_id: 'install:peer', kind: 'peer', peer_id: 'install:peer' }
     }
   ]
+
   const serverRoom = {
     authority_epoch: 1,
     authority_gateway_id: 'install:home',
@@ -188,11 +191,13 @@ it('renders mixed-gateway recovery in the registered canonical workspace and run
     name: 'Release',
     room_id: 'room-1'
   }
+
   let upgraded = false
   let holdUpgrade = false
   let upgradeStarted!: () => void
   let releaseUpgrade!: () => void
   const upgradeRequest = new Promise<void>(resolve => { upgradeStarted = resolve })
+
   const upgradeResponse = new Promise<Record<string, unknown>>(resolve => {
     releaseUpgrade = () => resolve({
       authority_gateway_id: 'install:peer',
@@ -209,7 +214,9 @@ it('renders mixed-gateway recovery in the registered canonical workspace and run
       if (connectionId === 'gateway-b') {
         if (!upgraded) {throw Object.assign(new Error('Method not found'), { code: -32601 })}
 
-        if (holdUpgrade) {upgradeStarted(); return upgradeResponse}
+        if (holdUpgrade) {upgradeStarted();
+
+ return upgradeResponse}
 
         return {
           authority_gateway_id: 'install:peer',
@@ -228,16 +235,20 @@ it('renders mixed-gateway recovery in the registered canonical workspace and run
     }
 
     if (method === 'groups.list') {return connectionId === 'gateway-b' ? { rooms: [] } : { rooms: [serverRoom] }}
+
     if (method === 'groups.state') {return { driver_status: { peer_routes: [{ member_id: 'builder', status: 'needs_reauthorization' }] }, room: serverRoom }}
+
     if (method === 'groups.log') {return { events: [], has_more: false, latest_seq: 0 }}
     throw new Error(`Unexpected method: ${method}`)
   })
 
   await startHostedRoomRuntime(scriptedStorage(new Map()).storage)
+
   const key = registerCanonicalGroup(
     { connectionId: 'gateway-a', profile: 'default' },
     { room_id: 'room-1', name: 'Release', members }
   )
+
   render(<GroupChatWorkspace group={key} members={[]} />)
 
   await screen.findByText('Update this device to keep this Group Chat running.')

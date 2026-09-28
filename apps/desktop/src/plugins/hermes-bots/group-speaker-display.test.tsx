@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as avatarModule from './avatar'
+import type * as roundsModule from './group-rounds'
 import { speakerEvent, speakerMember, speakerReplay, speakerRoom } from './group-speaker-test-fixtures'
 import { translateBots } from './i18n-test-helper'
 import type { GroupChat, GroupMember } from './types'
@@ -40,7 +41,7 @@ vi.mock('./group-chat-parts', () => ({
 }))
 
 vi.mock('./group-rounds', async importOriginal => ({
-  ...(await importOriginal<typeof import('./group-rounds')>()), sendToGroupChatDurably, stopGroupThread: vi.fn() 
+  ...(await importOriginal<typeof roundsModule>()), sendToGroupChatDurably, stopGroupThread: vi.fn() 
 }))
 
 vi.mock('./avatar', async importOriginal => {
@@ -67,7 +68,7 @@ async function show(room: GroupChat, members: GroupMember[] = room.members || []
   render(
     <>
       <GroupChatWorkspace group="Board" members={members} />
-      <GroupRow active group="Board" members={members} needsYou={false} onDisband={vi.fn()} onOpen={vi.fn()} onNewSection={vi.fn()} />
+      <GroupRow active group="Board" members={members} needsYou={false} onDisband={vi.fn()} onNewSection={vi.fn()} onOpen={vi.fn()} />
     </>
   )
 }

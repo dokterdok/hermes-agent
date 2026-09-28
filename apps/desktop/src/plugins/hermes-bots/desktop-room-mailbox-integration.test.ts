@@ -1,4 +1,5 @@
 import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
+
 import type * as clientModule from './desktop-room-command-client'
 import type * as runtimeModule from './desktop-room-command-runtime'
 import { ControlledMailbox } from './desktop-room-mailbox-fixtures'
@@ -189,6 +190,7 @@ describe('classic Desktop mailbox with the real room engine', () => {
       room_id: 'room-1',
       payload: { message: '@reviewer Reply once', recipients: remoteMembers }
     })
+
     const request = host.requestProfile as (
       route: ProfileRoute,
       method: string,
@@ -256,14 +258,17 @@ describe('classic Desktop mailbox with the real room engine', () => {
       const loaded = await load()
       loaded.chat.updateGroupChat('Legacy', () => ({ log: [], members, sessions: {}, watermarks: {} }), { sync: false })
       loaded.mailbox.tokens.set('name:Legacy', String(loaded.chat.$groupChats.get().Legacy.desktopAuthorityToken))
+
       const originalRequest = host.requestProfile as (
         target: ProfileRoute,
         method: string,
         params: Record<string, unknown>
       ) => Promise<unknown>
+
       const originalLocalRequest = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
       let release!: () => void
       let created = false
+
       const blocked = new Promise<void>(resolve => {
         release = resolve
       })
@@ -376,6 +381,7 @@ describe('classic Desktop mailbox with the real room engine', () => {
     const originalRequest = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
     let release!: () => void
     let created = false
+
     const blocked = new Promise<void>(resolve => {
       release = resolve
     })
@@ -425,8 +431,10 @@ describe('classic Desktop mailbox with the real room engine', () => {
     expect(loaded.gateway.rpcFor('prompt.submit')).toHaveLength(0)
     expect(loaded.chat.$groupChats.get().Workshop.desktopAuthorityToken).toBe(replacementToken)
     const bound = loaded.chat.$groupChats.get().Workshop.sessions?.reviewer
+
     const persisted = (loaded.gateway.storage.get('group-chats') as Record<string, GroupChat>).Workshop.sessions
       ?.reviewer
+
     loaded.rounds.sendToGroupChat('Workshop', members, 'New room input')
     await vi.advanceTimersByTimeAsync(5_000)
     expect({ bound, persisted, submittedTitle: loaded.gateway.calls[0]?.title }).toEqual({
@@ -486,14 +494,17 @@ describe('classic Desktop mailbox with the real room engine', () => {
     })
     const send = runCycle(loaded, 'desktop:one', ['send'])
     await vi.advanceTimersByTimeAsync(250)
+
     const originalRequest = host.requestProfile as (
       target: ProfileRoute,
       method: string,
       params: Record<string, unknown>
     ) => Promise<unknown>
+
     const originalLocalRequest = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
     let release!: () => void
     let interrupted = false
+
     const blocked = new Promise<void>(resolve => {
       release = resolve
     })

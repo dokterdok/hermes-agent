@@ -1,12 +1,12 @@
+import { host } from '@hermes/plugin-sdk'
+
+import { botFriendlyNames, botHandle, botMentionTag, mentionNameForms } from './data'
 /**
  * Room-level coordination: who speaks, in what order, for how long — the
  * @mention parse, the round-robin driver, the #93129 member holds, the stop
  * path, and the user send that starts it all.
  */
 import { desktopRoomIdentity } from './desktop-room-command-client'
-import { host } from '@hermes/plugin-sdk'
-
-import { botFriendlyNames, botHandle, botMentionTag, mentionNameForms } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
@@ -1358,6 +1358,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
     failedMembers: new Set(),
     binding
   }
+
   groupChatDrives.set(key, drive)
   // Queued threads share the activity epoch, so draining one cannot hide
   // unresolved failures from the preceding thread. Stop still invalidates it.

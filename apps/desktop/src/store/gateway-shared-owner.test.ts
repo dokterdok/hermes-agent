@@ -38,6 +38,7 @@ const {
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: Error) => void
+
   const promise = new Promise<T>((yes, no) => {
     resolve = yes
     reject = no
@@ -324,8 +325,10 @@ it.each(['shared', 'probe-error', 'isolated', 'exact-primary', 'plain-profile'] 
     await ensureGatewayForAgent('gateway-a', 'default')
     // No-op primary writers do not retire valid pending probes.
     const params = { session_id: 'current-session', profile: 'caller-profile' }
+
     const target =
       kind === 'plain-profile' ? 'reviewer' : route('gateway-a', kind === 'exact-primary' ? 'default' : 'reviewer')
+
     const pending = host.requestProfile(target, 'session.resume', params)
     setPrimaryGateway(a as never)
     setPrimaryGatewayConnectionId('gateway-a')

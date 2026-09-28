@@ -750,6 +750,7 @@ describe('hosted Group Chat runtime', () => {
         target: { installation_id: 'install:peer', kind: 'peer', peer_id: 'install:peer' }
       }
     ]
+
     const loaded = await loadRuntime((method, _params, route) => {
       const connectionId = String(route?.connectionId || '')
 
@@ -843,6 +844,7 @@ describe('hosted Group Chat runtime', () => {
       { connectionId: 'gateway-a', mode: 'remote', profile: 'default', targetProfile: 'default' },
       { connectionId: 'gateway-b', mode: 'remote', profile: 'default', targetProfile: 'default' }
     ]
+
     const members = [
       { member_id: 'research', profile: 'research' },
       {
@@ -850,6 +852,7 @@ describe('hosted Group Chat runtime', () => {
         target: { installation_id: 'install:peer', kind: 'peer', peer_id: 'install:peer' }
       }
     ]
+
     const loaded = await loadRuntime((method, _params, route) => {
       const connectionId = String(route?.connectionId || '')
 
@@ -860,17 +863,22 @@ describe('hosted Group Chat runtime', () => {
       }
 
       if (method === 'groups.list') {return connectionId === 'gateway-b' ? { rooms: [] } : { rooms: [{ authority_epoch: 1, authority_gateway_id: 'install:home', latest_seq: 0, members, name: 'Release', room_id: 'room-1' }] }}
+
       if (method === 'groups.state') {return { driver_status: { peer_routes: [{ member_id: 'builder', status: 'needs_reauthorization' }] }, room: { authority_epoch: 1, authority_gateway_id: 'install:home', members, name: 'Release', room_id: 'room-1' } }}
+
       if (method === 'groups.log') {return { events: [], has_more: false, latest_seq: 0 }}
       throw new Error(`unexpected method: ${method}`)
     }, routes)
+
     const storage = scriptedStorage(loaded.storage).storage
+
     const original = room({
       members: [
         MEMBERS[0],
         { connectionId: 'gateway-b', handle: 'builder', name: 'builder', route: { connectionId: 'gateway-b', mode: 'remote', profile: 'builder', targetProfile: 'builder' }, sourceScoped: true, targetProfile: 'builder' }
       ]
     })
+
     loaded.chat.$groupChats.set({ Release: original })
     await loaded.runtime.startHostedRoomRuntime(storage)
     const checked = structuredClone(loaded.chat.$groupChats.get().Release)
@@ -881,13 +889,17 @@ describe('hosted Group Chat runtime', () => {
       const started = new Promise<void>(resolve => { entered = resolve })
       const held = new Promise<typeof routes>(resolve => { release = () => resolve(routes) })
       let calls = 0
+
       host.profileRoutes = () => {
         calls += 1
 
-        if (calls === 1) {entered(); return held}
+        if (calls === 1) {entered();
+
+ return held}
 
         return Promise.resolve(routes)
       }
+
       let before = loaded.calls.length
       const pending = loaded.runtime.checkHostedRoomGateway('Release')
       await started
@@ -929,6 +941,7 @@ describe('hosted Group Chat runtime', () => {
     const firstEntered = new Promise<void>(resolve => { enterFirst = resolve })
     const firstProbe = new Promise<void>(resolve => { releaseFirst = resolve })
     const laterProbe = new Promise<void>(resolve => { releaseLater = resolve })
+
     const serverRooms = ['Alpha', 'Beta'].map((name, index) => ({
       authority_epoch: 1,
       authority_gateway_id: 'install:home',
@@ -939,21 +952,28 @@ describe('hosted Group Chat runtime', () => {
       revision: 1,
       room_id: `room-${index + 1}`
     }))
+
     const loaded = await loadRuntime(async (method, params) => {
       if (method === 'groups.capabilities') {
         if (!upgraded) {throw Object.assign(new Error('Method not found'), { code: -32601 })}
         probes += 1
+
         if (probes === 1) {enterFirst(); await firstProbe}
         else {await laterProbe}
+
         return { authority_gateway_id: 'install:home', driver: true, persistent_process: true }
       }
+
       if (method === 'groups.list') {return { rooms: serverRooms }}
+
       if (method === 'groups.state') {
         return { driver_status: { working: false }, room: serverRooms.find(item => item.room_id === params.room_id) }
       }
+
       if (method === 'groups.log') {return { events: [], has_more: false, latest_seq: 0 }}
       throw new Error(`unexpected mutation: ${method}`)
     })
+
     loaded.chat.$groupChats.set({ Alpha: room(), Beta: room({ roomId: 'room-2' }) })
     await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
     expect(loaded.chat.$groupChats.get().Alpha.hostedStatus?.checkConnectionId).toBe('gateway-a')
@@ -964,10 +984,13 @@ describe('hosted Group Chat runtime', () => {
     const second = loaded.runtime.checkHostedRoomGateway('Beta')
     // Drain the second click's async route lookup without releasing the first probe.
     await vi.advanceTimersByTimeAsync(0)
+
     if (replaceSecond) {
       loaded.chat.$groupChats.set({ ...loaded.chat.$groupChats.get(), Beta: room({ roomId: 'replacement' }) })
     }
+
     releaseFirst()
+
     try {
       await expect(first).resolves.toBe(true)
       expect(loaded.chat.$groupChats.get().Alpha.hostedStatus?.state).toBe('ready')
@@ -979,6 +1002,7 @@ describe('hosted Group Chat runtime', () => {
       await second
       loaded.runtime.stopHostedRoomRuntime()
     }
+
     if (!replaceSecond) {
       expect(loaded.chat.$groupChats.get().Beta.hostedStatus?.state).toBe('ready')
     }

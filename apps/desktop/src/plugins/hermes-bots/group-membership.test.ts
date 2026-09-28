@@ -70,6 +70,7 @@ describe('membership metadata', () => {
     const meta: BotMeta = { groups: ['Workshop', 'Other'], group: 'Workshop' }
     const orphanKey = modules.data.botMetaKey(orphan)
     const ownedKey = modules.data.botMetaKey(owned)
+
     const plan = modules.membership.groupDisbandMetadataPlan(
       'Workshop',
       [orphan, owned],
