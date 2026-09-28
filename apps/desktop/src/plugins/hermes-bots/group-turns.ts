@@ -11,7 +11,7 @@ import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
 import { noteBotAttention } from './data'
 import { desktopRoomIdentity } from './desktop-room-command-client'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
-import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
+import { $groupChats, $groupClarify, appendGroupChatEntry, durableGroupChatRooms, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupCommandFenceLive, groupCommandFenceMatches } from './group-command-fence'
 import type { GroupCommandFence } from './group-command-fence'
@@ -32,6 +32,7 @@ import {
 import { GROUP_PROMPT_HEADER_PREFIX } from './group-round-prompt'
 import { approveHostedGroupChat } from './hosted-room-runtime'
 import { botConnectionRoute, requestForBot } from './routing'
+import { getPluginCtx } from './shared'
 import { shippedGroupAdoptionOwnsExecution } from './types'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
@@ -1058,6 +1059,34 @@ function markGroupTurnInFlight(
   })
 }
 
+/** Confirm this turn's recovery record, not the whole multi-room snapshot:
+ * another room may legitimately advance while this storage write completes. */
+async function persistGroupTurnMarker(group: string, member: GroupMember, turn: string) {
+  const storage = getPluginCtx()?.storage
+
+  if (!storage?.set || !storage?.get) { throw new Error('Group Chat storage unavailable') }
+
+  const rooms = durableGroupChatRooms()
+  const room = rooms[group]
+  const memberKey = groupMemberKey(member)
+  const marker = room?.stranded?.[memberKey]
+
+  if (!marker || typeof marker !== 'object' || marker.turn !== turn) {
+    throw new Error('Group Chat turn changed before submission')
+  }
+
+  await storage.set('group-chats', rooms)
+  const saved = (await storage.get<Record<string, GroupChatRoom>>('group-chats', {}))?.[group]
+  const sessionKey = groupSessionKey(marker.thread || 'legacy', member)
+
+  if (saved?.roomId !== room.roomId || saved?.desktopAuthorityToken !== room.desktopAuthorityToken ||
+      saved?.sessions?.[sessionKey] !== room.sessions?.[sessionKey] ||
+      JSON.stringify(saved?.stranded?.[memberKey]) !== JSON.stringify(marker) ||
+      JSON.stringify($groupChats.get()[group]?.stranded?.[memberKey]) !== JSON.stringify(marker)) {
+    throw new Error('Group Chat turn could not be saved before submission')
+  }
+}
+
 /** Drop the marker only while it is still this poll's: a newer drive may have re-driven the
  *  member and stamped its own. */
 function clearGroupTurnMarker(group: string, member: GroupMember, turn: string) {
@@ -1316,56 +1345,70 @@ async function runGroupChatMemberTurnLeased(
       return null
     }
 
-    const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText, fence)
-
-    if (!leaseLive()) {
-      return null
-    }
-
-    runtimeIds.add(liveRuntime)
-
     // A UUID, not a clock+random suffix: a marker persisted by a previous process must never equal a token this one mints.
-    const turn = `${liveRuntime}:${crypto.randomUUID()}`
+    const turn = `${runtime}:${crypto.randomUUID()}`
     liveGroupTurns.add(turn)
 
-    // Only local turns may leave recovery work for the ordinary, unleased
-    // harvester. Mailbox replies belong exclusively to their command lease:
-    // never persist an unowned recovery marker, even if this renderer crashes
-    // before polling resumes or its finally block can run.
-    if (!fence) {
-      markGroupTurnInFlight(group, member, { before, thread, turn })
-    }
-
     try {
-      const reply = await pollGroupMemberTurn({
-        get group() {
-          return group
-        },
-        member,
-        thread,
-        dispatchEpoch,
-        stored,
-        liveRuntime,
-        runtimeIds,
-        before,
-        leftover,
-        binding,
-        leaseLive,
-        fence,
-        turn
-      })
+      // Persist uncertainty BEFORE submission: the gateway may accept a turn
+      // whose acknowledgement never reaches us. Mailbox work remains owned
+      // only by its command lease and must never enter ordinary recovery.
+      if (!fence) {
+        markGroupTurnInFlight(group, member, { before, thread, turn })
 
-      // A reply (or an explicit pass) ends the turn; null is a timeout or a dead
-      // binding, and the marker must outlive this poll for the harvest.
-      if (reply !== null) {
-        clearGroupTurnMarker(group, member, turn)
+        try {
+          await persistGroupTurnMarker(group, member, turn)
+        } catch (error) {
+          // No RPC was sent, so this is a known non-admission, not uncertainty.
+          if (binding.isLive()) { clearGroupTurnMarker(group, member, turn) }
+          throw error
+        }
       }
 
-      return reply
-    } catch (error) {
-      // The turn died on our prompt: nothing to harvest.
-      clearGroupTurnMarker(group, member, turn)
-      throw error
+      if (!leaseLive() || ($groupChats.get()[group]?.stoppedEpoch || 0) > dispatchEpoch) {
+        if (!fence && binding.isLive()) { clearGroupTurnMarker(group, member, turn) }
+
+        return null
+      }
+
+      // A submit rejection may be a lost acknowledgement. Leave its durable
+      // marker for reconciliation/import instead of declaring the work settled.
+      const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText, fence)
+
+      if (!leaseLive()) { return null }
+      runtimeIds.add(liveRuntime)
+
+      try {
+        const reply = await pollGroupMemberTurn({
+          get group() {
+            return group
+          },
+          member,
+          thread,
+          dispatchEpoch,
+          stored,
+          liveRuntime,
+          runtimeIds,
+          before,
+          leftover,
+          binding,
+          leaseLive,
+          fence,
+          turn
+        })
+
+        // A reply (or an explicit pass) ends the turn; null is a timeout or a dead
+        // binding, and the marker must outlive this poll for the harvest.
+        if (reply !== null) {
+          clearGroupTurnMarker(group, member, turn)
+        }
+
+        return reply
+      } catch (error) {
+        // Polling observed a terminal failure, unlike an unknown submit outcome.
+        clearGroupTurnMarker(group, member, turn)
+        throw error
+      }
     } finally {
       liveGroupTurns.delete(turn)
     }
