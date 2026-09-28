@@ -10,9 +10,19 @@ vi.mock('@hermes/plugin-sdk', async () => {
   return pluginSdkMock(host)
 })
 
-beforeEach(() => {
+// Transform the real module graph during collection, like static imports.
+// Each fixture still gets a fresh module generation and gateway below.
+Object.assign(host, createGroupGateway().host)
+await Promise.all([
+  import('./group-chat'), import('./shipped-group-adoption'), import('./shared'), import('./group-rounds')
+])
+
+let loaded: Awaited<ReturnType<typeof startup>>
+
+beforeEach(async () => {
   vi.resetModules()
   runTimersInline()
+  loaded = await startup()
 })
 afterEach(() => vi.unstubAllGlobals())
 
@@ -39,6 +49,7 @@ async function startup() {
   shared.setPluginCtx(ctx)
   chat.$groupChats.set(chat.hydrateGroupChatRooms(await ctx.storage.get('group-chats', {})))
   await chat.activateClassicGroupAuthorities()
+
   chat.stopGroupChatServerSync()
 
   return { gateway, capabilities, chat, adoption, rounds, ctx, members }
@@ -46,8 +57,6 @@ async function startup() {
 
 describe('shipped adoption preflight execution boundary', () => {
   it('startup without import_history leaves no hold and real classic Send runs', async () => {
-    const loaded = await startup()
-
     try {
       await loaded.adoption.adoptShippedGroupChats(loaded.ctx.storage)
       expect(loaded.capabilities).toHaveBeenCalled()
@@ -57,6 +66,7 @@ describe('shipped adoption preflight execution boundary', () => {
       const thread = loaded.rounds.sendToGroupChat('Classic', loaded.members, 'A new classic message')
       expect(thread).toBeTruthy()
       await drain(() => Boolean(loaded.chat.$groupChats.get().Classic.running))
+
       expect(loaded.gateway.rpcFor('prompt.submit').length).toBeGreaterThan(0)
       expect(loaded.chat.$groupChats.get().Classic.log.some(entry => entry.text === 'A new classic message')).toBe(true)
     } finally {
@@ -66,8 +76,6 @@ describe('shipped adoption preflight execution boundary', () => {
   })
 
   it.each(['prepared', 'uncertain', 'adopted'] as const)('never gives %s imports back to classic execution', async state => {
-    const loaded = await startup()
-
     const checkpoint: ShippedGroupAdoption = {
       version: 1, state: state === 'adopted' ? 'adopted' : 'prepared',
       sourceId: 'retained-source', roomId: 'released-classic', requestHash: 'retained-request',

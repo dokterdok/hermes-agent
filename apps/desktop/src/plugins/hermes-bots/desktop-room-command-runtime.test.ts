@@ -10,6 +10,7 @@ const { host } = vi.hoisted(() => ({
 
 const groupRounds = vi.hoisted(() => ({
   cancelGroupThreadForLeaseLoss: vi.fn(async (..._args: unknown[]) => undefined),
+  groupChatCommandInFlight: vi.fn(() => false),
   removePendingGroupChatCommand: vi.fn((..._args: unknown[]) => undefined),
   sendToGroupChat: vi.fn((..._args: unknown[]): unknown => null),
   stopGroupThread: vi.fn(async (..._args: unknown[]) => undefined)

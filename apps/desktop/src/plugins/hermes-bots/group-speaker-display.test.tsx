@@ -41,7 +41,7 @@ vi.mock('./group-chat-parts', () => ({
 }))
 
 vi.mock('./group-rounds', async importOriginal => ({
-  ...(await importOriginal<typeof roundsModule>()), sendToGroupChatDurably, stopGroupThread: vi.fn() 
+  ...(await importOriginal<typeof roundsModule>()), sendToGroupChatDurably, stopGroupThread: vi.fn()
 }))
 
 vi.mock('./avatar', async importOriginal => {
