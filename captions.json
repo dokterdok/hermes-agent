@@ -1,0 +1,114 @@
+[
+  {
+    "pr": 93007,
+    "phase": "baseline",
+    "source_sha": "be84a141f686c82db35399c828ba9c0e0320a871",
+    "caption": "Baseline: foreground chat and unread row; no actionable Sessions count in the tab.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93007-baseline-count-before.png"
+  },
+  {
+    "pr": 93007,
+    "phase": "candidate",
+    "source_sha": "3f6d77c1086b87ce9940aa6c8277a8a0d0de05b4",
+    "caption": "Candidate: Sessions count 1 while another chat is active; click targets the unread chat.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93007-candidate-count-before.png"
+  },
+  {
+    "pr": 93007,
+    "phase": "candidate",
+    "source_sha": "3f6d77c1086b87ce9940aa6c8277a8a0d0de05b4",
+    "caption": "Candidate after count click: unread conversation is active; compare with the preceding state.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93007-candidate-count-after.png"
+  },
+  {
+    "pr": 93903,
+    "phase": "baseline",
+    "source_sha": "be84a141f686c82db35399c828ba9c0e0320a871",
+    "caption": "Baseline: renamed Beta header and active Programmer reply; sequence also requires the UAT log.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93903-baseline-rename-during-reply.png"
+  },
+  {
+    "pr": 93903,
+    "phase": "candidate",
+    "source_sha": "3f6d77c1086b87ce9940aa6c8277a8a0d0de05b4",
+    "caption": "Candidate: Group settings retains the proposed rename but disables Save and explains the held-reply wait.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93903-candidate-blocked-rename.png"
+  },
+  {
+    "pr": 93903,
+    "phase": "candidate",
+    "source_sha": "3f6d77c1086b87ce9940aa6c8277a8a0d0de05b4",
+    "caption": "Candidate after the reply settles: room is renamed Beta and retains its conversation.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93903-candidate-idle-rename.png"
+  },
+  {
+    "pr": 93903,
+    "phase": "candidate",
+    "source_sha": "3f6d77c1086b87ce9940aa6c8277a8a0d0de05b4",
+    "caption": "Candidate: right-clicking the synthetic group row exposes Group settings; selecting it opens the current room settings (verified by native test).",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93903-candidate-roster-context-menu.png"
+  },
+  {
+    "pr": 93993,
+    "phase": "baseline",
+    "source_sha": "be84a141f686c82db35399c828ba9c0e0320a871",
+    "caption": "Baseline: selected Attention room still shows its Needs your input dot.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93993-baseline-visible.png"
+  },
+  {
+    "pr": 93993,
+    "phase": "candidate",
+    "source_sha": "3f6d77c1086b87ce9940aa6c8277a8a0d0de05b4",
+    "caption": "Candidate: no Needs your input dot on the visibly open Attention room.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93993-candidate-visible.png"
+  },
+  {
+    "pr": 93993,
+    "phase": "candidate",
+    "source_sha": "3f6d77c1086b87ce9940aa6c8277a8a0d0de05b4",
+    "caption": "Candidate: Attention dot reappears when Other room is the visible conversation.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93993-candidate-background.png"
+  },
+  {
+    "pr": 93223,
+    "phase": "baseline",
+    "source_sha": "be84a141f686c82db35399c828ba9c0e0320a871",
+    "caption": "Baseline remote profile globe in light mode at default 90% zoom.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93223-baseline-light.png"
+  },
+  {
+    "pr": 93223,
+    "phase": "candidate",
+    "source_sha": "3f6d77c1086b87ce9940aa6c8277a8a0d0de05b4",
+    "caption": "Candidate remote profile globe in light mode at default 90% zoom.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93223-candidate-light.png"
+  },
+  {
+    "pr": 93223,
+    "phase": "baseline",
+    "source_sha": "be84a141f686c82db35399c828ba9c0e0320a871",
+    "caption": "Baseline remote profile globe in dark mode at default 90% zoom.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93223-baseline-dark.png"
+  },
+  {
+    "pr": 93223,
+    "phase": "candidate",
+    "source_sha": "3f6d77c1086b87ce9940aa6c8277a8a0d0de05b4",
+    "caption": "Candidate remote profile globe in dark mode at default 90% zoom.",
+    "evidence_limit": "A still illustrates the rendered state; dynamic assertions and exact scenario are in REPORT.md.",
+    "file": "93223-candidate-dark.png"
+  }
+]
