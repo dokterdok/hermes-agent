@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import threading
 import time
 from collections import Counter
@@ -20,6 +21,9 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links, hosted_room_link_records
 from gateway import hosted_rooms
+from gateway.hosted_room_delegated_control import (
+    DelegatedControl, DelegatedControlUncertain, replay_approval, reserve_approval, settle_approval,
+    reserve_stop, settle_stop)
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
@@ -840,7 +844,10 @@ class HostedRoomService:
         return event
 
     def stop_room(
-        self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
+        self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False,
+        delegated_control: DelegatedControl | None = None) -> int:
+        if delegated_control is not None and not isinstance(delegated_control, DelegatedControl):
+            raise hosted_rooms.HostedRoomError("invalid delegated control")
         # Same-room controls share an attempt; independent rooms never wait here.
         with self._policy_lock:
             if not hasattr(self, '_room_stop_locks'):
@@ -848,18 +855,46 @@ class HostedRoomService:
             lock = self._room_stop_locks.setdefault(room_id, threading.RLock())
         with lock:
             return self._stop_room_captured(room_id, cancel_id=cancel_id,
-                                            require_acknowledged=require_acknowledged)
+                                            require_acknowledged=require_acknowledged,
+                                            delegated_control=delegated_control)
 
-    def _stop_room_captured(self, room_id, *, cancel_id, require_acknowledged):
-        gateway_id, epoch = self._owned_authority(room_id)
-        hosted_rooms.request_room_stop(
-            self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
-            expected_epoch=epoch)
+    def _stop_room_captured(self, room_id, *, cancel_id, require_acknowledged, delegated_control=None):
+        record = None
+        if delegated_control is None:
+            gateway_id, epoch = self._owned_authority(room_id)
+            stop_args = dict(room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
+                             expected_epoch=epoch)
+            hosted_rooms.request_room_stop(self.db_path, **stop_args)
+        else:
+            state, record, gateway_id, epoch = reserve_stop(
+                self, delegated_control, room_id, cancel_id, require_acknowledged,
+                _STOPPABLE_STATUSES)
+            if state == "replay":
+                if record["state"] == "settled":
+                    return record["result"]
+                raise DelegatedControlUncertain("delegated Stop previously admitted; outcome uncertain")
+        try:
+            result = self._finish_room_stop(room_id, cancel_id=cancel_id,
+                                            gateway_id=gateway_id, epoch=epoch,
+                                            require_acknowledged=require_acknowledged,
+                                            captured_tasks=record["snapshot"] if record is not None else None)
+            return settle_stop(self, delegated_control, record, result) if record is not None else result
+        except Exception as exc:
+            if delegated_control is not None:
+                raise DelegatedControlUncertain("delegated Stop admitted; completion is uncertain") from exc
+            raise
+
+    def _finish_room_stop(self, room_id, *, cancel_id, gateway_id, epoch, require_acknowledged,
+                          captured_tasks=None):
         pending, captured = 0, []
         with self._policy_lock:
-            tasks = {
-                (task["identity"].room_id, task["identity"].task_id): task
-                for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)}
+            if captured_tasks is None:
+                tasks = {(task["identity"].room_id, task["identity"].task_id): task
+                         for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)}
+            else:
+                tasks = {(item["identity"]["room_id"], item["identity"]["task_id"]):
+                         {**item, "identity": driver.TaskIdentity(**item["identity"])}
+                         for item in captured_tasks}
             for task in tasks.values():
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
@@ -893,8 +928,16 @@ class HostedRoomService:
 
     def approve_room_task(
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,
-        choice: str, request_id: str | None = None) -> Mapping[str, Any]:
+        choice: str, request_id: str | None = None,
+        delegated_control: DelegatedControl | None = None) -> Mapping[str, Any]:
         """Resolve one exact local or peer approval and wake room observation."""
+        if delegated_control is not None:
+            if not isinstance(delegated_control, DelegatedControl):
+                raise hosted_rooms.HostedRoomError("invalid delegated control")
+            return self._approve_delegated(
+                room_id, member_id=member_id, task_id=task_id,
+                execution_generation=execution_generation, choice=choice,
+                request_id=request_id, control=delegated_control)
         key = (room_id, member_id)
         route, client = self.peer_routes.get(key), self.peer_clients.get(key)
         with self._policy_lock:
@@ -932,6 +975,70 @@ class HostedRoomService:
                 self._pending_actions.pop(key, None)
         self.runtime.wakeup()
         return result
+
+    def _approve_delegated(self, room_id, *, member_id, task_id,
+                           execution_generation, choice, request_id, control):
+        if (not isinstance(request_id, str) or not request_id
+                or type(execution_generation) is not int or execution_generation < 1
+                or choice not in {"once", "deny"}):
+            raise hosted_rooms.HostedRoomError("invalid delegated approval identity or choice")
+        key = (room_id, member_id)
+        identity = (room_id, member_id, task_id, execution_generation, request_id, choice)
+        with control.writer(self):
+            gateway_id, epoch = self._owned_authority(room_id)
+        binding = HostedRoomBinding(room_id, gateway_id, epoch)
+        # The policy lock protects the in-memory pending action and route only
+        # until the source admission commits, never through the RPC.
+        with self._policy_lock:
+            previous = replay_approval(self, control, identity, binding)
+            if previous is not None:
+                if previous["state"] == "settled":
+                    return previous["result"]
+                raise DelegatedControlUncertain("delegated approval previously admitted; outcome uncertain")
+            action = self._pending_actions.get(key)
+            if (action is None or action.get("kind") != "approval"
+                    or action.get("request_id") != request_id
+                    or action.get("task_id") != task_id
+                    or action.get("execution_generation") != execution_generation
+                    or choice not in (action.get("approval") or {}).get("choices", ())):
+                raise RuntimeError("room approval is no longer pending")
+            local_approve = self.rpc.approve
+            route, client = self.peer_routes.get(key), self.peer_clients.get(key)
+            approve = _hook(client, "approve_receipt")
+            if route is not None:
+                client_url = getattr(client, "base_url", None)
+                if (approve is None or key not in self._persisted_peer_route_keys
+                        or not isinstance(client_url, str) or not client_url):
+                    raise RuntimeError("peer approval target is unavailable")
+                peer = {"grant": route.grant, "profile": route.target_profile,
+                        "install": route.target_install_id, "url": client_url}
+            else:
+                peer = None
+                if not str(action.get("session_id") or ""):
+                    raise RuntimeError("local room approval identity is unavailable")
+            state, record = reserve_approval(
+                self, control, identity=identity, binding=binding, action=action, peer=peer)
+        if state == "settled":
+            return record["result"]
+        if state != "reserved-new":
+            raise DelegatedControlUncertain("delegated approval previously admitted; outcome uncertain")
+        try:
+            if peer is not None:
+                result = approve(task_id=task_id, execution_generation=execution_generation,
+                                 request_id=request_id, choice=choice, grant=peer["grant"])
+            else:
+                result = local_approve(session_id=record["target"]["session_id"],
+                                       request_id=request_id, choice=choice)
+            if result is None:
+                raise RuntimeError("room approval target is unavailable")
+            receipt = settle_approval(self, control, identity, record, result)
+            with self._policy_lock:
+                if self._pending_actions.get(key) is action:
+                    self._pending_actions.pop(key, None)
+            self.runtime.wakeup()
+            return receipt
+        except Exception as exc:
+            raise DelegatedControlUncertain("delegated approval admitted; outcome uncertain") from exc
 
     def status(self, room_id: str | None = None) -> dict[str, Any]:
         runtime = {**self.runtime.status(), "peer_routes": self._route_statuses(room_id)}

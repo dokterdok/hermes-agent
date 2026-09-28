@@ -258,7 +258,9 @@ class HostedRoomRuntime:
             try:
                 result = (state.cancel_task if direct else state.begin_task_cancel)(
                     self.db_path, identity, cancel_id=cancel_id,
-                    expected_cancel_generation=before["cancel_generation"], clock=self.clock)
+                    expected_cancel_generation=before["cancel_generation"], clock=self.clock,
+                    **({"expected_execution_generation": expected_execution_generation}
+                       if expected_execution_generation is not None else {}))
             except (state.InvalidTaskTransitionError, state.StaleTaskError):
                 continue  # lost the race with the worker (settled or re-queued); re-route
             if capture_only:

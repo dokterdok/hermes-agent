@@ -1196,6 +1196,11 @@ def append_event(
         if existing is not None:
             if _event_content(existing) != (kind, actor_json, authority_epoch, payload_json):
                 raise EventConflictError("event_id already exists with different content")
+            if existing_only and authorize_new is not None:
+                # A read-only exact-receipt probe may use the existing callback
+                # to validate its external writer's physical lifetime. Normal
+                # idempotent append still does not re-authorize an old event.
+                authorize_new(conn)
             return _event_from_row(existing, idempotent=True)
         if existing_only:
             raise EventNotFoundError("event receipt not found")
@@ -1276,13 +1281,15 @@ def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False
 
 
 def request_room_stop(
-    db_path: DbPath, *, room_id: Any, cancel_id: Any, expected_gateway_id: Any, expected_epoch: Any) -> dict[str, Any]:
+    db_path: DbPath, *, room_id: Any, cancel_id: Any, expected_gateway_id: Any, expected_epoch: Any,
+    authorize_new=None, authorize_commit=None, existing_only: bool = False) -> dict[str, Any]:
     """Append an idempotent fence that supersedes earlier user turns."""
     cancel_id = _validate_identifier(cancel_id, label="cancel_id", max_chars=MAX_EVENT_ID_CHARS)
     return append_event(
         db_path, room_id=room_id, event_id=f"room-stop:{hashlib.sha256(cancel_id.encode()).hexdigest()[:32]}",
         kind="room.stop_requested", actor={"kind": "gateway", "id": expected_gateway_id},
-        payload={"cancel_id": cancel_id}, authority_gateway_id=expected_gateway_id, authority_epoch=expected_epoch)
+        payload={"cancel_id": cancel_id}, authority_gateway_id=expected_gateway_id, authority_epoch=expected_epoch,
+        authorize_new=authorize_new, authorize_commit=authorize_commit, existing_only=existing_only)
 
 
 def claim_authority(

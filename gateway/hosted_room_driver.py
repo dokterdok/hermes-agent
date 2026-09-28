@@ -477,20 +477,29 @@ def _transition(
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
     guard: Callable[[sqlite3.Row], None] | None = None, new_work: bool = False,
-    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
+    authorize: Callable[[sqlite3.Connection], None] | None = None,
+    expected_execution_generation: int | None = None) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
     is raised. ``lease_first`` checks the lease before the row load (recovery paths) instead of after the
     replay (settlement paths: an identical replay still succeeds after the lease moved on).
     """
-    params = (*set_params, identity.room_id, identity.task_id, *fence_params)
+    if expected_execution_generation is not None:
+        if not isinstance(expected_execution_generation, int) or expected_execution_generation < 0:
+            raise DriverValidationError("expected_execution_generation must be non-negative")
+        sql += " AND execution_generation=?"
+    params = (*set_params, identity.room_id, identity.task_id, *fence_params,
+              *((expected_execution_generation,) if expected_execution_generation is not None else ()))
     with _transaction(db_path) as conn:
         if authorize is not None:
             authorize(conn)
         if lease is not None and lease_first:
             _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
+        if (expected_execution_generation is not None
+                and int(row["execution_generation"]) != expected_execution_generation):
+            raise StaleTaskError("task execution generation changed")
         if replay is not None and (replayed := replay(row)) is not None:
             return replayed
         if lease is not None and not lease_first:
@@ -842,7 +851,8 @@ def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: C
 
 
 def cancel_task(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    expected_execution_generation: int | None = None
 ) -> dict[str, Any]:
     """Cancel a queued task before any external work was admitted."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
@@ -857,11 +867,12 @@ def cancel_task(
     return _transition(
         db_path, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_CANCEL_QUEUED_SQL,
         set_params=(expected_cancel_generation + 1, cancel_id, now, now), fence_params=(expected_cancel_generation,),
-        stale="task changed during cancellation")
+        stale="task changed during cancellation", expected_execution_generation=expected_execution_generation)
 
 
 def begin_task_cancel(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    expected_execution_generation: int | None = None
 ) -> dict[str, Any]:
     """Persist a stop intent without claiming the remote run has stopped."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
@@ -874,7 +885,7 @@ def begin_task_cancel(
     return _transition(
         db_path, identity, now=now, replay=_cancel_replay(cancel_id, "stopping"), guard=guard, sql=_BEGIN_STOP_SQL,
         set_params=(expected_cancel_generation + 1, cancel_id, now), fence_params=(expected_cancel_generation,),
-        stale="task changed during stop request")
+        stale="task changed during stop request", expected_execution_generation=expected_execution_generation)
 
 
 def complete_task_cancel(
