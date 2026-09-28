@@ -1,29 +1,12 @@
-/**
- * Gateway-hosted Group Chat runtime.
- *
- * RPC ownership lives here: capability negotiation, the durable command
- * outbox, monotonic replay, and the bounded refresh loop. Group state remains
- * owned by `group-chat.ts`; creation, round routing, and room UI call this
- * module through narrow verbs.
- */
-
-import { atom, gatewayActivationEpoch, host } from '@hermes/plugin-sdk'
 import type { PluginContext } from '@hermes/plugin-sdk'
+import { atom, gatewayActivationEpoch, host } from '@hermes/plugin-sdk'
 
 import { $lastRoster } from './data'
-import {
-  $groupChats,
-  applyHostedRoomAuthority,
-  groupChatHostedGateway,
-  mergeGroupChatRoomEntries,
-  uniqueGroupChatName,
-  updateGroupChat
-} from './group-chat'
+import { $groupChats, groupChatHostedGateway, mergeGroupChatRoomEntries, updateGroupChat } from './group-chat'
 import {
   clearHostedRoomApprovalState,
   resetHostedRoomApprovalState,
-  resolveHostedRoomApprovalAttention,
-  syncHostedRoomApprovals
+  resolveHostedRoomApprovalAttention
 } from './hosted-room-approval-state'
 import { readHostedMessageAttachment, stageHostedMessageAttachments } from './hosted-room-attachments-client'
 import { $hostedRoomCapabilities } from './hosted-room-capability-state'
@@ -37,20 +20,6 @@ import {
   startHostedRoomCleanup,
   stopHostedRoomCleanup
 } from './hosted-room-cleanup'
-import {
-  classifyHostedRoomCapability,
-  createHostedRoomOutbox,
-  createHostedRoomReplayState,
-  deriveFriendlyHostedRoomStatus,
-  hasRequestedRoomGrantLifetime,
-  isHostedRoomContinuityEligible,
-  isHostedRoomReadEligible,
-  profileScopedRoomLinkEndpoint,
-  replayHostedRoomPages,
-  resolveAutonomousRoomPlan,
-  ROOM_GRANT_STATUS_TTL_SECONDS,
-  ROOM_GRANT_TTL_SECONDS
-} from './hosted-room-client'
 import type {
   AutonomousRoomPlan,
   HostedRoomCapability,
@@ -58,6 +27,17 @@ import type {
   HostedRoomOutbox,
   HostedRoomRouteResolution,
   reduceHostedRoomOutbox
+} from './hosted-room-client'
+import {
+  classifyHostedRoomCapability,
+  createHostedRoomOutbox,
+  hasRequestedRoomGrantLifetime,
+  isHostedRoomContinuityEligible,
+  isHostedRoomReadEligible,
+  profileScopedRoomLinkEndpoint,
+  resolveAutonomousRoomPlan,
+  ROOM_GRANT_STATUS_TTL_SECONDS,
+  ROOM_GRANT_TTL_SECONDS
 } from './hosted-room-client'
 import {
   failedHostedRoomCommand,
@@ -69,17 +49,9 @@ import {
 import {
   hostedReadOnlyState,
   hostedRoomCapabilityFingerprint,
-  hostedRoomContinuityMode,
-  hostedRoomDriverDisplayStatus,
   hostedRoomPollFingerprint,
-  hostedStatus,
-  hostedUnavailableState,
-  readHostedInventoryState,
-  readHostedRoomInventory,
-  hostedReplayMessages as replayMessages
+  hostedUnavailableState
 } from './hosted-room-inventory'
-import { revokeInvalidHostedMemberRoutes } from './hosted-room-member-inventory'
-import { hostedMemberDescriptors } from './hosted-room-members'
 import { HostedRoomObservations } from './hosted-room-observations'
 import {
   mutateHostedRoomOutbox,
@@ -88,10 +60,11 @@ import {
   withHostedRoomCommandOrder,
   withHostedRoomOutboxDispatch
 } from './hosted-room-outbox'
-import { registerHostedPeers } from './hosted-room-peer-setup'
 import type { AutonomousHostedRoomCreateInput, PreparedHostedPeer } from './hosted-room-peer-setup'
+import { registerHostedPeers } from './hosted-room-peer-setup'
+import { performHostedRoomRefresh } from './hosted-room-runtime-refresh'
 import { requestHostedConnection, withHostedRoomProbeTimeout } from './hosted-room-transport'
-import { hostedUserEventReceipt, outgoingHostedUserEvent, restoreHostedUserOutboxIntents } from './hosted-user-events'
+import { hostedUserEventReceipt, outgoingHostedUserEvent } from './hosted-user-events'
 import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupChat, GroupMember, GroupMessage, GroupPrompt, ProfileRoute } from './types'
@@ -103,25 +76,30 @@ export { hostedRoomDriverDisplayStatus, hostedRoomPollFingerprint } from './host
 export { requestHostedConnection } from './hosted-room-transport'
 
 const HOSTED_ROOM_SYNC_INTERVAL_MS = 5000
-const HOSTED_ROOM_UNSUPPORTED_REPROBE_MS = 30_000
+export const HOSTED_ROOM_UNSUPPORTED_REPROBE_MS = 30_000
 
 export const $hostedRoomOutbox = atom<HostedRoomOutbox>(createHostedRoomOutbox())
 
-const hostedRoomPollCache = new Map<string, string>()
-const hostedRoomPollGenerations = new Map<string, number>()
+export const hostedRoomPollCache = new Map<string, string>()
+export const hostedRoomPollGenerations = new Map<string, number>()
 const hostedRoomMutationGenerations = new Map<string, number>()
-const hostedRoomLocallyDeleted = new Set<string>()
-const hostedRoomObservations = new HostedRoomObservations()
+export const hostedRoomLocallyDeleted = new Set<string>()
+export const hostedRoomObservations = new HostedRoomObservations()
 let hostedRoomSyncTimer: ReturnType<typeof setTimeout> | null = null
 let hostedRoomSyncRunning = false
+
+export function finishHostedRoomRefresh() {
+  hostedRoomSyncRunning = false
+}
+
 let hostedRoomRefreshPromise: Promise<void> | null = null
 let hostedRoomManualCheckTail: Promise<unknown> = Promise.resolve()
-let hostedRoomSyncDisposed = true
-let hostedRoomLifecycleGeneration = 0
+export let hostedRoomSyncDisposed = true
+export let hostedRoomLifecycleGeneration = 0
 let hostedOutboxDispatchPromise: Promise<void> | null = null
 let hostedRoomStorage: null | PluginContext['storage'] = null
-let hostedRoomHooks: HostedRoomRuntimeHooks = {}
-const hostedUnsupportedUntil = new Map<string, number>()
+export let hostedRoomHooks: HostedRoomRuntimeHooks = {}
+export const hostedUnsupportedUntil = new Map<string, number>()
 const hostedRoomManualChecks = new Map<string, Promise<boolean>>()
 
 export function hostedRoomLifecycleToken() {
@@ -132,7 +110,7 @@ export function hostedRoomLifecycleIsCurrent(token: number) {
   return !hostedRoomSyncDisposed && token === hostedRoomLifecycleGeneration
 }
 
-function hostedRoomMutationGeneration(roomId: string) {
+export function hostedRoomMutationGeneration(roomId: string) {
   return Math.max(0, Number(hostedRoomMutationGenerations.get(String(roomId || '')) || 0))
 }
 
@@ -209,7 +187,7 @@ interface HostedRoomCreateInput {
   route: HostedRoomRouteResolution
 }
 
-interface HostedRoomServerState {
+export interface HostedRoomServerState {
   authority_epoch?: unknown
   authority_gateway_id?: unknown
   disbanded_at?: unknown
@@ -219,15 +197,15 @@ interface HostedRoomServerState {
   room_id?: unknown
 }
 
-function record(value: unknown): Record<string, unknown> | null {
+export function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
 }
 
-function activeConnectionId() {
+export function activeConnectionId() {
   return String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || '')
 }
 
-async function hostedDefaultRoutes(): Promise<ProfileRoute[]> {
+export async function hostedDefaultRoutes(): Promise<ProfileRoute[]> {
   if (typeof host.profileRoutes !== 'function') {
     return []
   }
@@ -290,13 +268,13 @@ async function verifiedHostedAuthorityRoute(routes: ProfileRoute[], authorityId:
   return null
 }
 
-function sourceLabel(connectionId: string) {
+export function sourceLabel(connectionId: string) {
   const source = ($lastRoster.get() || []).find(row => String(row?.connectionId || '') === connectionId)
 
   return String(source?.connectionLabel || botsText().group.thisHost)
 }
 
-function markHostedConnectionUnavailable(connectionId: string) {
+export function markHostedConnectionUnavailable(connectionId: string) {
   const connectionName = sourceLabel(connectionId)
 
   for (const [name, room] of Object.entries($groupChats.get())) {
@@ -307,12 +285,7 @@ function markHostedConnectionUnavailable(connectionId: string) {
     updateGroupChat(
       name,
       current =>
-        hostedUnavailableState(
-          current,
-          $hostedRoomCapabilities.get()[connectionId],
-          connectionName,
-          connectionId
-        ),
+        hostedUnavailableState(current, $hostedRoomCapabilities.get()[connectionId], connectionName, connectionId),
       {
         sync: false
       }
@@ -321,11 +294,11 @@ function markHostedConnectionUnavailable(connectionId: string) {
   }
 }
 
-function isDisbanded(room: HostedRoomServerState) {
+export function isDisbanded(room: HostedRoomServerState) {
   return room.disbanded_at !== null && room.disbanded_at !== undefined
 }
 
-function storeHostedCapabilities(next: Record<string, HostedRoomCapability>, replace = false) {
+export function storeHostedCapabilities(next: Record<string, HostedRoomCapability>, replace = false) {
   const current = $hostedRoomCapabilities.get()
 
   for (const [connectionId, capability] of Object.entries(next)) {
@@ -357,7 +330,7 @@ function storeHostedCapabilities(next: Record<string, HostedRoomCapability>, rep
   }
 }
 
-function invalidateHostedRoomsForConnection(connectionId: string, installationId = '') {
+export function invalidateHostedRoomsForConnection(connectionId: string, installationId = '') {
   hostedRoomObservations.invalidate(connectionId)
 
   for (const room of Object.values($groupChats.get())) {
@@ -404,6 +377,7 @@ export function checkHostedRoomGateway(group: string): Promise<boolean> {
     sourceProfile: String(host.state.profile?.get?.() || ''),
     hint: room.peerProbeHint ? { ...room.peerProbeHint } : undefined
   }
+
   const key = JSON.stringify(owner)
   const pending = hostedRoomManualChecks.get(key)
 
@@ -437,28 +411,31 @@ export function checkHostedRoomGateway(group: string): Promise<boolean> {
 
   // Serialize explicit checks before invalidation: a later room must never
   // retire the observation that an earlier room is still awaiting.
-  const check = hostedRoomManualCheckTail.catch(() => undefined).then(async () => {
-    const routes = await hostedDefaultRoutes()
+  const check = hostedRoomManualCheckTail
+    .catch(() => undefined)
+    .then(async () => {
+      const routes = await hostedDefaultRoutes()
 
-    if (!current() || !routes.some(candidate => candidate.connectionId === connectionId)) {
-      return false
-    }
+      if (!current() || !routes.some(candidate => candidate.connectionId === connectionId)) {
+        return false
+      }
 
-    hostedUnsupportedUntil.delete(connectionId)
-    invalidateHostedRoomsForConnection(connectionId)
-    invalidateHostedRoomPoll(owner.roomId)
-    await refreshHostedRoomsAfterCurrent(current)
+      hostedUnsupportedUntil.delete(connectionId)
+      invalidateHostedRoomsForConnection(connectionId)
+      invalidateHostedRoomPoll(owner.roomId)
+      await refreshHostedRoomsAfterCurrent(current)
 
-    if (!current(false)) {
-      return false
-    }
+      if (!current(false)) {
+        return false
+      }
 
-    return String($groupChats.get()[group]?.hostedStatus?.checkConnectionId || '') !== connectionId
-  }).finally(() => {
-    if (hostedRoomManualChecks.get(key) === check) {
-      hostedRoomManualChecks.delete(key)
-    }
-  })
+      return String($groupChats.get()[group]?.hostedStatus?.checkConnectionId || '') !== connectionId
+    })
+    .finally(() => {
+      if (hostedRoomManualChecks.get(key) === check) {
+        hostedRoomManualChecks.delete(key)
+      }
+    })
 
   hostedRoomManualChecks.set(key, check)
   hostedRoomManualCheckTail = check
@@ -501,6 +478,7 @@ export function refreshHostedRooms(stillCurrent?: () => boolean): Promise<void> 
   }
 
   hostedRoomSyncRunning = true
+
   const refresh = performHostedRoomRefresh(stillCurrent).finally(() => {
     if (hostedRoomRefreshPromise === refresh) {
       hostedRoomRefreshPromise = null
@@ -521,647 +499,7 @@ function refreshHostedRoomsAfterCurrent(stillCurrent: () => boolean): Promise<vo
     return refreshHostedRooms(stillCurrent)
   }
 
-  return active
-    .catch(() => undefined)
-    .then(() => refreshHostedRooms(stillCurrent))
-}
-
-async function performHostedRoomRefresh(stillCurrent?: () => boolean) {
-  const lifecycleGeneration = hostedRoomLifecycleGeneration
-  const source = {
-    activation: gatewayActivationEpoch(),
-    connectionId: activeConnectionId(),
-    gateway: String(host.state.gateway?.get?.() || ''),
-    profile: String(host.state.profile?.get?.() || '')
-  }
-  const syncStale = () =>
-    hostedRoomSyncDisposed ||
-    lifecycleGeneration !== hostedRoomLifecycleGeneration ||
-    gatewayActivationEpoch() !== source.activation ||
-    activeConnectionId() !== source.connectionId ||
-    String(host.state.gateway?.get?.() || '') !== source.gateway ||
-    String(host.state.profile?.get?.() || '') !== source.profile ||
-    stillCurrent?.() === false
-
-  try {
-    const routes = await hostedDefaultRoutes()
-
-    if (syncStale()) {
-      return
-    }
-
-    const routesByConnection = Object.fromEntries(routes.map(route => [String(route.connectionId || ''), route]))
-
-    for (const id of Object.keys($hostedRoomCapabilities.get())) {
-      if (!routesByConnection[id]) {
-        invalidateHostedRoomsForConnection(id)
-      }
-    }
-
-    const capabilities = Object.fromEntries(
-      Object.entries($hostedRoomCapabilities.get()).filter(([id]) => routesByConnection[id])
-    )
-
-    hostedRoomObservations.retain(Object.keys(routesByConnection), Object.values($groupChats.get()))
-    storeHostedCapabilities(capabilities, true)
-
-    if (typeof host.profileRoutes === 'function') {
-      revokeInvalidHostedMemberRoutes(routesByConnection, capabilities, invalidateHostedRoomPoll)
-    }
-
-    for (const route of routes) {
-      if (syncStale()) {
-        return
-      }
-
-      const connectionId = String(route.connectionId)
-      let observation = hostedRoomObservations.capture(connectionId)
-      let capability: HostedRoomCapability
-
-      const cached = capabilities[connectionId]
-
-      if (cached?.kind === 'unsupported' && Number(hostedUnsupportedUntil.get(connectionId) || 0) > Date.now()) {
-        capability = cached
-      } else {
-        observation = hostedRoomObservations.captureCapability(connectionId)
-
-        try {
-          capability = classifyHostedRoomCapability(await requestHostedConnection(route, 'groups.capabilities'), {
-            connectionId
-          })
-        } catch (error) {
-          capability = classifyHostedRoomCapability(
-            {
-              ok: false,
-              error
-            },
-            {
-              connectionId
-            }
-          )
-        }
-      }
-
-      if (syncStale()) {
-        return
-      }
-
-      if (!hostedRoomObservations.current(observation)) {
-        capabilities[connectionId] = $hostedRoomCapabilities.get()[connectionId]
-
-        continue
-      }
-
-      if (capability !== cached) {
-        if (capability.kind === 'unsupported') {
-          hostedUnsupportedUntil.set(connectionId, Date.now() + HOSTED_ROOM_UNSUPPORTED_REPROBE_MS)
-        } else {
-          hostedUnsupportedUntil.delete(connectionId)
-        }
-      }
-
-      storeHostedCapabilities({ [connectionId]: capability })
-      capabilities[connectionId] = capability
-      revokeInvalidHostedMemberRoutes(routesByConnection, capabilities, invalidateHostedRoomPoll)
-    }
-
-    if (syncStale()) {
-      return
-    }
-
-    connectionLoop: for (const route of routes) {
-      if (syncStale()) {
-        return
-      }
-
-      const connectionId = String(route.connectionId)
-      const capability = $hostedRoomCapabilities.get()[connectionId]
-
-      if (!capability) {
-        continue
-      }
-
-      const observation = hostedRoomObservations.capture(connectionId)
-      const stale = () => syncStale() || !hostedRoomObservations.current(observation)
-
-      const read = <T>(method: string, params: Record<string, unknown>) =>
-        hostedRoomObservations.read(observation, () => requestHostedConnection<T>(route, method, params))
-
-      if (!isHostedRoomReadEligible(capability)) {
-        markHostedConnectionUnavailable(connectionId)
-
-        if (capability.reason === 'old-gateway') {
-          hostedRoomObservations.publish(hostedRoomObservations.capture(connectionId), new Set(), true)
-        }
-
-        continue
-      }
-
-      let inventory: Awaited<ReturnType<typeof readHostedRoomInventory>>
-
-      try {
-        inventory = await readHostedRoomInventory(
-          params => read('groups.list', params),
-          ids => {
-            if (!stale()) {
-              hostedRoomObservations.observe(observation, ids)
-            }
-          }
-        )
-      } catch {
-        if (stale()) {
-          continue
-        }
-
-        invalidateHostedRoomsForConnection(connectionId)
-        markHostedConnectionUnavailable(connectionId)
-
-        continue
-      }
-
-      if (stale()) {
-        continue
-      }
-
-      const listedRooms = inventory.rooms
-
-      // IDs establish absence independently of each known room's display replay.
-      hostedRoomObservations.publish(observation, inventory.ids, inventory.complete)
-
-      const disbandedIds = new Set(
-        listedRooms
-          .map(raw => (record(raw) || {}) as HostedRoomServerState)
-          .filter(isDisbanded)
-          .map(room => String(room.room_id || ''))
-          .filter(Boolean)
-      )
-
-      const caughtUpDisbandedIds = new Set<string>()
-
-      for (const listedRaw of listedRooms) {
-        if (stale()) {
-          continue connectionLoop
-        }
-
-        const listedRoom = (record(listedRaw) || {}) as HostedRoomServerState
-        const roomId = String(listedRoom.room_id || '')
-        const serverName = String(listedRoom.name || '').trim()
-
-        if (!roomId || !serverName || hostedRoomLocallyDeleted.has(roomId)) {
-          continue
-        }
-
-        const existingEntry = Object.entries($groupChats.get()).find(
-          ([, room]) => String(room?.roomId || '') === roomId
-        )
-
-        const includeDisbanded = isDisbanded(listedRoom)
-
-        // A client that already joined the room must replay terminal events
-        // committed while it was offline before painting the remote disband.
-        // Unknown disbanded rooms remain invisible on newly connected clients.
-        if (includeDisbanded && !existingEntry) {
-          continue
-        }
-
-        if (!shouldRefreshHostedRoom(existingEntry?.[1], listedRoom)) {
-          if (
-            includeDisbanded &&
-            Math.max(0, Number(existingEntry?.[1]?.hostedSeq || 0)) >= Math.max(0, Number(listedRoom.latest_seq || 0))
-          ) {
-            caughtUpDisbandedIds.add(roomId)
-          }
-
-          continue
-        }
-
-        const refreshGeneration = hostedRoomMutationGeneration(roomId)
-        const pollGeneration = Number(hostedRoomPollGenerations.get(roomId) || 0)
-
-        let stateResponse: Record<string, unknown>
-        let serverRoom: Record<string, unknown>
-
-        try {
-          stateResponse = await read('groups.state', {
-            room_id: roomId,
-            ...(includeDisbanded ? { include_disbanded: true } : {})
-          })
-          serverRoom = readHostedInventoryState(stateResponse, roomId)
-        } catch {
-          if (stale()) {
-            continue connectionLoop
-          }
-
-          markHostedConnectionUnavailable(connectionId)
-
-          continue
-        }
-
-        if (stale()) {
-          continue connectionLoop
-        }
-
-        if (!hostedRoomMutationIsCurrent(roomId, refreshGeneration)) {
-          continue
-        }
-
-        const ownership = applyHostedRoomAuthority(
-          existingEntry?.[1] || { roomId, log: [], watermarks: {} },
-          serverRoom
-        )
-
-        if (
-          ownership.hosted !== serverRoom.authority_gateway_id ||
-          ownership.hostedEpoch !== serverRoom.authority_epoch
-        ) {
-          continue
-        }
-
-        const writable =
-          isHostedRoomContinuityEligible(capability) && capability.authorityId === serverRoom.authority_gateway_id
-
-        let existingName = existingEntry?.[0]
-        let existing = existingEntry?.[1]
-        const taken = new Set(Object.keys($groupChats.get()))
-
-        let localName =
-          existingName ||
-          (taken.has(serverName)
-            ? uniqueGroupChatName(`${serverName} (${sourceLabel(connectionId)})`, taken)
-            : serverName)
-
-        const renamePending = $hostedRoomOutbox
-          .get()
-          .commands.some(
-            command => command.kind === 'rename' && command.roomId === roomId && command.status !== 'failed'
-          )
-
-        if (existingName && existingName !== serverName && !renamePending && hostedRoomHooks.renameGroupChat) {
-          const occupant = $groupChats.get()[serverName]
-          const renameTaken = new Set(taken)
-
-          renameTaken.delete(existingName)
-
-          const targetName =
-            occupant && occupant.roomId !== roomId
-              ? uniqueGroupChatName(`${serverName} (${sourceLabel(connectionId)})`, renameTaken)
-              : serverName
-
-          const renamed = await hostedRoomHooks.renameGroupChat(
-            existingName,
-            targetName,
-            Array.isArray(existing?.members) ? existing.members : []
-          )
-
-          if (renamed) {
-            existingName = renamed
-            localName = renamed
-            existing = $groupChats.get()[renamed]
-          }
-
-          if (stale()) {
-            continue connectionLoop
-          }
-
-          if (!hostedRoomMutationIsCurrent(roomId, refreshGeneration)) {
-            continue
-          }
-        }
-
-        const replay = await replayHostedRoomPages({
-          state: createHostedRoomReplayState({
-            roomId,
-            name: serverName,
-            members: Array.isArray(serverRoom.members) ? (serverRoom.members as Array<Record<string, unknown>>) : [],
-            authorityId: String(serverRoom.authority_gateway_id || capability.authorityId),
-            authorityEpoch: Number(serverRoom.authority_epoch || 1),
-            connectionId,
-            cursor: Number(existing?.hostedSeq || 0)
-          }),
-          fetchPage: request =>
-            read('groups.log', {
-              room_id: roomId,
-              since_seq: request.sinceSeq,
-              limit: request.limit,
-              ...(includeDisbanded ? { include_disbanded: true } : {})
-            }),
-          pageSize: capability.maxLogLimit || 100
-        })
-
-        if (stale()) {
-          continue connectionLoop
-        }
-
-        if (!hostedRoomMutationIsCurrent(roomId, refreshGeneration)) {
-          continue
-        }
-
-        const replayStatus = deriveFriendlyHostedRoomStatus(replay.state)
-        const driver = record(stateResponse.driver_status)
-
-        const reconnectRoute = (Array.isArray(driver?.peer_routes) ? driver.peer_routes : [])
-          .map(record)
-          .find(route => route?.status === 'needs_reauthorization' && String(route?.member_id || ''))
-
-        const reconnectMemberId = String(reconnectRoute?.member_id || '')
-
-        const reconnectMember = (Array.isArray(serverRoom.members) ? serverRoom.members : [])
-          .map(record)
-          .find(member => String(member?.member_id || '') === reconnectMemberId)
-
-        const reconnectName = String(
-          reconnectMember?.display_name || reconnectMember?.handle || reconnectMember?.profile || botsText().group.aBot
-        )
-
-        const reconnectTarget = record(reconnectMember?.target)
-        const reconnectAuthority = String(reconnectTarget?.installation_id || reconnectTarget?.peer_id || '')
-
-        const reconnectPrior = (existing?.members || []).find(
-          member =>
-            String(member.handle || member.name || '') ===
-              String(reconnectMember?.handle || reconnectMember?.profile || '') &&
-            String(member.targetProfile || member.name || '') ===
-              String(reconnectMember?.profile || reconnectMember?.member_id || '')
-        )
-
-        const reconnectHint = existing?.peerProbeHint
-        const reconnectHintMatches = Boolean(
-          reconnectMemberId &&
-          reconnectAuthority &&
-          reconnectHint?.memberId === reconnectMemberId &&
-          reconnectHint.installationId === reconnectAuthority
-        )
-        const reconnectFallbackConnections = Object.keys(capabilities).filter(id => id !== connectionId)
-        const reconnectConnectionId =
-          Object.entries(capabilities).find(([, candidate]) => candidate.authorityId === reconnectAuthority)?.[0] ||
-          (reconnectHintMatches ? String(reconnectHint?.connectionId || '') : '') ||
-          String(reconnectPrior?.route?.connectionId || reconnectPrior?.connectionId || '') ||
-          (reconnectFallbackConnections.length === 1 ? reconnectFallbackConnections[0] : '')
-
-        const reconnectCapability = reconnectConnectionId ? capabilities[reconnectConnectionId] : undefined
-        const reconnectCapabilityKnown = Boolean(reconnectCapability)
-        const reconnectIdentityVerified = Boolean(
-          reconnectCapability?.authorityId && reconnectCapability.authorityId === reconnectAuthority
-        )
-        const reconnectIdentityMismatch = Boolean(
-          reconnectAuthority &&
-          reconnectCapability?.kind === 'driver-capable' &&
-          reconnectCapability.authorityId &&
-          reconnectCapability.authorityId !== reconnectAuthority
-        )
-
-        const reconnectSupported = Boolean(
-          capability.routeGrantFingerprint &&
-          reconnectConnectionId &&
-          reconnectIdentityVerified &&
-          reconnectCapability?.kind === 'driver-capable' &&
-          reconnectCapability.exactPeerGrantRevoke
-        )
-
-        const reconnectUpdateConnectionId = reconnectMemberId && !capability.routeGrantFingerprint
-          ? connectionId
-          : reconnectCapability?.kind === 'unsupported' ||
-              (reconnectIdentityVerified &&
-                reconnectCapability?.kind === 'driver-capable' &&
-                !reconnectCapability.exactPeerGrantRevoke)
-            ? reconnectConnectionId
-            : ''
-        const reconnectCheckConnectionId = reconnectMemberId && reconnectConnectionId && !reconnectSupported
-          ? reconnectConnectionId
-          : reconnectUpdateConnectionId
-
-        const stopping = $hostedRoomOutbox
-          .get()
-          .commands.some(
-            command =>
-              command.roomId === roomId && ['disband', 'stop'].includes(command.kind) && command.status !== 'failed'
-          )
-
-        const friendly = reconnectMemberId
-          ? {
-              ...replayStatus,
-              kind: 'needs-attention' as const,
-              member: reconnectName,
-              canRetry: false,
-              canStop: false
-            }
-          : hostedRoomDriverDisplayStatus(replayStatus, driver, { stopping })
-
-        const running = ['queued', 'stopping', 'working'].includes(friendly.kind)
-
-        const pendingActions = Array.isArray(driver?.pending_actions) ? driver.pending_actions : []
-
-        const retryAction = pendingActions
-          .map(record)
-          .find(action => action?.kind === 'retry' && String(action?.task_id || ''))
-
-        const commandFailure = failedHostedRoomCommand($hostedRoomOutbox.get(), roomId)
-
-        const memberDescriptors = hostedMemberDescriptors(
-          serverRoom,
-          connectionId,
-          existing?.members || [],
-          capabilities,
-          sourceLabel
-        )
-
-        updateGroupChat(
-          localName,
-          current => {
-            if (stale()) {
-              return current
-            }
-
-            const authoritative = applyHostedRoomAuthority(current, serverRoom as Record<string, unknown>)
-
-            return {
-              ...authoritative,
-              roomId,
-              members: memberDescriptors,
-              hostedMembersVerified: true,
-              hostedMembersNeedRefresh: false,
-              peerProbeHint: reconnectMemberId && reconnectAuthority && reconnectConnectionId
-                ? {
-                    connectionId: reconnectConnectionId,
-                    installationId: reconnectAuthority,
-                    memberId: reconnectMemberId
-                  }
-                : undefined,
-              log: mergeGroupChatRoomEntries(
-                current,
-                restoreHostedUserOutboxIntents(current, $hostedRoomOutbox.get()),
-                replayMessages(replay.state.messages)
-              ),
-              hostedConnectionId: connectionId,
-              hostedSeq: replay.state.cursor,
-              hostedStatus: commandFailure
-                ? {
-                    canRetry: true,
-                    canStop: friendly.canStop,
-                    label: botsText().group.hostedNeedsAttention,
-                    retryCommandId: commandFailure.commandId,
-                    state: 'failed'
-                  }
-                : {
-                    ...hostedStatus(friendly, sourceLabel(connectionId)),
-                    ...(retryAction && !reconnectMemberId ? { taskId: String(retryAction.task_id) } : {}),
-                    ...(reconnectMemberId ? { canReconnect: reconnectSupported } : {}),
-                    ...(reconnectMemberId && reconnectSupported ? { reconnectMemberId } : {}),
-                    ...(reconnectCheckConnectionId
-                      ? { checkConnectionId: reconnectCheckConnectionId }
-                      : {}),
-                    ...(reconnectMemberId &&
-                    (!reconnectCapabilityKnown || reconnectCapability?.kind === 'transient-failure')
-                      ? { canRetry: true }
-                      : {}),
-                    ...(!replay.complete && !reconnectMemberId ? { canRetry: true } : {})
-                  },
-              continuityMode: hostedRoomContinuityMode(serverRoom),
-              continuityIssue: commandFailure
-                ? botsText().group.hostRejectedCommand
-                : reconnectMemberId
-                  ? !reconnectCapabilityKnown || reconnectCapability?.kind === 'transient-failure'
-                    ? botsText().group.reconnectFailed
-                    : reconnectCapability?.kind === 'auth-failure'
-                      ? botsText().group.hostReauthNeeded(sourceLabel(reconnectConnectionId))
-                      : reconnectIdentityMismatch
-                        ? botsText().group.memberCorrectDevice(reconnectName)
-                        : reconnectSupported
-                          ? botsText().group.memberReconnectToContinue(reconnectName)
-                          : botsText().group.hostUpdateNeeded(
-                              reconnectUpdateConnectionId ? sourceLabel(reconnectUpdateConnectionId) : reconnectName
-                            )
-                  : replay.complete
-                    ? null
-                    : botsText().group.hostedSyncing,
-              running,
-              ...(!writable ? hostedReadOnlyState() : {})
-            }
-          },
-          {
-            sync: false
-          }
-        )
-
-        if (stale()) {
-          continue connectionLoop
-        }
-
-        if (writable) {
-          syncHostedRoomApprovals(localName, serverRoom, memberDescriptors, pendingActions)
-        } else {
-          clearHostedRoomApprovalState(localName)
-        }
-
-        if (stale()) {
-          continue connectionLoop
-        }
-
-        if (
-          replay.complete &&
-          (!reconnectMemberId || Boolean(reconnectCheckConnectionId) || reconnectSupported) &&
-          Number(hostedRoomPollGenerations.get(roomId) || 0) === pollGeneration
-        ) {
-          hostedRoomPollCache.set(roomId, hostedRoomPollFingerprint(listedRoom))
-
-          if (includeDisbanded) {
-            caughtUpDisbandedIds.add(roomId)
-          }
-        } else {
-          hostedRoomPollCache.delete(roomId)
-        }
-      }
-
-      // Keep the local shell long enough to explain a disband observed on
-      // another client. Silently deleting only the room atom would strand an
-      // open workspace and leave membership metadata half-cleaned. The normal
-      // local disband action performs the complete cross-module cleanup.
-      if (disbandedIds.size) {
-        for (const [name, room] of Object.entries($groupChats.get())) {
-          if (stale()) {
-            continue connectionLoop
-          }
-
-          if (
-            room.roomId &&
-            disbandedIds.has(room.roomId) &&
-            caughtUpDisbandedIds.has(room.roomId) &&
-            room.hostedConnectionId === connectionId
-          ) {
-            updateGroupChat(
-              name,
-              current => ({
-                ...current,
-                running: false,
-                hostedStatus: {
-                  state: 'deleted',
-                  label: botsText().group.hostedDeleted
-                },
-                continuityIssue: botsText().group.hostedDeleteLocally
-              }),
-              {
-                sync: false
-              }
-            )
-            clearHostedRoomApprovalState(name)
-          }
-        }
-      }
-
-      if (inventory.complete) {
-        const listedIds = new Set(listedRooms.map(raw => String(record(raw)?.room_id || '')).filter(Boolean))
-
-        for (const [name, room] of Object.entries($groupChats.get())) {
-          if (stale()) {
-            continue connectionLoop
-          }
-
-          const roomId = String(room?.roomId || '')
-
-          if (!roomId || room.hostedConnectionId !== connectionId || listedIds.has(roomId)) {
-            continue
-          }
-
-          try {
-            await read('groups.state', {
-              room_id: roomId,
-              include_disbanded: true
-            })
-
-            continue
-          } catch (error) {
-            if (stale()) {
-              continue connectionLoop
-            }
-
-            const message = String(record(error)?.message || record(record(error)?.error)?.message || error || '')
-
-            if (!/history expired|permanently retired|hosted room not found/i.test(message)) {
-              continue
-            }
-          }
-
-          hostedRoomPollCache.delete(roomId)
-          updateGroupChat(
-            name,
-            current => ({
-              ...current,
-              running: false,
-              hostedStatus: {
-                state: 'deleted',
-                label: botsText().group.hostedDeleted
-              },
-              continuityIssue: botsText().group.hostedDeleteLocally
-            }),
-            { sync: false }
-          )
-          clearHostedRoomApprovalState(name)
-        }
-      }
-    }
-  } finally {
-    hostedRoomSyncRunning = false
-  }
+  return active.catch(() => undefined).then(() => refreshHostedRooms(stillCurrent))
 }
 
 function scheduleHostedRoomSync(delay = HOSTED_ROOM_SYNC_INTERVAL_MS) {
