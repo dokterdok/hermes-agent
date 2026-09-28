@@ -7,10 +7,13 @@ import json
 import re
 import sqlite3
 from collections import Counter
+from contextlib import closing
+from pathlib import Path
 
 from gateway import hosted_rooms as rooms
 from gateway import hosted_room_work_storage as storage
 from gateway.hosted_room_replica_retirement import copy_retired_locked, roster_digest
+from gateway.hosted_room_peer import HostedRoomGrantError
 from gateway.hosted_rooms_common import identifier, table_exists
 
 VERSION = 1
@@ -348,16 +351,52 @@ def _validate_roster(record, members):
             raise WorkRecordError("work record receipt target conflicts")
 
 
+def _authorize_ingress_locked(conn, *, checked, token, secret, target_install_id, target_profile):
+    """Rebuild grant validation from the current replica roster, not a prior snapshot."""
+    from gateway.hosted_room_replica_ingress import authorize_granted_room
+
+    row = conn.execute("""SELECT members_json,authority_gateway_id,authority_epoch,disbanded_at
+        FROM hosted_room_replicas WHERE room_id=?""", (checked["room_id"],)).fetchone()
+    if (row is None or row["disbanded_at"] is not None
+            or checked["authority"] != {"gateway_id": row["authority_gateway_id"], "epoch": row["authority_epoch"]}):
+        raise HostedRoomGrantError("passive work record grant has no current replica scope")
+    try:
+        members = json.loads(row["members_json"])
+    except (ValueError, TypeError) as exc:
+        raise HostedRoomGrantError("passive work record roster is unavailable") from exc
+    authorize_granted_room(
+        token=token, secret=secret, target_install_id=target_install_id, target_profile=target_profile,
+        room_id=checked["room_id"], members=members, authority=checked["authority"], permission=PERMISSION,
+    )(conn)
+
+
 def ingest(db_path, *, record: dict, token: str, secret: bytes, target_install_id: str, target_profile: str) -> dict:
     from gateway import hosted_room_replicas as replicas
+    from gateway.hosted_rooms import _schema_is_current
     checked = validate(record)
     error = WorkRecordError("passive work record target is quarantined")
-    with replicas._replica_transaction(db_path) as conn:
+    def authorize(conn):
+        try:
+            _authorize_ingress_locked(conn, checked=checked, token=token, secret=secret,
+                                     target_install_id=target_install_id, target_profile=target_profile)
+        except sqlite3.DatabaseError as exc:
+            raise HostedRoomGrantError("passive work record grant state is unavailable") from exc
+
+    # The room-store read helper can create/migrate a missing database. The
+    # preflight must refuse an already withdrawn grant before opening a writer.
+    try:
+        with closing(sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.25)) as conn:
+            conn.row_factory = sqlite3.Row
+            if not _schema_is_current(conn):
+                raise HostedRoomGrantError("passive work record grant state is unavailable")
+            authorize(conn)
+    except sqlite3.DatabaseError as exc:
+        raise HostedRoomGrantError("passive work record grant state is unavailable") from exc
+    with replicas._replica_transaction(db_path, _authorize=authorize) as conn:
         row = conn.execute("SELECT * FROM hosted_room_replicas WHERE room_id=?", (checked["room_id"],)).fetchone()
         if row is None or row["quarantine_reason"] is None:
             try:
-                return _ingest_audited_locked(conn, checked=checked, row=row, token=token, secret=secret,
-                                              target_install_id=target_install_id, target_profile=target_profile)
+                return _ingest_audited_locked(conn, checked=checked, row=row)
             except InvalidStoredWorkRecord as exc:
                 error = exc  # Preserve the newly discovered invalid disposition.
         # Commit the existing auditor's quarantine, not a metadata write. Raising
@@ -365,8 +404,7 @@ def ingest(db_path, *, record: dict, token: str, secret: bytes, target_install_i
     raise error
 
 
-def _ingest_audited_locked(conn, *, checked, row, token, secret, target_install_id, target_profile):
-    from gateway.hosted_room_replica_ingress import authorize_granted_room
+def _ingest_audited_locked(conn, *, checked, row):
     initialize(conn)
     room_id = checked["room_id"]
     if (row is None or row["disbanded_at"] is not None or copy_retired_locked(conn, room_id)
@@ -374,10 +412,6 @@ def _ingest_audited_locked(conn, *, checked, row, token, secret, target_install_
             or conn.execute("SELECT 1 FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()):
         raise WorkRecordError("passive work record target is unavailable")
     members = json.loads(row["members_json"])
-    authorize_granted_room(
-        token=token, secret=secret, target_install_id=target_install_id, target_profile=target_profile,
-        room_id=room_id, members=members, authority=checked["authority"], permission=PERMISSION,
-    )(conn)
     from gateway.hosted_room_passive_lineage import current_locked
     enrolled = current_locked(conn, room_id)
     # The retained prefix may still say epoch 1 after owner enrollment advances.
