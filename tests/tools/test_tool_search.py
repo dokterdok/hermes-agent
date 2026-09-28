@@ -103,8 +103,13 @@ class TestClassification:
         from toolsets import _HERMES_CORE_TOOLS
 
         discover_builtin_tools()
+        # Both the bot-room and setup session surfaces must remain direct.
+        assert {"bot_room", "setup"} <= _DIRECT_SURFACE_TOOLSETS
         surface = [n for n, ts in registry.get_tool_to_toolset_map().items()
                    if ts in _DIRECT_SURFACE_TOOLSETS]
+        assert {"bot_room", "setup"} <= {
+            registry.get_tool_to_toolset_map()[n] for n in surface
+        }
         assert surface
         for name in surface:
             assert not is_deferrable_tool_name(name), name

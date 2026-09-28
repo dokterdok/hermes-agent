@@ -80,7 +80,14 @@ def test_hosted_dequeue_checks_exact_task_member_and_frozen_input(tmp_path, monk
         tasks.start_task(db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
         task, = tasks.list_tasks(db.db_path, room_id='room')
         rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1), task)
-        row = {'principal_id': 'alice', 'request_id': 'hosted:' + json.dumps([asdict(identity), task['execution_generation']]),
+        assert rpc.authorizer('submit', identity, task['execution_generation']) is True
+        assert rpc.authorize_admission_write is not None
+        db._execute_write(lambda conn: rpc.authorize_admission_write(
+            conn, identity, task['execution_generation']))
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            db._execute_write(lambda conn: rpc.authorize_admission_write(
+                conn, tasks.TaskIdentity('room', 'task', 'different', 'turn'), task['execution_generation']))
+        row = {'status': 'queued', 'principal_id': 'alice', 'request_id': 'hosted:' + json.dumps([asdict(identity), task['execution_generation']]),
                'payload': {'text': 'frozen'}}
         assert service.check_admission(rpc.ref, row) == task
         for bad in ({**row, 'principal_id': 'bob'}, {**row, 'payload': {'text': 'changed'}},
@@ -95,6 +102,72 @@ def test_hosted_dequeue_checks_exact_task_member_and_frozen_input(tmp_path, monk
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
             service.check_admission(rpc.ref, row)
 
+
+
+def test_stop_revokes_submit_and_writer_but_keeps_control_visible(tmp_path, monkeypatch):
+    """A running task's Stop intent denies new work; controls can still inspect it."""
+    import json
+    import time
+    from dataclasses import asdict
+    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from gateway import hosted_room_driver as tasks
+    from gateway.hosted_rooms import create_room, local_authority_gateway_id
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))
+        service = CanonicalHostedRoomService(authority, None)
+        service.authorize_room('alice', 'room', create=True)
+        gateway = local_authority_gateway_id()
+        create_room(db.db_path, room_id='room', name='Room', authority_gateway_id=gateway,
+                    members=[{'member_id': 'default', 'profile': 'default', 'handle': 'bot'}])
+        identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
+        tasks.admit_task(db.db_path, identity, payload={
+            'target_profile': 'default', 'target_member_id': 'default',
+            'source_event_seq': 1, 'prompt': 'frozen'}, clock=time.time)
+        lease = tasks.acquire_lease(db.db_path, room_id='room', gateway_id=gateway,
+            authority_epoch=1, process_generation='test', ttl_seconds=30, clock=time.time)
+        attempt = tasks.start_task(db.db_path, identity, lease,
+            expected_cancel_generation=0, clock=time.time)
+        rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1),
+                                                 tasks.get_task(db.db_path, identity))
+        assert rpc.authorizer('submit', identity, attempt.execution_generation) is True
+        assert rpc.authorize_admission_write is not None
+        stopped = tasks.begin_task_cancel(db.db_path, identity, cancel_id='stop',
+                                           expected_cancel_generation=0, clock=time.time)
+        assert stopped['status'] == 'stopping'
+        assert rpc.authorizer('submit', identity, attempt.execution_generation) is False
+        assert rpc.authorizer('execute', identity, attempt.execution_generation) is True
+        assert rpc.authorizer('info', identity, attempt.execution_generation) is True
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            db._execute_write(lambda conn: rpc.authorize_admission_write(
+                conn, identity, attempt.execution_generation))
+        row = {'status': 'started', 'principal_id': 'alice',
+               'request_id': 'hosted:' + json.dumps([asdict(identity), attempt.execution_generation]),
+               'payload': {'text': 'frozen'}}
+        stopped_task = tasks.get_task(db.db_path, identity)
+        assert service.check_admission(rpc.ref, row) == stopped_task
+        # A stopped task cannot supply the producer to a queued, terminal, or
+        # unknown admission, only to the previously claimed exact admission.
+        for status in ('queued', 'terminal', 'unknown'):
+            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                service.check_admission(rpc.ref, {**row, 'status': status})
+        for invalid in (
+            {**row, 'principal_id': 'bob'},
+            {**row, 'payload': {'text': 'changed'}},
+            {**row, 'request_id': 'hosted:' + json.dumps([asdict(identity), attempt.execution_generation + 1])},
+            {**row, 'request_id': 'hosted:' + json.dumps([asdict(tasks.TaskIdentity('room', 'other', 'thread', 'turn')), attempt.execution_generation])},
+        ):
+            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                service.check_admission(rpc.ref, invalid)
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            service.check_admission(object(), row)
+        terminal = tasks.complete_task_cancel(db.db_path, identity, cancel_id='stop',
+                                              expected_cancel_generation=1, clock=time.time)
+        assert terminal['status'] == 'cancelled'
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            service.check_admission(rpc.ref, row)
 
 
 @pytest.mark.asyncio

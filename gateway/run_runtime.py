@@ -49,8 +49,30 @@ async def _build_profile_authority(runner, name, home, *, register):
         try:
             authority = await initialize_session_authority(
                 runner, profile_id=str(home), instance_id=instance_id, db=db, register=register)
+            # Capture the registrations before yielding to the fallible collector: the
+            # runner's store, its epoch map or its authority may be replaced while we wait.
+            store = runner.session_store
+            epochs = store._local_authority_epochs
+            db_path, epoch = Path(db.db_path).resolve(), authority.epoch
+            try:
+                # Reclaim only before publication; the collector still refuses hot-serve.
+                from gateway.run_input_reclamation import collect_legacy_copies_before_ingress
+                await asyncio.to_thread(collect_legacy_copies_before_ingress, runner, authority)
+            except BaseException:
+                from gateway.session_cron import unbind_owner
+                unbind_owner(authority)
+                if epochs.get(db_path) == epoch:
+                    epochs.pop(db_path)
+                if register and getattr(runner, 'session_authority', None) is authority:
+                    runner.session_authority = None
+                    if getattr(store, '_local_authority_epoch', None) == epoch:
+                        store._local_authority_epoch = None
+                # Metadata withdrawal is not worker cancellation or ownership release.
+                raise
         except BaseException:
-            registry.remove(home)
+            # Never mask the launch failure or remove a replacement authority's slot.
+            if not register and registry.for_home(home) is None:
+                registry.remove(home)
             raise
     registry.replace(home, authority)
     return authority
@@ -204,6 +226,13 @@ async def unserve_profile_runtime(runner, home):
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     unbind_owner(authority)
+    from gateway.config import Platform
+    adapter = getattr(runner, 'adapters', {}).get(Platform.API_SERVER)
+    if adapter is not None:
+        from gateway.platforms.api_server_runs import retire_profile_runs
+        from gateway.platforms.api_server_store import release_profile_run_idempotency_store
+        await retire_profile_runs(adapter, authority)
+        release_profile_run_idempotency_store(adapter, authority)
     _publish_served_set(runner)
 
 
@@ -246,9 +275,14 @@ async def recover_gateway_native_sessions(runner):
             await recover_webhook_finalizations(authority)
             pending = {row['target_session_id'] for row in authority.db._read_all(
                 "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-            bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
-                        for entry in runner.session_store.list_sessions() if entry.origin is not None
-                        for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
+            bindings = []
+            for entry in runner.session_store.list_sessions():
+                if entry.origin is None:
+                    continue
+                owner = authority.logical_owner(entry.session_id)
+                if owner in pending:
+                    source = runner._restored_source(entry)
+                    bindings.append((owner, source, runner._delivery_adapter_for(source)))
             outcome = await authority.recover_native_sessions(bindings)
         for sid, verdict in outcome.items():
             logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)

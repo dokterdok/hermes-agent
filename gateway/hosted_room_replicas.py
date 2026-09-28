@@ -9,6 +9,11 @@ epoch. Storage primitives only: the caller decides *when* takeover is safe.
 
 from __future__ import annotations
 
+import math
+import time
+from gateway.hosted_rooms import (
+    MAX_EVENT_ID_CHARS, _validate_actor, _validate_event_kind)
+
 import json
 import sqlite3
 from contextlib import closing, contextmanager
@@ -309,3 +314,94 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+
+def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
+    """Quarantine lineage written by the pre-fix replica implementation."""
+    for row in conn.execute(
+        """SELECT room_id, authority_gateway_id, authority_epoch, last_seq,
+                  latest_seq, event_bytes, disbanded_at, quarantine_reason
+             FROM hosted_room_replicas"""
+    ).fetchall():
+        room_id = str(row["room_id"])
+        events = conn.execute(
+            """SELECT seq, event_id, authority_epoch, kind, actor_json,
+                      payload_json, created_at
+                 FROM hosted_room_replica_events
+                WHERE room_id=? ORDER BY seq""",
+            (room_id,),
+        ).fetchall()
+        reasons: list[str] = []
+        seqs = [int(event["seq"]) for event in events]
+        event_ids = [str(event["event_id"]) for event in events]
+        last_seq = int(row["last_seq"])
+        latest_seq = int(row["latest_seq"])
+        if int(row["authority_epoch"]) != 1:
+            reasons.append("unverified_authority_epoch")
+        if seqs != list(range(1, last_seq + 1)):
+            reasons.append("non_contiguous_history")
+        if len(set(event_ids)) != len(event_ids):
+            reasons.append("duplicate_event_id")
+        if latest_seq < last_seq:
+            reasons.append("coverage_regression")
+        disband_positions = [
+            index for index, event in enumerate(events)
+            if event["kind"] == "room.disbanded"
+        ]
+        if disband_positions and disband_positions != [len(events) - 1]:
+            reasons.append("events_after_disband")
+        if disband_positions and last_seq != latest_seq:
+            reasons.append("incomplete_terminal_history")
+        if any(
+            event["authority_epoch"] != int(row["authority_epoch"])
+            for event in events
+        ):
+            reasons.append("mixed_authority_lineage")
+        try:
+            _validate_identifier(
+                row["authority_gateway_id"],
+                label="authority_gateway_id",
+                max_chars=MAX_ACTOR_ID_CHARS,
+            )
+            for event in events:
+                kind = _validate_event_kind(event["kind"])
+                _validate_identifier(
+                    event["event_id"],
+                    label="event_id",
+                    max_chars=MAX_EVENT_ID_CHARS,
+                )
+                actor, _ = _validate_actor(
+                    json.loads(event["actor_json"]), kind=kind
+                )
+                if (
+                    actor["kind"] == "gateway"
+                    and actor["id"] != str(row["authority_gateway_id"])
+                ):
+                    reasons.append("gateway_actor_authority_mismatch")
+                payload = json.loads(event["payload_json"])
+                if not isinstance(payload, dict):
+                    raise ReplicaError("event payload is not an object")
+                if not math.isfinite(float(event["created_at"])):
+                    raise ReplicaError("event timestamp is not finite")
+        except (HostedRoomError, TypeError, ValueError, json.JSONDecodeError):
+            reasons.append("invalid_event_shape")
+
+        recomputed_bytes = sum(
+            len(str(event["event_id"]).encode("utf-8"))
+            + len(str(event["kind"]).encode("utf-8"))
+            + len(str(event["actor_json"]).encode("utf-8"))
+            + len(str(event["payload_json"]).encode("utf-8"))
+            for event in events
+        )
+        if recomputed_bytes != int(row["event_bytes"]):
+            conn.execute(
+                "UPDATE hosted_room_replicas SET event_bytes=? WHERE room_id=?",
+                (recomputed_bytes, room_id),
+            )
+        if reasons and row["quarantine_reason"] is None:
+            conn.execute(
+                """UPDATE hosted_room_replicas
+                      SET quarantined_at=?, quarantine_reason=?
+                    WHERE room_id=?""",
+                (time.time(), reasons[0], room_id),
+            )

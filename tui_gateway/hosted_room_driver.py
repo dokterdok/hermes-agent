@@ -13,12 +13,17 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+from tui_gateway.hosted_room_secondary_catchup import (
+    forget_awaiting_primary, load_awaiting_primary)
+from hermes_state_runtime import RuntimeStoreError
+
+from gateway.hosted_rooms_common import identifier
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -100,7 +105,10 @@ class HostedRoomRuntime:
         turn_lock: Callable[[str], ContextManager[Any]], rpc: InternalSessionRPC | None = None,
         transport_resolver: MemberTransportResolver | None = None,
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
+        prepare_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
+        maintain_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
+        publish_settled_secondary: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0, poll_interval_seconds: float = 5.0,
@@ -126,6 +134,20 @@ class HostedRoomRuntime:
         self.db_path = Path(db_path)
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
+        self.capture_stopping = None
+        self.acknowledge_unadmitted_stop = None
+        self.reconcile_cancelled_terminal = None
+        # Settled invitation→NEW secondary publication. Not primary publish_terminal.
+        self.publish_settled_secondary = publish_settled_secondary
+        # Tags an exception raised by that callback so a committed settlement
+        # is not later recorded as an ambiguous observation.
+        self._secondary_notify_tls = threading.local()
+        # Unresolved settlements, journaled atomically before either callback.
+        # Not a scan of settled tasks or read by prepare_room/publish_terminal.
+        self._secondary_awaiting_primary: set[tuple[state.TaskIdentity, int]] = (
+            load_awaiting_primary(self.db_path))
+        self.prepare_leased_room = prepare_leased_room
+        self.maintain_leased_room = maintain_leased_room
         self.pending_action, self.clock = pending_action, clock
         for name, value in positive.items():
             setattr(self, name, float(value))
@@ -147,35 +169,66 @@ class HostedRoomRuntime:
         self._unavailable_route_retries: dict[tuple[str, str], dict[str, float]] = {}
         self._blocked_rooms: set[str] = set()
         self._status_lock, self._current_tasks = threading.Lock(), {}
+        # NEW event admission and stop publish under one outer lock.  Stop
+        # releases it before joining workers, so admission never waits on a
+        # thread whose shutdown needs the admission holder to finish.
+        self._lifecycle_lock = threading.Lock()
         self._room_schedule_cursor, self._cycles = 0, 0
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
         """Start the bounded room-worker supervisor idempotently."""
-        with self._status_lock:
-            if self._thread is not None and self._thread.is_alive():
-                return
-            self._stop.clear()
-            self._wake.set()
-            self._thread = threading.Thread(
-                target=self._worker_loop, name="hosted-room-driver-supervisor", daemon=True)
-            self._thread.start()
+        with self._lifecycle_lock:
+            with self._status_lock:
+                if self._thread is not None and self._thread.is_alive():
+                    return
+                self._stop.clear()
+                self._wake.set()
+                self._thread = threading.Thread(
+                    target=self._worker_loop, name="hosted-room-driver-supervisor", daemon=True)
+                self._thread.start()
 
     def stop(self, *, timeout: float = 5.0) -> bool:
         """Request a bounded clean stop without interrupting accepted turns."""
-        self._stop.set()
-        self._wake.set()
-        with self._status_lock:
-            thread = self._thread
+        deadline = time.monotonic() + max(0.0, timeout)
+        remaining = max(0.0, deadline - time.monotonic())
+        acquired = (self._lifecycle_lock.acquire(timeout=remaining) if remaining
+                    else self._lifecycle_lock.acquire(blocking=False))
+        if not acquired:
+            return False
+        try:
+            self._stop.set()
+            self._wake.set()
+            with self._status_lock:
+                thread = self._thread
+        finally:
+            self._lifecycle_lock.release()
         if thread is None:
             return True
-        deadline = time.monotonic() + max(0.0, timeout)
         thread.join(max(0.0, deadline - time.monotonic()))
         with self._status_lock:
             room_threads = tuple(self._room_threads.values())
         for room_thread in room_threads:
             room_thread.join(max(0.0, deadline - time.monotonic()))
         return not any(t.is_alive() for t in (thread, *room_threads))
+
+    @contextmanager
+    def new_event_admission(self):
+        """Linearize one NEW canonical event against runtime stop.
+
+        Admission-first retains this guard through the event transaction's
+        commit.  Stop-first publishes ``_stop`` under the same guard and the
+        later admission fails.  No worker join occurs while the guard is held.
+        """
+
+        with self._lifecycle_lock:
+            with self._status_lock:
+                thread = self._thread
+                running = bool(thread and thread.is_alive())
+                stopping = self._stop.is_set()
+            if not running or stopping:
+                raise RuntimeStoreError("runtime_coordination_required")
+            yield
 
     def wakeup(self) -> None:
         """Wake the worker after task admission or a room-state change."""
@@ -199,7 +252,8 @@ class HostedRoomRuntime:
                 "last_error": self._last_error, "cycles": self._cycles}
 
     # ------------------------------------------------------------------ public ops
-    def cancel(self, identity: state.TaskIdentity, *, cancel_id: str) -> dict[str, Any]:
+    def cancel(self, identity: state.TaskIdentity, *, cancel_id: str, publish: bool = True,
+               capture_only: bool = False, expected_execution_generation=None) -> dict[str, Any]:
         """Persist a stop intent, then commit cancellation after acknowledgement.
 
         The worker transitions tasks concurrently, so the status read is only a routing
@@ -207,6 +261,9 @@ class HostedRoomRuntime:
         """
         for _ in range(_CANCEL_ROUTE_RETRIES):
             before = state.get_task(self.db_path, identity)
+            if (expected_execution_generation is not None
+                    and before['execution_generation'] != expected_execution_generation):
+                raise state.StaleTaskError('Stop execution generation changed')
             if before["status"] == "cancelled":
                 return before
             if before["status"] in state.TERMINAL_STATUSES:
@@ -219,13 +276,17 @@ class HostedRoomRuntime:
                     expected_cancel_generation=before["cancel_generation"], clock=self.clock)
             except (state.InvalidTaskTransitionError, state.StaleTaskError):
                 continue  # lost the race with the worker (settled or re-queued); re-route
+            if not direct and self.capture_stopping is not None:
+                self.capture_stopping(result, cancel_id)
+            if capture_only:
+                return result
             if not direct:
                 binding = self._binding_for_room(identity.room_id)
                 try:
                     if binding is not None:
                         lease = self._ensure_lease(binding)
                         if self._peer_stop_acknowledged(binding, result) or (
-                            not self._settle_stopping_completion(binding, result, lease)
+                            not self._settle_stopping_completion(binding, result, lease, publish=publish)
                             and self._interrupt_stopping_task(binding, result)):
                             self._complete_cancel(result, cancel_id=cancel_id)
                 except Exception as exc:
@@ -239,6 +300,15 @@ class HostedRoomRuntime:
         raise state.InvalidTaskTransitionError(
             "cancel kept losing races with task transitions "
             f"(last observed state '{final['status']}')")
+
+    def finish_cancel(self, binding, captured, *, publish=True):
+        """Observe the captured attempt outside caller policy claims."""
+        current = state.get_task(self.db_path, captured['identity'])
+        if (current['execution_generation'], current['cancel_generation'], current['status']) != (
+                captured['execution_generation'], captured['cancel_generation'], 'stopping'):
+            return current
+        return self.cancel(captured['identity'], cancel_id=captured['cancel_id'], publish=publish,
+                           expected_execution_generation=captured['execution_generation'])
 
     def retry_indeterminate(self, identity: state.TaskIdentity) -> dict[str, Any]:
         """Explicitly retry one uncertain attempt under the current room lease."""
@@ -271,6 +341,97 @@ class HostedRoomRuntime:
             self.publish_terminal(binding, task)
         return task
 
+    def _notify_settled_secondary(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> None:
+        """After settlement, not from history, info, or primary publish_terminal."""
+        if self.publish_settled_secondary is None or task.get("status") != "settled":
+            return
+        identity = task.get("identity")
+        if identity is None:
+            return
+        try:
+            fresh = state.get_task(self.db_path, identity)
+        except state.TaskConflictError:
+            return
+        if fresh.get("status") != "settled":
+            return
+        try:
+            result = self.publish_settled_secondary(binding, fresh)
+        except Exception as exc:
+            self._secondary_notify_tls.error = exc
+            raise
+        self._remember_secondary_awaiting_primary(fresh, result)
+
+    def _remember_secondary_awaiting_primary(self, task: Mapping[str, Any], result: Any) -> None:
+        """Retain a no-op; clear the settlement key only after a definitive result."""
+        from gateway.session_hosted_output_secondary_caller import SecondaryAwaitingPrimary
+        identity = task.get("identity")
+        generation = task.get("execution_generation")
+        if identity is None or isinstance(generation, bool) or not isinstance(generation, int):
+            return
+        key = (identity, generation)
+        awaiting = type(result) is SecondaryAwaitingPrimary
+        if awaiting:
+            with self._status_lock:
+                self._secondary_awaiting_primary.add(key)
+            return
+        persisted = self._write_secondary_catchup(identity, generation)
+        with self._status_lock:
+            if persisted:
+                self._secondary_awaiting_primary.discard(key)
+
+    def _track_settlement(self, task: Mapping[str, Any]) -> None:
+        if self.publish_settled_secondary is not None and task.get("status") == "settled":
+            with self._status_lock:
+                self._secondary_awaiting_primary.add(
+                    (task["identity"], task["execution_generation"]))
+
+    def _write_secondary_catchup(
+            self, identity: state.TaskIdentity, generation: int) -> bool:
+        try:
+            forget_awaiting_primary(self.db_path, identity, generation)
+        except Exception as exc:
+            self._record_error(
+                f"room {identity.room_id} secondary catch-up durability failed: {exc}")
+            return False
+        return True
+
+    def _forget_secondary_catchup(self, identity: state.TaskIdentity, generation: int) -> None:
+        if self._write_secondary_catchup(identity, generation):
+            with self._status_lock:
+                self._secondary_awaiting_primary.discard((identity, generation))
+
+    def _catch_up_secondary_after_primary(self, binding: HostedRoomBinding) -> None:
+        """Retry remembered no-op notifies once primary terminal evidence can exist.
+
+        Reads the pending-key set only. Does not scan settled tasks. Not called
+        from ``publish_terminal`` or ``prepare_room``. Does not publish primary
+        events and does not pass send-consent. A missing contract is recorded
+        and writes nothing; the task stays pending.
+        """
+        if self.publish_settled_secondary is None:
+            return
+        with self._status_lock:
+            pending = tuple(
+                key for key in self._secondary_awaiting_primary
+                if key[0].room_id == binding.room_id)
+        for identity, generation in pending:
+            try:
+                task = state.get_task(self.db_path, identity)
+            except state.TaskConflictError:
+                self._forget_secondary_catchup(identity, generation)
+                continue
+            if (task.get("status") != "settled"
+                    or task.get("execution_generation") != generation):
+                self._forget_secondary_catchup(identity, generation)
+                continue
+            try:
+                self._notify_settled_secondary(binding, task)
+            except Exception as exc:
+                if getattr(self._secondary_notify_tls, "error", None) is exc:
+                    self._secondary_notify_tls.error = None
+                self._record_error(
+                    f"room {binding.room_id} secondary catch-up failed: {exc}")
+
     def _set_blocked(self, room_id: str, blocked: bool) -> None:
         with self._status_lock:
             (self._blocked_rooms.add if blocked else self._blocked_rooms.discard)(room_id)
@@ -281,8 +442,16 @@ class HostedRoomRuntime:
     ) -> dict[str, Any]:
         """Run one lease-fenced state transition on ``task``; ``extra`` may override fences."""
         kwargs = {**_fences(task), "clock": self.clock, **extra}
+        if op in (state.settle_stopping_task, state.resolve_indeterminate_task):
+            kwargs["pending_secondary"] = self.publish_settled_secondary is not None
         result = op(self.db_path, task["identity"], lease, **kwargs)
-        return self._publish(binding, result) if publish and binding is not None else result
+        if op in (state.settle_stopping_task, state.resolve_indeterminate_task):
+            self._track_settlement(result)
+        if publish and binding is not None:
+            result = self._publish(binding, result)
+        if binding is not None:
+            self._notify_settled_secondary(binding, result)
+        return result
 
     def _requeue(
         self, requeue: Callable[..., dict[str, Any]], task: Mapping[str, Any],
@@ -307,13 +476,14 @@ class HostedRoomRuntime:
             **asdict(terminal))
 
     def _finish_stop(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        *, publish: bool = True
     ) -> bool:
         """Terminalize a stopping task from its receipt or an acknowledged interrupt."""
-        if self._settle_stopping_completion(binding, task, lease):
+        if self._settle_stopping_completion(binding, task, lease, publish=publish):
             return True
         if self._interrupt_stopping_task(binding, task):
-            self._complete_acknowledged_stop(binding, task, lease)
+            self._complete_acknowledged_stop(binding, task, lease, publish=publish)
             return True
         return False
 
@@ -358,6 +528,8 @@ class HostedRoomRuntime:
             and int(info.get("execution_generation") or 0) == int(task["execution_generation"]))
 
     def _interrupt_stopping_task(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
+        if self.acknowledge_unadmitted_stop is not None and self.acknowledge_unadmitted_stop(task):
+            return True
         transport, profile, session_id = self._open_session(binding, task)
         if session_id is None:
             # A local turn cannot survive without its canonical session, so an authoritative
@@ -377,7 +549,8 @@ class HostedRoomRuntime:
             or str(result.get("status") or "") in _STOP_ACK_STATUSES)
 
     def _settle_stopping_completion(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        *, publish: bool = True
     ) -> bool:
         """Publish a terminal receipt that arrived before Stop was acknowledged."""
         transport, profile, session_id = self._open_session(binding, task)
@@ -386,7 +559,7 @@ class HostedRoomRuntime:
         receipt = self._terminal_from_history(transport, profile, session_id, task)
         if receipt is None:
             return False
-        self._fenced(state.settle_stopping_task, binding, task, lease, **asdict(receipt))
+        self._fenced(state.settle_stopping_task, binding, task, lease, publish=publish, **asdict(receipt))
         return True
 
     def _report_pending_action(
@@ -498,6 +671,11 @@ class HostedRoomRuntime:
     def _process_room(self, binding: HostedRoomBinding) -> None:
         if self.prepare_room is not None:
             self.prepare_room(binding)
+        # After prepare_room returns, not inside it and not inside
+        # publish_terminal. A failed prepare does not catch up. Primary evidence
+        # written by a successful call is visible to a no-op notify from an
+        # earlier settle or harvest.
+        self._catch_up_secondary_after_primary(binding)
         self._inspect_abandoned_attempts(binding)
         deferred_until = self._ambiguous_rooms.get(binding.room_id)
         if deferred_until is not None:
@@ -508,6 +686,8 @@ class HostedRoomRuntime:
         if (lease.room_id, lease.lease_generation) not in self._recovered_leases:
             state.recover_room(self.db_path, lease, clock=self.clock)
             self._recovered_leases.add((lease.room_id, lease.lease_generation))
+        if self.prepare_leased_room is not None:
+            self.prepare_leased_room(binding, lease)
         if self._retry_stopping_tasks(binding, lease):
             self._set_blocked(binding.room_id, True)
             return
@@ -525,8 +705,18 @@ class HostedRoomRuntime:
                 expected_cancel_generation=task["cancel_generation"], clock=self.clock)
             self._execute_attempt(binding, task, attempt)
             current = state.get_task(self.db_path, task["identity"])
+            if current["status"] in state.TERMINAL_STATUSES:
+                lease = self._maintain_room(binding, lease)
             if current["status"] not in state.TERMINAL_STATUSES:
                 return
+
+        self._maintain_room(binding, lease)
+
+    def _maintain_room(self, binding: HostedRoomBinding, lease: state.DriverLease) -> state.DriverLease:
+        if self.maintain_leased_room is not None and not self._stop.is_set():
+            lease = self._renew_lease_if_needed(lease)
+            self.maintain_leased_room(binding, lease)
+        return lease
 
     def _defer_unavailable_route(self, task: Mapping[str, Any]) -> float:
         key = (task["identity"].room_id, _member_id(task))
@@ -602,27 +792,59 @@ class HostedRoomRuntime:
                     transport=transport, deadline_monotonic=deadline_monotonic)
                 if receipt is None:
                     return
-                state.settle_task(self.db_path, attempt, **asdict(receipt), clock=self.clock)
+                settled_task = state.settle_task(
+                    self.db_path, attempt, **asdict(receipt), clock=self.clock,
+                    pending_secondary=self.publish_settled_secondary is not None)
+                self._track_settlement(settled_task)
         except (state.StaleLeaseError, state.StaleTaskError) as exc:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
-            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            if getattr(self._secondary_notify_tls, "error", None) is exc:
+                self._secondary_notify_tls.error = None
+                raise
+            # Only start_task's newly allocated, still-fenced generation proves freshness.
+            fresh_preflight_failure = (
+                getattr(exc, "dispatch_not_attempted", False) is True
+                and task.get("status") == "queued"
+                and task.get("execution_generation") == attempt.execution_generation - 1
+            )
+            if submit_attempted and (
+                bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure
+            ):
                 try:
-                    state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
+                    # Policy-managed member turns must publish deferral so the
+                    # planner can admit a sibling. A bare runtime has no such
+                    # consumer and retains its existing automatic queue retry.
+                    if self.publish_terminal is not None and task.get("payload", {}).get("target_member_id"):
+                        deferred = state.defer_not_admitted_task(
+                            self.db_path, attempt, reason="member_unavailable", clock=self.clock,
+                            retry_binding=getattr(transport, "nonadmission_retry_binding", None))
+                    else:
+                        deferred = None
+                        state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
                     self._mark_ambiguous(binding, attempt)
                     self._record_task_error(
                         attempt, f"not-admitted proof lost its fence: {fence_exc}")
                 else:
                     delay = self._defer_unavailable_route(task)
+                    if deferred is not None:
+                        self._publish(binding, deferred)
                     self._record_task_error(
-                        attempt, f"was not admitted; queued for retry in {delay:g}s")
+                        attempt, "was not admitted; " + (
+                            "member deferred pending explicit retry" if deferred is not None
+                            else f"queued for retry in {delay:g}s"))
             elif submit_attempted:
                 self._mark_ambiguous(binding, attempt)
                 self._record_task_error(attempt, f"observation failed after submit: {exc}")
             else:
                 self._settle_failure_if_current(attempt, exc)
+        else:
+            # Outside the observation handler: a secondary failure must not
+            # mark a committed settlement ambiguous.
+            if settled_task is not None:
+                self._notify_settled_secondary(binding, settled_task)
         finally:
             with self._status_lock:
                 self._current_tasks.pop(binding.room_id, None)
@@ -641,6 +863,12 @@ class HostedRoomRuntime:
         """Durably commit one in-process terminal receipt for ``attempt``."""
         status = receipt.get("status")
         if status == "cancelled":
+            # The exact canonical terminal callback may arrive after the signal
+            # already cancelled its driver row. Reconcile retained Output then.
+            current = state.get_task(self.db_path, attempt.identity)
+            if (current['execution_generation'] == attempt.execution_generation
+                    and current['status'] in {'cancelled', 'stopping'}):
+                self._publish(binding, current)
             self.wakeup()
             return
         terminal = _TerminalReceipt(
@@ -649,26 +877,33 @@ class HostedRoomRuntime:
             or f"reply:{attempt.identity.task_id}:{attempt.execution_generation}",
             result=_bounded_terminal_result(receipt))
         try:
-            self._publish(
-                binding,
-                state.settle_task(self.db_path, attempt, **asdict(terminal), clock=self.clock))
-        except state.StaleTaskError:
-            with suppress(state.StaleLeaseError, state.StaleTaskError):
-                current = state.get_task(self.db_path, attempt.identity)
-                if current["status"] == "stopping":
-                    self._fenced(
-                        state.settle_stopping_task, binding, current, attempt.lease,
-                        **asdict(terminal),
-                        expected_execution_generation=attempt.execution_generation)
-        except state.StaleLeaseError:
-            # Cancellation, disband, or authority transfer won the durable race: the model
-            # result is discarded rather than turning a correct fence into a thread exception.
-            pass
-        except state.DriverStateError as exc:
-            # A malformed receipt must not escape the callback and hold the profile lock.
-            self._settle_failure_if_current(
-                attempt, RuntimeError(f"terminal result could not be committed: {exc}"))
-        self.wakeup()
+            try:
+                settled = state.settle_task(
+                    self.db_path, attempt, **asdict(terminal), clock=self.clock,
+                    pending_secondary=self.publish_settled_secondary is not None)
+                self._track_settlement(settled)
+                self._publish(binding, settled)
+            except state.StaleTaskError:
+                with suppress(state.StaleLeaseError, state.StaleTaskError):
+                    current = state.get_task(self.db_path, attempt.identity)
+                    if current["status"] == "stopping":
+                        self._fenced(
+                            state.settle_stopping_task, binding, current, attempt.lease,
+                            **asdict(terminal),
+                            expected_execution_generation=attempt.execution_generation)
+            except state.StaleLeaseError:
+                # Cancellation, disband, or authority transfer won the durable race: the model
+                # result is discarded rather than turning a correct fence into a thread exception.
+                pass
+            except state.DriverStateError as exc:
+                # A malformed receipt must not escape the callback and hold the profile lock.
+                self._settle_failure_if_current(
+                    attempt, RuntimeError(f"terminal result could not be committed: {exc}"))
+            else:
+                # After primary publication returns. Not inside publish_terminal.
+                self._notify_settled_secondary(binding, settled)
+        finally:
+            self.wakeup()
 
     def _wait_for_terminal(
         self, binding: HostedRoomBinding, *, profile: str, session_id: str,
@@ -698,19 +933,21 @@ class HostedRoomRuntime:
                 return receipt
             info = transport.info(**_session_kw(profile, session_id))
             self._report_pending_action(task, session_id=session_id, info=info)
+            lease = self._maintain_room(binding, lease)
             remaining = max(0.0, deadline_monotonic - time.monotonic())
             self._wake.wait(min(self.active_poll_interval_seconds, remaining))
             self._wake.clear()
         return None
 
     def _complete_acknowledged_stop(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        *, publish: bool = True
     ) -> dict[str, Any]:
         """Terminalize an acknowledged Stop: deadline stops publish an explicit failure."""
         if not str(task.get("cancel_id") or "").startswith("deadline:"):
             return self._complete_cancel(task)
         return self._fenced(
-            state.settle_stopping_task, binding, task, lease,
+            state.settle_stopping_task, binding, task, lease, publish=publish,
             settlement_id=f"deadline:{int(task['execution_generation'])}", status="failed",
             result={
                 "error": "This Group Chat turn exceeded its configured time limit and was stopped.",
@@ -858,8 +1095,14 @@ class HostedRoomRuntime:
                 lease_generation=task["run_lease_generation"], expires_at=0.0))
         # Once the previous proof has expired there is deliberately no "trust this historical
         # output" escape hatch; fenced recovery leaves the task indeterminate for the user.
+        settled = None
         with suppress(state.StaleLeaseError, state.StaleTaskError):
-            state.settle_task(self.db_path, previous_attempt, **asdict(receipt), clock=self.clock)
+            settled = state.settle_task(
+                self.db_path, previous_attempt, **asdict(receipt), clock=self.clock,
+                pending_secondary=self.publish_settled_secondary is not None)
+            self._track_settlement(settled)
+        if settled is not None:
+            self._notify_settled_secondary(binding, settled)
 
     def _tasks(self, binding: HostedRoomBinding, status: str) -> list[dict[str, Any]]:
         return state.list_tasks(self.db_path, room_id=binding.room_id, status=status)
@@ -933,12 +1176,37 @@ def _truncate_utf8(value: Any, *, max_bytes: int) -> tuple[str, bool]:
 
 
 def _bounded_terminal_result(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    from gateway.session_hosted_output import output_receipt_fields
     text, truncated = _truncate_utf8(receipt.get("text", ""), max_bytes=MAX_TERMINAL_TEXT_BYTES)
     error, error_truncated = _truncate_utf8(receipt.get("error", ""), max_bytes=4096)
     return {
         "message_id": receipt.get("message_id"), "text": text,
+        **output_receipt_fields(dict(receipt)),
         **({"error": error} if error else {}),
         **({"truncated": True} if truncated or error_truncated else {})}
+
+
+def _legacy_artifact_receipt_is_held(message: Mapping[str, Any]) -> bool:
+    """Recognize only the old manifest/run pair that lacks canonical authority."""
+    artifacts, run_id = message.get("artifacts"), message.get("run_id")
+    peer_fields = (
+        "peer_run_id", "peer_admission_id", "peer_execution_generation", "peer_result_digest"
+    )
+    if (
+        "artifact_scope" in message
+        or any(field in message for field in peer_fields)
+        or not isinstance(artifacts, Mapping)
+    ):
+        return False
+    from gateway.hosted_room_artifacts import RoomArtifactError, validate_terminal_artifact_manifest
+    try:
+        checked_run_id = identifier(
+            run_id, label="run_id", error=RoomArtifactError, max_chars=256
+        )
+        validate_terminal_artifact_manifest(artifacts)
+    except RoomArtifactError:
+        return False
+    return message.get("message_id") == "peer-run:" + checked_run_id
 
 
 def _find_terminal_receipt(
@@ -951,13 +1219,18 @@ def _find_terminal_receipt(
             or message.get("execution_generation") != execution_generation
             or message.get("role") != "assistant" or status not in {"settled", "failed"}):
             continue
+        if _legacy_artifact_receipt_is_held(message):
+            return None
         receipt_id = message.get("message_id")
         if not isinstance(receipt_id, str) or not receipt_id:
             receipt_id = f"reply:{identity.task_id}:{execution_generation}"
         return _TerminalReceipt(
             status=cast(state.TerminalStatus, status), settlement_id=receipt_id,
             result=_bounded_terminal_result(
-                {"message_id": receipt_id, "text": message.get("content", "")}))
+                {"message_id": receipt_id, "text": message.get("content", ""),
+                 "artifacts": message.get("artifacts"),
+                 **{k: message[k] for k in ("peer_run_id", "peer_admission_id", "peer_execution_generation", "peer_result_digest", "owner_output_receipt") if k in message},
+                 **({"artifact_scope": message["artifact_scope"]} if "artifact_scope" in message else {})}))
     return None
 
 

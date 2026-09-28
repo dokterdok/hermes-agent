@@ -18,9 +18,10 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Literal, get_args
 
+from gateway.hosted_room_route_schema import require_room_work_open
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
-    transaction)
+    transaction, table_exists)
 
 Clock = Callable[[], float]
 TaskStatus = Literal["queued", "running", "settled", "failed", "cancelled", "indeterminate", "deferred", "stopping"]
@@ -30,13 +31,15 @@ MAX_IDENTIFIER_CHARS = 128
 MAX_PROMPT_BYTES = 128 * 1024
 MAX_RESULT_JSON_BYTES = 256 * 1024
 TERMINAL_TASK_RETENTION_SECONDS = 30 * 24 * 60 * 60
+# Source artifacts retain 30 days of bytes plus a 30-day ACK tombstone.
+ARTIFACT_RETRY_RETENTION_SECONDS = 60 * 24 * 60 * 60
 MAX_RETAINED_TERMINAL_TASKS = 2048
 MAX_TASK_PRUNE_BATCH = 1000
 TASK_STATUSES = frozenset(get_args(TaskStatus))
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({"target_profile", "prompt", "source_event_seq"})
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "input_context", "attachments"})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "attachments", "input_context", "recipient_member_ids"})
 _LEASE_COLUMNS = frozenset({
     "room_id", "gateway_id", "authority_epoch", "process_generation", "lease_generation", "expires_at", "acquired_at",
     "updated_at", "released_at"})
@@ -47,6 +50,9 @@ _TASK_COLUMN_ORDER = (
     "terminal_at", "indeterminate_at")
 _TASK_COLUMNS = frozenset(_TASK_COLUMN_ORDER)
 _TASK_ORDER = "ORDER BY source_event_seq, created_at, task_id"
+SECONDARY_CATCHUP_TABLE = "hosted_room_secondary_awaiting_primary"
+_SECONDARY_CATCHUP_COLUMNS = frozenset({
+    "room_id", "task_id", "thread_id", "turn_id", "execution_generation"})
 _SELECT_LEASE = "SELECT * FROM hosted_room_driver_leases WHERE room_id=?"
 _SELECT_TASK = "SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND task_id=?"
 _TASK_INDEX_SQL = """CREATE INDEX {if_not_exists}idx_hosted_room_driver_tasks_status
@@ -182,7 +188,17 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         except ValueError as exc:
             raise DriverValidationError(str(exc)) from exc
     if "target_member_id" in value:
-        normalized["target_member_id"] = _identifier(value["target_member_id"], label="target_member_id")
+        normalized["target_member_id"] = _identifier(
+            value["target_member_id"], label="target_member_id"
+        )
+    if "recipient_member_ids" in value:
+        raw_recipients = value["recipient_member_ids"]
+        if not isinstance(raw_recipients, list) or not 1 <= len(raw_recipients) <= 6:
+            raise DriverValidationError("recipient_member_ids must contain 1-6 members")
+        recipients = [_identifier(item, label="recipient_member_id") for item in raw_recipients]
+        if len(set(recipients)) != len(recipients):
+            raise DriverValidationError("recipient_member_ids must be unique")
+        normalized["recipient_member_ids"] = recipients
     if "attachments" in value:
         normalized["attachments"] = validate_bound_task_manifest(value["attachments"])
     encoded = compact_json(normalized)
@@ -470,12 +486,31 @@ def _require_cancel_generation(row: sqlite3.Row, expected_cancel_generation: int
     if int(row["cancel_generation"]) != expected_cancel_generation:
         raise StaleTaskError("task cancellation generation changed")
 
+def record_secondary_catchup_locked(conn: sqlite3.Connection, identity: TaskIdentity, generation: int) -> None:
+    """Record a replayable obligation inside the caller's settlement transaction."""
+    if table_exists(conn, SECONDARY_CATCHUP_TABLE):
+        if table_columns(conn, SECONDARY_CATCHUP_TABLE) != _SECONDARY_CATCHUP_COLUMNS:
+            raise DriverStateError("unsupported secondary catch-up schema; recreate the catch-up table")
+    else:
+        conn.execute(f"""CREATE TABLE {SECONDARY_CATCHUP_TABLE} (
+            room_id TEXT NOT NULL, task_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            execution_generation INTEGER NOT NULL CHECK (execution_generation >= 0),
+            PRIMARY KEY (room_id, task_id, execution_generation))""")
+    conn.execute(f"""INSERT INTO {SECONDARY_CATCHUP_TABLE} (
+        room_id, task_id, thread_id, turn_id, execution_generation) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(room_id, task_id, execution_generation) DO UPDATE SET
+            thread_id=excluded.thread_id, turn_id=excluded.turn_id""",
+        (identity.room_id, identity.task_id, identity.thread_id, identity.turn_id, generation))
+
 
 def _transition(
     db_path: DbPath, identity: TaskIdentity, *, sql: str, set_params: tuple[Any, ...], fence_params: tuple[Any, ...],
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
-    guard: Callable[[sqlite3.Row], None] | None = None) -> dict[str, Any]:
+    guard: Callable[[sqlite3.Row], None] | None = None, new_work: bool = False,
+    authorize: Callable[[sqlite3.Connection], None] | None = None,
+    pending_secondary: bool = False) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
@@ -484,6 +519,8 @@ def _transition(
     """
     params = (*set_params, identity.room_id, identity.task_id, *fence_params)
     with _transaction(db_path) as conn:
+        if authorize is not None:
+            authorize(conn)
         if lease is not None and lease_first:
             _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
@@ -493,16 +530,25 @@ def _transition(
             _require_active_lease(conn, lease, now=now)
         if guard is not None:
             guard(row)
+        if new_work:
+            require_room_work_open(conn, identity.room_id, error=RoomUnavailableError)
         fenced_update(conn, sql, params, StaleTaskError(stale))
+        updated_row = _load_task(conn, identity)
+        assert updated_row is not None  # the fenced UPDATE just matched this row
+        updated = _task_from_row(updated_row)
+        if pending_secondary and updated["status"] == "settled":
+            record_secondary_catchup_locked(conn, identity, updated["execution_generation"])
         from gateway.hosted_room_work_records import capture_transition_locked
         capture_transition_locked(conn, identity.room_id)
-        return _task_from_row(_load_task(conn, identity))
+        return updated
 
 
 def _generation_transition(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, execution_generation: int,
     cancel_generation: int, *, now: float, set_params: tuple[Any, ...],
-    replay: Callable[[sqlite3.Row], Any] | None = None) -> dict[str, Any]:
+    replay: Callable[[sqlite3.Row], Any] | None = None,
+    authorize: Callable[[sqlite3.Connection], None] | None = None,
+    pending_secondary: bool = False) -> dict[str, Any]:
     """Lease-first transition from ``_GENERATION_TRANSITIONS`` fenced on status + both generations."""
     status, set_clause, generation_stale, stale = _GENERATION_TRANSITIONS[name]
     def guard(row: sqlite3.Row) -> None:
@@ -510,7 +556,9 @@ def _generation_transition(
             raise StaleTaskError(generation_stale)
     return _transition(
         db_path, identity, lease=lease, now=now, replay=replay, guard=guard, sql=_generation_update(set_clause, status),
-        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale)
+        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale,
+        new_work=name in {"requeue", "requeue_deferred"}, authorize=authorize,
+        pending_secondary=pending_secondary)
 
 
 def _run_fence_transition(
@@ -623,6 +671,7 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
             "SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND thread_id=? AND turn_id=?",
             (identity.room_id, identity.thread_id, identity.turn_id)).fetchone() is not None:
             raise TaskConflictError("thread_id and turn_id are already bound to a task")
+        require_room_work_open(conn, identity.room_id, error=RoomUnavailableError)
         conn.execute("""INSERT INTO hosted_room_driver_tasks (
                    room_id, task_id, thread_id, turn_id, source_event_seq, payload_json, payload_digest,
                    status, execution_generation, cancel_generation, created_at, updated_at
@@ -659,6 +708,7 @@ def start_task(
         if next_queued is None or next_queued["task_id"] != identity.task_id:
             raise InvalidTaskTransitionError("task is not next in the hosted room event order")
         execution_generation = int(row["execution_generation"]) + 1
+        require_room_work_open(conn, identity.room_id, error=RoomUnavailableError)
         fenced_update(conn, """UPDATE hosted_room_driver_tasks
                SET status='running', execution_generation=?, run_gateway_id=?, run_process_generation=?,
                    run_lease_generation=?, started_at=?, updated_at=?
@@ -674,18 +724,21 @@ def start_task(
 
 
 def settle_task(
-    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    pending_secondary: bool = False,
 ) -> dict[str, Any]:
     """Commit one terminal result if every lease and task fence still matches."""
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _run_fence_transition(
         db_path, attempt, guard_stale="task attempt is stale or cancelled", lease_first=False, now=now, replay=replay,
-        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement")
+        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement",
+        pending_secondary=pending_secondary)
 
 
 def settle_stopping_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    pending_secondary: bool = False,
 ) -> dict[str, Any]:
     """Commit a completion that won the race with an unacknowledged Stop."""
     _terminal_settlement_id(settlement_id, status)  # settlement errors take precedence over generation errors
@@ -695,19 +748,20 @@ def settle_stopping_task(
     return _transition(
         db_path, identity, lease=lease, lease_first=False, now=now, replay=replay, sql=_SETTLE_STOPPING_SQL,
         set_params=set_params, fence_params=(expected_execution_generation, expected_cancel_generation),
-        stale="task completion lost the stop race")
+        stale="task completion lost the stop race", pending_secondary=pending_secondary)
 
 
 def resolve_indeterminate_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    pending_secondary: bool = False,
 ) -> dict[str, Any]:
     """Commit a verified historical receipt under the current room lease."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _generation_transition(
         db_path, identity, lease, "resolve", expected_execution_generation, expected_cancel_generation, now=now,
-        replay=replay, set_params=set_params)
+        replay=replay, set_params=set_params, pending_secondary=pending_secondary)
 
 
 def resolve_indeterminate_cancellation(
@@ -751,13 +805,70 @@ def defer_indeterminate_task(
 
 def requeue_deferred_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    expected_cancel_generation: int, clock: Clock,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Explicitly retry a fenced deferred turn under a new generation."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     now = _timestamp(clock)
     return _generation_transition(
         db_path, identity, lease, "requeue_deferred", expected_execution_generation, expected_cancel_generation,
-        now=now, set_params=(now,))
+        now=now, set_params=(now,), authorize=authorize)
+
+
+def is_proven_nonadmission(task: Mapping[str, Any]) -> bool:
+    """Only the durable producer's exact attempt may grant a NEW peer retry.
+
+    Legacy/unknown deferrals share reason/retryable, not this disposition.
+    Requeue clears result and run coordinates, consuming the proof.
+    """
+    result = task.get("result")
+    proof = result.get("nonadmission") if isinstance(result, dict) else None
+    if task.get("status") != "deferred" or not isinstance(proof, dict):
+        return False
+    if (set(proof) != {"disposition", "identity", "execution_generation", "cancel_generation",
+                      "authority_epoch", "run_gateway_id", "run_process_generation",
+                      "run_lease_generation", "retry_binding"}
+            or proof["disposition"] != "proven_nonadmission"
+            or proof["identity"] != dataclasses.asdict(task["identity"])
+            or type(proof["authority_epoch"]) is not int or proof["authority_epoch"] < 1):
+        return False
+    for key in ("execution_generation", "cancel_generation", "run_lease_generation"):
+        if type(proof[key]) is not int or proof[key] != task.get(key):
+            return False
+        if proof[key] < (0 if key == "cancel_generation" else 1):
+            return False
+    return all(isinstance(proof[key], str) and proof[key] and proof[key] == task.get(key)
+               for key in ("run_gateway_id", "run_process_generation"))
+
+
+def defer_not_admitted_task(
+    db_path: DbPath, attempt: TaskAttempt, *, reason: Any, clock: Clock,
+    retry_binding: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Release sibling member turns after proven non-admission, not unknown work.
+
+    Retains the historical member-deferral contract using the current exact
+    running-attempt fence. Retrying a deferred member still requires explicit
+    requeue_deferred_task; publication alone cannot allocate a new generation.
+    """
+    _check_same_room(attempt.lease, attempt.identity)
+    reason = _identifier(reason, label="defer_reason")
+    proof = dict(disposition="proven_nonadmission", identity=dataclasses.asdict(attempt.identity),
+        execution_generation=attempt.execution_generation, cancel_generation=attempt.cancel_generation,
+        authority_epoch=attempt.lease.authority_epoch, run_gateway_id=attempt.lease.gateway_id,
+        run_process_generation=attempt.lease.process_generation, run_lease_generation=attempt.lease.lease_generation,
+        retry_binding=dict(retry_binding) if retry_binding is not None else None)
+    result_json = _canonical_json({"reason": reason, "retryable": True, "nonadmission": proof})
+    now = _timestamp(clock)
+    def replay(row: sqlite3.Row) -> dict[str, Any] | None:
+        deferred = _generations_match(row, "deferred", attempt.execution_generation, attempt.cancel_generation)
+        same_run = (row["run_gateway_id"], row["run_process_generation"], row["run_lease_generation"]) == _run_fence(attempt.lease)
+        return _task_from_row(row, idempotent=True) if deferred and same_run and row["result_json"] == result_json else None
+    sql = _generation_update("status='deferred', result_json=?, terminal_at=?, updated_at=?", "running") + f" AND {_RUN_FENCE}"
+    return _run_fence_transition(
+        db_path, attempt, guard_stale="not-admitted task attempt lost its fence",
+        lease_generation=lambda value: int(value or 0), now=now, replay=replay, sql=sql,
+        set_params=(result_json, now, now), stale="not-admitted task changed during deferral")
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:
@@ -771,7 +882,7 @@ def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: C
     return _run_fence_transition(
         db_path, attempt, guard_stale="not-admitted task attempt lost its fence",
         lease_generation=lambda value: int(value or 0), now=now, replay=replay, sql=_REQUEUE_RUNNING_SQL,
-        set_params=(now,), stale="not-admitted task changed during requeue")
+        set_params=(now,), stale="not-admitted task changed during requeue", new_work=True)
 
 
 def cancel_task(
@@ -875,12 +986,37 @@ def prune_published_terminal_tasks(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_policy_publications'").fetchone()
         if publications is None:
             return 0
-        rows = conn.execute("""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
+        retries = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_artifact_retries'").fetchone()
+        retry_guard, retry_params = "", ()
+        if retries is not None:
+            retry_columns = {
+                str(row["name"])
+                for row in conn.execute(
+                    "PRAGMA table_info(hosted_room_artifact_retries)"
+                ).fetchall()
+            }
+            retry_age_column = next(
+                (name for name in ("created_at", "updated_at") if name in retry_columns),
+                None,
+            )
+            retry_guard = (
+                "AND NOT EXISTS (SELECT 1 FROM hosted_room_artifact_retries r "
+                "WHERE r.room_id=t.room_id AND r.task_id=t.task_id "
+                "AND r.execution_generation=t.execution_generation"
+            )
+            if retry_age_column is not None:
+                retry_guard += f" AND r.{retry_age_column}>?"
+                retry_params = (now - ARTIFACT_RETRY_RETENTION_SECONDS,)
+            retry_guard += ")"
+        rows = conn.execute(f"""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
                 WHERE t.room_id=? AND t.status IN ('settled', 'failed', 'cancelled')
                   AND EXISTS (SELECT 1 FROM hosted_room_policy_publications p
                               WHERE p.room_id=t.room_id AND p.task_id=t.task_id
                                 AND p.kind IN ('turn.settled', 'turn.failed', 'turn.cancelled'))
-                ORDER BY t.terminal_at DESC, t.task_id ASC""", (room_id,)).fetchall()
+                {retry_guard}
+                ORDER BY t.terminal_at DESC, t.task_id ASC""",
+            (room_id, *retry_params)).fetchall()
         cutoff = now - float(retention_seconds)
         candidates = [
             str(row["task_id"]) for index, row in enumerate(rows)

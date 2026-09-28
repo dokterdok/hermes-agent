@@ -16,6 +16,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
+from gateway import hosted_room_route_schema as route_schema
+from gateway import hosted_room_safety as room_safety
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, clock as _now, compact_json, connect, fenced_update as _fenced_update,
     identifier, open_sqlite, table_columns, table_exists, transaction, utf8_len)
@@ -192,6 +194,8 @@ class RoomProbeUnavailableError(HostedRoomError):
     """Raised when a non-blocking ownership probe cannot read the room store."""
 
 class EventConflictError(HostedRoomError): """Raised when an event id is reused with different immutable content."""
+
+class EventNotFoundError(HostedRoomError): """Raised when an exact receipt probe finds no event."""
 
 class EventCursorConflictError(HostedRoomError):
     """Raised when new room events invalidate an uncommitted publication plan."""
@@ -386,6 +390,15 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_RETIRE_FROM_ROOMS.format(where="disbanded_at IS NOT NULL"))
     _migrate_remote_run_schema(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor ON hosted_room_events(room_id, seq)")
+    # A private messaging source identity is retained only in the canonical
+    # message thread coordinate.  This narrow expression index makes the
+    # transaction-bound changed-target/lineage probe bounded without a second
+    # request ledger.
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_hosted_room_events_message_thread
+                    ON hosted_room_events(json_extract(payload_json,'$.thread_id'))
+                    WHERE kind='message.user'""")
+    route_schema.initialize_route_schema(conn)
+    room_safety.initialize_safety_schema(conn)
     if not _schema_is_current(conn):
         raise HostedRoomError("hosted room schema migration did not complete")
 
@@ -393,12 +406,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 def _schema_is_current(conn: sqlite3.Connection) -> bool:
     # Read every table first (fixed PRAGMA order), then compare.
     actual = [table_columns(conn, table) for table, _ in _REQUIRED_COLUMNS]
-    return all(
-        required.issubset(columns)
-        and (table != "hosted_room_remote_runs" or _remote_run_schema_current(conn, columns))
-        for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True)) and conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_cursor'"
-    ).fetchone() is not None
+    return (all((required.issubset(columns) and (table != 'hosted_room_remote_runs' or _remote_run_schema_current(conn, columns)) for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True))) and conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_cursor'").fetchone() is not None and (conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_message_thread'").fetchone() is not None) and route_schema.route_schema_is_current(conn)) and room_safety.safety_schema_is_current(conn)
 
 
 def default_db_path() -> Path:
@@ -950,13 +958,20 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
     authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
-    expected_latest_seq: int | None = None) -> dict[str, Any]:
+    expected_latest_seq: int | None = None, expected_output: dict | None = None,
+    authorize_new=None, authorize_commit=None, existing_only: bool = False) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
     with identical content returns the original, different content fails closed."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     if expected_latest_seq is not None:
         _bounded_int(expected_latest_seq, message="expected_latest_seq must be a nonnegative integer")
+    if authorize_new is not None and not callable(authorize_new):
+        raise HostedRoomError("authorize_new must be callable")
+    if authorize_commit is not None and not callable(authorize_commit):
+        raise HostedRoomError("authorize_commit must be callable")
+    if type(existing_only) is not bool:
+        raise HostedRoomError("existing_only must be a boolean")
     kind = _validate_event_kind(kind)
     normalized_actor, actor_json = _validate_actor(actor, kind=kind)
     # Every admitted actor kind is room-scoped, so authority fields are always required.
@@ -969,18 +984,27 @@ def append_event(
     payload_json = _payload_json(payload)
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
+        if expected_output is not None:
+            from gateway.hosted_room_output_fence import require_output_publication
+            require_output_publication(conn, room_id, expected_output, kind=kind, actor=normalized_actor, payload=payload)
         existing = _load_event(conn, room_id, event_id)
         if existing is not None:
             if _event_content(existing) != (kind, actor_json, authority_epoch, payload_json):
                 raise EventConflictError("event_id already exists with different content")
             return _event_from_row(existing, idempotent=True)
+        if existing_only:
+            raise EventNotFoundError("event receipt not found")
         room = _room_row(
             conn, """SELECT next_seq, event_bytes, authority_gateway_id, authority_epoch
                 FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""", (room_id,), room_id)
         _require_authority(room, authority_gateway_id, authority_epoch, "stale hosted room authority")
+        if kind == "message.user":
+            route_schema.require_room_work_open(conn, room_id, error=HostedRoomError)
         seq = int(room["next_seq"])
         if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
             raise EventCursorConflictError("room changed before event publication")
+        if authorize_new is not None:
+            authorize_new(conn)
         if kind in {"message.user", "message.member"}:
             from gateway.hosted_room_attachments import retain_message_attachments
             retain_message_attachments(conn, room_id=room_id, event_id=event_id,
@@ -994,6 +1018,8 @@ def append_event(
         row = _reload(
             conn, f"SELECT {_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?", (room_id, seq),
             "appended event could not be reloaded")
+        if authorize_commit is not None:
+            authorize_commit(conn)
     return {**_event_from_row(row), "actor": normalized_actor}
 
 
@@ -1215,3 +1241,9 @@ from typing import NoReturn  # noqa: F401,E402
 from contextlib import contextmanager  # noqa: F401,E402
 import time  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
+
+
+class RoomQuarantinedError(AuthorityConflictError):
+    """Raised when an unsafe legacy takeover must remain read-only."""
+
+    reason = "room_authority_quarantined"

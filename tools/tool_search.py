@@ -133,11 +133,10 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-# Session-gated GUI toolsets: off ``_HERMES_CORE_TOOLS`` so non-GUI clients never pay
+# Session-gated surface toolsets: off ``_HERMES_CORE_TOOLS`` so other clients never pay
 # their schema; once enabled they stay direct unless the deferral list names them. ``setup``
-# is the setup profile's whole job: a guide that has to search for its one tool first
-# answers the user's install request with a tool_search round trip.
-_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "setup"})
+# is the setup profile's whole job; forcing tool_search first adds a needless round trip.
+_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "bot_room", "setup"})
 
 # Event-triggered tools deferred BY DEFAULT (a catalog stub suffices). Keep the curated
 # list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit

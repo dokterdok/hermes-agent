@@ -19,10 +19,11 @@ _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
 
 class HostedRoomAuthorityRPC:
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
-                 authorize, timeout=30):
+                 authorize, authorize_admission_write=None, timeout=30):
         self.authority, self.loop = authority, loop
         self.room_id, self.member_id, self.profile = room_id, member_id, profile
         self.principal, self.authorizer, self.timeout = principal, authorize, timeout
+        self.authorize_admission_write = authorize_admission_write
         self.callbacks = {}
         binding = json.dumps([room_id, member_id, profile], separators=(',', ':'))
         self.creation_id = 'hosted:' + hashlib.sha256(binding.encode()).hexdigest()
@@ -122,6 +123,9 @@ class HostedRoomAuthorityRPC:
         receipt = {'status': status, 'text': value.get('final_response', ''),
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
                    'task_id': task.task_id, 'execution_generation': generation}
+        if status == 'settled':
+            from gateway.session_hosted_output import output_receipt_fields
+            receipt.update(output_receipt_fields(value))
         callback = self.callbacks.pop(row['admission_id'], None)
         if callback is not None:
             callback(receipt)
@@ -129,16 +133,44 @@ class HostedRoomAuthorityRPC:
 
     async def _submit(self, params):
         task, generation = params['task'], params['execution_generation']
+        owner_output_context = params.pop('_owner_output_context', None)
         request_id = 'hosted:' + json.dumps([asdict(task), generation], sort_keys=True, separators=(',', ':'))
         # Refuse unknown before submit: submit itself schedules the queue on retries.
         rows = self._rows()
         if any(row['status'] == 'unknown' for row, _, _ in rows):
             raise RuntimeStoreError('unknown_execution')
-        from gateway.session_hosted_attachments import submission_payload
-        payload = await asyncio.to_thread(
-            submission_payload, self, params['prompt'], params.get('attachments'))
+        from gateway.hosted_room_input_preparation import prepare_hosted_input
+        prepared = await asyncio.to_thread(prepare_hosted_input, self, request_id=request_id,
+            prompt=params['prompt'], attachments=params.get('attachments'))
+        # Preparation may outlive the dispatch decision (including Stop).
+        if self.authorizer('submit', task, generation) is not True:
+            raise RuntimeStoreError('permission_denied')
+        authorization = {}
+        write_guard = self.authorize_admission_write
+        if write_guard is not None:
+            def authorize_write(conn):
+                write_guard(conn, task, generation)
+            authorization['_authorize_write'] = authorize_write
+        if owner_output_context is not None:
+            from gateway.session_hosted_output_rpc import new_admission_authorizer
+            from gateway.session_submission_payload import normalize_submission_payload
+            from hermes_state_input_custody import AcceptedInputHandle
+            output_payload = (prepared.handle.payload if isinstance(prepared.handle, AcceptedInputHandle)
+                else normalize_submission_payload(self.authority, self.principal,
+                    Submission(request_id, self.ref, prepared.payload, 'queue')))
+            authorize_output = new_admission_authorizer(
+                self, owner_output_context, request_id=request_id, payload=output_payload,
+                task=task, generation=generation)
+            if authorize_output is not None:
+                previous = authorization.get('_authorize_write')
+                def authorize_both(conn):
+                    if previous is not None:
+                        previous(conn)
+                    authorize_output(conn)
+                authorization['_authorize_write'] = authorize_both
         receipt = await self.authority.submit(self.principal, Submission(
-            request_id, self.ref, payload, 'queue'))
+            request_id, self.ref, prepared.payload, 'queue'),
+            _input_custody=prepared.handle, **authorization)
         self.callbacks[receipt.admission_id] = params['on_terminal']
         if receipt.status in {'queued', 'started'}:
             waiter = self.authority.waiters.get(receipt.admission_id)
@@ -200,14 +232,37 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
-            await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
-        else:
-            await self.authority.interrupt(self.principal, self.ref, row['generation'])
-        return {'interrupted': True, 'status': 'interrupted'}
+            try:
+                await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
+            except RuntimeStoreError as exc:
+                if exc.reason != 'stale_generation':
+                    raise
+                # A concurrent claim won the queued CAS; interrupt only this exact row.
+                matches = [fresh for fresh, task, _ in self._rows()
+                           if fresh['admission_id'] == row['admission_id'] and task == current[1]]
+                if len(matches) != 1 or any(matches[0][key] != row[key] for key in (
+                        'request_id', 'principal_id', 'target_session_id', 'owner_epoch',
+                        'payload', 'intent')):
+                    raise RuntimeStoreError('stale_generation') from None
+                fresh = matches[0]
+                if fresh['status'] == 'unknown':
+                    raise RuntimeStoreError('unknown_execution') from None
+                if fresh['status'] != 'started' or type(fresh['generation']) is not int or fresh['generation'] < 1:
+                    raise RuntimeStoreError('stale_generation') from None
+                await self.authority.interrupt(self.principal, self.ref, fresh['generation'])
+                return {'interrupted': False, 'status': 'running'}
+            return {'interrupted': True, 'status': 'interrupted'}
+        await self.authority.interrupt(self.principal, self.ref, row['generation'])
+        # A request is not the producer's exact terminal receipt.
+        return {'interrupted': False, 'status': 'running'}
 
     async def _discard(self, params):
         generation = params['execution_generation']
-        if type(generation) is not int or generation < 1:
+        source_digest = params.pop('_source_discard_digest', None)
+        owner_output_cleanup = params.pop('_owner_output_cleanup', None)
+        if (type(generation) is not int or generation < 1
+                or not isinstance(source_digest, str) or len(source_digest) != 64
+                or any(ch not in '0123456789abcdef' for ch in source_digest)):
             raise RuntimeStoreError('invalid_params')
         matches = [(row, task) for row, task, hosted_generation in self._rows()
                    if (row['status'] == 'unknown' or (row['status'] == 'terminal' and row['outcome'] == 'interrupted'))
@@ -216,6 +271,13 @@ class HostedRoomAuthorityRPC:
         if len(matches) != 1:
             raise RuntimeStoreError('stale_generation')
         row, task = matches[0]
+        if owner_output_cleanup is not None:
+            output = __import__(
+                'gateway.session_hosted_output_rpc', fromlist=['discard_unknown_owner_output']
+            )
+            output.discard_unknown_owner_output(
+                self.authority, row, task, generation, owner_output_cleanup
+            )
         # The public fence is hosted; the canonical CAS uses its own generation.
         if row['status'] == 'unknown':
             await self.authority.resolve_unknown(
@@ -243,6 +305,25 @@ class HostedRoomAuthorityRPC:
     def resume(self, *, profile, session_id, source):
         return self._call('resume', profile=profile, session_id=session_id, source=source)
 
+    def publish_secondary_retained(
+            self, task, *, route=None, publication_id=None, transport_error=None,
+            confirm=False, consent=None):
+        """Invitation→NEW-run completion calls the Output secondary contract.
+
+        This does not admit work and does not treat send-consent as publication.
+        A missing contract fails closed before any secondary row is written.
+        """
+        from gateway.hosted_room_artifacts import RoomArtifactError
+        service = getattr(self.authority, 'hosted_room_service', None)
+        consumer = getattr(service, 'consume_secondary_retained_publication', None)
+        if not callable(consumer):
+            if consent is not None:
+                raise RoomArtifactError('Group Chat send consent is not publication authority')
+            raise RoomArtifactError('Group Chat secondary publication is not registered')
+        return consumer(
+            task, route=route, publication_id=publication_id, transport_error=transport_error,
+            confirm=confirm, consent=consent)
+
     def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal, attachments=None):
         return self._call('submit', profile=profile, session_id=session_id, source=source,
                           prompt=prompt, task=task, execution_generation=execution_generation, on_terminal=on_terminal,
@@ -257,9 +338,11 @@ class HostedRoomAuthorityRPC:
     def interrupt(self, *, profile, session_id, source, expected_task_id):
         return self._call('interrupt', profile=profile, session_id=session_id, source=source, expected_task_id=expected_task_id)
 
-    def discard(self, *, profile, session_id, source, expected_task_id, execution_generation):
+    def discard(self, *, profile, session_id, source, expected_task_id, execution_generation,
+                _source_discard_digest):
         return self._call('discard', profile=profile, session_id=session_id, source=source,
-                          expected_task_id=expected_task_id, execution_generation=execution_generation)
+                          expected_task_id=expected_task_id, execution_generation=execution_generation,
+                          _source_discard_digest=_source_discard_digest)
 
     def approve(self, *, session_id, request_id, choice):
         return self._call('approve', session_id=session_id, request_id=request_id, choice=choice)

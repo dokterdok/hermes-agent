@@ -24,7 +24,9 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _BINDING = 'gateway.hosted.transport.v1:'
 _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history',
-                         'info', 'interrupt', 'discard', 'approve'})
+                         'info', 'interrupt', 'discard', 'approve',
+                         'output_export', 'output_ack', 'output_discard',
+                         'secondary_deliver', 'secondary_receipt'})
 # One chunk per private-socket exchange. The response is a single JSON line capped at
 # gateway.control_socket._MAX_RESPONSE_BYTES (512 KiB) on both the POSIX socket and the
 # Windows pipe: 360 KiB raw -> 480 KiB base64, leaving 32 KiB for the envelope (owner
@@ -32,6 +34,16 @@ _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history
 _CHUNK_BYTES = 360 * 1024
 _CAPS = frozenset({'session:create', 'session:read', 'session:submit',
                    'session:control', 'session:approve'})
+
+
+def _output_owner_module():
+    import importlib
+    try:
+        return importlib.import_module('gateway.session_hosted_output_rpc')
+    except ModuleNotFoundError as exc:
+        if exc.name != 'gateway.session_hosted_output_rpc':
+            raise
+        return None
 
 
 def owner_request(home, verb, params, *, timeout=30):
@@ -76,7 +88,8 @@ def owner_request(home, verb, params, *, timeout=30):
     if response.get('ok') is not True:
         reason = str(response.get('error', '')).split(': ')[-1]
         if reason not in {'permission_denied', 'profile_mismatch', 'invalid_params',
-                          'unknown_execution', 'stale_generation', 'admission_conflict'}:
+                          'unknown_execution', 'stale_generation', 'admission_conflict',
+                          'storage_unavailable', 'output_owner_unavailable'}:
             reason = 'runtime_draining'
         raise RuntimeStoreError(reason)
     if response.get('protocol') != 1 or response.get('id') != 1:
@@ -205,7 +218,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
         selected, params = select(envelope)
         if set(params) != {'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
-        if params['operation'] not in _OPERATIONS | {'execute', 'attachment'}:
+        if params['operation'] not in _OPERATIONS | {'execute', 'attachment', 'secondary_chunk'}:
             raise RuntimeStoreError('invalid_params')
         callback = attest if selected is authority else getattr(
             getattr(selected, 'hosted_room_service', None), 'attest', None)
@@ -217,9 +230,9 @@ def install_hosted_transport(server, authority, loop, *, attest):
     def target(envelope, peer):
         selected, params = select(envelope)
         with owner_scope(selected):
-            return produce(selected, params)
+            return produce(selected, params, peer)
 
-    def produce(authority, envelope):
+    def produce(authority, envelope, peer_subject):
         if set(envelope) != {'source_home', 'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
         operation, params = envelope['operation'], dict(envelope['params'])
@@ -233,7 +246,19 @@ def install_hosted_transport(server, authority, loop, *, attest):
         binding = {'source_home': envelope['source_home'], 'selector': selector,
                    'target_home': authority.profile_id}
         attested = _attest(binding, operation, params)
+        output = _output_owner_module()
+        if operation in {'output_export', 'output_ack', 'output_discard'}:
+            if output is None:
+                raise RuntimeStoreError('invalid_params')
+            return output.handle_target_output_operation(
+                authority, source_home=binding['source_home'], selector=selector,
+                peer_subject=peer_subject, operation=operation, params=params,
+                attested=attested)
         binding['owner'] = attested['owner']
+        if operation == 'discard':
+            digest = params.get('_source_discard_digest')
+            if attested.get('source_discard_digest') != digest:
+                raise RuntimeStoreError('permission_denied')
         principal = _principal(authority, binding)
         # Authorization already happened: every operation, including each attachment
         # chunk, is re-attested at the SOURCE owner above before anything runs here, so
@@ -241,6 +266,10 @@ def install_hosted_transport(server, authority, loop, *, attest):
         # be added to _OPERATIONS (and therefore attested) before it can reach _call.
         rpc = HostedRoomAuthorityRPC(authority, loop, **selector, principal=principal,
                                     authorize=lambda *args: True)
+        if operation == 'discard' and output is not None:
+            params['_owner_output_cleanup'] = output.capture_unknown_output_context(
+                authority, binding, attested, peer_subject, params
+            )
         key = _BINDING + rpc.ref.session_id
         encoded = json.dumps(binding, sort_keys=True)
         def persist(conn):
@@ -251,10 +280,16 @@ def install_hosted_transport(server, authority, loop, *, attest):
             conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         authority.db._execute_write(persist)
         if operation == 'submit':
+            if output is not None:
+                params['_owner_output_context'] = output.capture_owner_output_context(
+                    authority, binding, attested, peer_subject)
             rpc.hosted_attachment_data = _attachment_data(binding, attested, params)
             params['attachments'] = attested['attachments'] or None
             params['task'] = TaskIdentity(**params['task'])
             params['on_terminal'] = lambda value: None
+        if operation in {'secondary_deliver', 'secondary_receipt'}:
+            from gateway.session_hosted_secondary_delivery import target_secondary_operation
+            return target_secondary_operation(authority, binding, operation, params, attested)
         result = rpc._call(operation, **params)
         return result
 
@@ -290,17 +325,21 @@ def _check_remote_hosted_admission(authority, ref, row):
         attested = _attest(binding, 'execute', params)
         if attested['owner'] != binding['owner']:
             raise ValueError('owner changed')
-        # Bytes are not re-transferred here: the durable row is compared against the
-        # payload the attested prompt, manifest and source-verified digests commit to.
-        from gateway.session_hosted_attachments import attested_submission_payload, verify_attested_documents
-        if row['payload'] != attested_submission_payload(
-                attested['prompt'], attested['attachments'], attested.get('attachment_digests')):
-            raise ValueError('input changed')
+        if not isinstance(attested.get('attachment_digests'), list):
+            raise ValueError('source digests missing')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
-    # Outside the permission_denied fold: a corrupted or missing retained document is a
-    # storage fault of this destination, not a revoked source binding.
-    verify_attested_documents(attested['attachments'], attested.get('attachment_digests'))
+    # Keep Q's destination storage faults outside the source authorization fold.
+    from gateway.hosted_room_input_preparation import reconstruct_attested_payload
+    try:
+        expected = reconstruct_attested_payload(authority.db, attested['prompt'],
+            attested['attachments'], attested['attachment_digests'], row)
+        if row['payload'] != expected:
+            raise RuntimeStoreError('admission_conflict')
+    except RuntimeStoreError as exc:
+        if exc.reason == 'admission_conflict':
+            raise RuntimeStoreError('permission_denied') from exc
+        raise
     return True
 
 
@@ -354,3 +393,12 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
             # Retain callbacks/input for normal driver history recovery; no retry
             # admission and no assertion that a timed-out request was unaccepted.
             return
+
+    def output_export(self, **params):
+        return self._call('output_export', **params)
+
+    def output_ack(self, **params):
+        return self._call('output_ack', **params)
+
+    def output_discard(self, **params):
+        return self._call('output_discard', **params)

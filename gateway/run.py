@@ -3414,12 +3414,6 @@ class GatewayRunner(
     GatewayAgentCacheMixin, GatewayRuntimeInitMixin, GatewayProfileReconcileMixin, GatewayPluginRewireMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
-    def _adapter_for_source(self, source):
-        """The adapter that owns *source* for the session authority (admission checks, canonical
-        automation, native route checks, recovery bindings). Main split the old resolver into the
-        intake and delivery seams; the authority needs the answering adapter, so this is the
-        delivery seam under its historical name."""
-        return self._delivery_adapter_for(source)
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
     _busy_input_mode: str = "interrupt"
@@ -4609,6 +4603,10 @@ def _start_gateway_housekeeping(
         # PID alive — the thread (or a chore blocked on the loop) wedged (#113372). Runs first so a
         # wedged chore stops the NEXT stamp instead of a slow one delaying this tick's.
         (1, "Runtime heartbeat", _write_runtime_status_quiet)]
+    if runner is not None:
+        from gateway.run_input_reclamation import collect_gateway_input_copies
+        # Collector enumerates owned authorities itself; do not run it once per profile.
+        chores.append((5, "Working-copy collection", lambda: collect_gateway_input_copies(runner)))
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
