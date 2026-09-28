@@ -36,12 +36,15 @@ def _authorize(connection, ref, params):
 def _client_config(cfg):
     # Native full-config consumers are presentation-only. Do not export provider,
     # MCP, plugin or terminal configuration (which can contain arbitrary secrets).
-    result = {key: cfg[key] for key in ('display', 'approvals', 'paste_collapse_threshold',
-              'paste_collapse_char_threshold') if key in cfg}
+    from hermes_cli.config import redact_config_value
+    result = redact_config_value({key: cfg[key] for key in (
+        'display', 'approvals', 'paste_collapse_threshold', 'paste_collapse_char_threshold') if key in cfg})
+    # Allowlisted after redaction: ``record_key`` is a keybinding, not a credential, but the
+    # structural masker treats every ``*_key`` leaf as one. The voice section's real secrets
+    # (``api_key``) never enter the projection.
     result['voice'] = {key: cfg.get('voice', {}).get(key) for key in ('record_key', 'submit_mode')
                        if key in cfg.get('voice', {})}
-    from hermes_cli.config import redact_config_value
-    return redact_config_value(result)
+    return result
 
 
 async def config_get(connection, ref, params):
@@ -50,7 +53,7 @@ async def config_get(connection, ref, params):
     key = params.get('key')
     if not isinstance(key, str):
         raise RuntimeStoreError('invalid_params')
-    if key == 'busy':
+    if key in ('busy', 'verbose'):
         from gateway.session_busy_controls import busy_config
         return await busy_config(connection, ref, params)
     policy = _authorize(connection, ref, params)
@@ -61,6 +64,7 @@ async def config_get(connection, ref, params):
     def read():
         from gateway.run import _profile_runtime_scope
         from hermes_cli.config import load_config
+        from hermes_cli.config_effective import load_user_config_effective
         from hermes_constants import DEFAULT_INDICATOR_STYLE
         from tools.approval_context import _get_approval_mode
         home = Path(connection.authority.profile_id)
@@ -68,7 +72,9 @@ async def config_get(connection, ref, params):
             cfg = load_config()
             display = cfg.get('display') or {}
             getters = {
-                'full': lambda: {'config': _client_config(cfg)},
+                # The user's own settings, not DEFAULT_CONFIG: clients read an absent key as their
+                # own default (the TUI streams unless display.streaming is explicitly false).
+                'full': lambda: {'config': _client_config(load_user_config_effective(home / 'config.yaml'))},
                 'mtime': lambda: {'mtime': (home / 'config.yaml').stat().st_mtime
                                  if (home / 'config.yaml').exists() else 0,
                                  # Frozen tool policy is not a live MCP reload request.

@@ -16,9 +16,16 @@ class EditPeer(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.server.requests.append(request)
-        tool = not any(m['role'] == 'tool' for m in request.get('messages', []))
+        # write_file refuses to replace an existing file this task never read in full
+        # (stale-overwrite guard), so the scripted model reads first, then edits.
+        seen = sum(1 for m in request.get('messages', []) if m['role'] == 'tool')
+        tool = seen < 2
         message = {'role': 'assistant', 'content': 'EDITOR_FINISHED'}
-        if tool:
+        if seen == 0:
+            message = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'owned-read', 'type': 'function', 'function': {
+                    'name': 'read_file', 'arguments': json.dumps({'path': str(self.server.target)})}}]}
+        elif seen == 1:
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'id': 'owned-edit', 'type': 'function', 'function': {
                     'name': 'write_file', 'arguments': json.dumps({
@@ -41,7 +48,7 @@ class EditPeer(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_acp_load_checks_authoritative_cwd(daemon, tmp_path):
     other = tmp_path / 'other'
@@ -58,7 +65,7 @@ async def test_acp_load_checks_authoritative_cwd(daemon, tmp_path):
             assert 'result' in loaded
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_real_editor_diff_requires_native_consent_before_write(daemon, tmp_path, model_peer):
     target = tmp_path / 'owned.txt'

@@ -907,7 +907,7 @@ describe('classic Desktop mailbox with the real room engine', () => {
     expect(loaded.mailbox.commands.get('telegram:already-settled')?.state).toBe('claimed')
     const originalResult = loaded.mailbox.calls.find(call => call.method === 'groups.desktop.complete')!.params.result
 
-    for (let index = 0; index < 96; index += 1) {
+    for (let index = 0; index <= loaded.chat.GROUP_CHAT_LOG_RETAIN; index += 1) {
       loaded.chat.appendGroupChatEntry(
         'Workshop',
         { kind: 'user', name: 'You' },

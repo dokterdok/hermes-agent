@@ -14,11 +14,13 @@ const { host, sendToGroupChatDurably } = vi.hoisted(() => ({
   )
 }))
 
-vi.mock('@hermes/plugin-sdk', async () => {
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof import('@hermes/plugin-sdk')>()
   const { pluginSdkMock } = await import('./group-test-utils')
   const base = await pluginSdkMock(host)
 
   return {
+    ...sdk,
     ...base,
     Button: (props: React.ComponentProps<'button'>) => <button type={props.type || 'button'} {...props} />,
     cn: (...values: unknown[]) => values.filter(Boolean).join(' '),
@@ -49,9 +51,11 @@ vi.mock('./group-chat-parts', () => ({
   )
 }))
 
-vi.mock('./group-rounds', () => ({
+vi.mock('./group-rounds', async importOriginal => ({
+  ...(await importOriginal<typeof import('./group-rounds')>()),
   sendToGroupChatDurably,
   stopGroupThread: vi.fn()
+
 }))
 
 const MEMBERS: GroupMember[] = [

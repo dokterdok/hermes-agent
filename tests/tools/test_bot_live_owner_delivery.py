@@ -1,5 +1,6 @@
 """Canonical delivery invariants: stable envelope IDs, authority-only admission,
 immutable receipts. The mailbox is receipt storage, never an execution queue."""
+import json
 import os
 from pathlib import Path
 
@@ -40,10 +41,15 @@ def test_same_envelope_id_admits_once_and_conflicts_on_changed_payload(tmp_path,
     authority = _FakeAuthority()
     monkeypatch.setattr(mailbox, "authority_delivery", authority)
     delivery_id = "a" * 32
-    queued = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id=delivery_id)
+    queued = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "héllo 世界", delivery_id=delivery_id)
     assert queued["status"] == "queued" and queued["delivery_id"] == delivery_id
+    # Receipts are written as plain UTF-8 and read back BOM-tolerantly (main 61dc26cd7d9).
+    path = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{delivery_id}.json"
+    raw = path.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    path.write_bytes(b"\xef\xbb\xbf" + raw)
     # Exact retry inspects the same admission; it never mints a second envelope.
-    assert mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id=delivery_id) == queued
+    assert mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "héllo 世界", delivery_id=delivery_id) == queued
     assert [params["id"] for _home, params in authority.calls] == [delivery_id, delivery_id]
     assert len(authority.records) == 1
     with pytest.raises(ValueError):
@@ -55,6 +61,59 @@ def test_same_envelope_id_admits_once_and_conflicts_on_changed_payload(tmp_path,
     if os.name != "nt":
         for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
             assert path.stat().st_mode & 0o077 == 0
+
+
+@pytest.mark.parametrize("intent_state", ["new", "existing", "raced"])
+def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, intent_state):
+    """Main 61dc26cd7d9 on the canonical door: a BOM-prefixed DM payload and a BOM-prefixed pinned
+    intent read back intact, a pinned intent is never replaced by a rewritten payload, and a
+    damaged intent retains its evidence instead of retrying a transport."""
+    import hermes_cli.gateway_runtime as runtime
+    from hermes_state import SessionDB
+    from tools import bot_mode_dm
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="chat", source="cli")
+    db.set_session_title("chat", "Bot Chat")
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", _ready("authority-1"))
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
+    try:
+        owner = mailbox.find_canonical_live_owner(tmp_path)
+        assert owner is not None
+        payload = tmp_path / "message.txt"
+        payload.write_bytes("héllo 世界".encode("utf-8-sig"))
+        intent_path = Path(str(payload) + ".live.json")
+        author = {"id": "bot:coder", "name": "Renée", "is_bot": True}
+        intent = dict(owner=owner, message="pinned 世界", delivery_id="d" * 32, author=author)
+        encoded = json.dumps(intent, ensure_ascii=False).encode("utf-8-sig")
+        if intent_state == "existing":
+            intent_path.write_bytes(encoded)
+        elif intent_state == "raced":
+            real_open = os.open
+
+            def competing_intent(path, flags, *args, **kwargs):
+                if Path(path) == intent_path:
+                    intent_path.write_bytes(encoded)
+                return real_open(path, flags, *args, **kwargs)
+
+            monkeypatch.setattr(os, "open", competing_intent)
+        record = bot_mode_dm._admit_live_dm(tmp_path, str(payload), author)
+        assert record is not None and record["status"] == "queued"
+        admitted = authority.records[record["delivery_id"]]
+        assert admitted["message"] == ("héllo 世界" if intent_state == "new" else "pinned 世界")
+        assert admitted["author"] == author
+        if intent_state == "new":
+            assert not intent_path.read_bytes().startswith(b"\xef\xbb\xbf")
+            intent_path.write_bytes(b"\xef\xbb\xbf" + intent_path.read_bytes())
+        payload.write_text("must not replace pinned payload", encoding="utf-8")
+        assert bot_mode_dm._admit_live_dm(None, str(payload)) == record
+        assert len(authority.records) == 1
+        intent_path.write_bytes(b"\xef\xbb\xbf{broken")
+        assert bot_mode_dm._run_delivery([], str(payload), stdin_file=False, profile_home=tmp_path) == 1
+        assert payload.exists()  # Ambiguous admission must retain its evidence, not retry a transport.
+    finally:
+        db.close()
 
 
 def test_owner_from_another_home_or_malformed_id_is_refused_before_admission(tmp_path, monkeypatch):
@@ -117,7 +176,9 @@ def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monk
     try:
         db.create_session(session_id="scratch", source="cli")
         db.set_session_title("scratch", "Scratch")
-        assert mailbox.find_canonical_live_owner(tmp_path) is None  # no Bot Chat
+        # No Bot Chat yet is still a deliverable owner: the authority creates the chat on
+        # first delivery (create-if-missing), so discovery reports an empty tip, not None.
+        assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == ""
         db.create_session(session_id="chat", source="cli")
         db.set_session_title("chat", "Bot Chat")
         owner = mailbox.find_canonical_live_owner(tmp_path)
@@ -145,3 +206,15 @@ def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id
         mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author={**author, "id": "bot:other"})
     mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
     assert "author" not in authority.calls[-1][1]
+
+
+def test_non_dict_ticket_fails_exact_id_reads_closed(tmp_path):
+    """Malformed is not absent: an exact-id receipt read raises instead of reporting "no record"."""
+    from tools import bot_live_delivery as mailbox
+
+    bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
+    bad.parent.mkdir(parents=True)
+    bad.write_text('"oops"', encoding="utf-8")  # parses, but is not a record
+    with pytest.raises(ValueError):
+        mailbox.read_delivery_result(tmp_path, "e" * 32)
+    assert bad.read_text(encoding="utf-8") == '"oops"'

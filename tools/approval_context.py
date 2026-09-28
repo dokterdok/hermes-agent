@@ -150,7 +150,15 @@ def _is_single_query_approval_context() -> bool:
     ``HERMES_INTERACTIVE=1`` (so sudo password prompts work) but nobody is waiting
     to answer approvals; without this marker the gate would wait the full timeout,
     fail closed and push the agent toward workarounds (e.g. execute_code).
-    ``approvals.single_query_mode`` makes the path deterministic."""
+    ``approvals.single_query_mode`` makes the path deterministic. A gateway-admitted turn
+    carries the same fact as the submission's ``finite`` flag (``hermes -z`` / ``chat -q``
+    over the daemon): the viewer detaches on the first prompt, so nobody answers there either."""
+    try:
+        from gateway.session_finite import finite_turn_required
+        if finite_turn_required() is True:
+            return True
+    except Exception:
+        pass
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
 
 
@@ -251,10 +259,31 @@ def _get_approval_timeout() -> int:
         from agent.deadline import MAX_SAFE_TIMEOUT_S
         safe_cap = int(MAX_SAFE_TIMEOUT_S)
     except Exception:
-        safe_cap = 365 * 24 * 3600  # fail CLOSED: the raw value would re-open the overflow
+        safe_cap = 300  # dependency failure must keep the safe default
     if raw > safe_cap:
         logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", raw, safe_cap)
     return min(raw, safe_cap)
+
+
+def format_approval_window(seconds: int) -> str:
+    """The ONE human wording for an approval timeout window, shared by the CLI timeout notice,
+    the tool result's ``user_summary`` and the gateway card copy so every surface agrees:
+    300 → "5 minutes", 90 → "90 seconds", 7200 → "2 hours"."""
+    seconds = max(int(seconds or 0), 0)
+    if seconds and seconds % 3600 == 0:
+        count, unit = seconds // 3600, "hour"
+    elif seconds and seconds % 60 == 0:
+        count, unit = seconds // 60, "minute"
+    else:
+        count, unit = seconds, "second"
+    return f"{count} {unit}" if count == 1 else f"{count} {unit}s"
+
+
+def approval_timeout_notice_kwargs() -> dict:
+    """``{waited, suggested}`` for the ``approval.timeout`` copy: how long we waited (``5 minutes`` /
+    ``90 seconds``) and a tripled ``approvals.timeout`` value the user can paste into ``hermes config set``."""
+    seconds = _get_approval_timeout()
+    return {"waited": format_approval_window(seconds), "suggested": seconds * 3}
 
 
 def _binary_approval_mode(key: str) -> str:

@@ -43,7 +43,7 @@ function setRoom(hosted: boolean, extra: Partial<GroupChat> = {}) {
 }
 
 function row(selected = members) {
-  return <GroupRow active={false} group={GROUP} members={selected} needsYou={false} onDisband={noop} onOpen={noop} />
+  return <GroupRow active={false} group={GROUP} members={selected} needsYou={false} onDisband={noop} onOpen={noop} onNewSection={noop} />
 }
 
 async function withHostFailure(state: 'offline' | 'unsupported', check: (room: GroupChat) => void) {

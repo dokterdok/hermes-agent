@@ -2,7 +2,7 @@ import type { PluginContext } from '@hermes/plugin-sdk'
 
 const { notify } = vi.hoisted(() => ({ notify: vi.fn() }))
 
-vi.mock('@hermes/plugin-sdk', () => ({ host: { notify } }))
+vi.mock('@hermes/plugin-sdk', async () => ({ atom: (await import('nanostores')).atom, host: { notify } }))
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 interface TestLockManager {

@@ -32,13 +32,18 @@ async def standalone_lifespan(app: "FastAPI"):
     # Bring state.db schema current BEFORE the first session-list poll
     # (#79531/#80037): a store left behind by `hermes update` otherwise 500s
     # every poll until its owner completes schema reconciliation.
-    # Daemon thread so a locked store never delays the socket (Desktop
-    # ready-probe times out at 10s, GH-73083).
-    threading.Thread(
+    # Off-thread so a locked store never delays the socket (Desktop
+    # ready-probe times out at 10s, GH-73083). NOT a daemon, and joined at
+    # shutdown: its sqlite connection must be closed by the thread that is
+    # stepping it. A daemon copy that outlived the lifespan had its
+    # connection closed from the main thread mid-probe (pytest's leaked-DB
+    # sweep) and segfaulted the interpreter. The worker is time-bounded by
+    # SessionDB's lock patience, so the join cannot hang shutdown.
+    eager_reconcile_thread = threading.Thread(
         target=_eager_reconcile_own_session_db,
-        daemon=True,
         name="statedb-eager-reconcile",
-    ).start()
+    )
+    eager_reconcile_thread.start()
 
     # Import hermes_cli.gateway *before* the yield: on Windows + 3.11 the
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and
@@ -58,6 +63,11 @@ async def standalone_lifespan(app: "FastAPI"):
     from tui_gateway import methods_groups as _hosted_groups
     import tui_gateway.server  # noqa: F401
 
+    try:
+        tui_gateway.server.install_tui_message_injector()
+    except Exception:
+        _log.warning("TUI message injector did not install", exc_info=True)
+
     hosted_room_start_cancel = threading.Event()
 
     def _start_hosted_rooms() -> None:
@@ -76,21 +86,25 @@ async def standalone_lifespan(app: "FastAPI"):
     )
     hosted_room_start_thread.start()
 
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
+    # Desktop-spawned backends fire cron jobs themselves, since the app has no
+    # gateway running the scheduler. Server `hermes dashboard` is unaffected —
+    # it relies on its own gateway.
+    from hermes_cli.process_identity import is_desktop_owned_backend
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
-    if os.getenv("HERMES_DESKTOP") == "1":
+    desktop_owned = is_desktop_owned_backend()
+    if desktop_owned:
         # Reap an orphaned gateway from an abnormal previous exit (reparented to
         # launchd, still holding the platform WebSocket) before forking a fresh
         # one that would race the same credential (#77276). Runs
         # unconditionally; protection of a healthy standalone gateway lives
         # INSIDE the reaper (registration probed with cleanup_stale=False).
+        # Startup grace: spare a gateway still claiming gateway.pid/lock (#122533).
         try:
+            from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
             from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
 
-            _reap_unsupervised_gateway_orphans()
+            _reap_unsupervised_gateway_orphans(min_age_s=_REAP_MIN_AGE_SECONDS)
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 
@@ -132,6 +146,10 @@ async def standalone_lifespan(app: "FastAPI"):
     try:
         yield
     finally:
+        try:
+            tui_gateway.server.clear_tui_message_injector()
+        except Exception:
+            _log.debug("TUI message injector clear skipped", exc_info=True)
         hosted_room_start_cancel.set()
         _hosted_groups.stop_hosted_room_service(timeout=5.0)
         hosted_room_start_thread.join(timeout=1.0)
@@ -140,6 +158,7 @@ async def standalone_lifespan(app: "FastAPI"):
         pty_reaper_task.cancel()
         selftest_task.cancel()
         auto_archive_task.cancel()
+        eager_reconcile_thread.join()
         await PTY_REGISTRY.close_all()
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
@@ -148,7 +167,7 @@ async def standalone_lifespan(app: "FastAPI"):
             shutdown_local_runtime()
         except Exception:  # noqa: BLE001
             pass
-        if os.getenv("HERMES_DESKTOP") == "1":
+        if desktop_owned:
             _terminate_desktop_managed_gateway()
 
 

@@ -39,7 +39,9 @@ vi.mock('./group-chat-parts', () => ({
   GroupMentionInput: () => null
 }))
 
-vi.mock('./group-rounds', () => ({ sendToGroupChatDurably, stopGroupThread: vi.fn() }))
+vi.mock('./group-rounds', async importOriginal => ({
+  ...(await importOriginal<typeof import('./group-rounds')>()), sendToGroupChatDurably, stopGroupThread: vi.fn() 
+}))
 
 vi.mock('./avatar', async importOriginal => {
   const avatar = await importOriginal<typeof avatarModule>()
@@ -65,7 +67,7 @@ async function show(room: GroupChat, members: GroupMember[] = room.members || []
   render(
     <>
       <GroupChatWorkspace group="Board" members={members} />
-      <GroupRow active group="Board" members={members} needsYou={false} onDisband={vi.fn()} onOpen={vi.fn()} />
+      <GroupRow active group="Board" members={members} needsYou={false} onDisband={vi.fn()} onOpen={vi.fn()} onNewSection={vi.fn()} />
     </>
   )
 }

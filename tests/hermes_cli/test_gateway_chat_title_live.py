@@ -12,7 +12,7 @@ import pytest
 from tests.gateway.test_normal_runtime_boot import control, model_peer  # noqa: F401
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_title_create_if_missing_then_resume_by_title_is_deterministic(tmp_path, model_peer):
     home = tmp_path / "state"
     home.mkdir(mode=0o700)
@@ -76,7 +76,7 @@ finally:
             created, sid = chat("-c", title, "--create-if-missing", "-q", "WS_SHARED create")
             assert created.returncode == 0 and sid and "LOCAL_ACK_WS_SHARED" in created.stdout, created
 
-            # Bot Mode's exact turn shape (tools.bot_relay.BOT_CHAT_TURN_ARGS): --in + --query-file
+            # The titled-thread turn shape: --in + --query-file
             # + --create-if-missing must resume the existing titled thread, never fork a second one.
             query_file = tmp_path / "dm.txt"
             query_file.write_text("WS_SHARED again", encoding="utf-8")

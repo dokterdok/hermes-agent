@@ -31,6 +31,9 @@ class LiveSession:
     subscribers: dict = field(default_factory=dict)
     event_stream: SessionEvents = field(default_factory=SessionEvents)
     controls: PendingControls = field(init=False)
+    # The messaging ingress tells the platform user once per pause episode (unknown head,
+    # preflight refusal), not per message; the drain clears it when the FIFO moves again.
+    pause_notified: bool = False
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -95,8 +98,12 @@ class SessionAuthority:
 
     def logical_owner(self, session_id):
         """The FIFO/admission identity of a route: the root of its compression lineage.
-        Compression advances the physical transcript, never the admission identity."""
-        return self.db.get_compression_lineage(session_id)[0] if session_id else session_id
+        Compression advances the physical transcript, never the admission identity. A session this
+        store does not hold (another served profile's, under multiplex) keeps its own id."""
+        if not session_id:
+            return session_id
+        lineage = self.db.get_compression_lineage(session_id)
+        return lineage[0] if lineage else session_id
 
     def physical_target(self, ref):
         return self.db.get_compression_tip(ref.session_id) or ref.session_id
@@ -204,6 +211,20 @@ class SessionAuthority:
             live.task = asyncio.create_task(self._drain(ref))
             live.task.add_done_callback(_log_drain_failure)
 
+    def _pause(self, ref, reason):
+        """The FIFO stopped without claiming its head. Committed rows stay queued for a later
+        drain; only the process-local messaging delivery waiters on this session are released,
+        with the reason instead of a reply, so an adapter loop is never parked on a turn that
+        will not run. The ingress turns that refusal into one user-facing notice per episode."""
+        for row in list_session_admissions(self.db, session_id=ref.session_id):
+            admission_id = row['admission_id']
+            if admission_id not in self.native_waiters:
+                continue
+            self.native_waiters.discard(admission_id)
+            waiter = self.waiters.pop(admission_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.set_exception(RuntimeStoreError(reason))
+
     async def admit_automation(self, adapter, event, identity):
         from gateway.session_automation import admit_automation
         return await admit_automation(self, adapter, event, identity)
@@ -265,7 +286,7 @@ class SessionAuthority:
         self.authorize(actor, request.ref, 'session:submit')
         self._require_admission_open()
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
-                'text', 'attachments', 'finite', 'surface', 'voice_context', 'interrupted'}
+                'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_ingress_media import admit_attachments
@@ -376,10 +397,10 @@ class SessionAuthority:
                 self.check_approval_generation(session_id, generation)
             except RuntimeStoreError:
                 return False
-            live.event_stream.publish(session_id, payload, event_type=event_type)
+            delivered = live.event_stream.publish(session_id, payload, event_type=event_type)
             from gateway.session_api_turn import publish_api_event
-            publish_api_event(self, session_id, event_type, payload)
-            return True
+            observed = publish_api_event(self, session_id, event_type, payload)
+            return bool(delivered or observed)
 
     def register_approval(self, session_id, generation, route, data):
         live = self.sessions[session_id]
@@ -416,6 +437,7 @@ class SessionAuthority:
             try:
                 pending = list_session_admissions(self.db, session_id=ref.session_id)
                 if any(row['status'] == 'unknown' for row in pending):
+                    self._pause(ref, 'unknown_execution')
                     return
                 first = next((row for row in pending if row['status'] == 'queued'), None)
                 from gateway.config import Platform
@@ -457,7 +479,10 @@ class SessionAuthority:
             except RuntimeStoreError as exc:
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
+                self._pause(ref, exc.reason)
                 return
+            # The FIFO is moving again (or empty): the next pause is a new episode.
+            live.pause_notified = False
             if row is None:
                 return
             admission_id = row['admission_id']
@@ -485,9 +510,13 @@ class SessionAuthority:
                     from gateway.session_ingress_media import release_admission_media
                     release_admission_media(self.db, admission_id)
                     self._publish_pending(ref)
+                    # ``status`` is the message.complete contract's TurnStatus: the Desktop
+                    # extends a Stopped bubble to the persisted partial only on 'interrupted'.
                     live.event_stream.publish(ref.session_id, {
                         'text': response, 'content': response, 'admission_id': admission_id,
-                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
+                        'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
+                            settled['outcome'], 'error')})
             except Exception:
                 # The settle fence lost (a reset/compression moved runtime_generation under
                 # the turn). The row stays `started` for recovery -> `unknown`; re-settling

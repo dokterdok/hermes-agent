@@ -26,6 +26,16 @@ def is_worker_process():
     return _worker_process
 
 
+
+def apply_row_annotations(messages, annotations):
+    """Mirror the owner's in-place row stamps onto the worker's dicts (None = the owner popped it)."""
+    for message, annotation in zip(messages, annotations, strict=True):
+        for key, value in annotation.items():
+            if value is None:
+                message.pop(key, None)
+            else:
+                message[key] = value
+
 class WorkerPersistenceError(RuntimeError):
     pass
 
@@ -121,7 +131,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             if self.path.exists():
                 if self.path.stat().st_size > max_bytes:
                     raise WorkerPersistenceError('outbox_full')
-                self.journal = json.loads(self.path.read_text(encoding="utf-8"))
+                self.journal = json.loads(self.path.read_text(encoding="utf-8-sig"))
                 if self.journal['scope'] != self.scope:
                     raise WorkerPersistenceError('outbox_scope_mismatch')
             else:
@@ -216,8 +226,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             return self._append_compression_messages(session_id, messages, compression_lock_holder,
                 turn_lease_holder, turn_lease_ttl_seconds)
         result = self._apply('transcript.append', {'messages': messages, 'turn_lease_holder': turn_lease_holder})
-        for message, annotation in zip(messages, result['annotations'], strict=True):
-            message.update(annotation)
+        apply_row_annotations(messages, result['annotations'])
         return result['count']
 
     def try_acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0, patience_s=None):
@@ -305,11 +314,11 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self._session(session_id)
         self._apply('session.sidecars', {'patch': patch})
 
-    def update_session_tool_names(self, session_id, tool_names):
-        # The tools[] freeze pin: without it every fresh worker re-probes check_fns and a
-        # config flip between turns silently forks the cached prefix (in-process stays pinned).
+    def update_session_tool_names(self, session_id, pin):
+        # The tools[] freeze pin ({"version", "tools"}; None clears): without it every fresh worker
+        # re-probes check_fns and a config flip between turns silently forks the cached prefix.
         self._session(session_id)
-        self._apply('session.tools', {'tool_names': None if tool_names is None else list(tool_names)})
+        self._apply('session.tools', {'tool_names': pin})
 
     def finish(self):
         return self._apply('execution.finish', {})

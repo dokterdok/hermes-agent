@@ -6,6 +6,7 @@ SessionDB transaction owner, including its inode guard and SQLite retry policy.
 import json
 import uuid
 
+from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
 from gateway.session_admission import admission_fingerprint
 
 
@@ -510,8 +511,15 @@ _MESSAGE_FIELDS = frozenset({
     'finish_reason', 'reasoning', 'reasoning_content', 'reasoning_details',
     'codex_reasoning_items', 'codex_message_items', 'platform_message_id', 'message_id',
     'observed', 'effect_disposition', '_compressed_summary', 'timestamp', 'api_content',
-    'display_kind', 'display_metadata', '_row_id', '_canonical_content',
+    'display_kind', 'display_metadata', '_row_id', '_canonical_content', DB_ROW_SNAPSHOT, CANONICAL_ROW,
 })
+# Row state the owner's transcript repair stamps on each message (main mutates the caller's dict
+# in place; a worker gets it back as an annotation). None = absent, so a stale adoption is cleared.
+_ROW_ANNOTATION_KEYS = ('_row_id', 'timestamp', DB_ROW_SNAPSHOT, CANONICAL_ROW)
+
+
+def row_annotations(messages):
+    return [{key: msg.get(key) for key in _ROW_ANNOTATION_KEYS} for msg in messages]
 
 
 def _worker_append(db, conn, session_id, payload):
@@ -533,8 +541,7 @@ def _worker_append(db, conn, session_id, payload):
     if holder is not None:
         _text(holder)
     count = db._append_messages_in_transaction(conn, session_id, messages, turn_lease_holder=holder)
-    return {'count': count, 'annotations': [
-        {key: msg[key] for key in ('_row_id', '_canonical_content') if key in msg} for msg in messages]}
+    return {'count': count, 'annotations': row_annotations(messages)}
 
 
 def _worker_turn(db, conn, session_id, payload, operation):
@@ -565,6 +572,10 @@ def _worker_turn(db, conn, session_id, payload, operation):
 
 def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     from hermes_state_usage import _MODEL_USAGE_FIELDS, _TOKEN_COUNTERS
+    if not auxiliary:
+        # ``source`` feeds the legacy path's row-existence guard (#111999); an authority-owned
+        # session row was minted with its real surface at admission, so nothing to repair here.
+        payload = {k: v for k, v in payload.items() if k != 'source'}
     allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute'})
     if set(payload) - allowed:
         raise RuntimeStoreError('invalid_params')

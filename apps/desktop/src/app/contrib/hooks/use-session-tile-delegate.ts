@@ -1,6 +1,10 @@
 import { useEffect } from 'react'
 
-import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import {
+  extendRefreshPageToOverlap,
+  graftRefreshedTailOntoBackfill,
+  olderPageReader
+} from '@/app/chat/transcript-backfill'
 import {
   fetchStoredTranscriptAcrossBackends,
   getLatestSessionMessages,
@@ -8,6 +12,8 @@ import {
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { markReasoningEffortPending } from '@/lib/chat-runtime'
+import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -23,7 +29,7 @@ import {
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
-import type { SessionResumeResponse } from '@/types/hermes'
+import type { SessionResumeResult } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
@@ -43,11 +49,9 @@ type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 function mergeTileTranscript(
   previous: ChatMessage[],
-  prefetchMessages: SessionResumeResponse['messages'] | undefined,
+  prefetched: ChatMessage[],
   streamId?: null | string
 ): ChatMessage[] {
-  const prefetched = toChatMessages(prefetchMessages ?? [])
-
   if (!prefetched.length) {
     return previous
   }
@@ -220,6 +224,11 @@ export function useSessionTileDelegate({
           }
         }
       },
+      dropRuntimeBindings: storedSessionIds => {
+        for (const storedSessionId of storedSessionIds) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+        }
+      },
       // Reconnect reconcile (#93059): retire an orphaned runtime's busy claim
       // through updateSessionState so the cache, focused view, busyRef and
       // tile mirrors settle together. A runtime this cache never held reports
@@ -326,11 +335,25 @@ export function useSessionTileDelegate({
           (cached.busy || cached.messages.length > 0)
         ) {
           const prefetch = await prefetchPromise
+
+          // A long turn can push every rendered row off the newest page; read
+          // older pages until they overlap so the graft keeps earlier history.
+          const prefetched = await extendRefreshPageToOverlap(
+            toChatMessages(prefetch?.messages ?? []),
+            cached.messages,
+            olderPageReader(storedSessionId, restScope, prefetch)
+          )
+
+          // The overlap reads await; drop the page if the tile was rebound.
+          if (sessionStateByRuntimeIdRef.current.get(existing)?.storedSessionId !== storedSessionId) {
+            return existing
+          }
+
           // Deltas and completion may land while REST is in flight.
           updateSessionState(
             existing,
             state => {
-              const merged = mergeTileTranscript(state.messages, prefetch?.messages, state.streamId ?? cached.streamId)
+              const merged = mergeTileTranscript(state.messages, prefetched, state.streamId ?? cached.streamId)
 
               return chatMessageArraysEquivalent(state.messages, merged) ? state : { ...state, messages: merged }
             },
@@ -353,7 +376,7 @@ export function useSessionTileDelegate({
             return singleFlightSessionResume(
               storedSessionId,
               () =>
-                requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
+                requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
                   session_id: storedSessionId,
                   cols: 96,
                   omit_messages: !authoritativeSnapshot,
@@ -431,7 +454,7 @@ export function useSessionTileDelegate({
                 ? overlayConcurrentMessageChanges(
                     mergeTileTranscript(
                       resumeRequestBaselineMessages,
-                      resumed.messages,
+                      toChatMessages(resumed.messages),
                       cached?.streamId
                     ),
                     resumeRequestBaselineMessages,
@@ -452,11 +475,17 @@ export function useSessionTileDelegate({
             const running = resolveResumedBusy(resumed.running ?? info?.running, busyChangedWhileResuming)
 
             return {
-              ...state,
+              // The deferred build reports the session's own effort later (#79807).
+              ...markReasoningEffortPending(state),
               ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
               ...(typeof info?.model === 'string' ? { model: info.model } : {}),
               ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-              ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+              ...(typeof info?.reasoning_effort === 'string'
+                ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
+                : {}),
+              ...(typeof info?.reasoning_effort_wire === 'string'
+                ? { reasoningEffortWire: info.reasoning_effort_wire }
+                : {}),
               awaitingResponse: running && !resumed.inflight?.assistant,
               busy: running,
               messages
@@ -478,6 +507,36 @@ export function useSessionTileDelegate({
         }
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
+
+        if (storedSessionId) {
+          const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
+          const owner = await ownerForStoredSession(storedSessionId)
+
+          const refreshed = await refreshIfTranscriptStale(storedSessionId, cached?.messages ?? [], {
+            profile: profileScopeForSessionOwner(owner)
+          })
+
+          if (refreshed) {
+            updateSessionState(
+              runtimeId,
+              state => ({
+                ...state,
+                awaitingResponse: false,
+                busy: false,
+                messages: refreshed,
+                pendingBranchGroup: null
+              }),
+              storedSessionId
+            )
+            notify({
+              kind: 'warning',
+              message: translateNow('desktop.staleSessionBody'),
+              title: translateNow('desktop.staleSessionTitle')
+            })
+
+            return
+          }
+        }
 
         const routedRequest = storedSessionId
           ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>

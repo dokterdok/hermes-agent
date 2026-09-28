@@ -25,7 +25,7 @@ def build_forward_policy(params, config, *, private_secrets):
 
 
 def is_forward_policy(policy):
-    if policy.source != 'a2a' or policy.platform != 'a2a':
+    if policy is None or policy.source != 'a2a' or policy.platform != 'a2a':
         return False
     try:
         request = json.loads(policy.request_json)
@@ -34,6 +34,14 @@ def is_forward_policy(policy):
                 and all(isinstance(value, str) for value in identity))
     except (ValueError, KeyError, TypeError):
         return False
+
+
+def forward_author(policy):
+    """The authenticated peer wrote a forwarded turn, not the local principal hosting it."""
+    if not is_forward_policy(policy):
+        return None
+    peer = json.loads(policy.request_json)['a2a_identity'][2]
+    return {'id': peer, 'name': peer, 'is_bot': True}
 
 
 def storage_source(db, source, session_id, fallback):
@@ -106,7 +114,9 @@ async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, t
         ticket = await asyncio.to_thread(_session_ticket, home, ready.endpoint)
         url = ready.endpoint.api_origin.replace('https:', 'wss:').replace('http:', 'ws:') + '/api/ws'
         protocols = ['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket]
-        async with connect(url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024) as ws:
+        # Loopback authority dial: never through HTTP(S)_PROXY (websockets>=14 honours it by default).
+        async with connect(url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024,
+                           proxy=None) as ws:
             if ws.subprotocol != protocols[0]:
                 raise GatewayClientError('gateway_protocol_mismatch')
             async with GatewayClient(ws) as client:
