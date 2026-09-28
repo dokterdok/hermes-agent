@@ -15,7 +15,9 @@ from tui_gateway.hosted_room_service import HostedRoomService
 def service(tmp_path, monkeypatch):
     import tui_gateway.server as server
     monkeypatch.setattr(rooms, "local_authority_gateway_id", lambda: "home")
-    (tmp_path / "profiles" / "ops").mkdir(parents=True)
+    ops = tmp_path / "profiles" / "ops"
+    ops.mkdir(parents=True)
+    (ops / "config.yaml").write_text("{}\n")  # identity marker: local roster
     service = HostedRoomService(SimpleNamespace(), db_path=tmp_path / "state.db")
     service.create_room(room_id="room", name="Workshop", members=[
         {"member_id": "default", "profile": "default", "handle": "writer"},
@@ -130,9 +132,12 @@ def test_begin_disband_keeps_foreign_authority_guard(service):
 
 def test_closing_peer_observation_and_stop_are_not_failed_by_route_health_write(service):
     from gateway import hosted_room_links as stored_links
+    from gateway.hosted_room_execution_policy import execution_policy_mapping
     from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
     catalog = GatewayRoomCatalog.from_mapping(catalog_mapping(
-        installation_id="peer", target_profile="ops", persistent_process=True))
+        installation_id="peer", target_profile="ops", persistent_process=True,
+        execution_policy=execution_policy_mapping(target_profile="ops", config={}),
+    ))
     stored = stored_links.make_stored_link(room_id="room", member_id="ops", target_url="http://127.0.0.1:9999",
                                           target_profile="ops", grant="accepted-grant", catalog=catalog,
                                           cancellation_scope_id="cancel", trace_id="trace")

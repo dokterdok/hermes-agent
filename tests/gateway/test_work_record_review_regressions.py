@@ -72,7 +72,9 @@ async def test_work_refusal_selects_alternate_and_remembers_each_generation(setu
         secret, grants, members = peer.gateway_room_grant_secret(), {}, []
         for profile in ("alpha", "beta"):
             catalog = peer.GatewayRoomCatalog.from_mapping(peer.catalog_mapping(
-                installation_id=TARGET, target_profile=profile, persistent_process=True))
+                installation_id=TARGET, target_profile=profile, persistent_process=True,
+                execution_policy=peer.execution_policy_mapping(target_profile=profile, config={}),
+            ))
             grants[profile] = peer.issue_room_grant(
                 secret, grant_id=f"grant-{profile}", room_id="room", home_install_id=HOME,
                 authority_gateway_id=HOME, authority_epoch=1, member_id=profile,

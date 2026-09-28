@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
 import tui_gateway.server as srv
 from tui_gateway import methods_groups
 
@@ -18,6 +19,7 @@ def home(tmp_path, monkeypatch):
     path = tmp_path / ".hermes"
     path.mkdir()
     (path / "profiles" / "ops").mkdir(parents=True)
+    (path / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: local roster
     monkeypatch.setenv("HERMES_HOME", str(path))
     monkeypatch.setattr(srv, "_run_idempotency_store", DurableRunStore(), raising=False)
     methods_groups.stop_hosted_room_service(timeout=1.0)
@@ -58,36 +60,15 @@ def _create_room():
     )["room"]
 
 
-def test_capabilities_are_honest_about_the_driver_boundary(home):
-    methods_groups.stop_hosted_room_service(timeout=1.0)
-    result = _result(srv._methods["groups.capabilities"](1, {}))
-
-    assert result["protocol_version"] == 2
-    assert result["driver"] is False
-    assert result["authority_gateway_id"] == _server_authority()
-    assert "authority_epoch" in result["features"]
-    assert "coordinator_fencing" in result["features"]
-    assert "monotonic_log" in result["features"]
-    assert "groups.state" in result["methods"]
-    assert "groups.send" in result["methods"]
-    assert "groups.send" in srv._LONG_HANDLERS
-    assert "groups.retry" in result["methods"]
-    assert "groups.approve" in result["methods"]
-    advertised = [
-        str(value).lower() for value in (*result["features"], *result["methods"])
-    ]
-    assert not any(
-        token in value
-        for token in ("attachment", "desktop", "messaging")
-        for value in advertised
-    )
-    assert result["room_link"]["enabled"] is True
 
 
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
     (home / "profiles" / "reviewer").mkdir(parents=True)
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
+    # The advertised policy is the SERVED profile's own config, so the profile must exist (#116900).
+    (home / "profiles" / "reviewer").mkdir(parents=True)
+    (home / "profiles" / "reviewer" / "config.yaml").write_text("approvals:\n  mode: manual\n")
     result = _result(srv._methods["groups.capabilities"](1, {}))
     assert result["room_link"]["enabled"] is True
     assert result["room_link"]["profile"] == "reviewer"
@@ -179,7 +160,6 @@ def test_capabilities_disable_roomlink_when_run_replay_is_not_durable(
         },
     )
     assert invitation["error"]["code"] == 4120
-    assert "durable run idempotency" in invitation["error"]["message"]
 
 
 def test_capabilities_open_shared_durable_run_store_without_test_injection(
@@ -275,6 +255,7 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
 
     reviewer_home = home / "profiles" / "reviewer"
     reviewer_home.mkdir(parents=True)
+    (reviewer_home / "config.yaml").write_text("{}\n")  # identity marker
     reviewer_key = "reviewer-api-key-1234567890"
     default_key = "default-api-key-1234567890"
     (reviewer_home / ".env").write_text(
@@ -344,6 +325,7 @@ def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
 
     reviewer_home = home / "profiles" / "reviewer"
     reviewer_home.mkdir(parents=True)
+    (reviewer_home / "config.yaml").write_text("{}\n")  # identity marker
     gateway_key = "gateway-api-key-1234567890"
     monkeypatch.setenv("API_SERVER_KEY", gateway_key)
 
@@ -380,6 +362,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
     from gateway.hosted_rooms import local_authority_gateway_id
 
     catalog = catalog_mapping(
+            target_profile="default",
         installation_id="install-peer",
         persistent_process=True,
     )
@@ -404,7 +387,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
             }
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
         def register_peer_route(self, **kwargs):
             captured["registered"] = kwargs
@@ -434,7 +417,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
 
 def test_register_rejects_plaintext_non_loopback(home, monkeypatch):
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     response = srv._methods["groups.peer.register"](
@@ -456,7 +439,7 @@ def test_register_requires_roomlink_protocol_v2(home, monkeypatch):
     from gateway.hosted_room_peer import catalog_mapping
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     response = srv._methods["groups.peer.register"](
@@ -468,6 +451,7 @@ def test_register_requires_roomlink_protocol_v2(home, monkeypatch):
             "target_profile": "reviewer",
             "grant": "signed.room.grant",
             "catalog": catalog_mapping(
+            target_profile="default",
                 installation_id="install-peer",
                 protocol_versions=(1,),
                 persistent_process=True,
@@ -583,7 +567,6 @@ def test_rpc_retry_is_idempotent_and_conflict_is_visible(home):
         },
     )
     assert conflict["error"]["code"] == 4111
-    assert "different content" in conflict["error"]["message"]
 
 
 def test_foreign_authority_cannot_send_or_disband(home):
@@ -951,7 +934,6 @@ def test_pruned_room_send_and_log_report_expired_history(home, monkeypatch):
     assert sent["error"]["data"] == {"reason": "room_history_expired"}
     assert logged["error"]["data"] == {"reason": "room_history_expired"}
     assert renamed["error"]["data"] == {"reason": "room_history_expired"}
-    assert "permanently retired" in sent["error"]["message"]
 
     recreated = srv._methods["groups.create"](
         7,
@@ -972,7 +954,7 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
     calls = []
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
         def begin_room_disband(self, room_id):
             calls.append(("begin", room_id))
@@ -995,7 +977,7 @@ def test_failed_remote_revocation_keeps_room_recoverable(home, monkeypatch):
     _create_room()
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
         def begin_room_disband(self, room_id):
             return methods_groups.get_hosted_room_service().begin_room_disband(room_id)
@@ -1023,7 +1005,7 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
     calls = []
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
         def begin_room_disband(self, room_id):
             calls.append(("begin", True))

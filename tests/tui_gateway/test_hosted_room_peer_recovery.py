@@ -34,7 +34,11 @@ class _RecoveringPeerClient(_FakePeerClient):
 def test_peer_recovery_replays_only_indeterminate_generation(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(
+            installation_id="install-peer",
+            persistent_process=True,
+            target_profile="default",
+        )
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),

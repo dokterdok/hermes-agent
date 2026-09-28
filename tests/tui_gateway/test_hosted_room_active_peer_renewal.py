@@ -102,11 +102,16 @@ def test_observer_adopts_only_same_scope_and_preserves_exact_cleanup(renewal, mo
                "cancel": {"cancellation_scope_id": "another-cancel"}, "trace": {"trace_id": "another-trace"},
                "reauthorization": {"status": "needs_reauthorization"}}
     if change in {"installation", "policy", "catalog"}:
+        policy = (
+            execution_policy_mapping(target_profile="ops", config={"agent": {"max_turns": 7}})
+            if change == "policy"
+            else stored.catalog.execution_policy.as_mapping()
+        )
         catalog = GatewayRoomCatalog.from_mapping(catalog_mapping(
             installation_id="another-install" if change == "installation" else route.target_install_id,
             persistent_process=change != "catalog",
-            execution_policy=execution_policy_mapping(target_profile="ops", config={"agent": {"max_turns": 7}})
-            if change == "policy" else stored.catalog.execution_policy.as_mapping(),
+            target_profile=policy["target_profile"],
+            execution_policy=policy,
         ))
         changed[change] = {"catalog": catalog}
     if change in changed:

@@ -41,6 +41,7 @@ def save_link(db, *, member_id="reviewer", profile="reviewer", permissions=("rep
               target=TARGET, url="http://127.0.0.1:9876", **grant_overrides):
     catalog = peer.GatewayRoomCatalog.from_mapping(peer.catalog_mapping(
         installation_id=target, target_profile=profile, persistent_process=True,
+        execution_policy=peer.execution_policy_mapping(target_profile=profile, config={}),
     ))
     fields = dict(
         grant_id=f"grant-{member_id}", room_id="room", home_install_id=HOME,
@@ -104,7 +105,10 @@ class HTTP:
 def pair(tmp_path, monkeypatch):
     monkeypatch.setattr(rooms, "local_authority_gateway_id", lambda: HOME)
     source, target = tmp_path / "source.db", tmp_path / "target.db"
-    catalog = peer.catalog_mapping(installation_id=TARGET, target_profile="reviewer", persistent_process=True)
+    catalog = peer.catalog_mapping(
+        installation_id=TARGET, target_profile="reviewer", persistent_process=True,
+        execution_policy=peer.execution_policy_mapping(target_profile="reviewer", config={}),
+    )
     members = [
         {"member_id": "writer", "handle": "writer", "profile": "default", "target": {"kind": "local", "profile": "default"}},
         {"member_id": "reviewer", "handle": "reviewer", "profile": "reviewer", "target": {

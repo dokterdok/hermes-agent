@@ -31,7 +31,8 @@ def peers(tmp_path, monkeypatch):
         catalog_mapping(
             installation_id="install-peer",
             persistent_process=True,
-            execution_policy=execution_policy_mapping(target_profile="reviewer"),
+            target_profile="reviewer",
+            execution_policy=execution_policy_mapping(target_profile="reviewer", config={}),
         )
     )
 

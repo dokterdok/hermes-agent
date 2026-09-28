@@ -439,7 +439,11 @@ def test_worker_hydrates_and_revokes_route_registered_by_another_process(
     revoker = HostedRoomService(_server(), db_path=db)
     writer = HostedRoomService(_server(), db_path=db)
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(
+            installation_id="install-peer",
+            persistent_process=True,
+            target_profile="default",
+        )
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -601,7 +605,11 @@ def test_failed_remote_retirement_keeps_fence_and_retries(
     db = tmp_path / "state.db"
     writer = HostedRoomService(_server(), db_path=db)
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(
+            installation_id="install-peer",
+            persistent_process=True,
+            target_profile="default",
+        )
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -654,7 +662,11 @@ def test_runtime_route_registration_requires_persistence_identity(tmp_path: Path
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(
+            installation_id="install-peer",
+            persistent_process=True,
+            target_profile="default",
+        )
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -682,7 +694,11 @@ def test_unpublished_refreshed_grant_is_revoked_before_dispatch():
     now = time.time()
     secret = b"s" * 32
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(
+            installation_id="install-peer",
+            persistent_process=True,
+            target_profile="default",
+        )
     )
     grant_kwargs = {
         "room_id": "room-1",

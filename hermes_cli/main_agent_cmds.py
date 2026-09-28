@@ -4,6 +4,7 @@ Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_RO
 are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
+from pm import install_hint
 import sys
 
 
@@ -81,9 +82,12 @@ def cmd_acp(args):
     try:
         from acp_adapter.entry import main as acp_main
         acp_main([flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)])
-    except ImportError:
-        print("ACP dependencies not installed.", file=sys.stderr)
-        print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
+    except ImportError as e:
+        print("The ACP server can't start: its protocol packages are missing from this install.", file=sys.stderr)
+        print("From the Hermes environment, run: "
+              f"{install_hint('acp')}", file=sys.stderr)
+        print("Then restart Hermes.", file=sys.stderr)
+        print(f"Details: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -107,7 +111,13 @@ def cmd_insights(args):
     try:
         from hermes_state import SessionDB
         from agent.insights import InsightsEngine
-        db = SessionDB()
+        from hermes_cli.config import get_hermes_home
+        path = get_hermes_home() / "state.db"
+        if not path.exists():
+            source = f" (source: {args.source})" if args.source else ""
+            print(f"  No sessions found in the last {args.days} days{source}.")
+            return
+        db = SessionDB(db_path=path, read_only=True)
         engine = InsightsEngine(db)
         report = engine.generate(days=args.days, source=args.source)
         print(engine.format_terminal(report))

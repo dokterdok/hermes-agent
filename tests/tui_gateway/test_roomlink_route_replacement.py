@@ -12,6 +12,7 @@ import pytest
 
 from gateway import hosted_room_links, hosted_rooms
 from gateway.hosted_room_driver import TaskIdentity
+from gateway.hosted_room_execution_policy import execution_policy_mapping
 from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping, issue_room_grant
 from tui_gateway.hosted_room_driver import HostedRoomBinding
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
@@ -48,11 +49,14 @@ def endpoint():
 
 def registration(url, profile, name):
     catalog = GatewayRoomCatalog.from_mapping(catalog_mapping(
-        installation_id="install-" + profile, target_profile=profile, persistent_process=True))
+        installation_id="install-" + profile, target_profile=profile, persistent_process=True,
+        execution_policy=execution_policy_mapping(target_profile=profile, config={}),
+    ))
     token = issue_room_grant(
         b"review-b-test-secret-material-only", grant_id=name, room_id="room-1", home_install_id="install-home",
         authority_gateway_id="install-home", authority_epoch=1, member_id="member",
         target_install_id=catalog.installation_id, target_profile=profile,
+        execution_policy_digest=catalog.execution_policy.policy_digest,
         issued_at=time.time() - 10, ttl_seconds=3600,
     )
     return dict(

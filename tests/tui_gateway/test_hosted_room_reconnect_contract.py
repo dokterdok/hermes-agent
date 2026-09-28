@@ -152,8 +152,10 @@ def test_old_gateway_without_exact_cleanup_never_falls_back_to_scope_revoke():
     catalog = hosted_room_peer.catalog_mapping(
         installation_id="install:peer",
         persistent_process=True,
+        target_profile="reviewer",
         execution_policy=hosted_room_peer.execution_policy_mapping(
-            target_profile="reviewer"
+            target_profile="reviewer",
+            config={},
         ),
     )
     paths = []

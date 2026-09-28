@@ -22,7 +22,11 @@ from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 def case():
     now = time.time()
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(
+            installation_id="install-peer",
+            persistent_process=True,
+            target_profile="default",
+        )
     )
     scope = dict(
         room_id="room-1",

@@ -13,7 +13,12 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>
+  resumeSession: (
+    sessionId: string,
+    focus: boolean,
+    ownerRoute?: SessionProfileRoute,
+    options?: { authoritativeSnapshot?: boolean }
+  ) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -62,7 +67,7 @@ function rawHashLooksLikeSession(): boolean {
 
   return (
     !hash.startsWith('/settings') &&
-    !hash.startsWith('/skills') &&
+    !hash.startsWith('/capabilities') &&
     !hash.startsWith('/messaging') &&
     !hash.startsWith('/artifacts')
   )
@@ -183,13 +188,24 @@ export function useRouteResume({
         const ownerRoute =
           sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
 
-        if (ownerRoute) {
+        if (explicitlyRequested && sessionResumeRequest.authoritativeSnapshot) {
+          void resumeSession(routedSessionId, true, ownerRoute, { authoritativeSnapshot: true })
+        } else if (ownerRoute) {
           void resumeSession(routedSessionId, true, ownerRoute)
         } else {
           void resumeSession(routedSessionId, true)
         }
       }
 
+      return
+    }
+
+    // A sleep/wake WS reconnect can reopen on a new-chat route while the active
+    // runtime session is still the user's current chat. The gateway re-opened;
+    // nothing navigated. Forcing a fresh draft here is what turned every
+    // Windows/macOS sleep/wake cycle into a brand-new session and parked the
+    // previous chat in the sidebar (#53374). Preserve the active chat instead.
+    if (isNewChatRoute(locationPathname) && gatewayBecameOpen && activeSessionId && !freshDraftReady) {
       return
     }
 
