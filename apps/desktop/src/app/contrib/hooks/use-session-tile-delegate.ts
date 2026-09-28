@@ -336,6 +336,13 @@ export function useSessionTileDelegate({
         ) {
           const prefetch = await prefetchPromise
 
+          // A failed REST read is not a refreshed transcript. In particular a
+          // cached Bot Chat must keep its unread marker until a real page was
+          // merged, rather than treating null as an empty successful page.
+          if (refreshTranscript && !prefetch) {
+            throw new Error('Could not refresh the stored transcript')
+          }
+
           // A long turn can push every rendered row off the newest page; read
           // older pages until they overlap so the graft keeps earlier history.
           const prefetched = await extendRefreshPageToOverlap(
@@ -346,6 +353,10 @@ export function useSessionTileDelegate({
 
           // The overlap reads await; drop the page if the tile was rebound.
           if (sessionStateByRuntimeIdRef.current.get(existing)?.storedSessionId !== storedSessionId) {
+            if (refreshTranscript) {
+              throw new Error('Transcript refresh was superseded by a newer tile binding')
+            }
+
             return existing
           }
 
