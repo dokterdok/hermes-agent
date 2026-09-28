@@ -190,7 +190,7 @@ def test_discard_requires_exact_owned_unknown_tuple_without_replay(owner, monkey
     coords['session_id'] = sid
     callbacks = []
     rpc.submit(**coords, prompt='lost', task=TaskIdentity('room', 'lost', 'thread', 'turn'), execution_generation=17, on_terminal=callbacks.append)
-    exact = dict(expected_task_id='lost', execution_generation=17)
+    exact = dict(expected_task_id='lost', execution_generation=17, _source_discard_digest='a' * 64)
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
         rpc.discard(**coords, **exact)  # queued is not unknown
     row = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
