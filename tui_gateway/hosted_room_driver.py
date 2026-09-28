@@ -129,6 +129,9 @@ class HostedRoomRuntime:
         self.db_path = Path(db_path)
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
+        self.capture_stopping = None
+        self.acknowledge_unadmitted_stop = None
+        self.reconcile_cancelled_terminal = None
         # Settled invitation→NEW secondary publication. Not primary publish_terminal.
         self.publish_settled_secondary = publish_settled_secondary
         # Tags an exception raised by that callback so a committed settlement
@@ -231,6 +234,8 @@ class HostedRoomRuntime:
                     expected_cancel_generation=before["cancel_generation"], clock=self.clock)
             except (state.InvalidTaskTransitionError, state.StaleTaskError):
                 continue  # lost the race with the worker (settled or re-queued); re-route
+            if not direct and self.capture_stopping is not None:
+                self.capture_stopping(result, cancel_id)
             if not direct:
                 binding = self._binding_for_room(identity.room_id)
                 try:
@@ -469,6 +474,8 @@ class HostedRoomRuntime:
             and int(info.get("execution_generation") or 0) == int(task["execution_generation"]))
 
     def _interrupt_stopping_task(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
+        if self.acknowledge_unadmitted_stop is not None and self.acknowledge_unadmitted_stop(task):
+            return True
         transport, profile, session_id = self._open_session(binding, task)
         if session_id is None:
             # A local turn cannot survive without its canonical session, so an authoritative

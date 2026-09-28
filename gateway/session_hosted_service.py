@@ -18,6 +18,8 @@ class CanonicalHostedRoomService(CanonicalHostedOutputPublisher, HostedControls,
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
         super().__init__(None, db_path=authority.db.db_path)
+        from gateway.session_hosted_output_rpc import initialize_owner_output
+        initialize_owner_output(self)
         # Output callbacks consume the captured Stop and exact local admission state.
         self.runtime.capture_stopping = self._capture_stopping_output
         self.runtime.acknowledge_unadmitted_stop = self._acknowledge_unadmitted_stop
@@ -249,6 +251,8 @@ async def _ensure_hosted_service(runner, authority):
             install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
                                      attest=service.attest)
             service._transport_installed = True
+        from gateway.session_hosted_output_rpc import retry_owner_output_cleanups
+        await asyncio.to_thread(retry_owner_output_cleanups, service)
 
 
 def start_ready_hosted_services(runner):

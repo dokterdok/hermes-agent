@@ -133,7 +133,6 @@ def initialize_owner_output(service) -> bool:
         authority.db.db_path, root=home / "hosted-room-artifact-outbox"
     )
     service._owner_output_owner = _owner_identity(authority)
-    retry_owner_output_cleanups(service)
     return True
 
 

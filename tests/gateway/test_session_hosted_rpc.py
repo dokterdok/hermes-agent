@@ -119,8 +119,10 @@ def test_controls_are_exact_current_admission_and_loop_safe(owner):
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
         rpc.interrupt(**coords, session_id=sid, expected_task_id='other')
     assert not agent.interrupted
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task')['interrupted']
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task') == {
+        'interrupted': False, 'status': 'running'}
     assert agent.interrupted
+    assert rpc.info(**coords, session_id=sid)['status'] == 'started'
     with pytest.raises(RuntimeStoreError):
         rpc.approve(session_id=sid, request_id='missing', choice='once')
     async def same_loop():
