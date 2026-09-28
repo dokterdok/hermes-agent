@@ -1,15 +1,3 @@
-/**
- * The group-chat room surface: the merged room view, its settings dialog, the
- * MAIN-window tab it opens into, and the two room-lifecycle mutations that
- * surface drives — disband and rename.
- *
- * Disband and rename live here rather than beside the pane registry because a
- * rename re-opens the room's main tab, and that tab renders this file's
- * workspace: settings dialog → rename → open → main view → workspace is one
- * cycle, so it is one module. The tab registry and the composer drafts they
- * touch stay below, in `group-panes.ts`.
- */
-
 import * as sdk from '@hermes/plugin-sdk'
 import {
   atom,
@@ -18,21 +6,12 @@ import {
   Codicon,
   ConfirmDialog,
   CopyButton,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
   gatewayActivationEpoch,
   host,
-  Input,
   queryClient,
   relativeTime,
   RowButton,
   Tip,
-  ToggleRow,
-  useI18n,
   useValue
 } from '@hermes/plugin-sdk'
 import type { ClipboardEvent, DragEvent, ReactNode } from 'react'
@@ -40,9 +19,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
-import { $canonicalGroupBindings, canonicalGroupRecoveryKey, revokeCanonicalGroupBinding } from './canonical-group-registry'
+import { groupExecutionMode } from './canonical-group-capabilities'
+import {
+  $canonicalGroupBindings,
+  canonicalGroupRecoveryKey,
+  revokeCanonicalGroupBinding
+} from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { canonicalGroupRequest } from './canonical-groups'
 import {
@@ -56,6 +39,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
+import type { GroupActivityEntry } from './group-activity'
 import {
   $groupActivity,
   currentGroupActivity,
@@ -63,8 +47,8 @@ import {
   groupActivityLabel,
   groupActivityTone
 } from './group-activity'
-import type { GroupActivityEntry } from './group-activity'
 import { filesToGroupAttachments, pickGroupAttachments } from './group-attachments'
+import type { GroupChatRoom } from './group-chat'
 import {
   $groupChats,
   $groupChatWorkspace,
@@ -72,33 +56,29 @@ import {
   $groupHostedNeedsYou,
   $groupNeedsYou,
   activateClassicGroupAuthorities,
-  groupChatContinuityMode,
   groupChatHostedGateway,
   groupThreadOf,
   persistGroupChatRoomsRequired,
   rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
-  setGroupChatHoldDetection,
-  setGroupChatImage,
   updateGroupChat
 } from './group-chat'
-import type { GroupChatRoom } from './group-chat'
-import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
+import { GroupClarifyCard, GroupMentionInput } from './group-chat-parts'
+import { GroupChatSettingsDialog } from './group-chat-settings'
 import { GroupMemberPicker } from './group-chat-view-members'
-import { compressGroupMemberHistory } from './group-compress'
 import { sweepExternalGroupWrites } from './group-external-writes'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
   groupChatMemberBots,
   groupDisbandMetadataPlan,
-  groupMemberKey,
   groupWorkspaceOwnerKey,
   liveGroupChatNames
 } from './group-membership'
-import { hostedMessageSpeaker } from './group-message-author'
 import { groupMentionComponents, groupMentionText } from './group-mention-text'
+import { hostedMessageSpeaker } from './group-message-author'
+import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import {
   clearGroupComposerDraft,
   closeGroupChatMainTab,
@@ -111,7 +91,6 @@ import {
   restoreGroupComposerDraft,
   updateGroupComposerDraft
 } from './group-panes'
-import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { groupReplyMentionTag, sendToGroupChatDurably, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { $hostedRoomCleanup } from './hosted-room-cleanup'
@@ -131,10 +110,14 @@ import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
 import { botRosterMeta, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
-import { restoreShippedGroupBindings, selectShippedGroupOwner, shippedGroupOwnerChoices } from './shipped-group-adoption'
 import type { ShippedGroupOwnerChoice } from './shipped-group-adoption'
-import { shippedGroupAdoptionOwnsExecution } from './types'
+import {
+  restoreShippedGroupBindings,
+  selectShippedGroupOwner,
+  shippedGroupOwnerChoices
+} from './shipped-group-adoption'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
+import { shippedGroupAdoptionOwnsExecution } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 // The 1:1 chat's message renderer: `MEDIA:` lines become inline players and
@@ -156,7 +139,9 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   } finally {
     const storage = getPluginCtx()?.storage
 
-    if (storage) { await restoreShippedGroupBindings(storage) }
+    if (storage) {
+      await restoreShippedGroupBindings(storage)
+    }
   }
 }
 
@@ -312,7 +297,9 @@ export async function renameGroupChat(...args: Parameters<typeof renameGroupChat
   } finally {
     const storage = getPluginCtx()?.storage
 
-    if (storage) { await restoreShippedGroupBindings(storage) }
+    if (storage) {
+      await restoreShippedGroupBindings(storage)
+    }
   }
 }
 
@@ -453,7 +440,9 @@ async function renameGroupChatOwned(
   if (room?.shippedAdoption) {
     const storage = getPluginCtx()?.storage
 
-    if (storage) { await persistGroupChatRoomsRequired($groupChats.get(), storage) }
+    if (storage) {
+      await persistGroupChatRoomsRequired($groupChats.get(), storage)
+    }
   }
 
   // A rename is one revisioned state transition: the new identity is updated
@@ -483,211 +472,6 @@ async function renameGroupChatOwned(
   }
 
   return next
-}
-
-interface GroupChatSettingsDialogProps {
-  group: string
-  members?: GroupMember[]
-  onClose: () => void
-  onManageMembers?: () => void
-  onRenamed?: (group: string) => void
-  open: boolean
-}
-
-/** Edit an existing group chat's name and picture. Renames re-key the room
- *  and every local member's membership (renameGroupChat); the picture rides
- *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onManageMembers, onRenamed }: GroupChatSettingsDialogProps) {
-
-  const { t } = useI18n()
-  const b = useBots()
-  const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
-  const room = rooms[group] || {}
-  const current = room.image || null
-  const hosted = Boolean(groupChatHostedGateway(room))
-  const hostedState = String(room.hostedStatus?.state || '')
-
-  const renameBlocked =
-    hosted && (room.running === true || ['queued', 'read-only', 'sending', 'stopping', 'working'].includes(hostedState))
-
-  const continuity = groupChatContinuityMode(room)
-  const currentHoldDetection = room.holdDetection !== false
-  const [name, setName] = useState(group)
-  const [image, setImage] = useState(current)
-  const [holdDetection, setHoldDetection] = useState(currentHoldDetection)
-  const [compressing, setCompressing] = useState<null | string>(null)
-  useEffect(() => {
-    if (open) {
-      setName(group)
-      setImage(current)
-      setHoldDetection(currentHoldDetection)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, group])
-
-  // Per-member "Compress history" (#102291): the member's hidden plumbing
-  // session is reachable from nowhere else, so the room that shows the
-  // symptom (empty replies) owns the repair. One member at a time — the
-  // gateway refuses a second compress while one holds the lock.
-  const compressMember = async (member: GroupMember) => {
-    const memberName = displayName(member, botRosterMeta(member, $botMeta.get()))
-    setCompressing(groupMemberKey(member))
-    host.notify({ kind: 'info', message: b.group.compressing(memberName) })
-
-    try {
-      const outcome = await compressGroupMemberHistory(group, member)
-
-      if (outcome.compressed === 0 && outcome.pending === 0) {
-        host.notify({ kind: 'info', message: b.group.compressNothing(memberName) })
-      } else {
-        host.notify({
-          kind: 'success',
-          message: b.group.compressDone(memberName, outcome.compressed + outcome.pending, outcome.lines.join('; '))
-        })
-      }
-    } catch (error) {
-      host.notify({
-        kind: 'error',
-        message: b.group.compressFailed(memberName, error instanceof Error ? error.message : String(error))
-      })
-    } finally {
-      setCompressing(null)
-    }
-  }
-
-  const save = async () => {
-    if (renameBlocked) {
-      return
-    }
-
-    const finalName = await renameGroupChat(group, name, members)
-
-    if (finalName === null) {
-      return // collision — dialog stays open for a different name
-    }
-
-    if (image !== current) {
-      setGroupChatImage(finalName, image)
-    }
-
-    if (holdDetection !== currentHoldDetection) {
-      setGroupChatHoldDetection(finalName, holdDetection)
-    }
-
-    onClose()
-
-    if (finalName !== group) {
-      onRenamed?.(finalName)
-    }
-  }
-
-  return (
-    <Dialog
-      onOpenChange={value => {
-        if (!value) {
-          onClose()
-        }
-      }}
-      open={open}
-    >
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>{b.group.settingsTitle}</DialogTitle>
-          <DialogDescription>{b.group.settingsDesc}</DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-0.5 text-sm">
-          <div className="font-medium text-(--ui-text-primary)">
-            {hostedState === 'read-only'
-              ? b.group.continuityReadOnlyTitle
-              : continuity === 'desktop'
-                ? b.group.continuityDesktopTitle
-                : b.group.continuityOnTitle}
-          </div>
-          <div className="text-xs text-(--ui-text-tertiary)">
-            {hostedState === 'read-only'
-              ? b.group.continuityReadOnlyDesc
-              : continuity === 'desktop'
-                ? b.group.continuityDesktopDesc
-                : b.group.continuityOnDesc}
-          </div>
-        </div>
-        <GroupImageControls
-          image={image}
-          onImage={setImage}
-          seedMembers={(members || []).map(member => member.name)}
-          seedName={name.trim() || group}
-        />
-        <form
-          onSubmit={event => {
-            event.preventDefault()
-            void save()
-          }}
-        >
-          <Input
-            aria-label={b.group.nameLabel}
-            autoFocus
-            disabled={renameBlocked}
-            maxLength={64}
-            onChange={event => setName(event.target.value)}
-            value={name}
-          />
-        </form>
-        <ToggleRow
-          checked={holdDetection}
-          description={b.group.holdDetectionHint}
-          label={b.group.holdDetection}
-          onChange={setHoldDetection}
-        />
-        {(members || []).length > 0 ? (
-          <ul className="flex flex-col gap-1" data-testid="group-settings-members">
-            {(members || []).map(member => {
-              const key = groupMemberKey(member)
-
-              return (
-                <li className="flex items-center justify-between gap-2 text-sm" key={key}>
-                  <span className="truncate">{displayName(member, botRosterMeta(member, $botMeta.get()))}</span>
-                  <Tip label={b.group.compressHistoryHint(member.name)}>
-                    <Button
-                      aria-label={`${b.group.compressHistory}: ${member.name}`}
-                      disabled={compressing !== null}
-                      onClick={() => void compressMember(member)}
-                      size="sm"
-                      variant="secondary"
-                    >
-                      <Codicon name={compressing === key ? 'loading' : 'fold'} spinning={compressing === key} />
-                      {b.group.compressHistory}
-                    </Button>
-                  </Tip>
-                </li>
-              )
-            })}
-          </ul>
-        ) : null}
-        {onManageMembers ? (
-          <Button
-            className="w-fit"
-            onClick={() => {
-              onClose()
-              onManageMembers()
-            }}
-            size="sm"
-            variant="secondary"
-          >
-            <Codicon name="organization" />
-            {`Manage members (${(members || []).length})…`}
-          </Button>
-        ) : null}
-        <DialogFooter>
-          <Button onClick={onClose} variant="secondary">
-            {t.common.cancel}
-          </Button>
-          <Button disabled={!name.trim() || renameBlocked} onClick={() => void save()}>
-            {t.common.save}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
 }
 
 // ── threads: the Slack/Discord shape ─────────────────────────────────────────
@@ -1261,7 +1045,6 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   const summaryActivity =
     !room.running && unresolvedFailures.size ? [...unresolvedFailures.values()].at(-1)! : latestActivity
 
-
   const hostedActivity = groupChatHostedGateway(room) ? room.hostedStatus?.label : null
   const retryTaskId = String(room.hostedStatus?.taskId || '')
   const retryCommandId = String(room.hostedStatus?.retryCommandId || '')
@@ -1338,7 +1121,6 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             <span
               className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}
             >{`${groupActivityLabel(summaryActivity, group)} · ${relativeTime(summaryActivity.at)}`}</span>
-
           ) : null}
         </RowButton>
         {canStop ? (
@@ -1583,9 +1365,9 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   const attachButton = (thread: null | string) => (
     <Tip label={b.group.attachHint}>
       <Button
-        disabled={hostedDeleted}
         aria-label={b.group.attachHint}
         className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+        disabled={hostedDeleted}
         onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
         size="sm"
         type="button"
@@ -1614,7 +1396,6 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       link.remove()
     } catch {
       host.notify({ kind: 'error', message: b.group.attachmentDownloadFailed })
-
     }
   }
 
