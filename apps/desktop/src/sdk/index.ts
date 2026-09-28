@@ -2052,6 +2052,21 @@ export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnai
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'
+export {
+  type ApprovalChoice,
+  type ControlConsentInput,
+  type ControlScope,
+  type ControlVerb,
+  controlGrantParams,
+  controlMethod,
+  controlRevokeParams,
+  type DisplayedApproval,
+  exactDisplayedApproval,
+  groupsApproveParams,
+  groupsStopParams,
+  isApprovalSelector,
+  type MessagingRecipient
+} from '../../../shared/src/private-controls'
 /** Client deadline for `approval.respond`: matches the backend's
  *  `approvals.timeout` (300s) so a plugin answering an approval never rejects
  *  its own RPC while the backend still applies the decision (#60654). */

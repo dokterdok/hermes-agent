@@ -1,5 +1,7 @@
 import { host } from '@hermes/plugin-sdk'
 
+import { controlGrantParams, controlMethod, controlRevokeParams, groupsApproveParams } from './private-controls'
+import type { ApprovalChoice, ControlConsentInput, ControlScope, ControlVerb } from './private-controls'
 import type { GroupMember } from './types'
 
 export interface CanonicalGroupRoute {
@@ -50,6 +52,7 @@ export interface CanonicalPendingAction {
   task_id: string
   execution_generation: number
   request_id?: string
+  selector?: string
 }
 
 function requireRoute(route: CanonicalGroupRoute): void {
@@ -174,21 +177,37 @@ export async function actCanonicalGroup(
     throw new Error('Invalid canonical group pending action')
   }
 
-  const params: Record<string, unknown> = {
+  if (action.kind === 'approval') {
+    if (choice !== 'once' && choice !== 'deny') {
+      throw new Error('Approval requires its exact request ID and an explicit choice')
+    }
+
+    return canonicalGroupRequest(binding, method, groupsApproveParams(binding.roomId, {
+      selector: action.selector ?? '',
+      member_id: action.member_id,
+      task_id: action.task_id,
+      request_id: action.request_id ?? '',
+      execution_generation: action.execution_generation
+    }, choice))
+  }
+
+  return canonicalGroupRequest(binding, method, {
     room_id: binding.roomId,
     member_id: action.member_id,
     task_id: action.task_id,
     execution_generation: action.execution_generation
-  }
-
-  if (action.kind === 'approval') {
-    if (!action.request_id || (choice !== 'once' && choice !== 'deny')) {
-      throw new Error('Approval requires its exact request ID and an explicit choice')
-    }
-
-    params.request_id = action.request_id
-    params.choice = choice
-  }
-
-  return canonicalGroupRequest(binding, method, params)
+  })
 }
+
+export async function setCanonicalControlConsent(
+  binding: CanonicalGroupBinding,
+  scope: ControlScope,
+  verb: ControlVerb,
+  consent: ControlConsentInput
+): Promise<Record<string, unknown>> {
+  const params = verb === 'revoke' ? controlRevokeParams(consent) : controlGrantParams(consent)
+
+  return canonicalGroupRequest(binding, controlMethod(scope, verb), params)
+}
+
+export type { ApprovalChoice, ControlConsentInput, ControlScope, ControlVerb }

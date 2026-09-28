@@ -176,6 +176,21 @@ export {
   type WindowsBackgroundMaterial
 } from './translucency'
 export {
+  type ApprovalChoice,
+  type ControlConsentInput,
+  type ControlScope,
+  type ControlVerb,
+  controlGrantParams,
+  controlMethod,
+  controlRevokeParams,
+  type DisplayedApproval,
+  exactDisplayedApproval,
+  groupsApproveParams,
+  groupsStopParams,
+  isApprovalSelector,
+  type MessagingRecipient
+} from './private-controls'
+export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,
   GatewayReauthRequiredError,

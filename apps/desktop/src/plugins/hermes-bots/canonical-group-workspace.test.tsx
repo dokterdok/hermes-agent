@@ -142,6 +142,93 @@ it('explicit Retry keeps the pending member and generation on groups.retry', asy
   expect(request.mock.calls.some(c => c[1] === 'groups.approve' || c[1] === 'groups.deny')).toBe(false)
 })
 
+const selectorA = `pa-${'aa'.repeat(32)}`
+const selectorB = `pa-${'bb'.repeat(32)}`
+
+function roomWith(actions: Record<string, unknown>[]) {
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { pending_actions: actions } }}
+
+    if (method === 'groups.log') {return { events: [], has_more: false }}
+
+    return {}
+  })
+}
+
+it('approves the displayed selector and never a list position', async () => {
+  roomWith([
+    { kind: 'approval', member_id: 'first', task_id: 't1', request_id: 'req-first', execution_generation: 2, selector: selectorA },
+    { kind: 'approval', member_id: 'second', task_id: 't2', request_id: 'req-second', execution_generation: 3, selector: selectorB },
+    { kind: 'approval', member_id: 'bare', task_id: 't3', request_id: 'req-bare', execution_generation: 4 }
+  ])
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'fresh-client', profile: 'reviewer', roomId: 'room-one' }} />)
+  expect(await screen.findByRole('button', { name: `Allow once ${selectorB}` })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Allow once', exact: true })).toBeNull()
+  expect(screen.queryByText('bare')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: `Allow once ${selectorB}` }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.approve')).toBe(true))
+  const call = request.mock.calls.find(item => item[1] === 'groups.approve')!
+  expect(call[2]).toEqual({
+    profile: 'reviewer', room_id: 'room-one', member_id: 'second', task_id: 't2',
+    execution_generation: 3, request_id: 'req-second', choice: 'once'
+  })
+  expect(call[2]).not.toHaveProperty('selector')
+  expect(request.mock.calls.some(item => String(item[1]).includes('groups.messaging') || item[1] === 'groups.deny')).toBe(false)
+})
+
+it('keeps native Stop off the consent methods', async () => {
+  roomWith([])
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'fresh-client', profile: 'reviewer', roomId: 'room-one' }} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.stop')).toBe(true))
+  const call = request.mock.calls.find(item => item[1] === 'groups.stop')!
+  expect(call[2].room_id).toBe('room-one')
+  expect(call[2].cancel_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+  expect(call[2].cancel_id).not.toMatch(/^pa-/)
+  expect(request.mock.calls.some(item => String(item[1]).startsWith('groups.messaging'))).toBe(false)
+  expect(screen.queryByRole('button', { name: 'Grant stop consent' })).toBeNull()
+})
+
+it('grants stop consent and revokes approval consent without calling Stop or approve', async () => {
+  roomWith([])
+  const recipient = {
+    platform: 'telegram', user_id: 'user-1', chat_id: 'chat-1', thread_id: null, scope_id: null,
+    transport_profile: 'telegram', runtime_profile: 'default'
+  }
+  render(<CanonicalGroupWorkspace
+    binding={{ connectionId: 'fresh-client', profile: 'reviewer', roomId: 'room-one' }}
+    operatorControl={{
+      recipient,
+      roomReadBindingId: `mrr-${'cd'.repeat(16)}`,
+      roomReadGeneration: 2,
+      stop: null,
+      approval: { bindingId: `mrc-${'ef'.repeat(16)}`, generation: 5, active: true }
+    }}
+  />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Grant stop consent' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.messaging.room.stop.grant')).toBe(true))
+  const grant = request.mock.calls.find(item => item[1] === 'groups.messaging.room.stop.grant')!
+  expect(grant[2]).toMatchObject({
+    profile: 'reviewer',
+    recipient,
+    room_id: 'room-one',
+    room_read_binding_id: `mrr-${'cd'.repeat(16)}`,
+    room_read_generation: 2,
+    expected_generation: 0
+  })
+  expect(grant[2].request_id).toMatch(/^[0-9a-f-]{36}$/i)
+  expect(grant[2]).not.toHaveProperty('binding_id')
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Revoke approval consent' }) as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: 'Revoke approval consent' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.messaging.room.approval.revoke')).toBe(true))
+  const revoke = request.mock.calls.find(item => item[1] === 'groups.messaging.room.approval.revoke')!
+  expect(revoke[2]).toMatchObject({
+    binding_id: `mrc-${'ef'.repeat(16)}`,
+    expected_generation: 5
+  })
+  expect(request.mock.calls.some(item => item[1] === 'groups.stop' || item[1] === 'groups.approve')).toBe(false)
+})
+
 it('reads back retry on the same authority and sends only through the group driver', async () => {
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { pending_actions: [{ kind: 'retry', member_id: 'w', task_id: 't', execution_generation: 2 }] } }}

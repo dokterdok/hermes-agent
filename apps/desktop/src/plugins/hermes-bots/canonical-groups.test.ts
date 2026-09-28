@@ -8,7 +8,7 @@ const host = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', () => ({ host }))
 
-import { actCanonicalGroup, canonicalGroupRequest, canonicalRoomMembers, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupRequest, canonicalRoomMembers, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups, setCanonicalControlConsent } from './canonical-groups'
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -87,10 +87,19 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
     })
   }
 
-  await actCanonicalGroup(binding, { kind: 'approval', ...identity, request_id: 'request:original' }, 'deny')
+  const selector = `pa-${'ab'.repeat(32)}`
+  await actCanonicalGroup(binding, { kind: 'approval', ...identity, request_id: 'request:original', selector }, 'deny')
   expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.approve', {
     profile: route.profile, room_id: binding.roomId, ...identity, request_id: 'request:original', choice: 'deny'
   })
+  expect(host.requestProfile.mock.calls.at(-1)?.[2]).not.toHaveProperty('selector')
+
+  for (const bad of [undefined, '1', 'pa-short']) {
+    await expect(actCanonicalGroup(binding, {
+      kind: 'approval', ...identity, request_id: 'request:original', selector: bad
+    }, 'once')).rejects.toThrow(/selector/)
+  }
+
   const count = host.requestProfile.mock.calls.length
 
   for (const action of [
@@ -100,4 +109,37 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
 
   expect(host.requestProfile).toHaveBeenCalledTimes(count)
   expect(host.request).not.toHaveBeenCalled()
+})
+
+it('sends stop and approval consent on separate methods from groups.stop and groups.approve', async () => {
+  const route = captureCanonicalGroupRoute()
+  const binding = { ...route, roomId: 'room-consent' }
+  const recipient = {
+    platform: 'telegram', user_id: 'user-1', chat_id: 'chat-1', thread_id: null, scope_id: null,
+    transport_profile: 'telegram', runtime_profile: 'default'
+  }
+  const consent = {
+    requestId: 'req-consent', recipient, roomId: binding.roomId,
+    roomReadBindingId: `mrr-${'cd'.repeat(16)}`, roomReadGeneration: 3, expectedGeneration: 0
+  }
+  host.requestProfile.mockResolvedValue({ accepted: true })
+  await setCanonicalControlConsent(binding, 'stop', 'grant', consent)
+  expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.messaging.room.stop.grant', {
+    profile: route.profile,
+    request_id: 'req-consent',
+    recipient,
+    room_id: binding.roomId,
+    room_read_binding_id: consent.roomReadBindingId,
+    room_read_generation: 3,
+    expected_generation: 0
+  })
+  await setCanonicalControlConsent(binding, 'approval', 'revoke', {
+    ...consent, expectedGeneration: 4, bindingId: `mrc-${'ef'.repeat(16)}`
+  })
+  expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.messaging.room.approval.revoke', expect.objectContaining({
+    binding_id: `mrc-${'ef'.repeat(16)}`, expected_generation: 4
+  }))
+  expect(host.requestProfile.mock.calls.map(call => call[1])).toEqual([
+    'groups.messaging.room.stop.grant', 'groups.messaging.room.approval.revoke'
+  ])
 })

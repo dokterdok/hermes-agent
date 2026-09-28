@@ -8,6 +8,7 @@ Consumer lane only. Do not use these notes as a patch for `gateway/`,
 - Conflicts returned to Barry: `docs/layers-integration/BACKEND_CONFLICTS.md`
 - R3 Retry handback: `docs/layers-integration/BACKEND_RETURNS_R3.md`
 - Journey status: `docs/layers-integration/JOURNEY.md`
+- Private-control client calls: `docs/layers-integration/PRIVATE_CONTROLS.md`
 
 `tests/layers_integration/test_controller_pins.py` checks that this branch
 still contains cb8 and that the owned backend blobs above are unchanged.

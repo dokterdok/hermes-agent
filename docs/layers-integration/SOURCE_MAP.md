@@ -21,13 +21,14 @@ They are not results for cb8. The 6f2 candidate remains
 | Files transport #98072 | `9f143dedd82a6da452d20d1cace4869b23b14ada` | Not classic Files and not the desktop Files pin. |
 | Retention #99107 | `c9f0029475f085e3b5e66b77df74cd5470925aef` | Accepted F1. Recipe still pins `004015d6087fe031231c4d7d9e0032cc59b679eb`. |
 | Desktop #97846 | `5211890fb87b626c9ba569910375707530c3a2cc` | Not a full-tree overlay onto cb8. |
-| Permission #111939 | `34332b47b3fb3c8394879e7179e157b89be115de` | Baseline only. Successor not accepted. |
-| Messaging #98073 | `d4d9f905e8123eea38ad81c4cdd6ac44257315d8` | Controls still in flight. |
+| Permission #111939 | `3b0d88e044f4a689def4ae1fee45186aafb51e11` | v2 control slice. Replaces v1 baseline `34332b47b3fb3c8394879e7179e157b89be115de` for Stop vs approval grant/revoke only. Not joined onto cb8. |
+| Messaging #98073 | head `eea4a0c96d321bfd9a03705627f7f0d6a6280f40`; product `8f5338e6a7699c615112e2e2ef50136f31f8e466` | Private grammar. Recipe still bases on `d4d9f905e8123eea38ad81c4cdd6ac44257315d8`. Not joined onto cb8. |
 
 Local-only Stop ACK `8461351e856450f33f6ed80a41b0d7e81b47fa59` and shipped-history
 importer `cc69090b8875f6c338fccb09d45f0cf2dfa8440b` are evidence. They are not
 copied onto this branch and are not a public supplier.
 
+Client calls for the v2 control slice are in `PRIVATE_CONTROLS.md`.
 Backend joins that are not clean public blobs are in `BACKEND_CONFLICTS.md`.
 This branch does not edit `gateway/**`, `tui_gateway/**`, `hermes_state*.py`,
 `agent/**`, `acp_adapter/**`, `tools/**`, or `hermes_cli/**`.

@@ -1,9 +1,12 @@
 # Backend conflicts returned to Barry
 
 No file below was hand-merged. The assembly tree keeps the cb8 blob. Causal
-notes are for the backend owner. Permission #111939 and Messaging controls
-stay pending; A3 control consent stays open. This client change does not
-invent a consent path.
+notes are for the backend owner. v2 accepts Permission `3b0d88e044` and
+Messaging product `8f5338e6` (recipe head `eea4a0c96d`) for the control
+slice. Those commits are not on this tree. The Desktop client can form the
+public calls (`PRIVATE_CONTROLS.md`); cb8 does not implement them. A3 stays
+open. Session policy, runtime custody, Route `8a29b6d`, Retention F1, and
+R3 retry keywords stay here.
 
 ## 1. `gateway/session_policy.py`
 

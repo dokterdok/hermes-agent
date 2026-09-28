@@ -27,10 +27,16 @@ and `event_id` from `groups.log`. The vitest
 `canonical-group-fresh-client.test.tsx` covers that client contract.
 
 It does not start two gateways, does not prove bytes on disk, and does not
-close A1–A7. A3 Stop/approve/deny consent stays open while Permission
-#111939 and Messaging controls have no accepted successor. The workspace
-still calls the existing `groups.stop` / `groups.approve` methods only;
-nothing in this change substitutes for a missing consent RPC.
+close A1–A7. The two-gateway cb8 journey was not run.
+
+A3 client calls are wired against Permission `3b0d88e044` and Messaging
+product `8f5338e6` (recipe head `eea4a0c96d`). Allow once and Deny use the
+displayed `pa-` selector and send `groups.approve` without that selector.
+Native Stop stays `groups.stop`. Grant and revoke use
+`groups.messaging.room.stop.*` and `groups.messaging.room.approval.*`.
+cb8 does not register those consent methods and does not emit selectors, so
+the buttons stay closed or fail closed until Barry joins the backend.
+Details: `PRIVATE_CONTROLS.md`. That wiring is not an A3 pass.
 
 Explicit Retry stays a client send of `groups.retry` with `member_id` and
 `execution_generation`. The gateway rejection of that call is

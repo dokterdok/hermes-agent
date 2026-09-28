@@ -6,8 +6,10 @@ import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-gro
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
-import { actCanonicalGroup, canonicalGroupRequest, canonicalRoomMembers } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupRequest, canonicalRoomMembers, setCanonicalControlConsent } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoomMember } from './canonical-groups'
+import { exactDisplayedApproval, groupsStopParams, isApprovalSelector } from './private-controls'
+import type { ControlScope, MessagingRecipient } from './private-controls'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
@@ -16,15 +18,25 @@ interface RoomState {
   driver_status?: { pending_actions?: CanonicalPendingAction[] }
 }
 
-export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
-  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
-}) {
-  // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView binding={binding} key={JSON.stringify(binding)} onBack={onBack} visible={visible} />
+export interface CanonicalOperatorControl {
+  recipient: MessagingRecipient
+  roomReadBindingId: string
+  roomReadGeneration: number
+  stop: { bindingId: string; generation: number; active: boolean } | null
+  approval: { bindingId: string; generation: number; active: boolean } | null
 }
 
-function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
+export function CanonicalGroupWorkspace({ binding, visible = true, onBack, operatorControl }: {
+  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
+  operatorControl?: CanonicalOperatorControl | null
+}) {
+  // Remount on identity changes: old polls and pending confirmations never cross rooms.
+  return <CanonicalRoomView binding={binding} key={JSON.stringify(binding)} onBack={onBack} operatorControl={operatorControl} visible={visible} />
+}
+
+function CanonicalRoomView({ binding: initialBinding, visible, onBack, operatorControl = null }: {
   binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void
+  operatorControl?: CanonicalOperatorControl | null
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
@@ -139,6 +151,39 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const act = (action: CanonicalPendingAction, choice?: 'once' | 'deny') =>
     mutate(() => actCanonicalGroup(binding, action, choice))
 
+  const approveDisplayed = (selector: string, choice: 'once' | 'deny') => {
+    const actions = (state?.driver_status?.pending_actions ?? []).flatMap(action =>
+      action.kind === 'approval' && action.selector ? [{
+        selector: action.selector,
+        member_id: action.member_id,
+        task_id: action.task_id,
+        request_id: action.request_id ?? '',
+        execution_generation: action.execution_generation
+      }] : [])
+
+    return mutate(() => {
+      const exact = exactDisplayedApproval(actions, selector)
+
+      return actCanonicalGroup(binding, { kind: 'approval', ...exact }, choice)
+    })
+  }
+
+  const setConsent = (scope: ControlScope) => {
+    if (!operatorControl) {return}
+    const current = operatorControl[scope]
+    const verb = current?.active ? 'revoke' : 'grant'
+
+    return mutate(() => setCanonicalControlConsent(binding, scope, verb, {
+      requestId: crypto.randomUUID(),
+      recipient: operatorControl.recipient,
+      roomId: binding.roomId,
+      roomReadBindingId: operatorControl.roomReadBindingId,
+      roomReadGeneration: operatorControl.roomReadGeneration,
+      expectedGeneration: current?.generation ?? 0,
+      ...(verb === 'revoke' && current ? { bindingId: current.bindingId } : {})
+    }))
+  }
+
   const members = canonicalRoomMembers(state?.room.members)
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
@@ -147,7 +192,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <h2>{state?.room.name || labels.loadingGroup}</h2>
       {members.length > 0 && <ul aria-label={labels.members}>{members.map(member =>
         <li key={member.member_id}>{member.display_name || member.handle || member.member_id} ({member.profile})</li>)}</ul>}
-      <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
+      <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', groupsStopParams(binding.roomId, crypto.randomUUID())))}>{labels.stop}</Button>
     </header>
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}
@@ -155,12 +200,29 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     <div className="min-h-0 flex-1 overflow-auto" role="log">
       <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} />
     </div>
-    {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
-      <span>{action.member_id}</span>
-      {action.kind === 'discard' && <Button disabled={busy} onClick={() => setDiscard({ ...action })}>{labels.discard}</Button>}
-      {action.kind === 'retry' && <Button disabled={busy} onClick={() => void act({ ...action })}>{labels.retry}</Button>}
-      {action.kind === 'approval' && <><Button disabled={busy} onClick={() => void act({ ...action }, 'once')}>{labels.allowOnce}</Button><Button disabled={busy} onClick={() => void act({ ...action }, 'deny')}>{labels.deny}</Button></>}
-    </div>)}
+    {(state?.driver_status?.pending_actions || []).map(action => {
+      if (action.kind === 'approval') {
+        if (!isApprovalSelector(action.selector)) {return null}
+        const selector = action.selector
+
+        return <div className="flex items-center gap-2" key={selector}>
+          <span>{action.member_id}</span>
+          <span>{selector}</span>
+          <Button aria-label={`${labels.allowOnce} ${selector}`} disabled={busy} onClick={() => void approveDisplayed(selector, 'once')}>{labels.allowOnce}</Button>
+          <Button aria-label={`${labels.deny} ${selector}`} disabled={busy} onClick={() => void approveDisplayed(selector, 'deny')}>{labels.deny}</Button>
+        </div>
+      }
+
+      return <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
+        <span>{action.member_id}</span>
+        {action.kind === 'discard' && <Button disabled={busy} onClick={() => setDiscard({ ...action })}>{labels.discard}</Button>}
+        {action.kind === 'retry' && <Button disabled={busy} onClick={() => void act({ ...action })}>{labels.retry}</Button>}
+      </div>
+    })}
+    {operatorControl && <div aria-label="Control consent" className="flex gap-2">
+      <Button disabled={busy} onClick={() => void setConsent('stop')}>{operatorControl.stop?.active ? labels.revokeStop : labels.grantStop}</Button>
+      <Button disabled={busy} onClick={() => void setConsent('approval')}>{operatorControl.approval?.active ? labels.revokeApproval : labels.grantApproval}</Button>
+    </div>}
     {discard && <div aria-label={labels.discardUnknown} role="alertdialog">
       <p>{labels.discardWarning}</p>
       <Button disabled={busy} onClick={() => { const exact = discard; setDiscard(null); void act(exact) }}>{labels.confirmDiscard}</Button>
