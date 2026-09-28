@@ -19,7 +19,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from gateway.hosted_rooms import (
     MAX_ACTOR_ID_CHARS,
@@ -219,8 +219,13 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _replica_transaction(db_path: Path | str):
+def _replica_transaction(
+    db_path: Path | str,
+    _authorize: Callable[[sqlite3.Connection], None] | None = None,
+):
     with _transaction(db_path, immediate=True) as conn:
+        if _authorize is not None:
+            _authorize(conn)
         _initialize_replica_schema(conn)
         # A still-running #99047 process can write after migration. Re-audit
         # inside the same write transaction before every read or extension.
