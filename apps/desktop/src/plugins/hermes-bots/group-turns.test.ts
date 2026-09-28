@@ -1287,6 +1287,56 @@ describe('in-flight marker', () => {
 // A turn that outlives its deadline leaves a "stranded" marker. The member is
 // still working; the next round harvests whatever landed instead of throwing
 // the finished work away.
+describe('mailbox reply custody', () => {
+  it.each([false, true])('never harvests a lease-lost polling reply (restart=%s)', async restart => {
+    const room = await loadRoom({ turn: () => 'Reply owned by the lost mailbox lease' })
+    const fences = await import('./group-command-fence')
+    room.chat.updateGroupChat('Mailbox', current => ({ ...current, roomId: 'mailbox-room' }))
+    let live = true
+    const fence = fences.beginGroupCommandFence('mailbox-room', 'mailbox-command', () => live)
+    fences.bindGroupCommandFence(fence, 'mailbox-thread', 0)
+    const original = host.request as (method: string, params: unknown) => Promise<unknown>
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    let polling = false
+    host.request = async (method: string, params: unknown) => {
+      const response = await original(method, params)
+      if (method === 'session.resume' && room.gateway.calls.length) {
+        polling = true
+        await held
+      }
+      return response
+    }
+    const running = room.turns.runGroupChatMemberTurn('Mailbox', LOCAL_MEMBER, roomPrompt('Mailbox'), 'mailbox-thread', [], fence)
+    try {
+      await drain(() => !polling)
+      expect(polling).toBe(true)
+      // Persist exactly what a renderer crash during the outstanding RPC leaves.
+      await room.chat.persistGroupChatRoomsRequired()
+      const persisted = structuredClone(room.gateway.storage.get('group-chats'))
+      live = false
+      release()
+      expect(await running).toBeNull()
+      if (restart) {
+        vi.resetModules()
+        const [chat, turns, shared] = await Promise.all([import('./group-chat'), import('./group-turns'), import('./shared')])
+        shared.setPluginCtx(scriptedStorage(room.gateway.storage))
+        chat.$groupChats.set(chat.hydrateGroupChatRooms(persisted))
+        await turns.harvestStrandedGroupReply('Mailbox', LOCAL_MEMBER)
+        expect(chat.$groupChats.get().Mailbox.log).toEqual([])
+      } else {
+        await room.turns.harvestStrandedGroupReply('Mailbox', LOCAL_MEMBER)
+        expect(log(room, 'Mailbox')).toEqual([])
+      }
+    } finally {
+      live = false
+      release()
+      await running
+      fences.releaseGroupCommandFence(fence)
+    }
+  })
+})
+
 describe('stranded harvest', () => {
   // #100274: the hard cap is a runaway guard, not a work budget. A member the
   // gateway still reports busy keeps its turn well past the old 20-minute
