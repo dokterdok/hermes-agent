@@ -120,6 +120,28 @@ it('captures exact pending attempts through confirmation and never retargets or 
   expect(request.mock.calls.every(c => c[1].startsWith('groups.'))).toBe(true)
 })
 
+it('explicit Retry keeps the pending member and generation on groups.retry', async () => {
+  const action = { kind: 'retry', member_id: 'two', task_id: 'task-uncertain', execution_generation: 4 }
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { pending_actions: [action] } }}
+
+    if (method === 'groups.log') {return { events: [], has_more: false }}
+
+    if (method === 'groups.retry') {throw new Error('invalid_params')}
+
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'fresh-client', profile: 'reviewer', roomId: 'room-one' }} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+  await screen.findByText('invalid_params')
+  const call = request.mock.calls.find(c => c[1] === 'groups.retry')!
+  expect(call[0]).toMatchObject({ connectionId: 'fresh-client', targetProfile: 'reviewer' })
+  expect(call[2]).toEqual({
+    profile: 'reviewer', room_id: 'room-one', member_id: 'two', task_id: 'task-uncertain', execution_generation: 4
+  })
+  expect(request.mock.calls.some(c => c[1] === 'groups.approve' || c[1] === 'groups.deny')).toBe(false)
+})
+
 it('reads back retry on the same authority and sends only through the group driver', async () => {
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { pending_actions: [{ kind: 'retry', member_id: 'w', task_id: 't', execution_generation: 2 }] } }}

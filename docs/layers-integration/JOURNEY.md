@@ -32,5 +32,16 @@ close A1–A7. A3 Stop/approve/deny consent stays open while Permission
 still calls the existing `groups.stop` / `groups.approve` methods only;
 nothing in this change substitutes for a missing consent RPC.
 
+Explicit Retry stays a client send of `groups.retry` with `member_id` and
+`execution_generation`. The gateway rejection of that call is
+`docs/layers-integration/BACKEND_RETURNS_R3.md`. The button does not drop
+those fields.
+
+A fresh connection follows `groups.log` pages. The next request uses the last
+event `seq` as `since_seq`. A page that does not advance that cursor shows
+the invalid-cursor alert and does not publish the partial page or the member
+list. A later binding on another room downloads only that room's
+`attachment_id`. These checks are mocked `requestProfile` calls.
+
 Native Windows Save/Cancel stays held. Host-loss successor (A7) stays with
 Barry.

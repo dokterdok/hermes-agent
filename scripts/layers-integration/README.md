@@ -6,6 +6,7 @@ Consumer lane only. Do not use these notes as a patch for `gateway/`,
 
 - Pin table: `docs/layers-integration/SOURCE_MAP.md`
 - Conflicts returned to Barry: `docs/layers-integration/BACKEND_CONFLICTS.md`
+- R3 Retry handback: `docs/layers-integration/BACKEND_RETURNS_R3.md`
 - Journey status: `docs/layers-integration/JOURNEY.md`
 
 `tests/layers_integration/test_controller_pins.py` checks that this branch
