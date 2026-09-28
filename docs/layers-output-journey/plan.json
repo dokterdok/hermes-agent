@@ -3,7 +3,7 @@
   "remote": "https://github.com/dokterdok/hermes-agent.git",
   "sources": {
     "runtime": "041ae76f80ba2330ef6f1b7b961adc08e59a1877",
-    "output": "4be9cb11031f3001929fd74cadb8f20b097cbf08",
+    "output": "31d00b0ed728e8d580aadf8a143cda3343752441",
     "route": "1fa3c0addd0c3eec671f3019c443dd3e449db134",
     "input": "a05c7d2fc9c16f7d1a5d6bf8ecb8e6f3365ca462",
     "files": "9f143dedd82a6da452d20d1cace4869b23b14ada",
@@ -2402,12 +2402,12 @@
     },
     {
       "path": "gateway/session_hosted_output_retry.py",
-      "sha256": "a59c5499feb388c8151372321ed006a4f3cf4d5ac3b00cec52e9a9ca63321b29",
+      "sha256": "c04111c8f964058650cd2e0be1c9c1a1512536019474f95591f2036d06ef3f2c",
       "mode": "100644",
       "parts": [
         {
           "source": "output",
-          "blob": "0be67b729d81aa66314ceb9c9ac5776140ea8422"
+          "blob": "7af13836e6508655f7b30ad6ec0b1f7ac08457e4"
         }
       ]
     },
@@ -3073,12 +3073,12 @@
     },
     {
       "path": "tests/gateway/test_multiplex_named_send_output.py",
-      "sha256": "40ef454385d76e26eac8e062e2a2d74c8ebb893781a8aa6db479a0870847f74e",
+      "sha256": "101432a0f6cc01f711e7bb67e96c0cfd63627256abe6ae51ddb14809bed51a50",
       "mode": "100644",
       "parts": [
         {
           "source": "output",
-          "blob": "cbed2f7ee4358a423bbc7fec147eee60b6b0476d"
+          "blob": "7fc278812f47806c59f07ebdea0e4432a123c695"
         }
       ]
     },
