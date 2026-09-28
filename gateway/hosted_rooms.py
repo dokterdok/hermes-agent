@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from contextlib import closing
+from contextlib import closing, nullcontext
 from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
@@ -1054,10 +1054,18 @@ def probe_peer_room_reservation(
         "peer room ownership is temporarily unavailable")
 
 
-def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False) -> dict[str, Any]:
-    """Return durable replay and authority state for one room."""
+def room_state(
+    db_path: DbPath, *, room_id: Any, include_disbanded: bool = False,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Return durable replay and authority state for one room.
+
+    Route ``groups.state`` borrows the connection it already authorized.
+    Passing that connection keeps the read on the held view. Callers that
+    omit it still open the runtime transaction.
+    """
     room_id = _room_id(room_id)
-    with _transaction(db_path) as conn:
+    with (nullcontext(conn) if conn is not None else _transaction(db_path)) as conn:
         row = _room_row(
             conn,
             f"""SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE room_id=? AND (disbanded_at IS NULL
@@ -1149,19 +1157,27 @@ def _disband_replay(conn: sqlite3.Connection, room_id: str, room: sqlite3.Row | 
 
 
 def disband_room(
-    db_path: DbPath, *, room_id: Any, expected_gateway_id: Any, expected_epoch: Any, now: float | None = None
+    db_path: DbPath, *, room_id: Any, expected_gateway_id: Any, expected_epoch: Any,
+    now: float | None = None, authorize_retirement=None, conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """Tombstone a room id permanently and idempotently."""
+    """Tombstone a room id permanently and idempotently.
+
+    ``conn`` is the route disband writer's already-held connection. Passing it
+    keeps the tombstone on that writer. ``authorize_retirement`` runs after the
+    authority check and before the tombstone event, on that same connection.
+    """
     room_id = _room_id(room_id)
     expected_gateway_id = _actor_id(expected_gateway_id, "expected_gateway_id")
     _require_positive_int(expected_epoch, "expected_epoch")
     now = _now(now)
-    with _transaction(db_path, immediate=True) as conn:
+    with (nullcontext(conn) if conn is not None else _transaction(db_path, immediate=True)) as conn:
         room = conn.execute("""SELECT authority_gateway_id, authority_epoch, next_seq, event_bytes, disbanded_at
                 FROM hosted_rooms WHERE room_id=?""", (room_id,)).fetchone()
         if (replay := _disband_replay(conn, room_id, room)) is not None:
             return replay
         _require_authority(room, expected_gateway_id, expected_epoch, "stale hosted room authority")
+        if authorize_retirement is not None:
+            authorize_retirement(conn)
         disband_bytes = _insert_event(
             conn, room, room_id, int(room["next_seq"]), "system:room-disbanded", "room.disbanded",
             _system_actor_json("room-control"), int(room["authority_epoch"]), _payload_json({"room_id": room_id}), now,
