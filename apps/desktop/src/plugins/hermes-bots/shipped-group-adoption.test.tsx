@@ -540,7 +540,8 @@ describe('automatic shipped Group Chat adoption', () => {
     expect(retained.members).toEqual(original.members)
     expect(retained.log).toEqual(original.log)
     expect(retained.stranded).toEqual(original.stranded)
-    expect(retained.shippedAdoption.state).not.toBe('adopted')
+    expect(retained.shippedAdoption).toBeUndefined()
+    expect(retained.shippedPreflight.issue.kind).toBe('conflict')
   })
 
   it.each(['waiting', 'prepared', 'conflict'] as const)('hydrated %s checkpoints block discovery and already-mounted aliases', async stage => {
@@ -604,7 +605,7 @@ describe('automatic shipped Group Chat adoption', () => {
     const blocked = new Promise<void>(resolve => { release = resolve })
 
     const waitingWrite = vi.spyOn(ctx.storage, 'set').mockImplementation(async (key, value) => {
-      if (key === 'group-chats' && (value as Record<string, any>).Release?.shippedAdoption?.state === 'waiting') {
+      if (key === 'group-chats' && (value as Record<string, any>).Release?.shippedAdoption?.state === 'prepared') {
         await blocked
 
         if (fail) { throw new Error('checkpoint could not be saved') }
@@ -950,9 +951,10 @@ describe('automatic shipped Group Chat adoption', () => {
     }
 
     await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
-    const checkpoint = (storage.get('group-chats') as Record<string, any>).Release.shippedAdoption
+    const retained = (storage.get('group-chats') as Record<string, any>).Release
 
-    expect(checkpoint).toMatchObject({ state: 'waiting', issue: { kind: issueKind } })
+    expect(retained.shippedAdoption).toBeUndefined()
+    expect(retained.shippedPreflight).toMatchObject({ state: 'waiting', issue: { kind: issueKind } })
     expect(calls).toEqual(['groups.capabilities'])
   })
 
@@ -999,7 +1001,9 @@ describe('automatic shipped Group Chat adoption', () => {
     loaded = await coldHydrate(ambiguousStorage)
     const before = ambiguousTransport.calls.length
     await loaded.adoption.adoptShippedGroupChats(scriptedStorage(ambiguousStorage).storage)
-    const ambiguous = (ambiguousStorage.get('group-chats') as Record<string, any>).Ambiguous.shippedAdoption
+    const retained = (ambiguousStorage.get('group-chats') as Record<string, any>).Ambiguous
+    expect(retained.shippedAdoption).toBeUndefined()
+    const ambiguous = retained.shippedPreflight
 
     expect(ambiguousTransport.calls).toHaveLength(before)
     expect(ambiguous).toMatchObject({ state: 'waiting', issue: { kind: 'owner-ambiguous' } })

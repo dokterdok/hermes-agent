@@ -276,6 +276,8 @@ export interface GroupChat {
   /** User-facing continuity choice. Missing records are classic Desktop rooms. */
   continuityMode?: 'desktop' | 'distributed' | 'gateway'
   /** Exact, installation-fenced checkpoint for automatic released-room adoption. */
+  /** Non-authoritative owner/capability preflight. Never fences classic Send. */
+  shippedPreflight?: ShippedGroupAdoption
   shippedAdoption?: ShippedGroupAdoption
   /** Whether user text may create sticky member holds. Defaults to true for
    *  rooms written by older builds; the room settings switch can disable it. */

@@ -1023,6 +1023,8 @@ export function hydrateGroupChatRooms(value: unknown): Record<string, GroupChat>
       desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
       members: Array.isArray(room.members) ? room.members : [],
       shippedAdoption: storedShippedGroupAdoption(room),
+      shippedPreflight: room.shippedPreflight?.state === 'waiting' && !room.shippedPreflight.route
+        ? storedShippedGroupAdoption({ shippedAdoption: room.shippedPreflight }) : undefined,
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       hosted: typeof room.hosted === 'string' && room.hosted ? room.hosted : null,
       hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
@@ -1080,6 +1082,8 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       externalCursors: room.externalCursors || {},
       members: Array.isArray(room.members) ? room.members : [],
       shippedAdoption: storedShippedGroupAdoption(room),
+      shippedPreflight: room.shippedPreflight?.state === 'waiting' && !room.shippedPreflight.route
+        ? storedShippedGroupAdoption({ shippedAdoption: room.shippedPreflight }) : undefined,
       // Immutable room identity: without this, a room merged in via the
       // remote-sync path (the only caller of this function) loses its
       // roomId on the next cold hydrate and falls back to legacy
@@ -1575,6 +1579,8 @@ export function updateGroupChat(
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
         shippedAdoption: storedShippedGroupAdoption(room),
+      shippedPreflight: room.shippedPreflight?.state === 'waiting' && !room.shippedPreflight.route
+        ? storedShippedGroupAdoption({ shippedAdoption: room.shippedPreflight }) : undefined,
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         hosted: groupChatHostedGateway(room) || null,

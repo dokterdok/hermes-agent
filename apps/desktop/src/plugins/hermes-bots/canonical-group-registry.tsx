@@ -21,16 +21,18 @@ function adoptionMatchesRoom(adoption: ShippedGroupAdoption, route: CanonicalGro
 function retainedCanonicalGroup(
   route: CanonicalGroupRoute, roomId: string, rooms: Record<string, GroupChat> = $groupChats.get()
 ): string | undefined {
-  return Object.entries(rooms).find(([, room]) =>
-    room.shippedAdoption && adoptionMatchesRoom(room.shippedAdoption, route, roomId)
-  )?.[0]
+  return Object.entries(rooms).find(([, room]) => {
+    const retained = room.shippedAdoption ?? room.shippedPreflight
+
+    return retained && adoptionMatchesRoom(retained, route, roomId)
+  })?.[0]
 }
 
 /** Resolve navigation to retained history, never an executable binding. */
 export function canonicalGroupRecoveryKey(
   group: string, rooms: Record<string, GroupChat>, bindings: Record<string, CanonicalGroupBinding>
 ): string | undefined {
-  if (rooms[group]?.shippedAdoption) { return group }
+  if (rooms[group]?.shippedAdoption || rooms[group]?.shippedPreflight) { return group }
 
   const binding = bindings[group]
 

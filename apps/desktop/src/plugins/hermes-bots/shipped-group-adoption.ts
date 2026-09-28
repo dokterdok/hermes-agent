@@ -528,7 +528,7 @@ function foregroundCurrent(fence: ForegroundFence, generation: number): boolean 
 }
 
 function checkpointMatches(room: GroupChat | undefined, expected: ShippedGroupAdoption): boolean {
-  const current = room?.shippedAdoption
+  const current = room?.shippedAdoption ?? room?.shippedPreflight
 
   return Boolean(
     current &&
@@ -559,8 +559,10 @@ async function persistRoom(
 
   // Revoke old closures before publishing ownership or awaiting durable storage.
   // A failed save must not resurrect an already-mounted descriptor alias.
-  if (next[group].shippedAdoption) {
-    quarantineCanonicalGroupBindings(group, next[group].shippedAdoption)
+  const retained = next[group].shippedAdoption ?? next[group].shippedPreflight
+
+  if (retained) {
+    quarantineCanonicalGroupBindings(group, retained)
   }
 
   $groupChats.set(next)
@@ -588,7 +590,11 @@ async function persistCheckpoint(
   return persistRoom(storage, group, expectedRoom, room => ({
     ...room,
     ...roomPatch,
-    shippedAdoption: adoption
+    // Only an import-ready checkpoint transfers execution authority. Preserve
+    // all old waiting checkpoints: older clients may already have submitted.
+    ...(adoption.state === 'waiting' && !room.shippedAdoption
+      ? { shippedPreflight: adoption }
+      : { shippedAdoption: adoption, shippedPreflight: undefined })
   }))
 }
 
@@ -705,7 +711,7 @@ export async function selectShippedGroupOwner(
 ): Promise<void> {
   const generation = lifecycleGeneration
   const room = $groupChats.get()[group]
-  let adoption = room?.shippedAdoption
+  let adoption = room?.shippedAdoption ?? room?.shippedPreflight
 
   if (
     !room ||

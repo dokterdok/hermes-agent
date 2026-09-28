@@ -593,7 +593,8 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     }
   }, [adoptionHeld, connectionId, profile, gateway, source])
 
-  const ownerCheckpoint = room?.shippedAdoption?.issue?.kind === 'owner-ambiguous' ? room.shippedAdoption : null
+  const retained = room?.shippedAdoption ?? room?.shippedPreflight
+  const ownerCheckpoint = retained?.issue?.kind === 'owner-ambiguous' ? retained : null
 
   useEffect(() => {
     let cancelled = false
@@ -636,7 +637,8 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     setOwnerChoiceError('')
 
     const current = () => {
-      const checkpoint = $groupChats.get()[props.group]?.shippedAdoption
+      const currentRoom = $groupChats.get()[props.group]
+      const checkpoint = currentRoom?.shippedAdoption ?? currentRoom?.shippedPreflight
 
       return (
         ownerChoiceScope.mounted &&
@@ -671,7 +673,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   }
 
   const notice =
-    room?.shippedAdoption?.issue?.message ||
+    retained?.issue?.message ||
     room?.continuityIssue ||
     (mode === 'canonical'
       ? b.canonical.upgradePreparing

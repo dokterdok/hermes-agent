@@ -13,7 +13,7 @@ import type { GroupChat, GroupMember } from './types'
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
-  return { ...sdk, usePluginI18n: () => translateBots }
+  return { ...sdk, host: { ...sdk.host, state: { ...sdk.host.state, gateway: sdk.atom('open'), connectionId: sdk.atom('owner'), profile: sdk.atom('default') } }, usePluginI18n: () => translateBots }
 })
 
 const GROUP = 'Project group'
@@ -85,6 +85,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   cleanup()
   $groupChats.set({})
 
@@ -138,10 +139,11 @@ describe('group availability follows its execution mode', () => {
     })
   })
 
-  it('retains classic availability in the chat header', () => {
+  it('retains classic availability in the chat header', async () => {
+    vi.spyOn(host, 'requestProfile').mockResolvedValue({ driver: false, persistent_process: false })
     setRoom(false)
     render(<GroupChatWorkspace group={GROUP} members={members} />)
-    expect(screen.getByLabelText('2 of 4 available', { exact: true })).toBeTruthy()
+    expect(await screen.findByLabelText('2 of 4 available', { exact: true })).toBeTruthy()
   })
 
   for (const state of ['offline', 'unsupported'] as const) {
