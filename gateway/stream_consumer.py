@@ -586,8 +586,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                             return
                         if self._first_send_overflows():
                             # A head send failed: keep the full text for the fallback final, and
-                            # skip the boundary reset below that would clear it.
+                            # skip the boundary reset below that would clear it. Still yield: the
+                            # buffer stays over the debounce threshold, so `continue` alone re-enters
+                            # the split on every pass and spins the loop without ever sleeping.
                             self._signal_flush(tick.flush_event)
+                            await asyncio.sleep(0.05)
                             continue
                     # The split tail goes out now, so a commentary or tool boundary drained in
                     # this tick still lands after it instead of being dropped.
@@ -621,8 +624,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _resolve_length_budget(self) -> "tuple[Callable[[str], int], int]":
         """Per-chat length function (relay adapters differ per chat, e.g. utf16) + budget.
         isinstance gate: MagicMock auto-attributes aren't callables; test doubles use len."""
-        len_fn = (self.adapter.message_len_fn_for_chat(self.chat_id)
-                  if isinstance(self.adapter, _BasePlatformAdapter) else len)
+        # Shares the guarded ladder with the fallback path: a git pull while the gateway
+        # runs can pair new consumer code with an old in-memory adapter lacking
+        # message_len_fn_for_chat (#72628), which then falls back to message_len_fn.
+        len_fn, _ = self._fallback_len_budget()
         return len_fn, max(500, self._raw_message_limit() - len_fn(self.cfg.cursor) - 100)
 
     async def _start_transports(self) -> None:

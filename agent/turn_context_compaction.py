@@ -101,7 +101,8 @@ def _apply_grown_window(agent: Any, compressor: Any, grown: int) -> None:
 
 
 def _refund_api_call(agent: Any, api_call_count: int) -> int:
-    """A pass that never reached the provider refunds the call count and budget."""
+    """Refund the call count and iteration budget for a pass that should not consume it:
+    one that never reached the provider (preflight) or a provider-switch fallback hop."""
     # Host progress-aware timeout (#98722, salvaged from #98741): this preflight iteration never reached the
     # provider. Refund its provisional call/budget exactly like a successful pre-API compaction, then stop
     # before the unchanged oversized request reaches the provider — its overflow error would only invoke
@@ -240,6 +241,11 @@ def _preflight_compression(
         _rearm_uncompressed_overflow_warn(agent, out.messages, out.active_system_prompt)
         return
     _compressor = agent.context_compressor
+    # A structural no-op ("nothing eligible among N messages") is a verdict about that transcript;
+    # the gateway daemon keeps this compressor across turns, so a grown transcript re-arms it.
+    _lift = getattr(_compressor, "lift_structural_backoff_if_grown", None)
+    if callable(_lift):
+        _lift(len(out.messages))
     if _tc._review_fork_first_request_pending(agent) or not _tc._should_run_preflight_estimate(
         out.messages, _compressor.protect_first_n, _compressor.protect_last_n,
         _compressor.threshold_tokens,

@@ -63,13 +63,18 @@ def automation_notification_metadata(metadata):
         raise RuntimeStoreError('invalid_params')
     return {'notification_category': category} if category == 'diagnostic' else {}
 
+# notification_origin / original_trigger_message_id are producer debug context (#52694) and are not
+# persisted; notification_category="diagnostic" rides the snapshot so the replayed wake still mutes.
+_AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
+    'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category'})
+
 
 def snapshot_automation(authority, adapter, event, identity):
     runner = authority.runner
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
             or not isinstance(event.text, str) or not identity
             or event.media_urls or event.prompt_response or event.source.platform == Platform.API_SERVER
-            or set(event.metadata) - {'gateway_session_key', 'gateway_session_id', 'automation_identities', 'turn_author', 'notification_category'}):
+            or set(event.metadata) - _AUTOMATION_METADATA):
         raise RuntimeStoreError('invalid_params')
     notification = automation_notification_metadata(event.metadata)
     entry = _owner(runner, event)

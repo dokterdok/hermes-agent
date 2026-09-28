@@ -14,7 +14,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { sharedControlParams } from '../canonicalGateway.js'
-import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
+import { DASHBOARD_TUI_MODE, NATIVE_MODE, STARTUP_RESUME_ID } from '../config/env.js'
 import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
@@ -469,6 +469,7 @@ export function useMainApp(gw: GatewayClient) {
     generation: historyGeneration,
     initialHeights: activeHeightCache,
     liveTailActive: turnLiveTailActive,
+    nativeMode: NATIVE_MODE,
     onHeightsChange: syncHeightCache
   })
 
@@ -733,7 +734,12 @@ export function useMainApp(gw: GatewayClient) {
           scrollRef.current.scrollToBottom()
         }
 
-        void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
+        // A canonical session has no server-side width (create/resume drop `cols`) and is not
+        // in the legacy registry `terminal.resize` looks up: it answers 4001 "session not
+        // found", which reads as "no longer attached" on every resize.
+        if (!gw.isCanonical) {
+          void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
+        }
       }, 100)
     }
 
@@ -743,7 +749,7 @@ export function useMainApp(gw: GatewayClient) {
       clearTimeout(timer)
       stdout.off('resize', onResize)
     }
-  }, [rpc, stdout, ui.sid])
+  }, [gw, rpc, stdout, ui.sid])
 
   const answerClarify = useCallback(
     (answer: string) => {

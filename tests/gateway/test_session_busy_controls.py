@@ -95,7 +95,7 @@ async def settled(home):
             await asyncio.sleep(.05)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_busy_policy_is_authorized_session_scoped_and_not_inference(tmp_path):
     with owner(tmp_path) as (home, peer, desc):
         async def probe():
@@ -129,12 +129,18 @@ def test_busy_policy_is_authorized_session_scoped_and_not_inference(tmp_path):
                             'key': 'busy', 'value': 'queue', 'scope': 'session'}, result
                 assert (await rpc(ws, 'config.get', session_id=ids[0], key='busy'))['result']['value'] == 'queue'
                 assert (await rpc(ws, 'config.get', session_id=ids[1], key='busy'))['result']['value'] == 'steer'
+                # /verbose is the same kind of session-scoped display negotiation.
+                result = await rpc(ws, 'config.set', session_id=ids[0], key='verbose', value='cycle')
+                assert result.get('result') == {'key': 'verbose', 'value': 'verbose', 'scope': 'session'}, result
+                assert (await rpc(ws, 'config.get', session_id=ids[1], key='verbose'))['result']['value'] == 'all'
+                assert (await rpc(ws, 'config.set', session_id=ids[0], key='verbose', value='loud')
+                        )['error']['message'] == 'invalid_params'
                 assert (home / 'config.yaml').read_bytes() == config_before
                 assert not admissions(home) and not peer.requests
         asyncio.run(probe())
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_corrections_are_generation_fenced_and_consumed_by_same_provider_loop(tmp_path):
     with owner(tmp_path) as (home, peer, desc):
         async def probe():

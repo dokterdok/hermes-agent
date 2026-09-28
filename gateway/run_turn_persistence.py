@@ -46,6 +46,7 @@ class GatewayTurnPersistenceMixin:
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
         persist_user_display_kind: Optional[str] = None,
+        reply_expected: Optional[bool] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -62,17 +63,24 @@ class GatewayTurnPersistenceMixin:
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
-        # opened the chain: an internal follow-up may go silent, a human one must not.
-        from gateway.response_filters import is_machinery_display_kind
+        # opened the chain: an internal follow-up, or a message not addressed to the bot, may go
+        # silent; any other human one must not.
+        from gateway.response_filters import is_machinery_display_kind, silence_allowed
         from gateway.run_turn import _UNEXPECTED_SILENCE_REPLY
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
+        if _intentional_silence and not silence_allowed(_silence_kind, _silence_reply_expected):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
             )
             _intentional_silence = False
             response = _UNEXPECTED_SILENCE_REPLY
+        elif _intentional_silence and not is_machinery_display_kind(_silence_kind):
+            logger.debug(
+                "silence marker suppressed on an unaddressed turn: platform=%s chat=%s",
+                _platform_name, source.chat_id or "unknown",
+            )
 
         # "(empty)" = the model produced no visible content after exhausting all retries. One
         # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
@@ -388,9 +396,11 @@ class GatewayTurnPersistenceMixin:
         if is_context_overflow_failure:
             pass  # Skip all transcript writes — don't grow a broken session
         else:
-            if not history:
+            if not history and source.platform != Platform.LOCAL:
                 # Fresh session: the tool definitions (as sent in the API request) make the transcript
-                # self-describing.
+                # self-describing. A LOCAL route (one-shot, chat -q, ACP, TUI attach) keeps the classic
+                # in-process CLI's transcript shape: the marker is gateway bookkeeping every local
+                # reader filters out, and the session row already carries model/model_config.
                 await store.append_to_transcript(sid, {
                     "role": "session_meta",
                     "tools": agent_result.get("tools", []) or [],

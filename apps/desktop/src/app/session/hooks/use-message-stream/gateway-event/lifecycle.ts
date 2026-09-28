@@ -2,16 +2,19 @@ import type { GatewayEvent } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
 import { eventSourceMatchesOwner, gatewayEventSource } from '@/lib/replay-gap-owner'
+import { clearClarifyRequest } from '@/store/clarify'
 import {
   notifyCronChanged,
   notifyPairingChanged,
   notifyPetChanged,
   notifyPlatformsChanged,
+  notifyProjectsChanged,
   notifySessionsChanged,
   notifySetupReady,
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { clearAllPrompts } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
 import type { SessionOwnerScope } from '@/store/session-request-router'
@@ -71,6 +74,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     event.type === 'pet.changed' ||
     event.type === 'cron.changed' ||
     event.type === 'sessions.changed' ||
+    event.type === 'projects.changed' ||
     event.type === 'platforms.changed' ||
     event.type === 'pairing.changed'
   ) {
@@ -84,6 +88,8 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
         notifyPetChanged(payload as PetChangeMeta | undefined)
       } else if (event.type === 'cron.changed') {
         notifyCronChanged()
+      } else if (event.type === 'projects.changed') {
+        notifyProjectsChanged()
       } else if (event.type === 'platforms.changed') {
         notifyPlatformsChanged()
       } else if (event.type === 'pairing.changed') {
@@ -109,6 +115,13 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
       // Heal while the cached stored-id mapping is still intact, then drop.
       markRuntimeGone(reclaimedRuntimeId)
       dropSessionState(reclaimedRuntimeId)
+      // A prompt keyed to the dead runtime must not outlive it. The runtime id
+      // rotates on every resume (cold/lazy/eager all mint a fresh sid), so the
+      // new runtime's turn-end clears can never remove an entry keyed to THIS
+      // one — a stale approval would re-mount the floating "needs approval"
+      // bar whenever the reclaimed conversation is reopened (#86577).
+      clearAllPrompts(reclaimedRuntimeId)
+      clearClarifyRequest(undefined, reclaimedRuntimeId)
       // A tile bound to the reclaimed runtime would otherwise render an
       // empty transcript forever: its view reads $sessionStates[runtime]
       // (just dropped) and its resume effect is gated on !runtimeId, so a

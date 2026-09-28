@@ -29,6 +29,19 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
+    """The ``ToolStartPayload`` contract every client reads (``tool_id``/``name``/``context``),
+    plus the ``tool_call_id``/``tool_name`` the gateway's own consumers were built on."""
+    from agent.display import build_tool_preview, tool_labels_for_call
+    name = str(tool_name or "tool")
+    args = args if isinstance(args, dict) else {}
+    payload = {"tool_id": str(call_id or ""), "name": name, "context": build_tool_preview(name, args, max_len=80) or "",
+               "tool_call_id": str(call_id or ""), "tool_name": name, "args": args}
+    if labels := [label.as_payload() for label in tool_labels_for_call(name, args)]:
+        payload["labels"] = labels
+    return payload
+
+
 class GatewayTurnProgressMixin:
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -764,9 +777,7 @@ class GatewayTurnProgressMixin:
 
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
-        self._publish_execution("tool.start", {
-            "tool_call_id": str(call_id or ""), "tool_name": str(tool_name or "tool"),
-            "args": args if isinstance(args, dict) else {}})
+        self._publish_execution("tool.start", _tool_lifecycle_payload(call_id, tool_name, args))
         self._publish_api_tool("tool.start", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
@@ -776,10 +787,15 @@ class GatewayTurnProgressMixin:
     def combined_tool_complete_callback(self, call_id, tool_name, args, result):
         from agent.display import _detect_tool_failure
         is_error, _ = _detect_tool_failure(tool_name, result)
-        self._publish_execution("tool.complete", {
-            "tool_call_id": str(call_id or ""), "tool_name": str(tool_name or "tool"),
-            "is_error": bool(is_error), "args": args if isinstance(args, dict) else {},
-            "result": result if isinstance(result, str) else str(result)})
+        payload = {**_tool_lifecycle_payload(call_id, tool_name, args), "is_error": bool(is_error),
+                   "result": result if isinstance(result, str) else str(result)}
+        owner = self._approval_owner
+        live = owner[0].sessions.get(owner[1]) if owner is not None else None
+        # A session's /verbose (gateway/session_busy_controls.py) ships the Result block text.
+        if live is not None and (getattr(live, "tool_progress_mode", None) or self._ctx.progress_mode) == "verbose":
+            from tui_gateway.tool_progress import _tool_result_text
+            payload["result_text"] = _tool_result_text(result)
+        self._publish_execution("tool.complete", payload)
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)

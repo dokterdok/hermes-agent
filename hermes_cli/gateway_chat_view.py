@@ -8,17 +8,20 @@ from hermes_cli.gateway_client import GatewayClientError
 
 
 class GatewayChatView:
-    def __init__(self, client, snapshot, *, quiet=False, emitter=None):
+    def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
+        self.usage_file = usage_file
         self.client = client
         self.session_id = snapshot["stored_session_id"]
         self.generation = snapshot.get("execution_generation", 0)
         self.prompts = {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
         self.pending = snapshot.get("pending", [])
+        self.model = str((snapshot.get("info") or {}).get("model") or "Hermes").split("/")[-1]
         # ``--format stream-json``: stdout belongs to the JSONL protocol, so every human line is
         # replaced by an emitter event and the terminal record carries the exit code.
         self.emitter = emitter
         self.quiet = quiet or emitter is not None
         self.finite = False
+        self.unattended = False  # `-z`: the classic one-shot auto-approves; `-q` stays single-query
         self.streams = {}
         self.completions = {}
         self.changed = asyncio.Event()
@@ -73,9 +76,19 @@ class GatewayChatView:
             self.changed.set()
 
     def _tool_start(self, admission, payload):
+        # Deltas before a tool call are interim commentary the final reply does not repeat;
+        # close that segment so `_complete` measures only the final's own stream.
+        if self.streams.pop(admission, None) and not self.quiet:
+            print(flush=True)
         if self.emitter is not None:
             self.emitter.on_tool_progress("tool.started", payload.get("tool_name"), None, payload.get("args"),
                                           tool_call_id=payload.get("tool_call_id") or None)
+        elif not self.quiet:
+            # Same line shape the in-process CLI prints: the tool's emoji and its primary argument.
+            from agent.display import build_tool_preview, get_tool_emoji
+            name = payload.get("tool_name") or payload.get("name") or "tool"
+            preview = build_tool_preview(name, payload.get("args") or {}, max_len=0)
+            print(f"{get_tool_emoji(name)} {name}{f': {preview}' if preview else ''}", flush=True)
 
     def _tool_complete(self, admission, payload):
         if self.emitter is not None:
@@ -91,16 +104,24 @@ class GatewayChatView:
             self.emitter.on_text_delta(text)
         elif not self.quiet:
             self.streams[admission] = self.streams.get(admission, "") + text
-            print(text, end="", flush=True)
+            # No flush: under the live composer, patch_stdout line-buffers this so a redraw
+            # (a resize mid-stream) never interleaves with a half-written line. Complete lines
+            # still appear as they stream; the last one lands with `_complete`.
+            print(text, end="")
 
     def _complete(self, admission, payload):
         text = payload.get("text") or payload.get("content") or ""
         streamed = self.streams.pop(admission, "")
         if not self.quiet:
+            # The final's deltas carry the agent's segment break (leading blank lines after a
+            # tool call) that the settled text has trimmed; a match modulo that edge whitespace
+            # is the same reply already on screen.
             if not streamed:
                 print(text, flush=True)
             elif text.startswith(streamed):
                 print(text[len(streamed):], flush=True)
+            elif text.strip() == streamed.strip():
+                print(flush=True)
             else:
                 print("\n" + text, flush=True)
         self.completions[admission] = payload
@@ -115,7 +136,8 @@ class GatewayChatView:
     async def submit(self, text):
         return await self.client.rpc("prompt.submit", session_id=self.session_id,
                                      input_id=uuid.uuid4().hex, text=text,
-                                     **({"finite": True} if self.finite else {}))
+                                     **({"finite": True} if self.finite else {}),
+                                     **({"unattended": True} if self.finite and self.unattended else {}))
 
     async def command(self, text):
         command, _, rest = text.partition(" ")
@@ -177,6 +199,21 @@ class GatewayChatView:
             return self.emitter.emit_result({"failed": True, "error": message}, session_id=self.session_id, exit_code=3)
         return 3
 
+    async def _write_usage_file(self, admission, outcome):
+        """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote, read from the
+        result the owner committed with this admission's settlement (best-effort, never raises)."""
+        from hermes_cli.oneshot import _write_usage_file
+        result = {}
+        try:
+            receipt = await self.client.rpc("prompt.receipt", session_id=self.session_id,
+                                            admission_id=admission, include_result=True)
+            result = dict(receipt.get("result") or {})
+        except Exception:
+            pass
+        result.setdefault("session_id", self.session_id)
+        failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
+        _write_usage_file(self.usage_file, result, failure=failure)
+
     async def run(self, query=None, *, oneshot=False):
         self.quiet = self.quiet or oneshot
         self.finite = oneshot
@@ -205,26 +242,41 @@ class GatewayChatView:
                     await self.changed.wait()
                 terminal = self.completions[admission]
                 outcome = terminal.get("outcome")
+                if self.usage_file:
+                    await self._write_usage_file(admission, outcome)
                 if self.emitter is not None:
                     return self.emitter.emit_result(
                         {"final_response": terminal.get("text") or terminal.get("content") or "",
                          "failed": outcome not in ("completed", "cancelled"), "interrupted": outcome == "cancelled"},
                         session_id=self.session_id, exit_code=130 if outcome == "cancelled" else 0)
                 print(terminal.get("text") or terminal.get("content") or "", flush=True)
+                # Same stderr exit contract as the legacy -Q path: automation wrappers read the
+                # durable id from this line, and it names the physical row (a compaction may have
+                # advanced it past the row printed at start).
+                print(f"\nsession_id: {self.session_id}", file=sys.stderr, flush=True)
                 return 0 if outcome == "completed" else 1
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
-            prompt = PromptSession()
+            from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
+            welcome = "Welcome to Hermes Agent! Type your message or /help for commands."
+            print(get_active_skin().get_branding("welcome", welcome), flush=True)
+            # The classic status bar's leading segments: model, then the attached session.
+            prompt = PromptSession(erase_when_done=True,
+                                   bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
+            prompt_symbol = get_active_prompt_symbol("❯ ")
             with patch_stdout():
                 while not self.failure:
                     try:
-                        text = (await prompt.prompt_async("You> ")).strip()
+                        text = (await prompt.prompt_async(prompt_symbol)).strip()
                         if not text:
                             continue
                         if text.startswith("/"):
                             if not await self.command(text):
                                 return 0
                         else:
+                            # Same scrollback shape as the in-process CLI: the typed prompt line is
+                            # erased on submit and the message lands as a `●` preview row.
+                            print(f"\n{'─' * 40}\n● {text}", flush=True)
                             await self.submit(text)
                     except KeyboardInterrupt:
                         print("Use /stop to interrupt execution, /quit to detach.")

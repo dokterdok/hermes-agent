@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade._helpers import WORKTREE, isolated_env
@@ -236,7 +236,12 @@ def _value_for(default: Any, rng: random.Random, *, long: bool, env: dict[str, s
     if roll < 0.08:
         return None
     if roll < 0.18:
-        return copy.deepcopy(default) if not isinstance(default, (dict, list)) else None
+        # Same-value-as-default write. Only representable scalars may be
+        # deep-copied: a default-less target (e.g. c18_custom_root) passes the
+        # _MISSING sentinel, which must never be planted in the config tree.
+        if isinstance(default, (bool, int, float, str)) or default is None:
+            return copy.deepcopy(default)
+        return None
     if isinstance(default, bool):
         return rng.random() < 0.5
     if isinstance(default, int):
@@ -286,6 +291,10 @@ def gen_case(seed: int, *, long: bool = False, n_sections: tuple = (5, 11), excl
         sec = sections[0]
         leaf = next(p for p in _leaves(tree) if p[0] == sec)
         _set(tree, leaf, "A" * 76 + "D:\\CentBrowserPortable " + "B" * 60)
+    if null_leaves and not any(v is None for v in _leaves(tree).values()):
+        # The draw depends on DEFAULT_CONFIG's leaf population, so a new default key reshuffles
+        # every seed; the explicit-null property must not hinge on which seed happened to roll one.
+        _set(tree, next(p for p in _leaves(tree) if p[0] == sections[0]), None)
     if "providers" not in exclude_top:  # a provider name with a literal dot (#84064 family)
         tree["providers"] = {f"acme.v{seed % 7}": {"base_url": f"http://127.0.0.1:9/v{seed}", "api_mode": "chat_completions"}}
     if "c18_custom_root" not in exclude_top:

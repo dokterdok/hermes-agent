@@ -206,8 +206,12 @@ def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
     from agent.safe_worker_policy import safe_worker_enabled
+    from gateway.session_finite import finite_turn_required
 
-    if safe_worker_enabled():
+    # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
+    # takes the daemon review thread with it; the long-lived gateway would otherwise fork a
+    # ~30K-token review after the viewer has already gone.
+    if safe_worker_enabled() or finite_turn_required() is True:
         return False, {}
     try:
         from hermes_cli.config import load_config_readonly
@@ -1027,6 +1031,11 @@ def build_cache_parity_fork(
         inherited_scope = resolve_prompt_cache_scope_safe(agent)
         if inherited_scope:
             review_agent._inherited_cache_scope = inherited_scope
+        # Slot-keyed caches (xAI): once the review's OWN compaction rewrites its transcript, its
+        # divergent stream would evict the parent's server slot, so the resolver then derives
+        # ``<scope>::review``. /btw never tags: one prefix-extension call cannot diverge.
+        if write_origin == "background_review":
+            review_agent._prompt_cache_fork_tag = "review"
         # Same reason for the Portal ``conversation=`` tag: with no DB the fork's own
         # _conversation_root_id() falls back to the parent's PHYSICAL id, so after a compression
         # rotation the review's usage was attributed to a different conversation than its parent.

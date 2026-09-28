@@ -426,6 +426,37 @@ def test_friendly_names_and_desktop_slugs_resolve_to_folder_ids(tmp_path, monkey
     assert authority.calls[0][1]["profile"] == expected
 
 
+@pytest.mark.parametrize(("target", "local_name", "relayed"), [
+    ("hermes@mini", "Hermes Mini", True),
+    ("@hermes@mini", "HermesMini", True),
+    ("Ops@Home", "Ops@Home", False),  # an '@' friendly name no connection answers to stays local (#100671)
+])
+def test_connection_qualified_target_reaches_the_relay_not_a_look_alike_local_bot(
+        tmp_path, monkeypatch, target, local_name, relayed):
+    """'hermes@mini' is the form the relay hands out, and stamps on replies, for a remote row whose bare forms
+    collide. Resolved locally first, a local bot whose friendly name slugs to 'hermes-mini' captured it: the DM
+    and its reply thread landed in the wrong bot's transcript and memory."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("ops",))
+    _canonical_target(monkeypatch, home / "profiles" / "ops")  # the local bot's authority is up
+    _rename(home, "ops", display_name=local_name)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "mini", "connection_label": "Mini"},
+    ])
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="status?", agent=_FakeAgent(home)))
+
+    local = [_runner_parts(c["command"])[2][1:3] for c in calls if "--run-delivery" in c["command"]]
+    envelopes = bot_relay.claim_pending_envelopes(home)
+    if relayed:
+        assert [e["target_connection"] for e in envelopes] == ["mini"], result
+        assert local == []
+    else:
+        assert envelopes == [] and result["to"] == "@ops"
+        assert local == [["-p", "ops"]]
+
+
 def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
     """Two bots titled the same must not let a DM land on whichever sorts first; the
     reserved @hermes alias can never be hijacked by a rename."""
@@ -507,12 +538,16 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     """A background delivery must not rely on PATH: the runner's service context
     lacks the gateway's venv bin dir, so a bare ``hermes`` resolves to a system
     install whose shebang picks the wrong interpreter and dies on import (#108628).
-    Both transports must invoke the entrypoint beside this interpreter instead."""
+    With no published install launcher, both transports invoke the entrypoint beside
+    this interpreter instead; a published launcher outranks that sibling (#124868)."""
     venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
     venv_bin.mkdir(parents=True)
     hermes_entry = venv_bin / ("hermes.exe" if sys.platform == "win32" else "hermes")
     hermes_entry.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(sys, "executable", str(venv_bin / "python3"))
+    # An install without a published launcher keeps the sibling fallback; keep this
+    # checkout's own published launcher out of the resolution (#124868).
+    monkeypatch.setattr(bot_relay, "__file__", str(tmp_path / "tools" / "bot_relay.py"))
 
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))
@@ -700,6 +735,41 @@ def test_live_dm_runner_retry_never_reexecutes_failed_admission(tmp_path, monkey
 # ── plaintext tempfile lifecycle (peer stdin transport) ─────────────────────
 
 
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_peer_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, encoding):
+    # Main 61dc26cd7d9 also ran the local query-file transport here; that lane has no local
+    # child any more (a local delivery without a canonical owner is refused and retained,
+    # see test_local_delivery_runner_surfaces_refusal_and_retains_payload), so only the peer
+    # stdin transport keeps the file for the child.
+    stdin_file = True
+    dm_file = tmp_path / "message with spaces.txt"
+    dm_file.write_bytes("secret λ $(not shell)".encode(encoding))
+    observed = tmp_path / "observed.txt"
+    child = tmp_path / "child.py"
+    child.write_text(
+        textwrap.dedent(
+            """\
+            import pathlib
+            import sys
+
+            source = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1], encoding="utf-8-sig")
+            with source:
+                pathlib.Path(sys.argv[2]).write_text(source.read(), encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    source_arg = "-" if stdin_file else str(dm_file)
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child), source_arg, str(observed)],
+        str(dm_file),
+        stdin_file=stdin_file,
+    )
+
+    assert returncode == 0
+    assert observed.read_text(encoding="utf-8") == "secret λ $(not shell)"
+    assert not dm_file.exists()
 
 
 
@@ -868,7 +938,7 @@ def test_real_peer_delivery_command_round_trip(tmp_path):
     assert not dm_file.exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
     """Native runner paths must survive the Git Bash process boundary.
 
@@ -986,6 +1056,7 @@ def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeyp
 
 
 
+@pytest.mark.platforms("linux")
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -998,6 +1069,7 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.platforms("linux")
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None

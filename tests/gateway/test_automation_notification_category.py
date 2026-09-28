@@ -114,7 +114,9 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
         route = runner.session_store._generate_session_key(source)
         sid = runner.session_store.peek_session_id(route)
         event = MessageEvent(text='notice', source=source, internal=True,
-            metadata={'gateway_session_key': route, 'gateway_session_id': sid, 'notification_category': category})
+            metadata={'gateway_session_key': route, 'gateway_session_id': sid, 'notification_category': category,
+                      'notification_origin': 'process_registry_synthetic',
+                      'original_trigger_message_id': 'producer-context'})
         receipt = await authority.admit_automation(adapter, event, 'notice')
         row = get_session_admission(authority.db, admission_id=receipt.admission_id)
         assert row is not None
@@ -123,6 +125,8 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
         assert restored.internal
         assert descriptor.get('notification_category', 'result') == category
         assert restored.metadata.get('notification_category', 'result') == category
+        assert 'notification_origin' not in descriptor
+        assert 'original_trigger_message_id' not in descriptor
         if category == 'result':
             assert 'notification_category' not in descriptor
             event.metadata.pop('notification_category')

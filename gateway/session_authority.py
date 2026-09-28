@@ -286,7 +286,7 @@ class SessionAuthority:
         self.authorize(actor, request.ref, 'session:submit')
         self._require_admission_open()
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
-                'text', 'attachments', 'finite', 'surface', 'voice_context', 'interrupted'}
+                'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_ingress_media import admit_attachments
@@ -398,10 +398,10 @@ class SessionAuthority:
                 self.check_approval_generation(session_id, generation)
             except RuntimeStoreError:
                 return False
-            live.event_stream.publish(session_id, payload, event_type=event_type)
+            delivered = live.event_stream.publish(session_id, payload, event_type=event_type)
             from gateway.session_api_turn import publish_api_event
-            publish_api_event(self, session_id, event_type, payload)
-            return True
+            observed = publish_api_event(self, session_id, event_type, payload)
+            return bool(delivered or observed)
 
     def register_approval(self, session_id, generation, route, data):
         live = self.sessions[session_id]
@@ -511,9 +511,13 @@ class SessionAuthority:
                     from gateway.session_ingress_media import release_admission_media
                     release_admission_media(self.db, admission_id)
                     self._publish_pending(ref)
+                    # ``status`` is the message.complete contract's TurnStatus: the Desktop
+                    # extends a Stopped bubble to the persisted partial only on 'interrupted'.
                     live.event_stream.publish(ref.session_id, {
                         'text': response, 'content': response, 'admission_id': admission_id,
-                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
+                        'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
+                            settled['outcome'], 'error')})
             except Exception:
                 # The settle fence lost (a reset/compression moved runtime_generation under
                 # the turn). The row stays `started` for recovery -> `unknown`; re-settling

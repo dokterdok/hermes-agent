@@ -77,8 +77,9 @@ def authority_delivery(home, params):
         endpoint = discovery.endpoint
         ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
         url = endpoint.api_origin.replace('http:', 'ws:').replace('https:', 'wss:') + '/api/ws'
+        # Loopback authority dial: never through HTTP(S)_PROXY (websockets>=14 honours it by default).
         async with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket],
-                           open_timeout=10) as ws:
+                           open_timeout=10, proxy=None) as ws:
             if ws.subprotocol != 'hermes-gateway-v1':
                 raise ValueError('authority protocol mismatch')
             async with GatewayClient(ws) as client:
@@ -138,7 +139,7 @@ def _locked(home: Path | str):
 def _read(path: Path) -> dict[str, Any] | None:
     """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed)."""
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
     if not isinstance(record, dict):
@@ -207,7 +208,7 @@ def _next_sequence(root: Path) -> int:
     """
     counter = root / _SEQUENCE_FILE
     try:
-        persisted = int(counter.read_text(encoding="utf-8"))
+        persisted = int(counter.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         persisted = 0
     scanned = max((record.get("sequence", record["created_at"])

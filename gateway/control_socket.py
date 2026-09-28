@@ -73,7 +73,7 @@ def resolve_client_socket_path(home: Path) -> Optional[Path]:
         return direct
     with contextlib.suppress(OSError):
         pointer = Path(home) / _POINTER_FILENAME
-        target = pointer.read_text(encoding="utf-8").strip() if pointer.is_file() else ""
+        target = pointer.read_text(encoding="utf-8-sig").strip() if pointer.is_file() else ""
         if target and Path(target).exists():
             return Path(target)
     return None
@@ -279,10 +279,11 @@ class GatewayControlServer:
         if os.name == "nt":
             return None
         try:
+            from hermes_cli.gateway_runtime_discovery import home_mode_unsafe
             home = self._home
             info = home.lstat()
             if (home.absolute() != home.resolve() or not stat.S_ISDIR(info.st_mode)
-                    or info.st_uid != os.getuid() or info.st_mode & 0o077):  # windows-footgun: ok — POSIX-only helper
+                    or info.st_uid != os.getuid() or home_mode_unsafe(info)):  # windows-footgun: ok — POSIX-only helper
                 return None
             sock = writer.get_extra_info("socket")
             if hasattr(socket, "SO_PEERCRED"):
@@ -389,25 +390,11 @@ def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[b
 
 
 def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
-    pipe_name = windows_pipe_name(home)
-    deadline = time.monotonic() + timeout
-    handle = None
-    while handle is None:
-        try:
-            handle = open(pipe_name, "r+b", buffering=0)
-        except FileNotFoundError:
-            return None
-        except OSError:
-            # Pipe busy (another client mid-handshake) — brief retry window.
-            if time.monotonic() >= deadline:
-                return None
-            time.sleep(0.05)
-    try:
-        handle.write(request)
-        return _read_response_line(lambda: handle.read(65536), deadline)
-    finally:
-        with contextlib.suppress(Exception):
-            handle.close()
+    # The server is the native overlapped pipe worker; its client verifies the server's SID and
+    # speaks the same framing (a plain open() got no answer in the live Windows pipe test).
+    from gateway.runtime_bootstrap_windows import query_runtime_control
+
+    return query_runtime_control(Path(home), request, timeout)
 
 
 def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:

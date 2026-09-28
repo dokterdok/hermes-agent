@@ -901,7 +901,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (incoming.running === false) {
           turnController.clearStatusTimer()
-          turnController.idle()
+          // The authority settles the row before it publishes the final, so this snapshot
+          // can land a frame ahead of `message.complete`; the trail (tool rows, reasoning)
+          // stays parked for that final to archive instead of being dropped here.
+          turnController.idle({ keepTurnArchive: true })
           setStatus('ready')
         }
 
@@ -1687,7 +1690,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.complete': {
-        const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
+        const { finalMessages, finalText, interruptedReply, wasInterrupted } = turnController.recordMessageComplete(
+          ev.payload ?? {}
+        )
+
+        // Ctrl+C sealed the reply before the agent stopped streaming: take the
+        // persisted partial so the screen shows what state.db (and the next
+        // request) holds.
+        if (interruptedReply?.from === null) {
+          appendMessage({ role: 'assistant', text: interruptedReply.to })
+        } else if (interruptedReply) {
+          const { from, to } = interruptedReply
+
+          setHistoryItems(prev => {
+            const at = prev.findLastIndex(m => m.role === 'assistant' && m.text === from)
+
+            return at < 0 ? prev : prev.map((m, i) => (i === at ? { ...m, text: to } : m))
+          })
+        }
 
         if (!wasInterrupted) {
           const payload = ev.payload ?? {}

@@ -7,7 +7,7 @@ import sys
 import pytest
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_losing_start_never_constructs_writable_runner(tmp_path):
     from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
     assert acquire_gateway_runtime_lock()
@@ -39,7 +39,7 @@ print('CLAIMED', result)
         release_gateway_runtime_lock()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_reserved_home_is_eligible_for_same_user_bootstrap(tmp_path):
     import asyncio
@@ -78,20 +78,21 @@ async def test_reserved_home_is_eligible_for_same_user_bootstrap(tmp_path):
         await server.stop()
         owner.close()
 
-    # Pre-existing readable homes are refused, not silently chmodded.
-    existing = tmp_path / 'existing-readable-home'
-    existing.mkdir(mode=0o755)
-    existing.chmod(0o755)
+    # Pre-existing homes writable by others are refused, not silently chmodded (a readable
+    # operator-chosen mode is fine: only write lets another user swap the socket).
+    existing = tmp_path / 'existing-writable-home'
+    existing.mkdir(mode=0o757)
+    existing.chmod(0o757)
     owner.reserve([existing])
     try:
         observed = await asyncio.to_thread(discover_gateway_endpoint, existing)
         assert (observed.state, observed.reason_code) == ('inaccessible', 'unsafe_control_permissions')
-        assert existing.stat().st_mode & 0o777 == 0o755
+        assert existing.stat().st_mode & 0o777 == 0o757
     finally:
         owner.close()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_profile_reservations_unwind_without_releasing_another_owner(tmp_path):
     from gateway import runtime_ownership
     homes = [tmp_path / 'a', tmp_path / 'b']

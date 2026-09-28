@@ -9,6 +9,8 @@ import threading
 import time
 from urllib.parse import parse_qs
 
+import importlib.machinery
+
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon
@@ -60,7 +62,8 @@ def wait_for(predicate, detail, timeout=30):
     pytest.fail(detail())
 
 
-@pytest.mark.linux_only
+@pytest.mark.skipif(importlib.machinery.PathFinder.find_spec("telegram") is None, reason="python-telegram-bot not installed (on-demand extra)")
+@pytest.mark.platforms("linux")
 def test_telegram_fifo_unknown_and_current_authorization_survive_sigkill(tmp_path):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -79,6 +82,9 @@ def test_telegram_fifo_unknown_and_current_authorization_survive_sigkill(tmp_pat
            'platforms': {'telegram': {'enabled': True, 'extra': {
                'base_url': f'http://127.0.0.1:{bot.server_port}/bot', 'dm_policy': 'allowlist'}}},
            'auxiliary': {'title_generation': {'enabled': False}},
+           # The default `interrupt` mode redirects a follow-up into the running turn instead of
+           # admitting it; the FIFO contract under test needs follow-ups queued behind the head.
+           'display': {'busy_input_mode': 'queue'},
            'platform_toolsets': {'telegram': []}, 'terminal': {'cwd': str(home)}}
     (home / 'config.yaml').write_text(json.dumps(cfg))
     env = child_env()

@@ -35,7 +35,9 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
 _STRIP_MSG_KEYS = (
     "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
-    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
+    # ``platform_message_id`` is persisted as-is and comes back from replay as ``message_id``
+    # (JSONL transcript compat); both are delivery bookkeeping, never model input.
+    "platform_message_id", "message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
@@ -562,7 +564,7 @@ class ChatCompletionsTransport(ProviderTransport):
             reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning", False),
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
             base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
-            session_id=params.get("session_id"),
+            session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
         )
         api_kwargs.update(top_level_from_profile)
 
