@@ -2,6 +2,41 @@
 
 This directory is the public delivery representation for the Desktop Files owner. It keeps the #104199 source branch owner-only while making the reviewed dependency composition reproducible.
 
+## Lost-response / explicit-Retry client regression
+
+The Files consumer must retain the selected revision and command identity when
+the reply to an already-committed file command is lost. The additional test at
+`d99c30e45f2519faa582e4d6b61f2b429411bf77` exercises the real Files and command
+consumer, explicit Retry, and Stop/stale refusal. It makes **no production change**
+and does not change the fixed composition below.
+
+The parent ran this one-test Vitest selection successfully in that composition;
+the owner test and composed test were byte-identical. Its synthetic RPC peer
+models an idempotent committed response. This proves client command/selection
+reuse, **not backend durability, native Save, or cross-host acceptance**.
+
+To reproduce, choose an absolute writable scratch destination that does not
+exist, then add only the public test to the fixed composition:
+
+```bash
+: "${REPLAY:?set REPLAY to a new absolute writable scratch destination}"
+DESKTOP_FILES_VERIFY=compose \
+  apps/desktop/scripts/delivery/104199/compose.sh "$REPLAY"
+git -C "$REPLAY" fetch --no-tags https://github.com/dokterdok/hermes-agent.git \
+  d99c30e45f2519faa582e4d6b61f2b429411bf77
+git -C "$REPLAY" show \
+  d99c30e45f2519faa582e4d6b61f2b429411bf77:apps/desktop/src/plugins/hermes-bots/group-files-command-retry.test.ts \
+  > "$REPLAY/apps/desktop/src/plugins/hermes-bots/group-files-command-retry.test.ts"
+cd "$REPLAY/apps/desktop"
+npm ci --ignore-scripts --no-audit --no-fund
+npx vitest run src/plugins/hermes-bots/group-files-command-retry.test.ts \
+  --maxWorkers=1 --no-file-parallelism
+```
+
+The exact baseline tree checks finish before this test-only addition. Bare-owner
+execution is not supported: the required lower `hosted-room-runtime.ts` belongs
+to the pinned composition. No broader suite or device pass is implied.
+
 ## Ownership and pins
 
 The recipe composes these immutable inputs in this order:
