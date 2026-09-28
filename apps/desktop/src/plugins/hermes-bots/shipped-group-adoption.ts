@@ -1110,7 +1110,19 @@ async function prepareShippedGroupHandoff(
     }
   }
 
-  const built = await buildShippedGroupImport(group, room, owner.connectionId)
+  let built: BuiltShippedGroupImport
+
+  try {
+    built = await buildShippedGroupImport(group, room, owner.connectionId)
+  } catch (error) {
+    if (unchanged()) {
+      await persistIssue(storage, group, adoption, 'conflict', error instanceof Error
+        ? error.message
+        : 'This Group Chat could not be mapped safely. Its original data was kept.')
+    }
+
+    return null
+  }
 
   if (!unchanged()) { return null }
 

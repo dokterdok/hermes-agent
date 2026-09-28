@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as groupActivity from './group-activity'
 import type * as groupChat from './group-chat'
 import type * as groupRounds from './group-rounds'
-import { createGroupGateway, drain, runTimersInline, scriptedStorage } from './group-test-utils'
+import { createGroupGateway, deferTimers, drain, scriptedStorage } from './group-test-utils'
 import type { GatewayOptions, ScriptedGateway } from './group-test-utils'
 import type * as groupTurns from './group-turns'
 import type { Attachment, GroupChat, GroupMember, GroupMessage } from './types'
@@ -68,7 +68,9 @@ async function settle(room: Room, group: string) {
 }
 
 beforeEach(() => {
-  runTimersInline()
+  // Preserve timer-handle installation and yield between polls. Inline timers
+  // can spin a retry before its handle is stored and starve queued test work.
+  deferTimers()
 })
 
 describe('routing', () => {
