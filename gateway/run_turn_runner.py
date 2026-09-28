@@ -60,6 +60,22 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
 # Slack click handler shows on a dead entry).
 _CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
+# run_conversation result keys the gateway projection carries verbatim so a finite viewer's
+# `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS) reads what the in-process path did.
+_LEDGER_PASSTHROUGH_KEYS = (
+    "estimated_cost_usd", "cost_status", "cost_source", "cache_read_tokens", "cache_write_tokens",
+    "reasoning_tokens", "total_tokens", "provider", "turn_exit_reason", "service_tier",
+)
+
+
+def _finite_viewer_turn() -> bool:
+    from gateway.session_finite import finite_turn_required
+    return finite_turn_required() is True
+
+
+class _NoStreamConsumer(RuntimeError):
+    """Raised by the delta callback when nothing consumed the text; ``_call_quietly`` turns it into
+    'not delivered' so the agent's partial-delivery accounting matches what the user saw."""
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -129,9 +145,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = not ctx.scheduled_heartbeat and (
-            scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
-        )
+        want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
         if want_stream_deltas or want_interim_messages:
             try:
@@ -176,11 +190,19 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         stream_delta_cb = None
         if delta_sinks or self._approval_owner is not None:
             def stream_delta_cb(text: Optional[str]) -> None:
-                if ctx._run_still_current():
-                    if text is not None:  # None closes only the native stream segment.
-                        self._publish_execution("message.delta", {"text": text})
-                    for sink in delta_sinks:
-                        sink.on_delta(text)
+                if not ctx._run_still_current():
+                    return
+                delivered = bool(delta_sinks)
+                if text is not None:  # None closes only the native stream segment.
+                    delivered = self._publish_execution("message.delta", {"text": text}) or delivered
+                for sink in delta_sinks:
+                    sink.on_delta(text)
+                if text is not None and (not delivered or _finite_viewer_turn()):
+                    # Nobody the user is looking at saw this text: no live viewer/observer/adapter
+                    # sink, or a finite (`-z`, `chat -q`) viewer, which prints the terminal reply
+                    # only. The agent must treat it as undelivered, else a stream that dies here is
+                    # stitched as a "partial delivery" nobody received (classic -q parity).
+                    raise _NoStreamConsumer()
 
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
@@ -1005,6 +1027,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # removing this in-process gateway write does not affect any of them.
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(runner, ctx.source)
+        if policy and policy.yolo and ctx.session_key:
+            from tools.approval import enable_session_yolo
+            enable_session_yolo(ctx.session_key)
         platform_key = policy.platform if policy else ("cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value)
         combined_ephemeral = self._combined_ephemeral_prompt()
         max_iterations = policy.max_turns if policy else _current_max_iterations()
@@ -1023,7 +1048,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             runner._pre_agent_fallback_notice = None
             from gateway.session_api_turn import prepare_api_runtime
             model, runtime_kwargs = prepare_api_runtime(model, runtime_kwargs)
-            if policy and policy.model:
+            if policy and policy.model and not pending_fallback_notice:
+                # The frozen route's model, unless resolution just fell back: the fallback entry's
+                # model is the one this agent must send (#112600).
                 model = policy.model
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
@@ -1031,30 +1058,37 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             )
         except Exception as exc:
             # Model/credential resolution failed before the turn began; the raw text (URLs, status
-            # codes) belongs in the log, and the chat gets the commands that fix it.
+            # codes) belongs in the log, and the chat gets the commands that fix it. The result is
+            # a FAILED turn: a one-shot client exits non-zero, transcript persistence closes the
+            # turn, and an API receipt reports failure, never a completed turn with an apology.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
             from hermes_state_runtime import RuntimeStoreError
+            from agent.turn_failure_copy import stamp_failure
+
+            def _unresolved(text: str) -> dict:
+                return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                                      "failed": True, "completed": False, "error": str(exc)},
+                                     "auth_permanent", False)
             if isinstance(exc, RuntimeStoreError):
                 # Session-policy refusals carry a stable reason code (e.g. a CLI launch key
                 # revoked by daemon restart): keep it in the reply so clients can act on it, and
                 # do not suggest /login — the profile's own credentials were never in play.
-                text = (f"⚠️ This session's launch credentials are no longer available "
-                        f"({exc.reason}), so this message wasn't processed. Start a new "
-                        "session from the CLI to bind them again.")
-                return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
+                return _unresolved(f"⚠️ This session's launch credentials are no longer available "
+                                   f"({exc.reason}), so this message wasn't processed. Start a new "
+                                   "session from the CLI to bind them again.")
             from hermes_cli.auth import is_rate_limited_auth_error
             if is_rate_limited_auth_error(exc.__cause__):
                 # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
                 from gateway.run import _gateway_provider_error_reply
-                return {"final_response": _gateway_provider_error_reply(str(exc)),
-                        "messages": [], "api_calls": 0, "tools": []}
-            return {
-                "final_response": (
-                    "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
-                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
-                    "failing, run `hermes doctor` on the host."),
-                "messages": [], "api_calls": 0, "tools": [],
-            }
+                return _unresolved(_gateway_provider_error_reply(str(exc)))
+            if ctx.source.platform == Platform.LOCAL:
+                # The local operator reads the terminal: the resolver's own sentence ("provider
+                # 'custom' resolved without credentials ...") is the diagnosis; /login is not.
+                return _unresolved(f"⚠️ {exc}")
+            return _unresolved(
+                "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
+                "Use /login to sign in again, or /model to pick a different model. If it keeps "
+                "failing, run `hermes doctor` on the host.")
         pr = runner._provider_routing
         reasoning_config = (policy.reasoning_config if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
@@ -1097,6 +1131,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
             "model": getattr(agent, "model", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
+            # The rest of the `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS): a finite
+            # viewer reads the committed result over `prompt.receipt`, so the projection must keep
+            # what the in-process one-shot took straight from `run_conversation`.
+            **{key: result.get(key) for key in _LEDGER_PASSTHROUGH_KEYS if key in result},
         }
         compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure

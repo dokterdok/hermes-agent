@@ -63,6 +63,11 @@ async def standalone_lifespan(app: "FastAPI"):
     from tui_gateway import methods_groups as _hosted_groups
     import tui_gateway.server  # noqa: F401
 
+    try:
+        tui_gateway.server.install_tui_message_injector()
+    except Exception:
+        _log.warning("TUI message injector did not install", exc_info=True)
+
     hosted_room_start_cancel = threading.Event()
 
     def _start_hosted_rooms() -> None:
@@ -94,10 +99,12 @@ async def standalone_lifespan(app: "FastAPI"):
         # one that would race the same credential (#77276). Runs
         # unconditionally; protection of a healthy standalone gateway lives
         # INSIDE the reaper (registration probed with cleanup_stale=False).
+        # Startup grace: spare a gateway still claiming gateway.pid/lock (#122533).
         try:
+            from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
             from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
 
-            _reap_unsupervised_gateway_orphans()
+            _reap_unsupervised_gateway_orphans(min_age_s=_REAP_MIN_AGE_SECONDS)
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 
@@ -139,6 +146,10 @@ async def standalone_lifespan(app: "FastAPI"):
     try:
         yield
     finally:
+        try:
+            tui_gateway.server.clear_tui_message_injector()
+        except Exception:
+            _log.debug("TUI message injector clear skipped", exc_info=True)
         hosted_room_start_cancel.set()
         _hosted_groups.stop_hosted_room_service(timeout=5.0)
         hosted_room_start_thread.join(timeout=1.0)

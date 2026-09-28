@@ -525,6 +525,29 @@ class SessionDB(
                 resolved = data.pop(f"_{column}_resolved")
                 if column in data:
                     data[column] = resolved
+        # Lift /new vs /branch markers out of model_config so list payloads
+        # (which strip that heavy field) can still tell a reset sibling from
+        # a genuine fork. Keep this a local helper: tests sometimes replace
+        # the SessionDB name with a factory lambda.
+        if not (data.get("_reset_from") and data.get("_branched_from")):
+            raw = data.get("model_config")
+            cfg = None
+            if isinstance(raw, str) and raw:
+                try:
+                    cfg = json.loads(raw)
+                except (TypeError, ValueError):
+                    cfg = None
+            elif isinstance(raw, dict):
+                cfg = raw
+            if isinstance(cfg, dict):
+                if not data.get("_reset_from"):
+                    value = cfg.get("_reset_from")
+                    if isinstance(value, str) and value.strip():
+                        data["_reset_from"] = value.strip()
+                if not data.get("_branched_from"):
+                    value = cfg.get("_branched_from")
+                    if isinstance(value, str) and value.strip():
+                        data["_branched_from"] = value.strip()
         return data
 
     @staticmethod
@@ -1621,10 +1644,12 @@ class SessionDB(
         if self.get_meta(gate) == "1":
             return 0
         def _do(conn):
+            esc = _escape_like(prefix)
             cursor = conn.execute(
                 "UPDATE sessions SET source = 'kanban' "
-                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, _escape_like(prefix) + "/%"),
+                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\' "
+                "OR cwd LIKE ? ESCAPE '\\')",
+                (prefix, f"{esc}/%", f"{esc}\\\\%"),
             )
             # rowcount BEFORE set_meta reuses this cursor for its INSERT.
             retagged = cursor.rowcount or 0
@@ -1641,6 +1666,53 @@ class SessionDB(
             "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'", (_escape_like(prefix) + "%",),
         )
         return [(row[0], row[1]) for row in rows]
+
+    @contextmanager
+    def live_write_connection(self) -> Iterator[sqlite3.Connection]:
+        """Hold the existing writer as a fence, without reopen, repair or retry.
+
+        Callers must retain this context through their dependent store's COMMIT.
+        Only bounded SQL belongs here; never recursively call _execute_write.
+        """
+        with self._lock:
+            if self._read_conns_closed or self._conn is None or self.read_only:
+                raise sqlite3.ProgrammingError("SessionDB live writer is unavailable")
+            self._raise_if_db_corrupt()
+            self._raise_if_db_replaced()
+            conn = self._conn
+            owner_operation = True
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                # BEGIN can wait on another writer while a pathname/WAL changes.
+                self._raise_if_db_corrupt()
+                self._raise_if_db_replaced()
+                # An exception thrown through yield can belong to a different
+                # database. Only our own operations establish owner provenance.
+                owner_operation = False
+                yield conn
+                owner_operation = True
+                conn.commit()
+            except BaseException as exc:
+                try:
+                    if conn.in_transaction:
+                        conn.rollback()
+                except Exception:
+                    pass  # Preserve the primary failure, including its origin.
+                if owner_operation and self._is_structural_corruption_error(exc):
+                    self._halt_db_corrupt(exc)
+                raise
+
+    @contextmanager
+    def live_read_connection(self) -> Iterator[Optional[sqlite3.Connection]]:
+        """Borrow the existing owner connection, or None after close. Never reopen.
+
+        Only bounded read-only statements belong here. The writer lifetime lock
+        excludes actual connection close; no schema, pool checkout or recovery.
+        A caller already holding its SQL connection must use that connection,
+        not recursively acquire this non-reentrant lock.
+        """
+        with self._lock:
+            yield None if self._read_conns_closed else self._conn
 
 
 class AsyncSessionDB:

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     reload_env,
@@ -489,7 +489,9 @@ class TestWebServerEndpoints:
         payload = response.json()
         assert payload["errors"]
         assert "schema" in payload["errors"][0]["error"]
-        assert payload["recents"]["sessions"] == []
+        # A failed read is a retryable failed load, never an empty list.
+        assert "sessions" not in payload["recents"]
+        assert payload["recents"]["failed"] is True
 
     def test_startup_eager_reconcile_heals_stale_store(self):
         """The OWNER's startup open brings a stale store current; the dashboard only reads.
@@ -890,28 +892,19 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert "api_key" not in provider_config
 
 
-    def test_post_memory_provider_setup_routes_pip_through_lazy_deps(self, monkeypatch):
-        """NS-605: dashboard pip installs must use the environment-aware
-        lazy_deps pipeline (durable-target redirect on immutable hosted
-        images), never a direct `pip install --python sys.executable`."""
+    def test_post_memory_provider_setup_routes_python_deps_through_pm(self, monkeypatch):
+        """Dashboard dependency setup publishes through PM, never direct pip."""
         import subprocess as _subprocess
 
         import hermes_cli.web_server as web_server
-        from tools import lazy_deps as ld
+        from hermes_cli import memory_setup
 
-        # honcho declares pip_dependencies: [honcho-ai]; force it missing.
-        monkeypatch.setattr(_web_server_memory, "_dependency_importable", lambda dep: False)
-
-        installed = []
-
-        def fake_install_specs(specs, *, timeout=300):
-            installed.append(tuple(specs))
-            return ld.InstallSpecsResult(
-                ok=True, command="uv pip install --target /opt/data/lazy-packages honcho-ai",
-                stdout="ok", stderr="",
-            )
-
-        monkeypatch.setattr(ld, "install_specs", fake_install_specs)
+        prepared = []
+        monkeypatch.setattr(
+            memory_setup,
+            "prepare_memory_provider_dependencies",
+            lambda name: (prepared.append(name) or ({}, "installed")),
+        )
 
         # Any direct pip/uv subprocess from the memory-provider pip path is
         # a regression; external-dep checks may still run subprocess, so only
@@ -931,8 +924,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         data = resp.json()
         pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
         assert pip_rows and pip_rows[0]["status"] == "installed"
-        assert "--target /opt/data/lazy-packages" in pip_rows[0]["command"]
-        assert installed == [("honcho-ai",)]
+        assert pip_rows[0]["command"] == "hermes pm install"
+        assert prepared == ["honcho"]
 
 
     def test_put_memory_provider_config_writes_config_and_secret(self):
@@ -2047,7 +2040,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         secret by the time Save sees it. Migrating it would duplicate the
         user's secret into a second env var they never asked for.
         """
-        import yaml
+        import hermes_yaml as yaml
 
         from hermes_cli.config import custom_endpoint_key_env, get_config_path, get_env_value
 
@@ -2125,6 +2118,73 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
         assert endpoint["has_api_key"] is True
         assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
+
+    def test_env_rejects_its_redacted_preview(self):
+        """Invariant: a GET preview (sentinel or legacy bare mask) never gains write
+        authority, even after another actor rotates the secret behind it."""
+        from hermes_cli.config import load_env, save_env_value
+
+        key = "OPENAI_API_KEY"
+        real = "sk-live-secret-abcdef1234567890"
+        save_env_value(key, real)
+        preview = self.client.get("/api/env").json()[key]["redacted_value"]
+        assert preview.startswith("«redacted")
+
+        response = self.client.put("/api/env", json={"key": key, "value": preview})
+        assert response.status_code == 400
+        assert load_env()[key] == real
+
+        rotated = "sk-rotated-secret-0987654321"
+        save_env_value(key, rotated)
+        for stale in (preview, redact_key(real)):
+            response = self.client.put("/api/env", json={"key": key, "value": stale})
+            assert response.status_code == 400
+            assert load_env()[key] == rotated
+
+    def test_messaging_and_custom_endpoint_reject_stale_previews(self):
+        """Invariant: preview rejection runs before any mutation (messaging clear+set),
+        and custom-endpoint display strings (``${KEY_ENV}`` / legacy plaintext preview)
+        are refused even after the entry rotated underneath them."""
+        from hermes_cli.config import load_config, load_env, save_config, save_env_value
+
+        key = "DISCORD_BOT_TOKEN"
+        real = "discord-live-secret-abcdef1234567890"
+        save_env_value(key, real)
+        response = self.client.put(
+            "/api/messaging/platforms/discord",
+            json={"clear_env": [key], "env": {key: redact_key(real)}},
+        )
+        assert response.status_code == 400
+        assert load_env()[key] == real
+
+        save_env_value("OLD_ENDPOINT_KEY", "old-secret-1234567890")
+        save_env_value("NEW_ENDPOINT_KEY", "new-secret-0987654321")
+        cfg = load_config()
+        cfg["providers"] = {
+            "env-preview": {"name": "Env Preview", "base_url": "https://env-preview.example.com/v1",
+                            "model": "m", "key_env": "OLD_ENDPOINT_KEY", "models": {"m": {}}},
+            "legacy-preview": {"name": "Legacy Preview", "base_url": "https://legacy-preview.example.com/v1",
+                               "model": "m", "api_key": "legacy-secret-A-1234567890", "models": {"m": {}}},
+        }
+        save_config(cfg)
+        endpoints = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert endpoints["env-preview"]["api_key_preview"] == "${OLD_ENDPOINT_KEY}"
+        assert endpoints["legacy-preview"]["api_key_preview"].startswith("«redacted")
+
+        cfg = load_config()
+        cfg["providers"]["env-preview"]["key_env"] = "NEW_ENDPOINT_KEY"
+        cfg["providers"]["legacy-preview"]["api_key"] = "legacy-secret-B-0987654321"
+        save_config(cfg)
+        for endpoint_id, base_url in (("env-preview", "https://env-preview.example.com/v1"),
+                                      ("legacy-preview", "https://legacy-preview.example.com/v1")):
+            response = self.client.post("/api/providers/custom-endpoints", json={
+                "id": endpoint_id, "name": "x", "base_url": base_url, "model": "m",
+                "api_key": endpoints[endpoint_id]["api_key_preview"],
+            })
+            assert response.status_code == 400
+        providers = load_config()["providers"]
+        assert providers["env-preview"]["key_env"] == "NEW_ENDPOINT_KEY"
+        assert providers["legacy-preview"]["api_key"] == "legacy-secret-B-0987654321"
 
     def test_activating_an_endpoint_carries_its_credential_either_way(self):
         """Activate must work for both key_env and pre-#69449 plaintext entries."""
@@ -2531,7 +2591,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         original_get_messages = SessionDB.get_messages
 
         def tracked_get_messages(self, session_id, *args, **kwargs):
-            calls.append((kwargs.get("limit"), kwargs.get("after_id")))
+            calls.append((kwargs.get("limit"), kwargs.get("after_id"), kwargs.get("include_inactive")))
             return original_get_messages(self, session_id, *args, **kwargs)
 
         monkeypatch.setattr(SessionDB, "get_messages", tracked_get_messages)
@@ -2543,7 +2603,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert len(payload["messages"]) == 501
         assert payload["messages"][0]["content"] == "msg 0"
         assert payload["messages"][-1]["content"] == "msg 500"
-        assert calls == [(500, 0), (500, 500)]
+        # Transfer projection: archived rows ride along with their flags (import re-archives them).
+        assert calls == [(500, 0, True), (500, 500, True)]
 
 
 # ---------------------------------------------------------------------------
@@ -4074,6 +4135,74 @@ class TestDeleteSessionEndpoint:
         assert retry.status_code == 200, retry.text
         assert retry.json() == first.json()
 
+    def _canonical_delete(self, owner, sid, **query):
+        from gateway.session_authority import LiveSession
+        owner.sessions[sid] = LiveSession(None, 'route')
+        row = owner.db.get_session(sid)
+        params = dict(request_id=f'scrub-{sid}', expected_revision=row['runtime_revision'],
+                      expected_generation=row['runtime_generation'], **query)
+        return self.auth_client.delete(f"/api/sessions/{sid}", params=params)
+
+    def test_delete_existing_session_scrubs_row_and_disk(self, mutation_owner):
+        # The canonical delete retires rows; the endpoint must also remove the secret-bearing
+        # session_<id>.json snapshots and request dumps the CLI delete path removes (#60207).
+        from hermes_constants import get_hermes_home
+
+        self._seed(["disk-scrub"])
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        for name, body in (
+            ("session_disk-scrub.json", '{"messages": [{"content": "secret-token"}]}'),
+            ("disk-scrub.jsonl", "{}\n"),
+            ("request_dump_disk-scrub_001.json", "{}"),
+        ):
+            (sessions_dir / name).write_text(body, encoding="utf-8")
+        # Another session's artifacts must survive.
+        (sessions_dir / "session_disk-scrub-neighbour.json").write_text("{}", encoding="utf-8")
+
+        resp = self._canonical_delete(mutation_owner, "disk-scrub")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json().get("ok") is True
+        assert not self._exists("disk-scrub")
+        assert not (sessions_dir / "session_disk-scrub.json").exists()
+        assert not (sessions_dir / "disk-scrub.jsonl").exists()
+        assert not (sessions_dir / "request_dump_disk-scrub_001.json").exists()
+        assert (sessions_dir / "session_disk-scrub-neighbour.json").exists()
+
+    def test_delete_named_profile_session_scrubs_profile_disk(self, monkeypatch):
+        from types import SimpleNamespace
+        from gateway.session_authority import SessionAuthority
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.web_server import app
+        from hermes_state import SessionDB
+        from hermes_state_runtime import begin_runtime_epoch
+
+        profile_home = profiles_mod.get_profile_dir("worker")
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
+        sessions_dir = profile_home / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        db = SessionDB(db_path=profile_home / "state.db")
+        # ?profile= is served by that home's own authority.
+        owner = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(profile_home),
+            instance_id='worker-owner', db=db, epoch=begin_runtime_epoch(db, instance_id='worker-owner'))
+        monkeypatch.setattr(app.state, 'session_authority', owner, raising=False)
+        try:
+            db.create_session("profile-scrub", source="cli")
+            (sessions_dir / "session_profile-scrub.json").write_text(
+                '{"messages": [{"content": "secret-token"}]}', encoding="utf-8"
+            )
+
+            resp = self._canonical_delete(owner, "profile-scrub", profile="worker")
+
+            assert resp.status_code == 200, resp.text
+            assert resp.json().get("ok") is True
+            assert db.get_session("profile-scrub") is None
+            assert not (sessions_dir / "session_profile-scrub.json").exists()
+        finally:
+            db.close()
+
 
 class TestBulkDeleteSessionsEndpoint:
     """Tests for ``POST /api/sessions/bulk-delete`` — backs the
@@ -4129,7 +4258,7 @@ class TestBulkDeleteSessionsEndpoint:
             "/api/sessions/bulk-delete", json={"ids": ["a", "b"]}
         )
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "deleted": 2}
+        assert resp.json() == {"ok": True, "deleted": 2, "skipped_active": []}
 
         db = SessionDB()
         try:
@@ -4613,6 +4742,7 @@ def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
     import hermes_cli.main_tui_launch as tui_launch
     import hermes_cli.web_server as ws
 
+    monkeypatch.setenv("PATH", "/run/current-system/sw/bin:/usr/bin")
     monkeypatch.setattr(
         tui_launch,
         "_make_tui_argv",

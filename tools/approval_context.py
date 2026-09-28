@@ -150,7 +150,15 @@ def _is_single_query_approval_context() -> bool:
     ``HERMES_INTERACTIVE=1`` (so sudo password prompts work) but nobody is waiting
     to answer approvals; without this marker the gate would wait the full timeout,
     fail closed and push the agent toward workarounds (e.g. execute_code).
-    ``approvals.single_query_mode`` makes the path deterministic."""
+    ``approvals.single_query_mode`` makes the path deterministic. A gateway-admitted turn
+    carries the same fact as the submission's ``finite`` flag (``hermes -z`` / ``chat -q``
+    over the daemon): the viewer detaches on the first prompt, so nobody answers there either."""
+    try:
+        from gateway.session_finite import finite_turn_required
+        if finite_turn_required() is True:
+            return True
+    except Exception:
+        pass
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
 
 
@@ -251,7 +259,7 @@ def _get_approval_timeout() -> int:
         from agent.deadline import MAX_SAFE_TIMEOUT_S
         safe_cap = int(MAX_SAFE_TIMEOUT_S)
     except Exception:
-        safe_cap = 365 * 24 * 3600  # fail CLOSED: the raw value would re-open the overflow
+        safe_cap = 300  # dependency failure must keep the safe default
     if raw > safe_cap:
         logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", raw, safe_cap)
     return min(raw, safe_cap)
