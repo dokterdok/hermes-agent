@@ -20,6 +20,11 @@ vi.mock('@hermes/plugin-sdk', async () => {
   return pluginSdkMock(host)
 })
 
+// Transform the real dependency graph during collection, outside a behavioral
+// test's deadline. Fixtures still reset module state and install a fresh host.
+Object.assign(host, createGroupGateway().host)
+await Promise.all([import('./group-chat'), import('./group-rounds'), import('./group-turns'), import('./group-chat-view')])
+
 // agent/turn_failure_copy.py::PARTIAL_FAILED_TURN_NOTICE
 const PARTIAL_NOTICE =
   'This turn did not complete. Some actions may already have run; verify their effects before resending.'
@@ -1299,15 +1304,20 @@ describe('mailbox reply custody', () => {
     let release!: () => void
     const held = new Promise<void>(resolve => { release = resolve })
     let polling = false
+
     host.request = async (method: string, params: unknown) => {
       const response = await original(method, params)
+
       if (method === 'session.resume' && room.gateway.calls.length) {
         polling = true
         await held
       }
+
       return response
     }
+
     const running = room.turns.runGroupChatMemberTurn('Mailbox', LOCAL_MEMBER, roomPrompt('Mailbox'), 'mailbox-thread', [], fence)
+
     try {
       await drain(() => !polling)
       expect(polling).toBe(true)
@@ -1317,6 +1327,7 @@ describe('mailbox reply custody', () => {
       live = false
       release()
       expect(await running).toBeNull()
+
       if (restart) {
         vi.resetModules()
         const [chat, turns, shared] = await Promise.all([import('./group-chat'), import('./group-turns'), import('./shared')])

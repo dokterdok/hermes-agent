@@ -1327,6 +1327,7 @@ async function runGroupChatMemberTurnLeased(
     // A UUID, not a clock+random suffix: a marker persisted by a previous process must never equal a token this one mints.
     const turn = `${liveRuntime}:${crypto.randomUUID()}`
     liveGroupTurns.add(turn)
+
     // Only local turns may leave recovery work for the ordinary, unleased
     // harvester. Mailbox replies belong exclusively to their command lease:
     // never persist an unowned recovery marker, even if this renderer crashes

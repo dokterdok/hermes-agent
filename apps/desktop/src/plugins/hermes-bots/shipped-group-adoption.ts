@@ -760,9 +760,12 @@ export async function selectShippedGroupOwner(
     }
 
     handoff = beginGroupChatHandoff(group)
+
     if (!handoff) { return }
+
     const frozen = await prepareShippedGroupHandoff(storage, group, adoption, owner, capability, 'explicit',
       handoff, () => generation === lifecycleGeneration)
+
     if (!frozen) { return }
     const { built, prepared } = frozen
     routeOwner.assertCurrent()
@@ -1092,27 +1095,35 @@ async function prepareShippedGroupHandoff(
 ) {
   await handoff.settled
   const room = $groupChats.get()[group]
+
   if (!current() || !handoff.isCurrent() || !checkpointMatches(room, adoption)) { return null }
   const snapshot = JSON.stringify(room)
+
   const unchanged = () => current() && handoff.isCurrent() &&
     $groupChats.get()[group] === room && JSON.stringify(room) === snapshot
 
   if (selection === 'inferred') {
     const inferred = await chooseOwner(room)
+
     if (!unchanged() || inferred?.connectionId !== owner.connectionId || inferred?.profile !== owner.profile) {
       return null
     }
   }
+
   const built = await buildShippedGroupImport(group, room, owner.connectionId)
+
   if (!unchanged()) { return null }
+
   const prepared: ShippedGroupAdoption = {
     ...adoption, state: 'prepared', sourceId: built.request.source_id, roomId: built.request.room_id,
     requestHash: built.requestHash, ownerSelection: selection,
     route: { ...owner, authorityGatewayId: capability.authorityGatewayId }, issue: undefined
   }
+
   if (!(await persistCheckpoint(storage, group, room, prepared)) || !current() || !handoff.isCurrent()) {
     return null
   }
+
   return { prepared, built }
 }
 
@@ -1131,6 +1142,7 @@ async function importPreparedGroup(
   const snapshot = JSON.stringify(importRoom)
   const verified = await buildShippedGroupImport(group, importRoom, ownerRoute.connectionId)
   routeOwner.assertCurrent()
+
   if (!current() || $groupChats.get()[group] !== importRoom || JSON.stringify(importRoom) !== snapshot ||
       !checkpointMatches(importRoom, adoption) || verified.requestHash !== built.requestHash) {
     return false
@@ -1323,12 +1335,17 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
       // Discovery was non-fencing: validate the room's identity, not its stale
       // log. The handoff drains the real drive before taking a fresh snapshot.
       const latest = $groupChats.get()[group]
+
       if (!checkpointMatches(latest, adoption) || latest.desktopAuthorityToken !== room.desktopAuthorityToken ||
           latest.roomId !== room.roomId) { return }
+
       handoff = beginGroupChatHandoff(group)
+
       if (!handoff) { return }
+
       const frozen = await prepareShippedGroupHandoff(storage, group, adoption, owner, capability, 'inferred',
         handoff, () => foregroundCurrent(fence, generation))
+
       if (!frozen) { return }
       built = frozen.built
       adoption = frozen.prepared
@@ -1336,8 +1353,10 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
       room = $groupChats.get()[group]
     } else {
       handoff = beginGroupChatHandoff(group)
+
       if (!handoff) { return }
       await handoff.settled
+
       if (!handoff.isCurrent() || !foregroundCurrent(fence, generation)) { return }
       room = $groupChats.get()[group]
       ownerRoute = { connectionId: adoption.route.connectionId, profile: adoption.route.profile }

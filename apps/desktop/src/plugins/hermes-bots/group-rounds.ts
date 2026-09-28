@@ -1310,6 +1310,7 @@ const groupChatHandoffs = new Set<string>()
 export function beginGroupChatHandoff(group: string) {
   if (groupChatHandoffs.has(group)) { return null }
   const room = $groupChats.get()[group]
+
   if (!room || room.tombstone) { return null }
   groupChatHandoffs.add(group)
   const drive = liveGroupChatDrive(group, room)
@@ -1318,6 +1319,7 @@ export function beginGroupChatHandoff(group: string) {
     settled: drive?.settled ?? Promise.resolve(),
     isCurrent: () => {
       const current = $groupChats.get()[group]
+
       return Boolean(current && !current.tombstone && current.roomId === room.roomId &&
         current.desktopAuthorityToken === room.desktopAuthorityToken)
     },

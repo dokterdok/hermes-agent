@@ -67,12 +67,15 @@ describe('shipped adoption preflight execution boundary', () => {
     loaded.capabilities.mockImplementation(async (method, params) => {
       if (method === 'groups.capabilities') {
         await held
+
         return { authority_gateway_id: 'original-install', methods: ['groups.import_history'] }
       }
+
       if (method === 'groups.import_history') { imports.push(params!) }
       throw new Error('Keep the prepared checkpoint for inspection')
     })
     const adopting = loaded.adoption.adoptShippedGroupChats(loaded.ctx.storage)
+
     try {
       await drain(() => !loaded.capabilities.mock.calls.length)
       expect(loaded.rounds.sendToGroupChat('Classic', loaded.members, 'Sent during discovery')).toBeTruthy()
@@ -94,7 +97,10 @@ describe('shipped adoption preflight execution boundary', () => {
     let release!: () => void
     const held = new Promise<void>(resolve => { release = resolve })
     loaded = await startup({ turn: async ({ n }) => {
-      if (n === 1) { await held; return 'Reply from active classic work' }
+      if (n === 1) { await held;
+
+ return 'Reply from active classic work' }
+
       return '(pass)'
     } })
     const imports: Record<string, unknown>[] = []
@@ -103,10 +109,12 @@ describe('shipped adoption preflight execution boundary', () => {
       if (method === 'groups.capabilities') {
         return { authority_gateway_id: 'original-install', methods: ['groups.import_history'] }
       }
+
       if (method === 'groups.import_history') {
         imports.push(params!)
         submitsAtImport = loaded.gateway.calls.length
       }
+
       throw new Error('Keep the prepared checkpoint for inspection')
     })
     loaded.rounds.sendToGroupChat('Classic', loaded.members, 'First thread')
@@ -114,8 +122,10 @@ describe('shipped adoption preflight execution boundary', () => {
     expect(loaded.rounds.sendToGroupChat('Classic', loaded.members, 'Queued thread'),
       JSON.stringify(loaded.chat.$groupChats.get().Classic)).toBeTruthy()
     const adopting = loaded.adoption.adoptShippedGroupChats(loaded.ctx.storage)
+
     try {
       await drain(() => !loaded.capabilities.mock.calls.length)
+
       // Let capability + preparation microtasks run while the real submit is held.
       for (let i = 0; i < 30; i++) { await Promise.resolve() }
       expect(imports).toHaveLength(0)

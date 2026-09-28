@@ -18,6 +18,11 @@ vi.mock('@hermes/plugin-sdk', async () => {
   return pluginSdkMock(host)
 })
 
+// Transform the real dependency graph during collection, outside a behavioral
+// test's deadline. Fixtures still reset module state and install a fresh host.
+Object.assign(host, createGroupGateway().host)
+await Promise.all([import('./group-chat'), import('./group-rounds'), import('./desktop-room-command-runtime'), import('./group-chat-view')])
+
 interface Loaded {
   chat: typeof groupChat
   client: typeof clientModule
