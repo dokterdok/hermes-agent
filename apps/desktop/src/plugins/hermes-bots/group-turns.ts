@@ -32,6 +32,7 @@ import {
 import { GROUP_PROMPT_HEADER_PREFIX } from './group-round-prompt'
 import { approveHostedGroupChat } from './hosted-room-runtime'
 import { botConnectionRoute, requestForBot } from './routing'
+import { shippedGroupAdoptionOwnsExecution } from './types'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
 /** "(pass)" (loosely: pass / (pass) / pass.) or empty = the member stayed silent. */
@@ -1264,7 +1265,8 @@ async function runGroupChatMemberTurnLeased(
 
   try {
     const leaseLive = () =>
-      binding.isLive() && groupCommandFenceMatches(fence, desktopRoomIdentity(group, $groupChats.get()[group]), thread)
+      binding.isLive() && !shippedGroupAdoptionOwnsExecution($groupChats.get()[group]) &&
+      groupCommandFenceMatches(fence, desktopRoomIdentity(group, $groupChats.get()[group]), thread)
 
     const { runtime, stored } = await ensureGroupChatSession(group, member, thread, fence)
 
@@ -1387,7 +1389,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const strandedBefore = typeof marker === 'number' ? marker : marker?.before
     const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
 
-    if (typeof strandedBefore !== 'number' || strandedMarkerIsLive(marker)) {
+    if (shippedGroupAdoptionOwnsExecution(room) || typeof strandedBefore !== 'number' || strandedMarkerIsLive(marker)) {
       return // nothing stranded, or a poll in this process still owns the turn
     }
 
@@ -1412,7 +1414,9 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     } catch (error: any) {
       // A session that genuinely no longer exists has nothing to harvest, and a marker that can
       // never resolve would keep the member out of every round; only unreachability keeps it.
-      if (error?.code === 4007) {
+      if (error?.code === 4007 && binding.isLive() &&
+          !shippedGroupAdoptionOwnsExecution($groupChats.get()[group]) &&
+          $groupChats.get()[group]?.stranded?.[memberKey] === marker) {
         updateGroupChat(group, (r: GroupChatRoom) => {
           const next = {
             ...(r.stranded || {})
@@ -1428,7 +1432,8 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       return
     }
 
-    if (!binding.isLive()) {
+    if (!binding.isLive() || shippedGroupAdoptionOwnsExecution($groupChats.get()[group]) ||
+        $groupChats.get()[group]?.stranded?.[memberKey] !== marker) {
       return
     }
 

@@ -758,7 +758,7 @@ export async function runGroupChatRounds(
 
   const leaseLive = () => groupCommandFenceMatches(fence, desktopRoomIdentity(group, $groupChats.get()[group]), thread)
 
-  if (!leaseLive() || (fence && fence.epoch !== ($groupChats.get()[group]?.epoch || 0))) {
+  if (shippedGroupAdoptionOwnsExecution($groupChats.get()[group]) || !leaseLive() || (fence && fence.epoch !== ($groupChats.get()[group]?.epoch || 0))) {
     binding.dispose()
 
     return
@@ -781,7 +781,8 @@ export async function runGroupChatRounds(
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
 
   const isCurrent = () =>
-    binding.isLive() && leaseLive() && (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
+    binding.isLive() && !shippedGroupAdoptionOwnsExecution($groupChats.get()[group]) &&
+    leaseLive() && (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
 
   const context = {
     get group() {
@@ -979,7 +980,7 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
       await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))
       const room = $groupChats.get()[group]
 
-      if (!binding.isLive() || !room || room.running) {
+      if (!binding.isLive() || !room || room.running || shippedGroupAdoptionOwnsExecution(room)) {
         return
       }
 
@@ -1129,7 +1130,7 @@ export function sendToGroupChat(
   const externalId = String(options.entryId || '').trim()
   const fence = options.commandFence
 
-  if (shippedGroupAdoptionOwnsExecution(roomBeforeSend)) {
+  if (shippedGroupAdoptionOwnsExecution(roomBeforeSend) || groupChatHandoffs.has(group)) {
     return null
   }
 
@@ -1289,6 +1290,7 @@ interface GroupChatQueueItem {
 }
 
 interface GroupChatDrive {
+  settled: Promise<void>
   active: null | GroupChatQueueItem
   failedMembers: Set<string>
   // Local replies coalesce by thread; mailbox claims coalesce only by their
@@ -1300,6 +1302,28 @@ interface GroupChatDrive {
 // Keep the owner until its awaited member releases, even after Stop. A
 // rename follows the room identity; disband retires the binding permanently.
 const groupChatDrives = new Map<string, GroupChatDrive>()
+const groupChatHandoffs = new Set<string>()
+
+/** Stop admitting new sends, but let the actual owner settle its active AND
+ * queued work before the adopter freezes history. No durable authority moves
+ * until preparation succeeds; releasing a failed preflight restores Send. */
+export function beginGroupChatHandoff(group: string) {
+  if (groupChatHandoffs.has(group)) { return null }
+  const room = $groupChats.get()[group]
+  if (!room || room.tombstone) { return null }
+  groupChatHandoffs.add(group)
+  const drive = liveGroupChatDrive(group, room)
+
+  return {
+    settled: drive?.settled ?? Promise.resolve(),
+    isCurrent: () => {
+      const current = $groupChats.get()[group]
+      return Boolean(current && !current.tombstone && current.roomId === room.roomId &&
+        current.desktopAuthorityToken === room.desktopAuthorityToken)
+    },
+    release: () => { groupChatHandoffs.delete(group) }
+  }
+}
 
 function liveGroupChatDrive(group: string, room: GroupChatRoom) {
   const drive = groupChatDrives.get(groupChatRoomKey(group, room))
@@ -1353,6 +1377,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
   })
 
   const drive: GroupChatDrive = {
+    settled: Promise.resolve(),
     active: null,
     pending: new Map([[owner, item]]),
     failedMembers: new Set(),
@@ -1364,11 +1389,11 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
   // unresolved failures from the preceding thread. Stop still invalidates it.
   updateGroupChat(group, room => ({ ...room, epoch: (room.epoch || 0) + 1 }))
 
-  void (async () => {
+  drive.settled = (async () => {
     let currentThread = thread
 
     try {
-      while (binding.isLive() && drive.pending.size) {
+      while (binding.isLive() && !shippedGroupAdoptionOwnsExecution($groupChats.get()[group]) && drive.pending.size) {
         const [nextOwner, next] = drive.pending.entries().next().value!
         const nextThread = next.thread
         currentThread = nextThread

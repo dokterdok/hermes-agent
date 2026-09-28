@@ -21,6 +21,7 @@ import type {
   ShippedGroupImportResult
 } from './canonical-groups'
 import { $groupChats, groupChatHostedGateway, persistGroupChatRoomsRequired } from './group-chat'
+import { beginGroupChatHandoff } from './group-rounds'
 import { classifyHostedRoomCapability } from './hosted-room-client'
 import type {
   Attachment,
@@ -735,6 +736,7 @@ export async function selectShippedGroupOwner(
   }
 
   let routeOwner: PluginProfileRouteLease | null = null
+  let handoff: ReturnType<typeof beginGroupChatHandoff> = null
 
   try {
     routeOwner = await acquireOwnerRoute(owner)
@@ -757,25 +759,12 @@ export async function selectShippedGroupOwner(
       return
     }
 
-    const built = await buildShippedGroupImport(group, room, owner.connectionId)
-
-    const prepared: ShippedGroupAdoption = {
-      ...adoption,
-      state: 'prepared',
-      requestHash: built.requestHash,
-      ownerSelection: 'explicit',
-      route: {
-        connectionId: owner.connectionId,
-        profile: owner.profile,
-        authorityGatewayId: capability.authorityGatewayId
-      },
-      issue: undefined
-    }
-
-    if (!(await persistCheckpoint(storage, group, room, prepared))) {
-      return
-    }
-
+    handoff = beginGroupChatHandoff(group)
+    if (!handoff) { return }
+    const frozen = await prepareShippedGroupHandoff(storage, group, adoption, owner, capability, 'explicit',
+      handoff, () => generation === lifecycleGeneration)
+    if (!frozen) { return }
+    const { built, prepared } = frozen
     routeOwner.assertCurrent()
     adoption = prepared
     const preparedRoute = prepared.route!
@@ -815,6 +804,7 @@ export async function selectShippedGroupOwner(
     await persistIssue(storage, group, adoption, issue.kind, issue.message)
   } finally {
     routeOwner?.release()
+    handoff?.release()
   }
 }
 
@@ -1088,6 +1078,44 @@ async function restoreAdoptedGroup(
   }
 }
 
+/** Capability discovery owns no snapshot. Freeze only after the existing
+ * classic drive has drained, then verify the exact room through every await. */
+async function prepareShippedGroupHandoff(
+  storage: PluginStorage,
+  group: string,
+  adoption: ShippedGroupAdoption,
+  owner: CanonicalGroupRoute,
+  capability: CapabilityResult,
+  selection: 'explicit' | 'inferred',
+  handoff: NonNullable<ReturnType<typeof beginGroupChatHandoff>>,
+  current: () => boolean
+) {
+  await handoff.settled
+  const room = $groupChats.get()[group]
+  if (!current() || !handoff.isCurrent() || !checkpointMatches(room, adoption)) { return null }
+  const snapshot = JSON.stringify(room)
+  const unchanged = () => current() && handoff.isCurrent() &&
+    $groupChats.get()[group] === room && JSON.stringify(room) === snapshot
+
+  if (selection === 'inferred') {
+    const inferred = await chooseOwner(room)
+    if (!unchanged() || inferred?.connectionId !== owner.connectionId || inferred?.profile !== owner.profile) {
+      return null
+    }
+  }
+  const built = await buildShippedGroupImport(group, room, owner.connectionId)
+  if (!unchanged()) { return null }
+  const prepared: ShippedGroupAdoption = {
+    ...adoption, state: 'prepared', sourceId: built.request.source_id, roomId: built.request.room_id,
+    requestHash: built.requestHash, ownerSelection: selection,
+    route: { ...owner, authorityGatewayId: capability.authorityGatewayId }, issue: undefined
+  }
+  if (!(await persistCheckpoint(storage, group, room, prepared)) || !current() || !handoff.isCurrent()) {
+    return null
+  }
+  return { prepared, built }
+}
+
 async function importPreparedGroup(
   storage: PluginStorage,
   group: string,
@@ -1099,6 +1127,14 @@ async function importPreparedGroup(
   current: () => boolean
 ): Promise<boolean> {
   routeOwner.assertCurrent()
+  const importRoom = $groupChats.get()[group]
+  const snapshot = JSON.stringify(importRoom)
+  const verified = await buildShippedGroupImport(group, importRoom, ownerRoute.connectionId)
+  routeOwner.assertCurrent()
+  if (!current() || $groupChats.get()[group] !== importRoom || JSON.stringify(importRoom) !== snapshot ||
+      !checkpointMatches(importRoom, adoption) || verified.requestHash !== built.requestHash) {
+    return false
+  }
 
   const result = await routeOwner.request<ShippedGroupImportResult>('groups.import_history', {
     ...(built.request as unknown as Record<string, unknown>),
@@ -1107,7 +1143,8 @@ async function importPreparedGroup(
 
   routeOwner.assertCurrent()
 
-  if (!current() || !checkpointMatches($groupChats.get()[group], adoption)) {
+  if (!current() || $groupChats.get()[group] !== importRoom || JSON.stringify(importRoom) !== snapshot ||
+      !checkpointMatches(importRoom, adoption)) {
     return false
   }
 
@@ -1231,6 +1268,7 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
   let built: BuiltShippedGroupImport
   let routeOwner: PluginProfileRouteLease | null = null
   let ownerRoute: CanonicalGroupRoute | null = null
+  let handoff: ReturnType<typeof beginGroupChatHandoff> = null
 
   try {
     if (!adoption.route) {
@@ -1282,43 +1320,26 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
         return
       }
 
-      try {
-        built = await buildShippedGroupImport(group, room, owner.connectionId)
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : 'This Group Chat could not be mapped safely. Its original data was kept.'
-
-        await persistIssue(storage, group, adoption, 'conflict', message)
-
-        return
-      }
-
-      const prepared: ShippedGroupAdoption = {
-        ...adoption,
-        state: 'prepared',
-        requestHash: built.requestHash,
-        ownerSelection: 'inferred',
-        route: {
-          connectionId: owner.connectionId,
-          profile: owner.profile,
-          authorityGatewayId: capability.authorityGatewayId
-        },
-        issue: undefined
-      }
-
-      const current = $groupChats.get()[group]
-
-      if (!checkpointMatches(current, adoption) || !(await persistCheckpoint(storage, group, current, prepared))) {
-        return
-      }
-
+      // Discovery was non-fencing: validate the room's identity, not its stale
+      // log. The handoff drains the real drive before taking a fresh snapshot.
+      const latest = $groupChats.get()[group]
+      if (!checkpointMatches(latest, adoption) || latest.desktopAuthorityToken !== room.desktopAuthorityToken ||
+          latest.roomId !== room.roomId) { return }
+      handoff = beginGroupChatHandoff(group)
+      if (!handoff) { return }
+      const frozen = await prepareShippedGroupHandoff(storage, group, adoption, owner, capability, 'inferred',
+        handoff, () => foregroundCurrent(fence, generation))
+      if (!frozen) { return }
+      built = frozen.built
+      adoption = frozen.prepared
       routeOwner.assertCurrent()
-
-      adoption = prepared
       room = $groupChats.get()[group]
     } else {
+      handoff = beginGroupChatHandoff(group)
+      if (!handoff) { return }
+      await handoff.settled
+      if (!handoff.isCurrent() || !foregroundCurrent(fence, generation)) { return }
+      room = $groupChats.get()[group]
       ownerRoute = { connectionId: adoption.route.connectionId, profile: adoption.route.profile }
 
       try {
@@ -1393,6 +1414,7 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
     await persistIssue(storage, group, adoption, issue.kind, issue.message)
   } finally {
     routeOwner?.release()
+    handoff?.release()
   }
 }
 
