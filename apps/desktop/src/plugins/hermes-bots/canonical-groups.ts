@@ -26,6 +26,24 @@ export interface CanonicalRoom {
   disbanded_at?: number | null
 }
 
+/** Supplier order from groups.state `room.members`. Incomplete rows are dropped; ids are not invented. */
+export function canonicalRoomMembers(members: readonly CanonicalRoomMember[] | null | undefined): CanonicalRoomMember[] {
+  if (!Array.isArray(members)) {return []}
+  const seen = new Set<string>()
+  const ordered: CanonicalRoomMember[] = []
+
+  for (const member of members) {
+    const memberId = member?.member_id?.trim()
+    const profile = member?.profile?.trim()
+
+    if (!memberId || !profile || seen.has(memberId)) {continue}
+    seen.add(memberId)
+    ordered.push(member)
+  }
+
+  return ordered
+}
+
 export interface CanonicalPendingAction {
   kind: string
   member_id: string

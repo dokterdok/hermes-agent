@@ -16,6 +16,7 @@ export interface CanonicalGroupMessages {
   attachFiles: string
   removeAttachment: string
   uploadFailed: string
+  members: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -36,7 +37,8 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Group message',
     attachFiles: 'Attach files',
     removeAttachment: 'Remove attachment',
-    uploadFailed: 'Upload failed'
+    uploadFailed: 'Upload failed',
+    members: 'Members'
   },
   ja: {
     refreshGroups: 'ゲートウェイのグループを更新',
@@ -55,7 +57,8 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'グループメッセージ',
     attachFiles: 'ファイルを添付',
     removeAttachment: '添付ファイルを削除',
-    uploadFailed: 'アップロードに失敗しました'
+    uploadFailed: 'アップロードに失敗しました',
+    members: 'メンバー'
   },
   zh: {
     refreshGroups: '刷新网关群组',
@@ -74,7 +77,8 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: '群组消息',
     attachFiles: '附加文件',
     removeAttachment: '移除附件',
-    uploadFailed: '上传失败'
+    uploadFailed: '上传失败',
+    members: '成员'
   },
   'zh-hant': {
     refreshGroups: '重新整理閘道群組',
@@ -93,7 +97,8 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: '群組訊息',
     attachFiles: '附加檔案',
     removeAttachment: '移除附件',
-    uploadFailed: '上傳失敗'
+    uploadFailed: '上傳失敗',
+    members: '成員'
   },
   ar: {
     refreshGroups: 'تحديث مجموعات البوابة',
@@ -112,7 +117,8 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'رسالة المجموعة',
     attachFiles: 'إرفاق ملفات',
     removeAttachment: 'إزالة المرفق',
-    uploadFailed: 'فشل الرفع'
+    uploadFailed: 'فشل الرفع',
+    members: 'الأعضاء'
   },
   ru: {
     refreshGroups: 'Обновить группы шлюза',
@@ -134,7 +140,8 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Сообщение группе',
     attachFiles: 'Прикрепить файлы',
     removeAttachment: 'Удалить вложение',
-    uploadFailed: 'Не удалось загрузить файл'
+    uploadFailed: 'Не удалось загрузить файл',
+    members: 'Участники'
   },
   fr: {
     refreshGroups: 'Actualiser les groupes de la passerelle',
@@ -155,7 +162,8 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Message de groupe',
     attachFiles: 'Joindre des fichiers',
     removeAttachment: 'Retirer la pièce jointe',
-    uploadFailed: 'Échec du téléversement'
+    uploadFailed: 'Échec du téléversement',
+    members: 'Membres'
   },
   de: {
     refreshGroups: 'Gateway-Gruppen aktualisieren',
@@ -177,7 +185,8 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Gruppennachricht',
     attachFiles: 'Dateien anhängen',
     removeAttachment: 'Anhang entfernen',
-    uploadFailed: 'Hochladen fehlgeschlagen'
+    uploadFailed: 'Hochladen fehlgeschlagen',
+    members: 'Mitglieder'
   },
   es: {
     refreshGroups: 'Actualizar grupos de la pasarela',
@@ -198,6 +207,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Mensaje de grupo',
     attachFiles: 'Adjuntar archivos',
     removeAttachment: 'Quitar adjunto',
-    uploadFailed: 'Error al subir'
+    uploadFailed: 'Error al subir',
+    members: 'Miembros'
   }
 } satisfies Record<string, CanonicalGroupMessages>

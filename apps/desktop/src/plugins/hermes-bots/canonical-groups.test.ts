@@ -8,7 +8,7 @@ const host = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', () => ({ host }))
 
-import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupRequest, canonicalRoomMembers, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -42,6 +42,13 @@ it('pins discovery and every subsequent request to its captured authority, inclu
   host.requestProfile.mockResolvedValueOnce({ driver: true }).mockResolvedValueOnce({ rooms: [], next_offset: 0 })
   await expect(discoverCanonicalGroups(route)).rejects.toThrow('pagination')
   expect(host.request).not.toHaveBeenCalled()
+})
+
+it('keeps groups.state member order and drops rows that have no identity', () => {
+  const one = { member_id: 'one', profile: 'default', handle: 'one', display_name: 'One' }
+  const two = { member_id: 'two', profile: 'two', handle: 'two', display_name: 'Two' }
+  expect(canonicalRoomMembers([two, one, { member_id: ' ', profile: 'x', handle: 'x' }, two])).toEqual([two, one])
+  expect(canonicalRoomMembers(undefined)).toEqual([])
 })
 
 it('creates only same-authority rosters and dispatches exact advertised attempt identities without inference', async () => {
