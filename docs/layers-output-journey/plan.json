@@ -1,0 +1,3983 @@
+{
+  "format": 1,
+  "remote": "https://github.com/dokterdok/hermes-agent.git",
+  "sources": {
+    "runtime": "041ae76f80ba2330ef6f1b7b961adc08e59a1877",
+    "output": "4be9cb11031f3001929fd74cadb8f20b097cbf08",
+    "route": "1fa3c0addd0c3eec671f3019c443dd3e449db134",
+    "input": "a05c7d2fc9c16f7d1a5d6bf8ecb8e6f3365ca462",
+    "files": "9f143dedd82a6da452d20d1cace4869b23b14ada",
+    "retention": "004015d6087fe031231c4d7d9e0032cc59b679eb",
+    "base": "6f2aeb528fc6e8c9cee8ed1fa022a1c50c05829d",
+    "runtime-base": "03ab73504dae640e8cfef0b19841c7053aa31cbe",
+    "output-base": "39104d9195b0773977c3e93a4d94f3cfaad9c340",
+    "route-base": "fa77a1ac75393b4df1db61b8ed3c3b8184e8a1f2"
+  },
+  "base": "base",
+  "excluded": {
+    "scripts/run_tests_parallel.py": "local test-runner scratch adjustment; canonical public base retained"
+  },
+  "files": [
+    {
+      "path": "COMPAT_MANIFEST.md",
+      "sha256": "66da4707f15b8d20db3fd2a17a2599871fec884366f1ac53f27e540a521ffff6",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "7b1dbd52e734175dce2168c5b69d9a7e2f4cedc3"
+        }
+      ]
+    },
+    {
+      "path": "compat_manifest.json",
+      "sha256": "acbe74bc0fc95c77143d742d7419f5fa98b4a4255be4dc6859f278d94d7a35ae",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "5db8fe6b069213f7c6f1ac38aa72ba9909930cc5"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_attachments.py",
+      "sha256": "8329eebd61f4a0bb6674b8d87f9e4adbf4ca28e782578a6b505ff9aa7761695b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "3b52fe6c6d4c4af33860919ad8b038ae11a86bc4",
+          "lines": [
+            1,
+            79
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "a8716dc08ba9586bf8744cf2062ba6aebb971715",
+          "lines": [
+            80,
+            95
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            103,
+            394
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "a8716dc08ba9586bf8744cf2062ba6aebb971715",
+          "lines": [
+            325,
+            1108
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            1348,
+            1351
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "3b52fe6c6d4c4af33860919ad8b038ae11a86bc4",
+          "lines": [
+            1115,
+            1317
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            405,
+            485
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            395,
+            404
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            815,
+            895
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            897,
+            938
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            940,
+            943
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            1541,
+            1562
+          ]
+        },
+        {
+          "source": "runtime",
+          "blob": "86f704fba91e6adcb6464cd8d21d7069c8f0faef",
+          "lines": [
+            1263,
+            1266
+          ]
+        },
+        {
+          "source": "runtime",
+          "blob": "86f704fba91e6adcb6464cd8d21d7069c8f0faef",
+          "lines": [
+            1263,
+            1266
+          ]
+        },
+        {
+          "source": "runtime",
+          "blob": "86f704fba91e6adcb6464cd8d21d7069c8f0faef",
+          "lines": [
+            1265,
+            1362
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            1675,
+            1686
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            1697,
+            1712
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "a9937ddfa60a657328305670a6bae56e2f627434",
+          "lines": [
+            1714,
+            1715
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_discussion.py",
+      "sha256": "f0085f4bbb837c74c5d78cebc8dd62887f1d421a0aa953a15855787ccd5e2948",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "56b05051859f2818bcd1ee4e5c7e41b1b3942c5f"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_driver.py",
+      "sha256": "9f3e41c7392aa56b069bd34e9ad403c7dbe2fdee0a3b4e4443adfe8633f429d5",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "e6ae4af92c6adc312f5c659c4d0867bd940135ac",
+          "lines": [
+            1,
+            23
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "94bb8e56ce81f0855bfd74246122a36870770b96",
+          "lines": [
+            23,
+            509
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "e6ae4af92c6adc312f5c659c4d0867bd940135ac",
+          "lines": [
+            479,
+            479
+          ]
+        },
+        {
+          "join": "    authorize: Callable[[sqlite3.Connection], None] | None = None,\n",
+          "reason": "Route writer authorization arguments and requeue flag bridge"
+        },
+        {
+          "source": "output",
+          "blob": "94bb8e56ce81f0855bfd74246122a36870770b96",
+          "lines": [
+            511,
+            519
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "e6ae4af92c6adc312f5c659c4d0867bd940135ac",
+          "lines": [
+            489,
+            502
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "94bb8e56ce81f0855bfd74246122a36870770b96",
+          "lines": [
+            530,
+            543
+          ]
+        },
+        {
+          "join": "    authorize: Callable[[sqlite3.Connection], None] | None = None,\n",
+          "reason": "Route writer authorization arguments and requeue flag bridge"
+        },
+        {
+          "source": "output",
+          "blob": "94bb8e56ce81f0855bfd74246122a36870770b96",
+          "lines": [
+            544,
+            552
+          ]
+        },
+        {
+          "join": "        new_work=name in {\"requeue\", \"requeue_deferred\"}, authorize=authorize,\n",
+          "reason": "Route writer authorization arguments and requeue flag bridge"
+        },
+        {
+          "source": "output",
+          "blob": "94bb8e56ce81f0855bfd74246122a36870770b96",
+          "lines": [
+            553,
+            665
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "e6ae4af92c6adc312f5c659c4d0867bd940135ac",
+          "lines": [
+            634,
+            686
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "94bb8e56ce81f0855bfd74246122a36870770b96",
+          "lines": [
+            717,
+            797
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "e6ae4af92c6adc312f5c659c4d0867bd940135ac",
+          "lines": [
+            764,
+            944
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "94bb8e56ce81f0855bfd74246122a36870770b96",
+          "lines": [
+            922,
+            991
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_links.py",
+      "sha256": "61add087b80ba5bca718480e2e90b3d5485f8f6b10d083ce6860680b209cf265",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "223c38ddfd92d2ffd8b96c22bd515faa549231de"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_peer.py",
+      "sha256": "042da07753c083e04469d36ddb48ed8868b0e7abf8bf207003d2d9fad6210cf9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "b8285391b38d6fd9be76a5855a564a4acff72e0e"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_policy_checkpoint.py",
+      "sha256": "65f9fb1581d4cafb24d3afc34b4ed9572b0f70e55a6e19f8e656e395efec3ce8",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "fee941964c678213dac29261ac355d4f27a9ad1a"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_replicas.py",
+      "sha256": "086c3ecc1e4c983eda070d1e543f36102d9f7285b7801a859889bbf7211848b4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "505404179ccc1ff50182b9a1707f35ef7bfb9a50",
+          "lines": [
+            1,
+            11
+          ]
+        },
+        {
+          "source": "retention",
+          "blob": "e59558eb2cc1a8ab32b0e2e2fd07a7b9ec9fc5d6",
+          "lines": [
+            17,
+            17
+          ]
+        },
+        {
+          "source": "retention",
+          "blob": "e59558eb2cc1a8ab32b0e2e2fd07a7b9ec9fc5d6",
+          "lines": [
+            19,
+            19
+          ]
+        },
+        {
+          "source": "runtime",
+          "blob": "505404179ccc1ff50182b9a1707f35ef7bfb9a50",
+          "lines": [
+            18,
+            18
+          ]
+        },
+        {
+          "join": "    MAX_EVENT_ID_CHARS, _validate_actor, _validate_event_kind)\n",
+          "reason": "Retention audit imports Route validator identifiers"
+        },
+        {
+          "source": "runtime",
+          "blob": "505404179ccc1ff50182b9a1707f35ef7bfb9a50",
+          "lines": [
+            11,
+            311
+          ]
+        },
+        {
+          "source": "retention",
+          "blob": "e59558eb2cc1a8ab32b0e2e2fd07a7b9ec9fc5d6",
+          "lines": [
+            128,
+            218
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_rooms.py",
+      "sha256": "0ba291b1a2f0827dae8b599e1ba138c2f4e6e7d3725160bec2d2f48bec4edfac",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "d959f06ebc22d9c6ad5b459a81dbc4cab9192bde",
+          "lines": [
+            1,
+            18
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "86a366c81c7c4345578554a07a67f27dcbed52fc",
+          "lines": [
+            21,
+            21
+          ]
+        },
+        {
+          "source": "retention",
+          "blob": "b7f9b9b08684042ecab012caa366b63a6c73bb1f",
+          "lines": [
+            19,
+            39
+          ]
+        },
+        {
+          "source": "runtime",
+          "blob": "d959f06ebc22d9c6ad5b459a81dbc4cab9192bde",
+          "lines": [
+            39,
+            195
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "86a366c81c7c4345578554a07a67f27dcbed52fc",
+          "lines": [
+            196,
+            398
+          ]
+        },
+        {
+          "source": "retention",
+          "blob": "b7f9b9b08684042ecab012caa366b63a6c73bb1f",
+          "lines": [
+            391,
+            398
+          ]
+        },
+        {
+          "join": "    return (all((required.issubset(columns) and (table != 'hosted_room_remote_runs' or _remote_run_schema_current(conn, columns)) for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True))) and conn.execute(\"SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_cursor'\").fetchone() is not None and (conn.execute(\"SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_message_thread'\").fetchone() is not None) and route_schema.route_schema_is_current(conn)) and room_safety.safety_schema_is_current(conn)\n",
+          "reason": "Route schema/currentness and Retention safety currentness conjunct; combined append signature"
+        },
+        {
+          "source": "runtime",
+          "blob": "d959f06ebc22d9c6ad5b459a81dbc4cab9192bde",
+          "lines": [
+            402,
+            952
+          ]
+        },
+        {
+          "join": "    expected_latest_seq: int | None = None, expected_output: dict | None = None,\n",
+          "reason": "Route schema/currentness and Retention safety currentness conjunct; combined append signature"
+        },
+        {
+          "source": "route",
+          "blob": "86a366c81c7c4345578554a07a67f27dcbed52fc",
+          "lines": [
+            1170,
+            1194
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "8a70404319c61e4104ba2fd739989505ff74b051",
+          "lines": [
+            972,
+            979
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "86a366c81c7c4345578554a07a67f27dcbed52fc",
+          "lines": [
+            1200,
+            1261
+          ]
+        },
+        {
+          "source": "runtime",
+          "blob": "d959f06ebc22d9c6ad5b459a81dbc4cab9192bde",
+          "lines": [
+            1031,
+            1217
+          ]
+        },
+        {
+          "source": "retention",
+          "blob": "b7f9b9b08684042ecab012caa366b63a6c73bb1f",
+          "lines": [
+            1251,
+            1256
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/api_server.py",
+      "sha256": "4ed59ae57a1f08d9d26bbded5360ff835f9707c9100c63c707b97314603f1739",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "1a26b81401f453311bcfe90ebd51d47645b0f978"
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/api_server_authority_runs.py",
+      "sha256": "e87b058485125c757db5254e1967c8da8305a098f0d3adffd1cb2ea673fa625b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "5b65a1c49163b0058ffabf59e7fc3f8354069d08",
+          "lines": [
+            1,
+            15
+          ]
+        },
+        {
+          "join": "def raw_run_admission(adapter, run_id, *, connection=None):\n",
+          "reason": "Input/Output API run receipt projection signature and connection reuse"
+        },
+        {
+          "source": "route",
+          "blob": "c7c4c00513e9dd2846eceb49502c5e714012ba31",
+          "lines": [
+            16,
+            19
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "5b65a1c49163b0058ffabf59e7fc3f8354069d08",
+          "lines": [
+            20,
+            20
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "c7c4c00513e9dd2846eceb49502c5e714012ba31",
+          "lines": [
+            21,
+            26
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "5b65a1c49163b0058ffabf59e7fc3f8354069d08",
+          "lines": [
+            16,
+            16
+          ]
+        },
+        {
+          "join": "    owned = raw_run_admission(adapter, run_id, connection=connection)\n",
+          "reason": "Input/Output API run receipt projection signature and connection reuse"
+        },
+        {
+          "source": "route",
+          "blob": "c7c4c00513e9dd2846eceb49502c5e714012ba31",
+          "lines": [
+            29,
+            31
+          ]
+        },
+        {
+          "join": "def run_projection(adapter, run_id, *, connection=None, receipt_identity=None):\n",
+          "reason": "Input/Output API run receipt projection signature and connection reuse"
+        },
+        {
+          "source": "output",
+          "blob": "5b65a1c49163b0058ffabf59e7fc3f8354069d08",
+          "lines": [
+            31,
+            31
+          ]
+        },
+        {
+          "join": "        authority = _authority(adapter)\n        if authority is None:\n            return None\n",
+          "reason": "Input/Output API run receipt projection signature and connection reuse"
+        },
+        {
+          "source": "output",
+          "blob": "5b65a1c49163b0058ffabf59e7fc3f8354069d08",
+          "lines": [
+            32,
+            32
+          ]
+        },
+        {
+          "join": "            return run_projection(adapter, run_id, connection=conn, receipt_identity=receipt_identity)\n",
+          "reason": "Input/Output API run receipt projection signature and connection reuse"
+        },
+        {
+          "source": "output",
+          "blob": "5b65a1c49163b0058ffabf59e7fc3f8354069d08",
+          "lines": [
+            34,
+            37
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "c7c4c00513e9dd2846eceb49502c5e714012ba31",
+          "lines": [
+            37,
+            42
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "5b65a1c49163b0058ffabf59e7fc3f8354069d08",
+          "lines": [
+            39,
+            48
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "c7c4c00513e9dd2846eceb49502c5e714012ba31",
+          "lines": [
+            50,
+            60
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "5b65a1c49163b0058ffabf59e7fc3f8354069d08",
+          "lines": [
+            53,
+            140
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/api_server_room_dispatch.py",
+      "sha256": "3ef89982fd87fd783aedb571a572248086577c5aa3ce39d249d0eac046f58b03",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "a1b73c6b5431906e2e12c945023c9a74324c1c99",
+          "lines": [
+            1,
+            75
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "b6a89d91d545196dd01ee4cf329191a2ed4db215",
+          "lines": [
+            75,
+            88
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "a1b73c6b5431906e2e12c945023c9a74324c1c99",
+          "lines": [
+            85,
+            127
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "b6a89d91d545196dd01ee4cf329191a2ed4db215",
+          "lines": [
+            110,
+            112
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "a1b73c6b5431906e2e12c945023c9a74324c1c99",
+          "lines": [
+            128,
+            130
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/api_server_room_grants.py",
+      "sha256": "e8b49455dfc20fb6aa4e9f901b53bf51ea41c24e8fa83ca80a83763c0b36d407",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "7ae921b3e59de65a3dc33968af08ad24c701ef47"
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/api_server_run_idempotency.py",
+      "sha256": "faf923e56fe3b2399eb18c6bac1af676809bc5a0079fdd9c5c19ef5ae8fffddf",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "901ae877fbe703fd1aa1258c7302f5daf80d4b3f"
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/api_server_runs.py",
+      "sha256": "6f262282f16a834744a8b7b6245a886a52965b3535455fad8cc3ccb9a435a20c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "3444d0185dd8599471d6ee751a595edfcd5073a3",
+          "lines": [
+            1,
+            404
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "7796c60214cb27a87a46e22b37d6a1f5d459735d",
+          "lines": [
+            367,
+            411
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "3444d0185dd8599471d6ee751a595edfcd5073a3",
+          "lines": [
+            446,
+            938
+          ]
+        },
+        {
+          "join": "                        _room_selected_route=_room_binding, _room_request_identity=request,\n                        _room_output_consent=getattr(request, \"_hermes_peer_output\", None),\n                        _room_output_authorizer=getattr(\n                            getattr(request, \"_hermes_peer_output\", None), \"authorizer\", None),\n",
+          "reason": "Output authorization fields carried through Route admission call"
+        },
+        {
+          "source": "route",
+          "blob": "3444d0185dd8599471d6ee751a595edfcd5073a3",
+          "lines": [
+            940,
+            1632
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/api_server_store.py",
+      "sha256": "5b1664e0061e0b5cd9b2bf79875356dc941f7e2beb8fcd54057de0183d9ab48b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "1fe13c55ca661895c79c1b99beb8a1ac81c896b9"
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/webhook_delivery.py",
+      "sha256": "3053163c797e2ef17f61a46c25b38b0bbff57c8a03d51d3661043f2b199471e9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "8a2e36d7f9cf1f2e695a2796f239ab07cd6c3239"
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/webhook_ingress.py",
+      "sha256": "a518ab0c74dec85af57427869716c8ccf58e38fa1c7529be932d2d35715d0075",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "b12a1a51600de280f964b70c98d0892393aabfa6"
+        }
+      ]
+    },
+    {
+      "path": "gateway/run.py",
+      "sha256": "1a7b7b119a51acf6fb086b25dcb97f8a228fc98e1345779e6bb615603acd3996",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "6434522847331a59ba924d5cd9ae878b05834f68",
+          "lines": [
+            1,
+            4605
+          ]
+        },
+        {
+          "source": "input",
+          "blob": "c3a9356ccae9a98441d5920c8b37bcb36f019593",
+          "lines": [
+            4612,
+            5406
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/run_runtime.py",
+      "sha256": "3f599d9bba6551fc09ee1632ed324ef585aa48362a4705c78e2afd9d487708dc",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "80e0a24dc1ae4bb947f39d1b4f5d914e7b9af239",
+          "lines": [
+            1,
+            228
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "94e376ba8b645a19f8c9c7bd0add38ad21c56080",
+          "lines": [
+            207,
+            255
+          ]
+        },
+        {
+          "source": "runtime",
+          "blob": "52b2625e0c142265b218a83049db5a161c0a4b29",
+          "lines": [
+            249,
+            321
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_api.py",
+      "sha256": "336b1ecba22f0d2b8f7ff52eebc45fbfbf7696dc4e08d1ad5130f0c77d6bf4c3",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "bc9c7eac1bf3316b99f7312d487b35b86f253c3f"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_api_turn.py",
+      "sha256": "9dbcf02bf72392347122e04ba8fceca48493718b8010763cf2f729636a1a382e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "88345601dbf43ba3bcdeb58f96269a9dcbcf1796",
+          "lines": [
+            1,
+            39
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2dc8dc7fb8fda2e997f90a82954da9796d038a6b",
+          "lines": [
+            40,
+            47
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "e44b619eeac08a94b2b29a187eeca07df0e69030",
+          "lines": [
+            48,
+            133
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2dc8dc7fb8fda2e997f90a82954da9796d038a6b",
+          "lines": [
+            119,
+            134
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "e44b619eeac08a94b2b29a187eeca07df0e69030",
+          "lines": [
+            144,
+            222
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2dc8dc7fb8fda2e997f90a82954da9796d038a6b",
+          "lines": [
+            171,
+            348
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_authority.py",
+      "sha256": "2c09267ac6710f20a9edf85201e43cce1f0e0a09bc1a26ad9b90b4ef5606ee08",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "c15f5e533669318e0c1fd1e6a63565aff326dc71",
+          "lines": [
+            1,
+            293
+          ]
+        },
+        {
+          "join": "    async def submit(self, actor: Principal, request: Submission, *,\n                     _input_custody=None, _authorize_write=None):\n",
+          "reason": "Input custody and Output writer guard threaded through one admission"
+        },
+        {
+          "source": "input",
+          "blob": "dcc0fd19039ff3469653de01b721020241a6860d",
+          "lines": [
+            286,
+            303
+          ]
+        },
+        {
+          "join": "                                  payload=payload, intent=request.intent, input_custody=_input_custody,\n                                  **({'_authorize_write': _authorize_write}\n                                     if _authorize_write is not None else {}))\n",
+          "reason": "Input custody and Output writer guard threaded through one admission"
+        },
+        {
+          "source": "runtime",
+          "blob": "c15f5e533669318e0c1fd1e6a63565aff326dc71",
+          "lines": [
+            318,
+            557
+          ]
+        },
+        {
+          "source": "input",
+          "blob": "dcc0fd19039ff3469653de01b721020241a6860d",
+          "lines": [
+            545,
+            565
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_automation.py",
+      "sha256": "499b7f7f62029cac1ac5a45cb2bfd6988c1669a559cee81998072326b0424d48",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "582614aa026e173b4e85ad0e67b2998fdc2aafa4"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_bot.py",
+      "sha256": "e37c40be959eafb2a0c6a4973afe80ef4fb5b1ef4c46b9d491cd35608f60694a",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "ea64da5d1edde8a4f399f99d02bf27aae04934ce"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_controls.py",
+      "sha256": "d4e6c31473979bad3a6f9a4238ab71055ea9642dfe816567f559cf93625178ae",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "a55c7e3d24b5433db55e10656e2a11058a742ba7"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_envelope.py",
+      "sha256": "019c0f94204dd8af2b8571664fb9ccc4c493b6fa8c4a6fe3947e9ad0f6604a7c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "1d3715d5f38278886280338a99c39a580f1da5e4"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_finite.py",
+      "sha256": "c9a5df3716281b0f89b640d3fe8adc131b8322561990c48104f4ac480a08fcd4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "db6f31db994f4a37d278003801eb98fc355815ab"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_group_controls.py",
+      "sha256": "6809fffb65b876045eaca9c7531414e54fd1a52f3b008c5883dd41992f2d6126",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "0af2b65d175cdbc4d0f96d861e7c6fa00b005b5d"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_attachments.py",
+      "sha256": "3da923b5693286edda0f780d759bc2b384c96f33b239dcb0f5d70a5b8a7d8b74",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "04b77957f3b41ca4502bd82cbf371b358e491889",
+          "lines": [
+            1,
+            156
+          ]
+        },
+        {
+          "source": "input",
+          "blob": "baf66b876bbed45967ddf059050b2a1ee31d2034",
+          "lines": [
+            138,
+            204
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_controls.py",
+      "sha256": "abb8843a7bf565368b6b2f20306d428ecbfb245226b2dca433dfd6a5b31d6d07",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "04ed4b1048e2f334eeeede3870c401a891376f75"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_rpc.py",
+      "sha256": "78ba5b3dcdbe97468ae2a1f7aec52f708c9535aeeafe5a1cf8549072c3c4c45c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "4d6d0be1a6c40c08839497d5f0016f2816641c52",
+          "lines": [
+            1,
+            125
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "7e718b8cb1d17a123b678d17188ca28e27fa7e59",
+          "lines": [
+            125,
+            134
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "366c5cfd185baca91a18f0142ebe8f689ae3570d",
+          "lines": [
+            132,
+            137
+          ]
+        },
+        {
+          "source": "input",
+          "blob": "4d6d0be1a6c40c08839497d5f0016f2816641c52",
+          "lines": [
+            138,
+            149
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "366c5cfd185baca91a18f0142ebe8f689ae3570d",
+          "lines": [
+            142,
+            143
+          ]
+        },
+        {
+          "join": "            from gateway.session_submission_payload import normalize_submission_payload\n            from hermes_state_input_custody import AcceptedInputHandle\n            output_payload = (prepared.handle.payload if isinstance(prepared.handle, AcceptedInputHandle)\n                else normalize_submission_payload(self.authority, self.principal,\n                    Submission(request_id, self.ref, prepared.payload, 'queue')))\n",
+          "reason": "Input prepared payload and Output admission guard threaded through one submission"
+        },
+        {
+          "source": "route",
+          "blob": "366c5cfd185baca91a18f0142ebe8f689ae3570d",
+          "lines": [
+            144,
+            144
+          ]
+        },
+        {
+          "join": "                self, owner_output_context, request_id=request_id, payload=output_payload,\n",
+          "reason": "Input prepared payload and Output admission guard threaded through one submission"
+        },
+        {
+          "source": "route",
+          "blob": "366c5cfd185baca91a18f0142ebe8f689ae3570d",
+          "lines": [
+            146,
+            146
+          ]
+        },
+        {
+          "join": "            if authorize_output is not None:\n                previous = authorization.get('_authorize_write')\n                def authorize_both(conn):\n                    if previous is not None:\n                        previous(conn)\n                    authorize_output(conn)\n                authorization['_authorize_write'] = authorize_both\n",
+          "reason": "Input prepared payload and Output admission guard threaded through one submission"
+        },
+        {
+          "source": "input",
+          "blob": "4d6d0be1a6c40c08839497d5f0016f2816641c52",
+          "lines": [
+            150,
+            213
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "7e718b8cb1d17a123b678d17188ca28e27fa7e59",
+          "lines": [
+            206,
+            231
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "366c5cfd185baca91a18f0142ebe8f689ae3570d",
+          "lines": [
+            235,
+            281
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "7e718b8cb1d17a123b678d17188ca28e27fa7e59",
+          "lines": [
+            268,
+            300
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "366c5cfd185baca91a18f0142ebe8f689ae3570d",
+          "lines": [
+            296,
+            303
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_service.py",
+      "sha256": "d52192fcd98db0a37c0f5f06770f634081ebd3c297d82678b9fcea9e84351c92",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "c35ffede2f71e73066f4a1ef462ee865bf12186c",
+          "lines": [
+            1,
+            9
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "a903cb3ecb901563b9e33b1abbf5abf8202fe83a",
+          "lines": [
+            9,
+            15
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "c35ffede2f71e73066f4a1ef462ee865bf12186c",
+          "lines": [
+            16,
+            25
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "a903cb3ecb901563b9e33b1abbf5abf8202fe83a",
+          "lines": [
+            16,
+            85
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "c35ffede2f71e73066f4a1ef462ee865bf12186c",
+          "lines": [
+            81,
+            317
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "c35ffede2f71e73066f4a1ef462ee865bf12186c",
+          "lines": [
+            319,
+            319
+          ]
+        },
+        {
+          "join": "            if type(rpc) is not HostedRoomAuthorityRPC:\n                raise ValueError('not a local hosted admission')\n            from gateway.session_hosted_attachments import committed_submission_payload\n            committed = committed_submission_payload(\n                rpc, task['payload']['prompt'], task['payload'].get('attachments'), admission=row)\n",
+          "reason": "Input committed payload and Route/Output service coupling"
+        },
+        {
+          "source": "route",
+          "blob": "c35ffede2f71e73066f4a1ef462ee865bf12186c",
+          "lines": [
+            331,
+            368
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "a903cb3ecb901563b9e33b1abbf5abf8202fe83a",
+          "lines": [
+            249,
+            279
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_transport.py",
+      "sha256": "7f0fc2098aa693bcb2c3d463b1fdb9c3d56e2d076992337f98dcedd2a64ccfc2",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "acc5110561f1395a08da2cf8a055cd962e221a13",
+          "lines": [
+            1,
+            327
+          ]
+        },
+        {
+          "source": "input",
+          "blob": "aa5f58e052675d26fcbb2ac34cb7900bbb44322f",
+          "lines": [
+            293,
+            360
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "acc5110561f1395a08da2cf8a055cd962e221a13",
+          "lines": [
+            392,
+            400
+          ]
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_ingress.py",
+      "sha256": "e1d9adb27e7925edcb655c148db287f45ac8c7fa3b9dc0afb35b2aa2768f4a39",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "c48ea47440c0f9f385f7d6a628bba1db0a9a7267"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_ingress_context.py",
+      "sha256": "fc212c6e47a535a8d6583ae5ec19644a0f3a3f673d347a0433f19ab4e1af2a71",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "3195279b32004bb93da7cb79d4013248904cc30e"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_ingress_media.py",
+      "sha256": "9b97fb4680ac24e012ce2ccb42352aa6a04ee3685fb83d2748183df59ba16c32",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "1fb69dee51a1ac7767a37e12d9f62f2c5ea96050"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_local_recovery.py",
+      "sha256": "7523987a864f0128be012f5269a94942e580de4c1f9a41449913ffa04f0f51f0",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "5c8e8f11bafa9c431857643dff8c30c8eae3f11d"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_policy.py",
+      "sha256": "2f455223ee5a7c59c13b4774742da365c0fc9811357d7e9de138ab6d037365a4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "1718a83bde77b81ee137f46dce7525660a3d2eb6"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_results.py",
+      "sha256": "7a67cc76ba419af72d848e03ce32fad6eceffb7d349f8594d45a8bb6082499ae",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "0ab8e39e714b028f19992dededf1485ce025f320"
+        }
+      ]
+    },
+    {
+      "path": "hermes_state.py",
+      "sha256": "3f6d2d498b8d2f2e348081144d4039a74acb0e16026142b8bd109e51429c3f6b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "387a84bd69046ed70b54f640dbc2eb0e92489815"
+        }
+      ]
+    },
+    {
+      "path": "hermes_state_mutation_branch.py",
+      "sha256": "4f3a7b90709e550853e866efab5940d8364e026b2adce36616bb94e28af5cf95",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "cd806e42004a7a5ad7c819375d1a262f4f2b410d"
+        }
+      ]
+    },
+    {
+      "path": "hermes_state_mutation_retirement.py",
+      "sha256": "80763b66350f9f4492a3ea0ae68554fcc8cb5c43a47b84a380cff618c0bc60e6",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "97d37c356b8ba2f890be413f1e32117931a85904"
+        }
+      ]
+    },
+    {
+      "path": "hermes_state_runtime.py",
+      "sha256": "74788e49b033a2346571a26503c979ed5b6325cdad6e8e856675a83554d2b259",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "238b5baeadd1429a500eee7882620ac4fa0606cb",
+          "lines": [
+            1,
+            87
+          ]
+        },
+        {
+          "join": "                        input_custody=None, _authorize_write=None) -> dict:\n",
+          "reason": "Input custody and Output writer guard share Runtime admission signature"
+        },
+        {
+          "source": "runtime",
+          "blob": "238b5baeadd1429a500eee7882620ac4fa0606cb",
+          "lines": [
+            89,
+            113
+          ]
+        },
+        {
+          "source": "input",
+          "blob": "eeb29c3cc7792c3c63137db039086257d1e1e9ef",
+          "lines": [
+            108,
+            120
+          ]
+        },
+        {
+          "source": "runtime",
+          "blob": "238b5baeadd1429a500eee7882620ac4fa0606cb",
+          "lines": [
+            115,
+            121
+          ]
+        },
+        {
+          "source": "input",
+          "blob": "eeb29c3cc7792c3c63137db039086257d1e1e9ef",
+          "lines": [
+            126,
+            170
+          ]
+        },
+        {
+          "source": "runtime",
+          "blob": "238b5baeadd1429a500eee7882620ac4fa0606cb",
+          "lines": [
+            163,
+            699
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/fixtures/native_ingress_trust_multiplex.py",
+      "sha256": "ae7979c0a6faf93028939207f723e316145dca12f3bbc588cc49e391b0304c7f",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "7e4e4f86a0860d93332aaa88bf817a25b56ba514"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_api_hosted_binding.py",
+      "sha256": "2ae41c230a0a710d268117ddb701fcef7aa32dd35a3df2137c052c316295b8a1",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "24914c89c72567b4bea518143de0727613d5abd8"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_api_media_retention.py",
+      "sha256": "54cf862588ade0baecd207286837a4fce0dd03e31febc47ec7574ebe6fb2aeb7",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "9248257834b839747064cfb499d63d79ef7ffd5e"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_api_server_room_grants.py",
+      "sha256": "c315feaf4f68ea3b7f381d7c4de12ba8cac5d1696792d6621982e9030faf1099",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "590b5d93ac922b54448523eb49b0e71a5d9e3995"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_api_server_runs.py",
+      "sha256": "18b74a863b961fb6976ffc7ecb7697f5a70711be5cb3b9e79000f8449558bfbc",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "7cf885e1059313c18e9efea99144df40b236ae64"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_room_execution_policy.py",
+      "sha256": "92bda745f391d48d8f6b9eae15bfda10ced302fc3d27686b6ae93e16a22d34ac",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "48a930fd22c9f19cddbec73b36ba8488a36f725a"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_rooms.py",
+      "sha256": "8e4fc6b280bb0756b7f05aa24cb905a9fa0fbfdfaaa57305db47b3ccf569ffa4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "ba81d57635fba4234b1467ec03a35482e3cd9897"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_native_media_alias_safety.py",
+      "sha256": "1c62592cd90de650be213c730b44b094472ce8a66e5cdd3823299308e7e72ec4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "20c1fbd8576eacf80c93803a2bb11fd3ce105980"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_native_media_budget.py",
+      "sha256": "5f54231495cca08e3bdb5d7c77efd17298fe1825a4c6963b97f71ed288f8a98f",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "cb270310df55d4712bf2f303e48469473d2d26ea"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_native_media_ownership.py",
+      "sha256": "68b8fa1bfa54ed4a277facbcfcffa1a1f32a4117214cd32e5dc8297776c53d22",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "3b5250b25f238d9b84b632ce3cd41f199bf9ff38"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_room_work_service_capture.py",
+      "sha256": "692d48d1f33fbe052ccc4b6b7eb93d593881a36da62b4b47cf3405447ecfab59",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "1d827c1b2c5ebc7f4beed66eeaee8120101653de"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_session_group_execution_controls.py",
+      "sha256": "dca498444db278c867985cfb7a21ea4917b1c9917ed5259e94f4d50ed475c296",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "a4e60b9b30fb402caed660819c8e369348e39281"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_session_hosted_controls.py",
+      "sha256": "b482e71728d2301e388d0a540edce05642e41f41a58c21a6a0866823eb3a9382",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "0d3e0ce3970adce5c1a6e1d89ea839a9e923372a"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_session_hosted_rpc.py",
+      "sha256": "3e077e41e099c4098713dd6f2a41a3012a88c2b6c55e5cd7c0aaf964bbab2345",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "827ef0059a0f149c37c96662d2169c902a1c892e",
+          "lines": [
+            1,
+            160
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "490f2d169c9129d16ce18aa021c655edbc31900e",
+          "lines": [
+            122,
+            194
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "1a628687609d486644c061a57dca5e3602157ea0",
+          "lines": [
+            193,
+            258
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_session_hosted_service.py",
+      "sha256": "8be2d3c450b328ec4939eea65783cd93a076ca2d9eab3c41ca5320ef32e0e9fd",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "6d10b35afa9d24580d662903438eca4d252c7f50"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_session_hosted_transport.py",
+      "sha256": "f5e4e939a9f3be056ac35b1f85344b8d8c455845e2e290e97641a226c5196d19",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "0d2c1274b41b2e0a8cedccfbf289e509d620e506"
+        }
+      ]
+    },
+    {
+      "path": "tests/tools/test_tool_search.py",
+      "sha256": "711c896a56f4aab65b197ff86f287b3290ef8a72ce27feeb97ffdb91ef1c0ed8",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "f28ce3714cc89700931209155ec2fe920240ebad"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_groups_methods.py",
+      "sha256": "fb54da1ac523f7cb2e7b4dfe38c2ed2888a6635234023254690a9161040ac470",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "585c47f1a3dc9ad2afac20c89dfb48ac45ebd4c2"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_driver_runtime.py",
+      "sha256": "aa2840eddc4226ff84f4b63650ad606d7307aa6efd5897cf2c86ef5fc4cd6a06",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "5bc59190f4e52e04b458b2632b2a0fb8a9cf835a"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_peer_http.py",
+      "sha256": "3038aef4d0a7cc3b24d42a3a818c7353f6e44561cf573d2531e2baff405306fa",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "8621097d35e357519aa1b9bfeb330862daec3957"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_service.py",
+      "sha256": "dae5deb4a67822922df1e50f10a6742415f7538c971a3bf4c77b75c37fc18ee5",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "6a1779fbf6a1ce8cde4537e678b7acb01aa9348c"
+        }
+      ]
+    },
+    {
+      "path": "tools/tool_search.py",
+      "sha256": "b12d8112c2d7293a1b1d0293d54fb7e57063b74123573c6a019461f5061ae6d2",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "de05cde9b2d2a7db60c4a6ebe3f6f96c85bf2421"
+        }
+      ]
+    },
+    {
+      "path": "toolsets.py",
+      "sha256": "075f9649e17b399184e4f3e3af39792a99e4f37d9be052eb7d7af856de73c81e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "956315d7699e4c2ddf91f4429373313b6c3bce88"
+        }
+      ]
+    },
+    {
+      "path": "tui_gateway/hosted_room_driver.py",
+      "sha256": "1a67e9b26d8c573b1af14b7dfc99e56ba96ace7c312b27a068176b6c97f8f09d",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            1,
+            21
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            22,
+            23
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            22,
+            108
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            106,
+            143
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            134,
+            263
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            237,
+            238
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            264,
+            326
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            291,
+            425
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            363,
+            414
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            477,
+            497
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            434,
+            555
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            619,
+            633
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            566,
+            671
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            728,
+            738
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            677,
+            713
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            755,
+            777
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            732,
+            745
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            786,
+            841
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            795,
+            956
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            1002,
+            1092
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "dfd2a8c766a497c183372b1141a0bfa3cb02a67c",
+          "lines": [
+            1040,
+            1080
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2af946d92da9912a18107cdd8b213a6767db167f",
+          "lines": [
+            1109,
+            1136
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tui_gateway/hosted_room_peer_http.py",
+      "sha256": "5d032dcee26ca2d3c81a6048c93e0427dc12e5b9173cf937968524d073ba8321",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "5f76a652a0933be9c8375244b3d3684d3bd9c042",
+          "lines": [
+            1,
+            47
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2eb20827a574a7db803fef6651363f908c5f133b",
+          "lines": [
+            44,
+            69
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "5f76a652a0933be9c8375244b3d3684d3bd9c042",
+          "lines": [
+            72,
+            245
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2eb20827a574a7db803fef6651363f908c5f133b",
+          "lines": [
+            207,
+            217
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "5f76a652a0933be9c8375244b3d3684d3bd9c042",
+          "lines": [
+            249,
+            604
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "2eb20827a574a7db803fef6651363f908c5f133b",
+          "lines": [
+            515,
+            590
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "5f76a652a0933be9c8375244b3d3684d3bd9c042",
+          "lines": [
+            676,
+            824
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tui_gateway/hosted_room_peer_transport.py",
+      "sha256": "127a6f88d411ddaa98c106696e58792534e582bb7544f73c9ccffb73045dd06e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "b438e320a7fd90e295a48f32bb10e87070fab8ad"
+        }
+      ]
+    },
+    {
+      "path": "tui_gateway/hosted_room_service.py",
+      "sha256": "1415972efdeee8830485e16f9f28624d0da97465ae9d2be9e430d1da8c515ac7",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "484b933ef2ada02ea2490e978254c2544be59000",
+          "lines": [
+            1,
+            3
+          ]
+        },
+        {
+          "join": "from gateway.hosted_room_attachments import HostedRoomAttachmentStore\n",
+          "reason": "Files attachment-store constructor import"
+        },
+        {
+          "source": "route",
+          "blob": "7a3042ccd9ffc64a50e1e8bd99bb147ef0681707",
+          "lines": [
+            4,
+            84
+          ]
+        },
+        {
+          "source": "files",
+          "blob": "e499b321388e039bb524463e2458ab8fda2f9760",
+          "lines": [
+            77,
+            82
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "7a3042ccd9ffc64a50e1e8bd99bb147ef0681707",
+          "lines": [
+            90,
+            1218
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tui_gateway/methods_groups.py",
+      "sha256": "329b616e172bd38b19ed0c7dd7c564f7d9dec45b3a2cf5c9ae1334429055eba5",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "c892ceb46a8b23af89f93c4c840806f15edac08d"
+        }
+      ]
+    },
+    {
+      "path": "docs/development/hosted-output-cutover.md",
+      "sha256": "ef5bd848e4414d34e5279784b22dc1d9b3a9ee69f51cfc60d2c00941a621c8dc",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "f7957c11347122044674f36cef0001e65cbf7b1f"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_artifacts.py",
+      "sha256": "feb0e4a7f080b8b98064ffef5607983028e0bed620685894f61ebe3e634cbeb9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "cb4011fa138076c5d1e1fdb6079b3dbaac33c040"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_attachment_catalog.py",
+      "sha256": "60777eca3253a1c152123888aaa0ee9b68b4e3bd90bbe13e68f3de3e3a5a30cc",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "files",
+          "blob": "8aab5f2c68d026262c3793428806f4f54f35fb38"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_grant_state.py",
+      "sha256": "1df1a522e714a3571e29a933e2fe8df6ded55122c3cd79e5c85519278dcf13ec",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "6c9f73ec7ef6c1cd8329f0b2d926ea8fa365726a"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_input_custody.py",
+      "sha256": "43a1112f3fc65cfc98dea32a2715bc43af9d2107d2f35c8219779181d2969002",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "4690a2970612e1e84878bebcffb2aeeeecf09fb1"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_input_preparation.py",
+      "sha256": "7d1cf275df04c0905c67da9fe822372a413bd02da4b0986c5d758de37e547770",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "aa6cc518682c4fc05a53974841743092d0af0a51"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_input_reclamation.py",
+      "sha256": "1d1e661c2346ee3a2742ad1d0b7b911a95934abf3e7c6a9a04d7e83b7d79c35b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "174704a4d5f0e603114ff5419d46f06d5680c4f1"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_input_retained.py",
+      "sha256": "e7f832ad25391dd5d6167afc6c5aacbe634830f894986f4a6aa3dc210260ffc4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "f6354696139de5921efc4f96c3ee440bade91bd6"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_link_records.py",
+      "sha256": "a74bea0498cb21827637bff01472d0bde0b4446229fedc4dccb45b16888b1634",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "778dbed575dd44c2ae587604eef94045599123ac"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_output_completion.py",
+      "sha256": "17e5ff2a2b4e298a34068ce7b2ee391f5ae4e13c8fcafca907802ce0a305445b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "retention",
+          "blob": "10134f074e170f6010b7ba22d80abb93e1d34f4b"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_output_discard.py",
+      "sha256": "6db4cc705b8049138452553ed75a7428f29cc2b08ea6b91846bef79d68fecce4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "94c4838569a9e0947ac252cf13ff906f1e5804e9"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_output_fence.py",
+      "sha256": "18e42caa8d8b38ac44d80d8230540a1e94401803e7077ca8fce26b80d41f7337",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "441f2d4875ebfd2503852118c35241e837668146"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_recipient_files.py",
+      "sha256": "0275c86f59634251b1dc891ad55926a110f4201c1d4bddaad21da57e84d49116",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "files",
+          "blob": "af673957f2058f351a9271a30015de525a0e351f"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_route_schema.py",
+      "sha256": "d6ab85080d8fca0173b9d1e87136c2f4bb1f07caab4576ce568b903a9268d619",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "04dd05e850e36b8710f2c186ce21b11ec1152dfd"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_safety.py",
+      "sha256": "d7edc3e6fd7e84927145dae524b62b9941409e41cf0182642ed9b0db2a27c94c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "retention",
+          "blob": "7bfb1bf04b59c52e27603370ef278ae85419ab22"
+        }
+      ]
+    },
+    {
+      "path": "gateway/hosted_room_task_scan.py",
+      "sha256": "70319244d9ec594b2666be6caa9be0b3ef45c27a46cb62e4cc9d55fa373d44f8",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "retention",
+          "blob": "42f2ff4f5e93014b83cb5afd6390d0c61d5d98d9"
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/api_server_room_artifacts.py",
+      "sha256": "21e82a1a8908bc69ff2a9829b560aeaed15b99df3e257b0289492b7f5f331ca6",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "f627397edf20275d63a2fd6c8700b2c883944c71"
+        }
+      ]
+    },
+    {
+      "path": "gateway/platforms/api_server_room_replay.py",
+      "sha256": "040238c37d78724559837805789b7999afd5df1f46b837630f6b9e2090965d39",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "de68dd557c626cbedecc74b08fdc9e3e66b79e84"
+        }
+      ]
+    },
+    {
+      "path": "gateway/run_input_reclamation.py",
+      "sha256": "9069ea16e1ab5e695599064d4a54cc177aa8badaeb8daa0e8dfa958be76ad9fa",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "3660a03a69d1105758a7e27a424d3a62031b41b3"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_api_replay.py",
+      "sha256": "71ff703f30895a1add4faec090ede5ed4abbbe46532c0d5c2d15a14b6c2102c8",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "8429b6f648f6697d260492520cbade607141a039"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_group_disband.py",
+      "sha256": "08af1014cb029275077671235480e40dec325a00c9721d101a2bd0e23300164e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "8b1f4373697970b433a97576d622182e79ca9ae8"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_group_files.py",
+      "sha256": "722202d9c02122efecf78dbf04ee2ebacf13fd16163c9927161addf31b17f116",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "files",
+          "blob": "f75a9f2efc2af035104cb7c6c272c9cb3ecdb142"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_group_files_revoke.py",
+      "sha256": "fae37db563cbb2ff3259cfeb9d32222c221419fada27befdcdab2eedb2a679c1",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "files",
+          "blob": "155c43287cfabb2ebd250f55a081f4787ff9c228"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_group_peers.py",
+      "sha256": "a0a5968c9e7a5bce8cddfa7fd8a6f851cc9f1e37ec8cb661cc22d1ff679c421a",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "f39e15ba973cd8ff3490d829064fbcb4a71f6a75"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_group_renewal.py",
+      "sha256": "5abd94f199a482c776e49a34156d251f54a1c7a031985fb78f598241dca44979",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "ba96e1f31c1b7b6272662a595d38e287f29cf368"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_group_retirement.py",
+      "sha256": "477c565cd0036f06b8e87bc44e14b7288114aa124df2e2edb56d808747f5c753",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "c9a0b092c2a1a91a0f5e33480a2a49da089603f7"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_group_setup.py",
+      "sha256": "fb6f39463e846cf60e2553ddb14c962ac7258e8167f93e0772b5811d1ed41785",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "e786466786f5816bfef10dda65f71c67df1cd872"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_group_state.py",
+      "sha256": "c12d882488c3c8ae9e113bb882bbd1974f099180309d4de7bbbd59e8eb1601d2",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "8634628ee86af069bfe089d96df737dbb0f2295f"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output.py",
+      "sha256": "821da95b21079bd9ec8ddcf9859c43601fb4c00fe72846ed48b2760edac9bf28",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "14edf74b398dbd2d58e150629a1b3154b0bf3225"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output_close.py",
+      "sha256": "6210743bebb062a3c8deed05dc947ea966e660614bb1f17c62585e62e6cf2e66",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "e0b13a10c479e8da6fd50e5f6b8f84e4ad195849"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output_lifecycle.py",
+      "sha256": "d6ceea311a64b44bfb383c3652fbc6586997f30d92de49a954b43d47d6024198",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "76a737b46dacba2f888d03e67d43e38cbd4d6fc9"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output_publication.py",
+      "sha256": "4a98639a1de10710b4a61b287f26826cd0f85c25b59e074bc375c53ef5d5bf97",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "1dbf63d15847d561cab64aa87cbc243dec40d55f"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output_retirement.py",
+      "sha256": "5378f77f31b78812123110595f90cfa2e06d6d6f9eccdd475b6446da2163aa71",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "347a266dc1b9d9ddcb38b648770682d8385a651d"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output_retry.py",
+      "sha256": "a59c5499feb388c8151372321ed006a4f3cf4d5ac3b00cec52e9a9ca63321b29",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "0be67b729d81aa66314ceb9c9ac5776140ea8422"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output_rpc.py",
+      "sha256": "df9043f861bd782d55a186b0a8c54cc4b2a5d9ff50fd266b5d761ee730979ada",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "0afc0fcf84972296e0b61029758f5ba4de53e9c2"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output_secondary.py",
+      "sha256": "037a47af1eeeb9512fa6a02f32082d0784f4ea7bbd00d475f7029d898ffd40d8",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "9cde0ba0b034d3735aa316082e966d41725552b7"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output_secondary_caller.py",
+      "sha256": "0f6c278e5d4381b6777299f786ec6a70692525724e62b8efefac19448d430b8e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "82e9731cb8c96f008b975c89bfbfce8fe685cad0"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_output_secondary_consumer.py",
+      "sha256": "981f40c1562626ff764f9f414374a79c5164f81455f39a358268130a33e32a00",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "3d10ffe0a97f964adee7aa00264442731e7e5cc0"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_peer_retry.py",
+      "sha256": "e9a16ae92a55df91ef0277fdca4ab25f0645e22c291231223bfe694edc2e286e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "b1f2fd854b7ecc3b091284df28d5b8597861e566"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_hosted_secondary_delivery.py",
+      "sha256": "f2d4a657fff72f876ecea3fd3214f130ff342a0e3cef3b567f8456be84c1e90c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "b00eecf3baee793e3556fda5547108f958a55129"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_peer_output.py",
+      "sha256": "88b7a91428c5c3893c70ee126bb0e99234481f845ef20edd46d2aee4f8f04232",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "94dbdcd2603bdcb147fbcd2a0ce12938d95c53a5"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_peer_output_custody.py",
+      "sha256": "7c6b8064da7ab0563defe73e8ef11ea7e15ef9869ecec013571bddeabaf0d9a1",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "e2e4ce867c6d493b97a3f90161f48f254f218345"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_peer_route.py",
+      "sha256": "0585bd78e9b6ecfd306324e144176ae2bee7e0883fedb0561940e257ce55c863",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "f8f1531c7863ee0133335633035380fb91ad45d1"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_peer_target.py",
+      "sha256": "93e978d83619ec818729b3e1dedd97f895cee5c59f28bd1dde42b0d19a0ba71b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "8d00398eab49b0c151cdd96d764536ca41d04332"
+        }
+      ]
+    },
+    {
+      "path": "gateway/session_submission_payload.py",
+      "sha256": "c22295b64aa710689b91b00792642666187a877c5a4a6792c6c8b12780562f01",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "53b5b4bc296dc541491c4ec3f6e76838517146a0"
+        }
+      ]
+    },
+    {
+      "path": "hermes_state_input_custody.py",
+      "sha256": "44a08540c2142afb9aed815035af404a5569847e3373e80a3fb4d6e2bddf35e8",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "fe40174dde9198359a3212ba4f9e218bc3813de4"
+        }
+      ]
+    },
+    {
+      "path": "scripts/replay_input_declared_composition.py",
+      "sha256": "15cd30b804a20584ae8305eeb5e92840daf2d157afba92b0c1dd1226b7d6ce42",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "4cdbbee9080e9afb33dbf1869df001f51252db49"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/input_reclamation_fixtures.py",
+      "sha256": "1552a027ee8efa7043cf5d2fbb3cb78182534550e8f61e4406585d8f31ab296b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "d4aad74ddfd3638fbba1f159033e3d56e2617dff"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/peer_output_discard_checks.py",
+      "sha256": "58f80a631f6fb2f27d2467ce3b59f5240adfa3ea53ca2c0312bca85c88d9b24e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "59e5f5cc31372d5db6f055c10947c8e5429d9b2b"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/peer_output_fixtures.py",
+      "sha256": "2632306d1a2fa305d0c072d56c46e1751fbab14e4c344ec78da20b32ced0a59d",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "aa2d311dd40b5f4cd3311d034904d186e2d0ef56"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/peer_retry_fixtures.py",
+      "sha256": "556b2efa0f7cb7c9f34af964e99ba5ddb36e70c2242798281040365c30910a9f",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "ddaf4e3c7d49456f84a187936305ac79923e9261"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/platforms/test_api_server_room_exact_revoke.py",
+      "sha256": "f4533a932f8fa0be56f85a769a20ae00121b7bd8b15996d624ce2225306b6014",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "8ff12e4b900445c5ff1431cabd88e2e2faca7811"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_api_receipt_recovery.py",
+      "sha256": "172f3ebac5be9697b6b21be9584c71cc295f63bca50ba4775597a9e25e5a1cc0",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "0197ec78de235f88404bb99927872a02004a9b06"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_backend_refresh_preingress.py",
+      "sha256": "f8d7437d796712065de1f7b3ab78078541e09c7ef74c3afd40b3eafd892c8bcd",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "088af9dc804c5f996726f5988e6d3728be12e4e0"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_hosted_outputs.py",
+      "sha256": "79c7fb3593f7a4dca3832286f364f5f8934a6da58fe1787aae21b7a5a7b3471d",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "fff4421b0eafc5f02188ec9ff3c17b1355f67be5"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_output_commitment.py",
+      "sha256": "29238ed02eb89e842ae4a0f5da4857e37f5a15b3ef18529158a91aa1a18ba3c8",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "246035cf9af0ebf6bc3464b6840b557ada132c22"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_output_early_terminal.py",
+      "sha256": "b21d7155b2de29b001307fff037c09171fc13a148cced7a7f373f9a3743ad63e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "339bfd773c173ea666aaca109e36e541d19848d0"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_output_input_compatibility.py",
+      "sha256": "2ba51b261dd6172525483f0bee81eb02097b85551f714479efdb4b6f6beb306f",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "3c1c11e1839f8dd503c7ad7a33d72f00f4f21dfe"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_output_lifecycle.py",
+      "sha256": "2d8ce3703a01a4d231f85cf45074aa0e20a5e036a2f4fd0aafa52c3f1c6dd830",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "90097ffe9d73bc80afbcfce2c140bd3a89c64fe5"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_output_refusals.py",
+      "sha256": "fc5d1d155a18c0d17991c94e022e20193e49ad7c3a03bb1f77c76d4d0cbfb105",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "e9687cfd6019b24048b4c21e33efd6a7c581bacc"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_output_retention.py",
+      "sha256": "cc9e9e8249024b569d9133bef408abbad6a5e17adbe38886abecf1a052da9266",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "1af024c5e8b8d4ea26ea464be073d4ea82231c1e"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_output_scan.py",
+      "sha256": "2aeabd893e950c1e7cc58d136b9e212adf867ca7fe58ac6911caa4cb3abea9c7",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "971777c69840077182b94b1bdc261154ddbd5f5c"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_output_stop_corrections.py",
+      "sha256": "23bbed692b45942df178925461dcc49ab2f91a53ba38d8afa92ec4e3cf0585fc",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "321f5778e57761e76a24fbd585c6d6defc841be7"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_output_stop_no_admission.py",
+      "sha256": "38589d9fd69053cdfe3230751d10db4358573a2f66b2245f82feeb0e7f3d3434",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "6f348bb4da1290f2f17747ef71fc45919cc06576"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_peer_backoff_retry.py",
+      "sha256": "f3362d15ea2426d632d765eaea6f3eb1ea3ae5b59d43ed04ece36a4b07e5846d",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "d6ad8234f9f2d4ce91e1b9e529a04e8447975adf"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_peer_invitation_permissions.py",
+      "sha256": "55870979097c5e71c8c72924e6a5da480698711964625320557f7cfb6ea5abc9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "4d5a4fd59f592ebe796909440e3c89fa9bcaa5b9"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_peer_native_consent.py",
+      "sha256": "74623843f7404003aa470f42be8e208a98ac427d2088728ecc19a2d12687229a",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "10edb432fe657291233f021e0dc757aaabc4a446"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_peer_retry_admission.py",
+      "sha256": "75e30ace5a3a91d007a141e6ea71572d797e475a489aaa5939a0d28425a654c4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "d1baac1c4fac55f90055620072363450d8283142"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_peer_revoke_legacy.py",
+      "sha256": "295bbd08bb190923c8b20a61da006e19b1e011005c77a17a10fcb3ae34a2d887",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "b7017416551043aec29d1db02c634b34181f2f20"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_peer_target_setup.py",
+      "sha256": "3e6dc8c9f4e4157125580f82d39fa572ca2665bc301dd5a1a5a39d809b741d0d",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "b5bd4a65b2c8ad22d9e95cf5cab080b481bc8cec"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_canonical_peer_text_admission.py",
+      "sha256": "8bfd6a80e940fae972b03ace4a6ac9fcce79ba2f52b02143e3c5e304850d9fc9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "6da190ebf9079ec82cca8e8d5166ec1c03d4f158"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_custody_attested_preflight.py",
+      "sha256": "81a147d0760e0a94b53e43d9f783d93944d44a3a634081d604a40ff6ebd5d04b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "e16224054d0ec419315acab97af8c53afc99157f"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_files_route_queued_catalog.py",
+      "sha256": "f463a5b136f8e55129605c7a509bb4e95292b7f98c928f70ce2e8fadd04ddc1a",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "86a5f6415728554dae6a43a1465dba295e28f994"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_files_route_registration.py",
+      "sha256": "c19f1b210af6fe0291cc137e3522a60148a9bfd4ff999c21df856344a5219288",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "cb1fdbda27011a69c05c678eef1549906880fa20"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_group_state_action_projection.py",
+      "sha256": "34c9e1d342deb6a9de2904adfc33db7431b9a5b59e29753734c1a2a477a079de",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "8825e454576be584d7f978825f91c3b5bef180d7"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_group_state_read_lifetime.py",
+      "sha256": "6e4adf063f44b8db103b2b84e1e92760b17d5c7657de798454dd669c6bdad878",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "7f292c287b4e6236a9f2e19f1a489df263927943"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_file_tool_refresh.py",
+      "sha256": "5a06d31dc3a31d8dacde64c600f19bca7ab52d3702a2395e28aa783ac20adfb4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "ebe7eca865872ba5621009c1dde6ce2289b2a8dc"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_room_artifacts.py",
+      "sha256": "80281eeb6151e7952da1af904f6ea4cf3241536b77df181a6f455d72702c22ff",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "a588fc3550042f1b0daf64a54dfd84c6bbc9f402"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_room_attachment_wire.py",
+      "sha256": "9428cc470c999f67ce3ec7679405ec8c3d0816878d16d64d00b009ae8c5f915d",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "b3055c10403340ec3df3fbfaf94c12ded38a26e3"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_room_disband_fence.py",
+      "sha256": "8a13857ac85125fdd8e98d0d4648b2fe05b2af042a5e1fa3bbfccdc9aaf90079",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "f8aba4b848b76ea98a8386c8fe32ef8cfdc64473"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_room_exact_grant_revoke.py",
+      "sha256": "19c337f42a79140dd31597b696657ec68515f4c9f87db87b2df644fe0a1932dc",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "d1f3bed836017fe1d11a20a3fc7a2527e9431a60"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_room_grant_state.py",
+      "sha256": "96e8d0458168bdd0d27055ed00fc97e2268a3a97ef8ce8ddd57a34fd29d435c9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "489f3d3923ca609998bc3627d707129bdd74394a"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_room_policy_checkpoint.py",
+      "sha256": "0ed77df80a5af14fea5cf65e7c2061880286d9fb09af19d2449d1c5231328863",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "6e76223c19d77d7df727497f6074ee25c698d71d"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_room_reconnect_imports.py",
+      "sha256": "418ab004730f02ce154017f4bd505109b052134724aab31e08fb961e7b8ced31",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "599bd88eda96c9f13581b4bb095a19430a1d65b3"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_hosted_room_retention_boundaries.py",
+      "sha256": "26901efdb7c3cfad8c83804137c1ed1fdcc692dca8acd1c494fa3e90bf2e0958",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "dc0e08080539db67c108d9e5f920cdcdad1e4770"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_http_invitation_cancellation.py",
+      "sha256": "010195713cbb550fd57368703beb2a0cd98edc7cfe4208a82bf0c906a578feee",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "18980e8e54d336563d045f187d0d6e0e5913ec28"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_input_custody_failure_boundaries.py",
+      "sha256": "6f38fdade4b0e959d0deaab74268d4c53735988f3d586019872627c09b4cd52e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "53127484266585049cfd0df66fe213f2a62a4e8b"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_input_custody_lifetimes.py",
+      "sha256": "e25af63f6562438c0fc2bd1503f21cea1b7de025eb855b005dbdddf56af1e451",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "d1d1564305ad0b3e2f55bf3a52fa37f0c7bd03b1"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_input_custody_migration.py",
+      "sha256": "d2c129e525a47a232384327fb44a9d07a0427a46c10045b8cc30c0a8b8144304",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "f21b942a6d41e102680db2d15311f4de6a2b87ac"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_input_native_publication.py",
+      "sha256": "31b389de77c31d1defb41086955ee8eff0f99fb2fb5e5876a1deeec7a54258ac",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "19532e0d07069e8181ef3fecfae57888533928c0"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_input_reclamation_acceptance.py",
+      "sha256": "266153f91f624ea00ba4acba15780ffd9ea7d9c9444c450873aa18844a26e260",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "793f54a2a04965bed75f04c3b131bc59dec3800a"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_input_reclamation_collection.py",
+      "sha256": "8d0240f01d5efa17d82cb3dc0d5fa5f3dba9c691c27839bcd1b2a02fa0f29138",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "7799fbac241e254b335a3a3c3e28f332fc1d2006"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_input_reclamation_hardlinks.py",
+      "sha256": "d7aae1f982c1c45e7b2288b091782dfdb1642d4c42dd3835daafb1dc0e9033e7",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "b973d06a0b8f73a1af752a18111c1d1da3d4030b"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_messaging_send_owner_port.py",
+      "sha256": "89d455e1f9e6f0ef22f5b477e8164f52b398781559228b78c85350a499155883",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "583b462c98d9d74923c3230854a829909f83073c"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_multiplex_named_send_output.py",
+      "sha256": "40ef454385d76e26eac8e062e2a2d74c8ebb893781a8aa6db479a0870847f74e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "cbed2f7ee4358a423bbc7fec147eee60b6b0476d"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_named_output_cleanup_startup.py",
+      "sha256": "f9127e8debdd9e56b02162e7f1ea5976088d058fbda1aa893a762aa446ea6a36",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "a6a114c46cd57f0f79b9d25a3aca7752f31fd29d"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_named_output_ownership.py",
+      "sha256": "b5db8db75ecdeb50769066dfa8ed5228d677068c20a8e91e0a964893632c1b2b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "e8076c9ed86d22e3ce0d678309c6d9a35b8651bc"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_native_route_receipt.py",
+      "sha256": "3901a1530e30dcd436ba33ae0609207acc5af69e4d84eac2635b6b9ba5c8ff40",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "789fcd1b1ef22834de0c917264ddf5b122fe8a57"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_output_historical_failure_cleanup.py",
+      "sha256": "b1cf751dc056aaa17d6272e6b0d2751104def4cab168c31f01c3aeacc09f9813",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "9b182d527b7de46b55c5190144e5a6a8b5d181fe"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_output_information_read_lifetime.py",
+      "sha256": "6aadb73c9953cdd98941a97e4f26dbee18c7f42039c4c26ade3a9973fed50bd0",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "1749183c1b90c611ad1b83ce695b623b2b0fce55"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_admission_consumer.py",
+      "sha256": "173aedb52a75ae162c60aa42c5f131c359f5931e1ec7965de22381faa6e337f3",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "995ac9c17577f7e3562cf1ca568a3e23ffbcdeff"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_admission_seam.py",
+      "sha256": "dc75c24095326cace552204445e81dd4f6dc0592bbef675e8ef6497f0cd5ea32",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "8b2c8c4637cc789903c50951560f8989fe669ea4"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_catalog_compatibility.py",
+      "sha256": "b2229acf98d5e04e2f18a654bd86535a3ece2e804059340f3aecd47650a0f357",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "c53bb51871b3ab87a562c8c8be10e9d2d3a42709"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_consent.py",
+      "sha256": "699d87fd0df4031fac2a50d3521884be6557ab826ada28447bacda09b0a5c7c4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "cb7d39d4f389f48535d7ef74f348b8cb851982db"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_discard.py",
+      "sha256": "b2c433fa01b6e450d719c20ff597e09a898e1bfd5d354544f1df368a81fc7b48",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "76e4f8252dc7301ef591c1ce8f72b0cad4d5dd2c"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_discard_authority.py",
+      "sha256": "e6d4820bfe72373bd5d957ba14cf389afc5b537a9015141035ca470f86a652fa",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "8a7f0e5884808a3cde8d66af9eb24c10961179cf"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_discard_authorization.py",
+      "sha256": "bb7f04d4413e7563ffebc8ccb724b6c273ea2a8fe2e00c0709e3a58e24e22556",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "663bd8ef0a65e20e872c397181d99db05d9c25a2"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_discard_custody.py",
+      "sha256": "cb5e48e6d780c3010763db648eb29b59de93cb2d143a1fe7a3903f11382c6deb",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "72a3c7208b0e6c2a4ac0991cdbdfca7c205e5e51"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_discard_fences.py",
+      "sha256": "52f53be5a5d8e36731ad366991ceb0c10dc5d491b97793da015a4d8acd80c0e3",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "abe1a6426e77a56bc227d924dc0b23962a0f293a"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_discard_pruning.py",
+      "sha256": "abc5bff0b774870d9d762975890f4a14739dc17e803778cf42b7a8c65a8986f4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "4b15ba8b3c330ecaf7a2cc3c237eee696543eec4"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_discard_recovery.py",
+      "sha256": "175d5247969e768863d6f7edb38ba81f6693701cc1a60db0e50e534f91206667",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "819e3c2f1bc3f70500185191e721fdba171cebb8"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_discard_store_errors.py",
+      "sha256": "7ff6ed1d1b94c8a4b8829f6ee3e7153b2ac287cae0bdf6b9d22437d6933b0dc7",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "1fa7109bb105b890698b5974867b6429e766a195"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_fences.py",
+      "sha256": "80e50498ebb58593e2276691e46a48ebf9034a4873777733d189b3c6ca3c1dd7",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "ae8f23f3baed3fbf32e8efba3d560e5a3105379c"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_lifecycle_callers.py",
+      "sha256": "c513a0675990190b7734b49edbf71744a97280e9976fe670c99d09d88aa1d171",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "3dc9d2c810680f13556d0d08aca52d0ceb470d9b"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_product.py",
+      "sha256": "e50b4fff420600e88e431b5902baf579606e96c98d4c0b05a025bef439b9d850",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "5202c8e0bbcc92c82c8ced6fa656d0198f22b486"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_retry.py",
+      "sha256": "3252550781b7cdca99e09017deeff6fb8eaccba827e0b9ab37434d6fe918ab3f",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "86e72efb10e7ba3189b4083c68af15edd69b6dc0"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_retry_admission.py",
+      "sha256": "839c25742aefc85393f3689b1fd498e73ddf4a2f3f1644a76e5c7867b5f964eb",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "47175cfe30d403f54709f98578657055936342e3"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_retry_corrections.py",
+      "sha256": "fb2cc5cfda7ee78576cc3a6e07a81f293b31456309155ba5e99ede8b8ceef6db",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "daa9d0524a8272559636d27fe7e43eb35c842841"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_retry_fences.py",
+      "sha256": "7df0c1041b1bd7bfb1fd6ff2962c02214c09946dac239b90f07875f4dae844a9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "9e11808913c0ecf7271ad5ea1dbde3dbab576326"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_retry_isolation.py",
+      "sha256": "d22b9d4c669ead6501646a587eb52f55595279e28bd6ff9c030c0e07ebb20734",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "d388d8572c457ed6aa83743cad799e7860ad1180"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_retry_lifetime.py",
+      "sha256": "3ec87a3196d5fc5faa39b40bc2c3b6fbcfd5af163f4c40c47d48d6dec1a1c19b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "2c279c06529476610f58baf4bcc0f61284f17b94"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_retry_recovery.py",
+      "sha256": "4d0b1a3440e2e2c53736205917dbeb14674fcd651b8b229a54b8a9144ad26b5d",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "314c9a09f872b26b40c34dfeda88076f29cf1d21"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_peer_output_retry_snapshot.py",
+      "sha256": "6ccd609be40c998101ee1d7d3e7d2154652aac2ba780201b9f4b445aa759055e",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "1ce8a42e546e3f2a204e0c70189b8d0c9570f7aa"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_room_output_consent.py",
+      "sha256": "47ec03e8630dc4ae796732a72a6f917d86ab218cbafc9576f6e33c128fb3a3f9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "4afa183a466eac297a2648e333b691f8de7efbee"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_roomlink_replay_records.py",
+      "sha256": "da02e91463fb9a2b77d14e208182821a05d69c975243d4571b6aef4080ad91b2",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "e9a458bd977cf2a47f7054add886757b2bfdefc3"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_roomlink_review_grants.py",
+      "sha256": "8d4318e47b1f8defc04a37a48ba89d44d3e782d08f7a85b048e1d6a31935c33c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "51a42790d275ca645fd506389465915d09be2838"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_root_ack_replay_boundary.py",
+      "sha256": "a140ebbc227fea03bc421ae75e53b6297b05be07b219f8349eefb6a3f4bb9c7c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "20ae224a56c214205c424426860b68b55ec2a848"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_route_document_custody.py",
+      "sha256": "3268737a16cfcaa72fdc98e24cae6e0dbd809f96a76c0f68425469d9f6526983",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "17b358681714b6c9811a7616bef4f8ecad39d9e1"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_secondary_retained_publication.py",
+      "sha256": "8de19146ef1acdebb6cef69a22251edc41beebb3027c2afebb1d250c7bb95f30",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "d7e019007eff46cdb5f4b1f8778c4133e0d673c1"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_secondary_retained_publication_caller.py",
+      "sha256": "e2e77c76bb277605588c0feb0a6d4bff8c722bba37a4841557a2a44a11f122c2",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "3cac1da912c5e361644b48c79488e3b36aafaa8a"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_secondary_retained_publication_consumer.py",
+      "sha256": "acd738f6c60ce424f1c7e8193b06b345b267650d8d99c634d251c26ada813740",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "f97b97314f0f6b700e6284be20156aff0862afd3"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_secondary_route_dispatch.py",
+      "sha256": "6641bd93bc6c31fe13d8ec413fde396bd3317d5200a6eeb58f9e29a38c47d49c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "ee16c57c9d149d2d85dfd7baf98448e53169969a"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_selected_route_creation.py",
+      "sha256": "f44bc03fde782843aa329cb97eb17a3d48c317d4422a7e738b31eb07febedfa5",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "a5d76f59fac11cc4de2a5320172b95cec22af218"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_session_group_disband_fence.py",
+      "sha256": "95583d82d40418a2b7130293e186e4314259010c11961bea21338d44cbf7ce9a",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "14ba6f860b663ce5830a9a21e16c285aa0a6ba6d"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_session_group_setup.py",
+      "sha256": "b41bc899585b296cdf679efc9c7cc20b5681bc6071f8c8264557140fd5902ef1",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "4d15fe7b9c34b0430d06ce755b416b66a0818c99"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_session_group_setup_target.py",
+      "sha256": "c07b1638d6c18e55856175883fd042050651fef75c08d37547281358482a8511",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "49f4fb5a56f1fedf24ad1e7c7503cb538ba44ba6"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_session_results_terminal_write_hook.py",
+      "sha256": "20a3b544a94531234c0d76e0ff04c50699130e6d479fbb4229a3d671e7c72b7c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "831a55d0e35422d469c7640840a1852bafceed91"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_verified_document_preparation.py",
+      "sha256": "4697c6ff0a8dbbf811815e7338b1ccdc21b3cb6814c633674ea04d959f5c2068",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "a0077566bc79d53a6cb13c413f00fb5d29ef8fbd"
+        }
+      ]
+    },
+    {
+      "path": "tests/gateway/test_verified_document_task_limits.py",
+      "sha256": "adebb3cd6ae6cd40cbf50e5c8271abf2666e53872f030571309e6cd86bf83433",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "ea33c3f7cc81d07ed6508630f520b3704eca6d41"
+        }
+      ]
+    },
+    {
+      "path": "tests/hermes_state/test_admission_input_custody.py",
+      "sha256": "024e74c83f23f8096da6b8a1b7a9e57b19490d57d86a366971ac2133dbf25d6c",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "4960f141207f47a3cb3bb4b766a68dd18e247462"
+        }
+      ]
+    },
+    {
+      "path": "tests/hermes_state/test_live_owner_connections.py",
+      "sha256": "1825ea9c1d4cfc37c698fab9a9f7cf31ec88ca65d7c3d73aad3f780b20404bab",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "6d5132bebd8946429de5825d79d86e8c297a8fba"
+        }
+      ]
+    },
+    {
+      "path": "tests/hermes_state/test_runtime_admission_guard.py",
+      "sha256": "b627ea96c8d5a705e5780aee34cc7049c7b7813eb25bd67cb145ba75974359f4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "b726490921e0964569c0a51ffc559bd008551ced"
+        }
+      ]
+    },
+    {
+      "path": "tests/hermes_state/test_runtime_terminal_write_hook.py",
+      "sha256": "bffe9b6a751f58f01349c2bc5c9df162b7da33f3b0325d6cafbe14e03e2fd0b4",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "43e3c471c585f8a89b9031e31b9047cab32083d6"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_groups_disband_fence.py",
+      "sha256": "694c18a5f39ba988d9a3820506b9b307d835f39ca453ed9f7e824d2d77f4e00b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "cd7c98542e7b8d8d5caa4f676c25a5df33fcc3ca"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_groups_grant_lifetimes.py",
+      "sha256": "0d49db7d5ad18dd4e273d017e3adc0179dd8312ac4576bbe40d35d6e5dcde501",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "b0753a495e94fdc7588a681fc7572bfab898390f"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_active_peer_renewal.py",
+      "sha256": "4219f0f0861d7ecd2fdb1729ca54e24dd230732f03a625af77f4adaa3a9fc870",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "e2531d165a96522cb52d853f4cc2c6e4295670f4"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_artifact_runtime_compatibility.py",
+      "sha256": "f4e6b6a17d1425f1ed36841c3fa456f4aa53eb306502107182fe837f732e2f11",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "d7b05887ab38c0122ca61c4cfad8fdfc7361e2d8",
+          "lines": [
+            1,
+            6
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "35d6574a4bf0de5fcffc745998f5d97a4537b851",
+          "lines": [
+            5,
+            7
+          ]
+        },
+        {
+          "join": "from gateway import hosted_rooms\nfrom gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE\n",
+          "reason": "Test fixture imports across Route/Files"
+        },
+        {
+          "source": "route",
+          "blob": "35d6574a4bf0de5fcffc745998f5d97a4537b851",
+          "lines": [
+            17,
+            18
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "d7b05887ab38c0122ca61c4cfad8fdfc7361e2d8",
+          "lines": [
+            8,
+            41
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "35d6574a4bf0de5fcffc745998f5d97a4537b851",
+          "lines": [
+            55,
+            73
+          ]
+        },
+        {
+          "source": "output",
+          "blob": "d7b05887ab38c0122ca61c4cfad8fdfc7361e2d8",
+          "lines": [
+            61,
+            92
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "35d6574a4bf0de5fcffc745998f5d97a4537b851",
+          "lines": [
+            20,
+            41
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "35d6574a4bf0de5fcffc745998f5d97a4537b851",
+          "lines": [
+            84,
+            140
+          ]
+        },
+        {
+          "source": "route",
+          "blob": "35d6574a4bf0de5fcffc745998f5d97a4537b851",
+          "lines": [
+            172,
+            351
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_backoff_scheduler.py",
+      "sha256": "6d02c625f5a845016368f06040f5780f88d5531313f02f7b608beb36487ff2d7",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "c5bc0af40ac324cf23d9c48390a7e70668dc2b35"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_grant_fingerprint.py",
+      "sha256": "439344c79e017fe4cec05d999774394a50dfe6f6f83f62b24a9783dbe1ca5700",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "2b3ebc2795c49b7f5339b872877a03ffeaea1112"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_idle_grant_renewal.py",
+      "sha256": "51b8340902cf9a5d0b1389c29c958f0508853612acd600dfa91154e6d068c275",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "eeb0cc5356d6c0a7ce661d31a4240a80f41330f7"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_nonadmission_proof.py",
+      "sha256": "8a38a62a023e2440cd751335972e379919450eb2f366433d1a36be940307cc5b",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "ed0f149c407128b1147755b2a9d545e2cd278cf2"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_reconnect_contract.py",
+      "sha256": "19355ad9b3394e403d12d2e81ff2f589c5df60e96a7ff8e2b0dac9dd71a8d316",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "236f102dd7a24e77bbd7423e97f5935f2784e473"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_refresh_observation.py",
+      "sha256": "241beedbf3f3677a9193727da35f3b3209884d12b054079efd39c19c586f33d9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "ed3f6e8e0d066e47248190dff3a14da0eb405025"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_renewal_scheduling.py",
+      "sha256": "18b4726fe09b957ff8b10e714affe2ead6cfca59bfcc55bd412436fe46d74237",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "bb394e3ccec92404c26fdd2a4fe97ddf695015e5"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_hosted_room_route_sync.py",
+      "sha256": "ebb35edc1c0fb7875fbdfcbbf8c6ef1f87cb16cee9f116804d87aba8a1683485",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "dcf6fcbffd73efa1b48fc079676445446cbe2e95"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_peer_preflight_driver_proof.py",
+      "sha256": "3cf475174e1828fdfe6cf831d7f4d2555047685ccc4fcb373588f1c550ff9545",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "ae4809fa0effac24e025fbf8c73a3e34788f0bf0"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_peer_refresh_admission.py",
+      "sha256": "f5426a2bc160a41afa72fd20f1674e43d5926bd8cfaf7c1e89087ca38a6c7b40",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "a0be9bde40ae5ce705129526c45377989f2d25c2"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_peer_refresh_reentrancy.py",
+      "sha256": "66ca7a6806a314542c9375ba567e04dbd2122f2c83f5d51b8cdd01aa178ad3e5",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "2fe012513c4e73de4d682d459e3d46899ac2a7ed"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_peer_revocation_receipts.py",
+      "sha256": "e29b51d70fb7d48fef631b30b735554646dea74d451106260d2e09257a79ffe0",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "8ea69ae730bae4286792b01eee9d8f9278e5ed05"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_roomlink_auth_probe_cooldown.py",
+      "sha256": "d88d3aa99f4c6cb36345666ab21ba1f12d28beee73bf3e545411679368d493cc",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "f08925d8c826e7022922ccfbbe6b0b04e9f4e818"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_roomlink_route_replacement.py",
+      "sha256": "7619fadcc2e7f82c7ce7423b613d068fe96f43674c5f9afd4d70e542641930fd",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "d06654fad384cc665297ec0b8cfd5cfbe72fc9a6"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_route_attachment_contract.py",
+      "sha256": "85b8754d2186c7fb553831ac57835bbaeecf9a919ce97f4e9de233b9ae5afa10",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "b25414b413c625cc2dcb0f4da654681af39e5dde"
+        }
+      ]
+    },
+    {
+      "path": "tests/tui_gateway/test_route_text_without_output.py",
+      "sha256": "5516eab5de8f0690eaa6af5b9667c0494b3dced7f27a05515800eb401ca32371",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "5f5445cf5e4b0aa64c4511f68545dadb1e6aab1e"
+        }
+      ]
+    },
+    {
+      "path": "tools/hosted_room_artifact.py",
+      "sha256": "881376326c9fcbf2cd6488326047e504c4d632a14b7110430a9e53fc57ad5a44",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "3e0380af2adf4a903db6acc8dc554f9afc0a5fda"
+        }
+      ]
+    },
+    {
+      "path": "tui_gateway/hosted_room_artifact_service.py",
+      "sha256": "2eadbbf867834e7f2e67651c94d0407e1495902f34dcc077c86d7ebc841a3279",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "20abc2efab37eef54711fac1f21622e74a455e9f"
+        }
+      ]
+    },
+    {
+      "path": "tui_gateway/hosted_room_peer_artifacts.py",
+      "sha256": "3fc4c4964b12380a747fa3d9e301ffe4988420e5a6c5211ab657a2ae6200d592",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "dcf7157d38b9a0b7db397109cdc2b63a1c870b5d"
+        }
+      ]
+    },
+    {
+      "path": "tui_gateway/hosted_room_peer_status.py",
+      "sha256": "79ca8b4064a61b420dad611db8875d047334a39485e276b3bd4d11823b4b1c51",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "route",
+          "blob": "a5c38c086f51a7a10b36c468245835102a663601"
+        }
+      ]
+    },
+    {
+      "path": "tui_gateway/hosted_room_secondary_catchup.py",
+      "sha256": "bd09af1d0524585e3a0e77e151ce78d2e72883bcd60873dc7d51ce12adb9c9a9",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "output",
+          "blob": "7e3026755e10f036223d7fb7e520e406c6af156f"
+        }
+      ]
+    },
+    {
+      "path": "website/docs/developer-guide/input-declared-composition-replay.md",
+      "sha256": "6f4be51801ad4ba671674955ef40e66a78c4d1eb68455816ed77b8e6d365a069",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "input",
+          "blob": "89ef5b368e9dbc9a01eeaa4dce0693db1a0728e6"
+        }
+      ]
+    },
+    {
+      "path": "website/docs/developer-guide/runtime-terminal-write-callback.md",
+      "sha256": "3a55abecccee48a3feb7e96548fdefc236546fd5986dc4610acba3bf2e5be3ab",
+      "mode": "100644",
+      "parts": [
+        {
+          "source": "runtime",
+          "blob": "f0a657fb8a37cf1a74612a3741e98b71e774b2f5"
+        }
+      ]
+    }
+  ]
+}
