@@ -1,6 +1,6 @@
 # Fault injection for the adversarial matrix
 
-Use this with `artifacts/ADVERSARIAL_MATRIX.md`. Sleeps, poll loops, and "wait until status looks settled" are not oracles.
+Use this with `artifacts/ADVERSARIAL_MATRIX.md`. Pins, ownership, and which rows stay OPEN are in that file's controller section. Sleeps, poll loops, and "wait until status looks settled" are not oracles. A supplier proof on `6f2aeb…` is not a pass of assembly target `cb8d692…`.
 
 ## Barrier
 

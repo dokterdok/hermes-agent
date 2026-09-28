@@ -1,8 +1,10 @@
 # Guards a frozen candidate still has to show
 
-R12 in `artifacts/ADVERSARIAL_MATRIX.md` re-checks this list on the frozen SHA. A later owner tip is not a superset because its date is later. Execute the behavior. An import or collection error is not a failing counterexample.
+R12 in `artifacts/ADVERSARIAL_MATRIX.md` re-checks this list on one frozen revision of assembly target `cb8d6920549ebe9d31f69f187d30b356b5639eed`. A later owner tip is not a superset because its date is later. Execute the behavior. An import or collection error is not a failing counterexample. A green result on supplier foundation `6f2aeb528fc6e8c9cee8ed1fa022a1c50c05829d` is not a cb8 pass.
 
-Symbols below exist on composition base `6f2aeb528fc6e8c9cee8ed1fa022a1c50c05829d`. On the frozen tree, follow the wire method if the function moved.
+Symbols below were located on that foundation. On the frozen tree, follow the wire method if the function moved. If the failing guard lives in `gateway/**`, `tui_gateway/**`, `hermes_state*.py`, or `agent/**`, the finding stays assigned to Barry. The consumer lane does not privately patch those trees.
+
+Controller pins, not the older handoff snapshots: Route `8a29b6d13bc558221130b4216a93f373afa68caf` (not `1fa3c0…`); Output recipe `23c5e66d0da21b46cc373993cd39dc2d7ab3929e` and implementation `31d00b0ed728e8d580aadf8a143cda3343752441`; Retention F1 `c9f0029475f085e3b5e66b77df74cd5470925aef` carried explicitly against recipe pin `004015d6087fe031231c4d7d9e0032cc59b679eb`. The older plan tip `4be9cb11…` is not the Output recipe pin.
 
 | Guard | Entry | Pass observation |
 |---|---|---|
@@ -20,5 +22,8 @@ Symbols below exist on composition base `6f2aeb528fc6e8c9cee8ed1fa022a1c50c05829
 | Wrong profile stops first | `dispatch_group_control` | `profile_mismatch` before any insert |
 | Desktop Retry keeps the generation | `session_group_controls` `groups.retry` | client `execution_generation` older than the stored row does not requeue. On this base the canonical caller passes `execution_generation` into `retry_room_task`, which accepts only `room_id` and `task_id`, and the runtime fences the loaded row. Dropping the extra keywords and retrying by `task_id` alone fails the row. The TUI `groups.retry` handler is not the Desktop path |
 | Client shutdown is not Stop | `HostedRoomRuntime.stop` | accepted task row stays non-terminal; only that runtime's threads are joined |
+| Route delegated Stop keeps the admitted generation | Route `8a29b6d…` six paths: `hosted_room_delegated_control`, driver, `hosted_rooms`, both TUI hosted-room modules, `test_hosted_room_delegated_control` | stop snapshots the attempt at fence admission; a later generation is not settled by the earlier ACK; uncertain stays uncertain. The 16/0 public replay is a supplier fixture, not a cb8 pass |
+| Retention F1 revocation survives the Output recipe | Retention `c9f0029…` beside recipe pin `004015d…` | a revoked or denied identity gains no execution authority. The historical recipe pass does not retire this row |
+| Control consent fails closed at the mutation | `begin_task_cancel` / `complete_task_cancel` / approve, while Permission successor is unpublished | no new task, run, or settled row without the consented mutation. A client that hides the control or fabricates consent fails the guard. Owner is Barry if the fence is missing in gateway or TUI |
 
-Compare input tips by these observations. Keep the stricter result. Do not drop a guard to match the tip that is currently checked out.
+Compare input tips by these observations. Keep the stricter result. Do not drop a guard to match the tip that is currently checked out. Do not treat `1fa3c0…` or `4be9cb11…` as the live Route or Output pins.

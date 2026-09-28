@@ -1,10 +1,63 @@
 # Adversarial matrix — BarryX Layers (#97681)
 
-Independent review artifact only. No product change. Written before the integrator freezes a candidate, against composition base `6f2aeb528fc6e8c9cee8ed1fa022a1c50c05829d` (2026-09-28).
+Independent review artifact only. No product change. No new PR. Symbol locators were read on supplier-proof foundation `6f2aeb528fc6e8c9cee8ed1fa022a1c50c05829d`. The assembly target is public #106742 `cb8d6920549ebe9d31f69f187d30b356b5639eed` (NousResearch/hermes-agent; never push). A green result on 6f2aeb is not a pass of cb8d692. Pins and ownership below follow immutable CONTROLLER_INPUTS v1 and supersede conflicting assignment or handoff pins.
 
-Each row is a falsifier for that frozen tree. Pass means the persisted oracle below holds on that tree after a barrier fault and a real process restart where the row requires one. A green unit test, a success boolean, an in-memory dict, or a `localStorage` write does not pass a row. A missing registered path on the frozen tree fails the row. Renamed helpers still count: follow the wire method to the store it opens, and record that path.
+Each row is a falsifier for one frozen candidate revision. Pass means the persisted oracle below holds on that revision after a barrier fault and a real process restart where the row requires one. A green unit test, a success boolean, an in-memory dict, or a `localStorage` write does not pass a row. A missing registered path on the frozen tree fails the row. Renamed helpers still count: follow the wire method to the store it opens, and record that path. Supplier proofs on 6f2aeb, and a fixture replay of a supplier, are not automatic cb8 passes. No cb8 composed behavioral gate has run. Every row below stays OPEN until it is executed on the frozen assembly candidate.
 
 Injection rules live in `artifacts/FAULT_INJECTION.md`. The guard list a composition must still satisfy lives in `artifacts/SIBLING_GUARDS.md`.
+
+## Controller pins and ownership
+
+Authoritative handoff: CONTROLLER_INPUTS v1 (DAVID-LAYERS-RUNNABLE-FINISH-20260928 and DAVID-BARRYX-BRIEF-DELIVERED-20260928-151808). Original controller `20260908_093606_d3e087`. Preserve this snapshot. A changed supplier needs a successor, not a silent pin swap. Direction gist `765f9d551ce88ee01630c18367763e75` revision `70a69b7844871ed696637cecfcfa365ea7ce6e7a`.
+
+### Assembly target vs supplier foundation
+
+| Role | Pin | What a result on it means |
+|---|---|---|
+| Assembly target #106742 | `cb8d6920549ebe9d31f69f187d30b356b5639eed` | The revision these rows are judged against. Never push to that repository. |
+| Supplier proof foundation | `6f2aeb528fc6e8c9cee8ed1fa022a1c50c05829d` | Recipes, prior results, and the symbol names in R1–R13. Proofs of this foundation plus explicit overlays. Not proofs of cb8d692. |
+| Integration carrier #98307 | `cb657c411cda8a3b645e9cbfa2a2c8df5ef9d4c5` | Not the new runnable candidate. Permanent draft. Barry alone publishes. Never push local `ec34dfc4f6d122503c5f578922a9525bbbc6c193`. |
+
+Inspected authority, gateway runtime, ACP, hosted-room, and `hermes_state.py` surfaces had no source delta between cb8d692 and 6f2aeb. The trees are not equal: cb8 carries client, build, history, and other Runtime changes. Exactly two Output-recipe product paths intersect that upstream set: `gateway/session_policy.py` and `hermes_state_runtime.py`. Those joins stay Barry/backend-owned. Preserve upstream null-section normalization and canonical row, snapshot, and timestamp annotations (absent stamps are removed, not written by a simple dict update) and retain owner admission and history guards. Do not overwrite either file with an older full copy.
+
+### Supplier pins the rows use
+
+| Owner | Pin | Matrix use |
+|---|---|---|
+| Runtime #111216 | `041ae76f80ba2330ef6f1b7b961adc08e59a1877` | Admission, lifetime, and terminal metadata. |
+| Route #100016 | `8a29b6d13bc558221130b4216a93f373afa68caf` | Supersedes assignment snapshot `1fa3c0…`. Delegated Stop snapshots the exact attempt at fence admission, uses transactional generation guards, persists honest uncertain and settled receipts, and guards physical lifetime before authority reads. Approval captures once and never resends uncertainty. Six declared paths: `gateway/hosted_room_delegated_control.py`, `gateway/hosted_room_driver.py`, `gateway/hosted_rooms.py`, `tui_gateway/hosted_room_driver.py`, `tui_gateway/hosted_room_service.py`, `tests/tui_gateway/test_hosted_room_delegated_control.py`. A public Messaging-recipe replay of those paths is a supplier fixture, not the cb8 or Desktop stack. |
+| Output #99159 recipe | `23c5e66d0da21b46cc373993cd39dc2d7ab3929e` | Composition contract. Public `docs/layers-output-journey/` (`materialize.py`, `plan.json`, `JOIN_CONTRACTS.md`, `README.md`), 243 paths. The older plan tip `4be9cb11…` is not this pin. |
+| Output #99159 implementation | `31d00b0ed728e8d580aadf8a143cda3343752441` | Owner behavior the recipe composes. Recipe and implementation are each a supplier, not a cb8 pass. |
+| Retention #99107 F1 | `c9f0029475f085e3b5e66b77df74cd5470925aef` | Carry explicitly. The Output recipe still pins older `004015d6087fe031231c4d7d9e0032cc59b679eb`. A historical recipe pass does not prove the later F1 union. |
+| Input #111362 | `a05c7d2fc9c16f7d1a5d6bf8ecb8e6f3365ca462` | Retained input and custody. |
+| Files transport #98072 | `9f143dedd82a6da452d20d1cace4869b23b14ada` | Distinct from classic Files. |
+| Classic Files #104198 | `3cc3eb71b011c1d58aa6e87e1bda3e422093a074` | Independent backend owner. |
+| Desktop Files #104199 | `3537e93cf89013e234e7980e7cf83fcd44319885` plus test `d99c30e45f2519faa582e4d6b61f2b429411bf77` | Recipe foundation is not cb8 acceptance. The declared inherited availability-test failure stays declared. |
+| Preservation #104601 | `ab1414260a79b7a9c4415576f23fb2d1e8dd97fc` | Accepted F1 revocation correction. Not blanket recovery completion. |
+| Permission #111939 | baseline `34332b47b3fb3c8394879e7179e157b89be115de` | Read and Send are not Stop, approve, or deny. Control consent is PENDING. No immutable successor. |
+| Messaging #98073 | `d4d9f905e8123eea38ad81c4cdd6ac44257315d8` | Published private list, Send, ACK, detail. Thin control commands are in flight. |
+| Desktop #97846 | `5211890fb87b626c9ba569910375707530c3a2cc` | Current owner fixes and ancestry, not only an older recipe baseline. |
+| Recovery #105079 | `c63f938278b9d6c4072191b0ea936a7762c5881b` | Scoped increment. Host-loss and exclusive successor stay incomplete. |
+| Connect #109338 | `acf21665bcecf0edf27e117a35b9338a34f567c3` | History-held. Not a reviewed replacement. Do not import inherited lower changes as owner work. |
+
+Local-only, not public, and not copied into the consumer: canonical stop-ack `8461351e856450f33f6ed80a41b0d7e81b47fa59` (a joined-test timeout is retained; that journey is not repeatably green); shipped-history importer `cc69090b8875f6c338fccb09d45f0cf2dfa8440b`; mutable checkout `c7f03671123f24342adc7be8600f72f286ea154f` plus a pending `hermes_constants.py`. That HEAD alone is not the local proof.
+
+### Write-set and finding ownership
+
+The consumer lane must not privately patch `gateway/**`, `tui_gateway/**`, `hermes_state*.py`, `agent/**`, `acp_adapter/**`, `tools/**`, or `hermes_cli/**`. BarryX's isolated write set is client and integration only: `apps/desktop/**`, `apps/shared/**`, and new scripts, tests, and docs under a task-local root. Lab builds may consume public immutable sources. A nontrivial backend merge conflict, including the two cb8 overlaps, returns to Barry.
+
+If an oracle fails inside a reserved tree, the finding stays assigned to Barry. A Desktop-only change that hides Stop, approve, or deny, or that synthesizes consent, does not pass the row. Record one candidate revision per result. Do not sum tests across tuples.
+
+### Rows that stay OPEN
+
+| Surface | Status | What a pass requires |
+|---|---|---|
+| A3 / R9, and any Stop, approve, or deny effect inside R6 | PENDING control consent | The mutation itself fails closed: no new task, run, or settled row; uncertain work stays uncertain. A client that omits the control or fabricates consent fails the row. |
+| A5 / R8 native Save and Cancel destination bytes | HELD / unexecuted | Electron `saveGatewayDownload` remains the falsifier for the Electron path. Windows native proof stays unexecuted unless separately admitted and this oracle is run. |
+| A6 / R4 cross-room and history | OPEN. Connect #109338 is history-held | `acf21665…` is not a replacement candidate. |
+| A7 / R10 promote and host-loss | OPEN. Recovery `c63f9382…` is scoped only | No unauthorized takeover. Exclusive-successor and host-loss stay open. |
+
+Every other row stays OPEN until executed on the frozen cb8 assembly candidate. A 6f2aeb supplier proof does not close it.
 
 ## Index
 
@@ -17,9 +70,9 @@ Injection rules live in `artifacts/FAULT_INJECTION.md`. The guard list a composi
 | R5 | Valid credentials for the wrong profile | First vertical |
 | R6 | Revocation between preparation and effect | Later A1 / A3 |
 | R7 | Two same-name file versions, including the earlier one after reconnect, plus a late selection reply | First vertical |
-| R8 | Partial write, cancel, pre-existing destination | Later A5 (native Windows stays unexecuted unless separately admitted) |
-| R9 | Old Stop vs new work; ambiguous Stop vs confirmed stopped | Later A3 / A7 |
-| R10 | Gateway absence, return, unknown accepted work, stale/passive copies | First vertical (continue while Desktop is closed) and later A2 / A7 (promotion) |
+| R8 | Partial write, cancel, pre-existing destination | Later A5 (native Save/Cancel destination bytes HELD / unexecuted) |
+| R9 | Old Stop vs new work; ambiguous Stop vs confirmed stopped | Later A3 / A7 (control consent PENDING; fail closed at the mutation) |
+| R10 | Gateway absence, return, unknown accepted work, stale/passive copies | First vertical (continue while Desktop is closed). Promote and host-loss stay OPEN (A2 / A7) |
 | R11 | Missing or replaced stores, stale caller state, fail closed | Later A1 / A7 |
 | R12 | Branch composition drops an earlier guard; a later sibling is not a superset | Freeze precondition for the first journey, then again for each later group |
 | R13 | Teardown and native helpers touch only task-owned resources | First vertical |
@@ -166,7 +219,7 @@ This is the prior BarryX defect: settlement committed, the secondary obligation 
 
 **User invariant.** A cancel or a torn write leaves the sentinel bytes in place and creates no successful destination. A partial blob is not downloadable as the attachment.
 
-**Real entry point.** `_write_blob`; `saveGatewayFile` in `apps/desktop/electron/main.ts` → `saveGatewayDownload` → `finalizeGatewayDownload`. Native Windows Save/Cancel is outside the default tranche unless separately admitted. This row still applies to the Electron path that exists on the base. Claiming Windows proof without this oracle fails the row as unexecuted.
+**Real entry point.** `_write_blob`; `saveGatewayFile` in `apps/desktop/electron/main.ts` → `saveGatewayDownload` → `finalizeGatewayDownload`. Native Windows Save/Cancel destination-byte proof is HELD / unexecuted (commit-headroom). It is not green unless separately admitted and this oracle is run on that host. The Electron path on the foundation remains the falsifier for the shipped Electron save. Claiming Windows proof without the destination-byte oracle fails the row as unexecuted. A missing guard inside `gateway/**` stays assigned to Barry.
 
 **Observable.** Sentinel file bytes and size unchanged. No new file at `destPath` on cancel (`saved: false` is insufficient; the directory listing is the oracle). No `hosted_room_attachments` row in `committed` for the killed `upload_id`. `read` of a missing blob raises `AttachmentIntegrityError` and returns no bytes. A leftover `.tmp-*` or `.part` file is not served. An exclusive-create collision (`EEXIST`) leaves the foreign file at that temp path in place.
 
@@ -175,6 +228,8 @@ This is the prior BarryX defect: settlement committed, the secondary obligation 
 ---
 
 ## R9 — Stop generations
+
+**Status.** OPEN. Permission #111939 baseline `34332b47…` covers Read and Send, not Stop, approve, or deny. Messaging #98073 `d4d9f905…` is the published list→Send→ACK→detail proof. Independent control consent is PENDING, with no immutable successor. A pass requires the mutation itself to fail closed while that successor is unpublished. A client that hides Stop, approve, or deny, or that synthesizes consent, fails the row. If `begin_task_cancel`, `complete_task_cancel`, or the approve path lacks that fence, the finding stays assigned to Barry. Route pin `8a29b6d…` is the delegated-stop supplier, not a cb8 pass.
 
 **Failure boundary.** Two cuts.
 
@@ -192,6 +247,8 @@ This is the prior BarryX defect: settlement committed, the secondary obligation 
 ---
 
 ## R10 — Gateway absence, return, unknown work, stale copies
+
+**Status.** The Desktop-close and member-absence half is part of the first journey and stays OPEN until executed on the frozen cb8 candidate. The promote, replica, and host-loss half stays OPEN. Recovery #105079 `c63f9382…` is a scoped increment, not takeover approval and not exclusive-successor completion. Connect history publication does not close this row. Do not copy local-only stop-ack `8461351…` into the consumer or describe that journey as repeatably green. A finding that needs `gateway/**`, `tui_gateway/**`, or `hermes_state*.py` stays assigned to Barry.
 
 **Failure boundary.** After a task is admitted, kill the member gateway or drop its socket. Leave the home gateway up. Close the disposable Desktop. Later, start the member gateway again from the same home, and also offer a stale replica page to the home.
 
@@ -221,7 +278,14 @@ This is the prior BarryX defect: settlement committed, the secondary obligation 
 
 ## R12 — Composition drops a guard; a later sibling is not a superset
 
-**Failure boundary.** Freeze one candidate SHA. Re-run R1–R11 on that tree. Separately, compare behavior of the composed files with each owner tip the integrator actually merged (handoff pins are starting points, not proof of supersets: Output plan tip `4be9cb11031f3001929fd74cadb8f20b097cbf08` vs recipe `23c5e66…`, Desktop `5211890fb87b626c9ba569910375707530c3a2cc`, Desktop Files `3537e93cf89013e234e7980e7cf83fcd44319885`). Judge the stricter oracle. Commit dates and PR titles are not evidence.
+**Failure boundary.** Freeze one candidate revision of assembly target `cb8d692…` plus the declared supplier deltas. Re-run R1–R11 on that revision. A result recorded on `6f2aeb…` does not transfer. Compare the composed behavior with each controller pin the candidate claims, and keep the stricter oracle:
+
+- Route `8a29b6d13bc558221130b4216a93f373afa68caf`, not assignment snapshot `1fa3c0…`.
+- Output recipe `23c5e66d0da21b46cc373993cd39dc2d7ab3929e` and implementation `31d00b0ed728e8d580aadf8a143cda3343752441`. The older plan tip `4be9cb11…` is not the recipe pin.
+- Retention F1 `c9f0029475f085e3b5e66b77df74cd5470925aef` carried explicitly against Output-recipe pin `004015d6087fe031231c4d7d9e0032cc59b679eb`. The historical recipe pass does not prove the later F1 union.
+- Desktop `5211890fb87b626c9ba569910375707530c3a2cc` and Desktop Files `3537e93cf89013e234e7980e7cf83fcd44319885`.
+
+A later sibling is not a superset. Commit dates and PR titles are not evidence. Backend guard loss inside `gateway/**`, `tui_gateway/**`, `hermes_state*.py`, or `agent/**` is a finding for Barry, not a consumer patch.
 
 **User invariant.** Every guard that was true on an input tip the candidate claims to include is still true on the frozen tree. A newer tip that lost a guard does not erase the older tip's obligation.
 
@@ -266,12 +330,12 @@ The first proving journey is: two independently identified gateways, a hosted gr
 
 | Rows | Group | Why it stays later |
 |---|---|---|
-| R6 | A1 foundations, A3 messaging | Revocation at the effect boundary is a permission journey, not the reopen journey |
-| R8 | A5 Desktop/Files | Cancel, partial write, and sentinel destinations. Native Windows Save/Cancel stays unexecuted unless a later admission runs this oracle on that host |
-| R9 | A3 messaging, A7 recovery | Stop generation fences and ambiguous vs confirmed stop. The first journey does not Stop |
-| R10 promote / replica half | A2 peer, A7 recovery | Passive copy must not become authority. Host-loss takeover stays with Barry |
+| R6 | A1 foundations, A3 messaging | Revocation at the effect boundary is a permission journey, not the reopen journey. Stop, approve, and deny effects stay PENDING with R9: fail closed at the mutation |
+| R8 | A5 Desktop/Files | Cancel, partial write, and sentinel destinations. Native Save/Cancel destination bytes are HELD / unexecuted |
+| R9 | A3 messaging, A7 recovery | OPEN. Control consent is PENDING. Stop generation fences and ambiguous vs confirmed stop. The first journey does not Stop. A client workaround is not a pass |
+| R10 promote / replica half | A2 peer, A7 recovery | OPEN. Passive copy must not become authority. Host-loss is incomplete. Recovery `c63f9382…` does not approve takeover |
 | R11 | A1, A7 | Missing and replaced stores. The first journey uses live disposable stores |
-| R4 cross-room / foreign-owner half | A4 session, A6 connect | Same-room reopen is in the first journey. A reply landing in a different room or epoch is later |
-| R12 again | Each group as it is claimed | Re-run the oracles for the guards that group owns. A pass of the first journey does not retire R12 |
+| R4 cross-room / foreign-owner half | A4 session, A6 connect | OPEN. Same-room reopen is in the first journey. Connect #109338 `acf21665…` is history-held, not a reviewed replacement |
+| R12 again | Each group as it is claimed | Re-run the oracles for the guards that group owns, on the frozen cb8 revision. A pass of the first journey, or a 6f2 supplier proof, does not retire R12 |
 
-Shipped Group Chat upgrade, native Windows destination proof, and A7 exclusive-successor fencing are out of this matrix's first journey. They stay blocked until their supplier tuple is the frozen tree and their rows above have been executed. They are not passed by omission.
+Shipped Group Chat upgrade, native Windows Save/Cancel destination bytes, A3 control consent, A6 Connect history publication (#109338), and A7 host-loss / exclusive-successor fencing stay outside a shown first journey. They remain OPEN. They are not passed by omission, by a supplier proof on `6f2aeb…`, or by a client workaround. Findings that need `gateway/**`, `tui_gateway/**`, `hermes_state*.py`, or `agent/**` stay assigned to Barry.
