@@ -99,6 +99,7 @@ import {
   beginHostedRoomMutation,
   checkHostedRoomGateway,
   disbandHostedGroupChat,
+  groupChatContinuityReady,
   markHostedRoomLocallyDeleted,
   readHostedGroupChatAttachment,
   renameHostedGroupChat,
@@ -546,7 +547,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const gateway = useValue(host.state.gateway)
   const activationEpoch = gatewayActivationEpoch()
   const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
-  const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
+  const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode; responded?: boolean } | null>(null)
   const [ownerChoices, setOwnerChoices] = useState<ShippedGroupOwnerChoice[]>([])
   const [ownerChoiceBusy, setOwnerChoiceBusy] = useState(false)
   const [ownerChoiceError, setOwnerChoiceError] = useState('')
@@ -579,7 +580,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     void canonicalGroupRequest<unknown>({ connectionId: connectionId ?? '', profile }, 'groups.capabilities')
       .then(result => {
         if (!cancelled) {
-          setCapability({ source, mode: groupExecutionMode(result) })
+          setCapability({ source, mode: groupExecutionMode(result), responded: true })
         }
       })
       .catch(() => {
@@ -668,7 +669,13 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     }
   }
 
-  if (mode === 'legacy' && !adoptionHeld) {
+  // A retained classic room uses session RPCs, not the canonical room driver.
+  // A confirmed importer-only preflight limitation must not remove its composer.
+  const retainedClassicReady = room?.shippedPreflight?.issue?.kind === 'update-required' &&
+    gateway === 'open' && capability?.source === source && capability.responded &&
+    groupChatContinuityReady(room)
+
+  if ((mode === 'legacy' || retainedClassicReady) && !adoptionHeld) {
     return <LegacyGroupChatWorkspace {...props} />
   }
 
