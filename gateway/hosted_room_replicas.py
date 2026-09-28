@@ -18,7 +18,7 @@ import json
 import sqlite3
 from contextlib import closing, contextmanager
 from functools import partial
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from gateway.hosted_rooms import (
     MAX_ACTOR_ID_CHARS, HostedRoomError, RoomConflictError, _actor_json, _connect, _payload_json, _room_id,
@@ -57,12 +57,25 @@ def _initialize_replica_schema(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _replica_transaction(db_path: DbPath) -> Iterator[sqlite3.Connection]:
-    """Ensure the replica schema (own autocommit connection), then open an IMMEDIATE transaction. The DDL is
-    deliberately re-run inside the transaction: that double init is the established statement order."""
+def _replica_transaction(
+    db_path: DbPath,
+    _authorize: Callable[[sqlite3.Connection], None] | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """Ensure the replica schema, then open an IMMEDIATE transaction.
+
+    The DDL is deliberately re-run inside the transaction: that double init is
+    the established runtime statement order. ``_authorize`` is the retention
+    admission callback (#99107 ``c9f0029475``). It runs after the writer lock is
+    held and before the in-transaction schema init, so a refusal rolls back
+    writer effects and never reaches the body. The prelude stays outside that
+    fence. Audit-on-open remains with safety schema init; this writer does not
+    grow a second maintenance pass.
+    """
     with closing(_connect(db_path)) as conn, conn:
         _initialize_replica_schema(conn)
     with _transaction(db_path, immediate=True) as conn:
+        if _authorize is not None:
+            _authorize(conn)
         _initialize_replica_schema(conn)
         yield conn
 
