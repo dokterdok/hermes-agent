@@ -206,6 +206,42 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+describe('gateway transition ownership', () => {
+  it('runs one ordered transition per enable and none after disposal', async () => {
+    const { host } = await import('@hermes/plugin-sdk')
+    const { handleSessionsGatewayTransition } = await import('./group-chat')
+    const gateway = atom('closed')
+    const listen = vi.spyOn(host.state.gateway, 'listen').mockImplementation(gateway.listen as never)
+    paneStores()
+    const harnesses: ReturnType<typeof recordingContext>[] = []
+
+    try {
+      for (const state of ['open', 'closed']) {
+        const harness = recordingContext()
+        harnesses.push(harness)
+        plugin.register(harness.ctx)
+        await vi.waitFor(() => expect(mocks.startDesktopRoomCommandRuntime).toHaveBeenCalled())
+        vi.mocked(handleSessionsGatewayTransition).mockClear()
+        mocks.stopDesktopRoomCommandRuntime.mockClear()
+        gateway.set(state)
+        expect(handleSessionsGatewayTransition).toHaveBeenCalledTimes(1)
+        expect(mocks.stopDesktopRoomCommandRuntime.mock.invocationCallOrder[0])
+          .toBeLessThan(vi.mocked(handleSessionsGatewayTransition).mock.invocationCallOrder[0])
+        await settle()
+        harness.dispose()
+        harnesses.pop()
+        vi.mocked(handleSessionsGatewayTransition).mockClear()
+        gateway.set(`${state}-disposed`)
+        expect(handleSessionsGatewayTransition).not.toHaveBeenCalled()
+        mocks.startDesktopRoomCommandRuntime.mockClear()
+      }
+    } finally {
+      harnesses.forEach(harness => harness.dispose())
+      listen.mockRestore()
+    }
+  })
+})
+
 describe('the Bots pane dock', () => {
   it('renders its tab label from the live locale, not the register-time string', () => {
     paneStores()

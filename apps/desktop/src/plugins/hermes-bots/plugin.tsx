@@ -452,7 +452,6 @@ export default {
     // duplicate listener per cycle (same survives-disable class as the face
     // clock before its onDispose hook — these kept firing until app restart).
     const unbindProfileListener = bindProfileSync($focusedBotOwner)
-    unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
 
     // The composer's @ picker reads the roster cache synchronously; fill it on
     // the first gateway open so cross-connection bots complete before the Bots
