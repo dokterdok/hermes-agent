@@ -23,7 +23,8 @@ it('opens the existing Group settings from the roster context menu', async () =>
     needsYou: false,
     onDisband: vi.fn(),
     onOpen: vi.fn(),
-    onSettings
+    onSettings,
+    onNewSection: vi.fn()
   }
 
   render(<GroupRow {...props} />)
