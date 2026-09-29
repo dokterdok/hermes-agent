@@ -230,6 +230,10 @@ export type BotsMessages = {
     settingsTitle: string
     settingsDesc: string
     nameLabel: string
+    settingsRenameBusy: string
+    settingsRenameReadOnly: string
+    settingsRoomUnavailable: string
+    settingsSaveFailed: string
     holdDetection: string
     holdDetectionHint: string
     compressHistory: string
@@ -732,6 +736,10 @@ const en: BotsMessages = {
     settingsTitle: 'Group settings',
     settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
     nameLabel: 'Group name',
+    settingsRenameBusy: 'The name cannot change while this Group Chat is busy.',
+    settingsRenameReadOnly: 'The name cannot change while this Group Chat is read-only.',
+    settingsRoomUnavailable: 'This Group Chat is no longer available. Changes were not saved.',
+    settingsSaveFailed: 'Could not save these settings. Your changes are still here.',
     holdDetection: 'Detect stop directives',
     holdDetectionHint: 'Let room messages put addressed members on hold until they are mentioned again.',
     compressHistory: 'Compress history',
