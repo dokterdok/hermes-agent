@@ -16,14 +16,20 @@ const image = (data: string, name = 'proof.png'): Attachment => ({
   name
 })
 
+function owned(request: (route: ProfileRoute, method: string, params?: Record<string, unknown>) => Promise<unknown>) {
+  return {
+    assertCurrent: () => undefined,
+    request: async <T>(method: string, params?: Record<string, unknown>) => (await request(ROUTE, method, params)) as T
+  }
+}
+
 describe('hosted Group Chat attachment client', () => {
   it('rejects count and aggregate limits before the first upload', async () => {
     const request = vi.fn()
 
     await expect(
       stageHostedMessageAttachments(
-        request,
-        ROUTE,
+        owned(request),
         'room-1',
         Array.from({ length: 9 }, (_, index) => image('YQ==', `proof-${index}.png`))
       )
@@ -33,7 +39,7 @@ describe('hosted Group Chat attachment client', () => {
     const thirteenMb = 'A'.repeat(Math.ceil(13_000_000 / 3) * 4)
 
     await expect(
-      stageHostedMessageAttachments(request, ROUTE, 'room-1', [
+      stageHostedMessageAttachments(owned(request), 'room-1', [
         image(thirteenMb, 'first.png'),
         image(thirteenMb, 'second.png')
       ])
@@ -101,7 +107,7 @@ describe('hosted Group Chat attachment client', () => {
       })
       .mockRejectedValueOnce(new Error('connection lost'))
 
-    await expect(stageHostedMessageAttachments(request, ROUTE, 'room-1', attachments)).rejects.toThrow(
+    await expect(stageHostedMessageAttachments(owned(request), 'room-1', attachments)).rejects.toThrow(
       'connection lost'
     )
     expect(request).toHaveBeenCalledTimes(2)
@@ -128,7 +134,7 @@ describe('hosted Group Chat attachment client', () => {
         }
       })
 
-    await expect(stageHostedMessageAttachments(request, ROUTE, 'room-1', attachments)).resolves.toHaveLength(2)
+    await expect(stageHostedMessageAttachments(owned(request), 'room-1', attachments)).resolves.toHaveLength(2)
     expect(request.mock.calls.map(call => call[2].upload_id)).toEqual(firstAttemptIds)
   })
 

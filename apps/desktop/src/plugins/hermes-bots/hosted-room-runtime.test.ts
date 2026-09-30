@@ -77,6 +77,16 @@ function hostedEvent(
   }
 }
 
+// Minimum identity-bearing groups.send projection from methods_groups.py.
+// A matching receipt confirms the same-key replay, not just a generic success.
+function sendReceipt(params: Record<string, unknown>) {
+  return {
+    accepted: true,
+    client_event_id: params.event_id,
+    event: { kind: 'message.user', room_id: params.room_id }
+  }
+}
+
 async function loadRuntime(
   handler: (
     method: string,
@@ -100,6 +110,16 @@ async function loadRuntime(
     delete host[key]
   }
 
+  const requestProfile = async (route: Record<string, unknown>, method: string, params: Record<string, unknown>) => {
+    calls.push({
+      connectionId: String(route?.connectionId || ''),
+      method,
+      params
+    })
+
+    return handler(method, params, route)
+  }
+
   Object.assign(host, {
     activeConnectionId: () => 'gateway-a',
     notify: vi.fn(),
@@ -112,14 +132,32 @@ async function loadRuntime(
 
       return handler(method, params)
     },
-    requestProfile: async (route: Record<string, unknown>, method: string, params: Record<string, unknown>) => {
-      calls.push({
-        connectionId: String(route?.connectionId || ''),
-        method,
-        params
-      })
+    requestProfile,
+    // Fixed endpoints only: capture this route rather than resolving it again.
+    // Real SDK/registry replacement and ABA coverage remains in the SDK tests.
+    acquireProfileRoute: async (route: Record<string, unknown>) => {
+      const captured = Object.freeze({ ...route })
+      let released = false
 
-      return handler(method, params, route)
+      const assertCurrent = () => {
+        if (released) {
+          throw new Error('Route lease has been released')
+        }
+      }
+
+      return {
+        generation: 1,
+        route: captured,
+        assertCurrent,
+        release: () => {
+          released = true
+        },
+        request: (method: string, params: Record<string, unknown> = {}) => {
+          assertCurrent()
+
+          return requestProfile(captured, method, params)
+        }
+      }
     },
     state: {
       connectionId: {
@@ -734,7 +772,7 @@ describe('hosted Group Chat runtime', () => {
   })
 
   it('persists send, stop, and disband commands before dispatch and acknowledges them idempotently', async () => {
-    const loaded = await loadRuntime(method => {
+    const loaded = await loadRuntime((method, params) => {
       if (method === 'groups.capabilities') {
         return {
           driver: true,
@@ -759,10 +797,16 @@ describe('hosted Group Chat runtime', () => {
         }
       }
 
-      if (method === 'groups.send' || method === 'groups.stop' || method === 'groups.disband') {
-        return {
-          ok: true
-        }
+      if (method === 'groups.send') {
+        return sendReceipt(params)
+      }
+
+      if (method === 'groups.stop') {
+        return { cancelled: 1 }
+      }
+
+      if (method === 'groups.disband') {
+        return { tombstone: { room_id: params.room_id } }
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -956,7 +1000,7 @@ describe('hosted Group Chat runtime', () => {
     let releaseFirstSend: () => void = () => undefined
     let firstSend = true
 
-    const loaded = await loadRuntime(method => {
+    const loaded = await loadRuntime((method, params) => {
       if (method === 'groups.capabilities') {
         return {
           driver: true,
@@ -975,17 +1019,12 @@ describe('hosted Group Chat runtime', () => {
         firstSend = false
 
         return new Promise(resolve => {
-          releaseFirstSend = () =>
-            resolve({
-              ok: true
-            })
+          releaseFirstSend = () => resolve(sendReceipt(params))
         })
       }
 
       if (method === 'groups.send') {
-        return {
-          ok: true
-        }
+        return sendReceipt(params)
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -1058,7 +1097,7 @@ describe('hosted Group Chat runtime', () => {
       let available = false
       let accepted = 0
 
-      const loaded = await loadRuntime(method => {
+      const loaded = await loadRuntime((method, params) => {
         if (method === 'groups.capabilities') {
           return {
             driver: true,
@@ -1080,7 +1119,7 @@ describe('hosted Group Chat runtime', () => {
 
           accepted += 1
 
-          return { ok: true }
+          return kind === 'send' ? sendReceipt(params) : { tombstone: { room_id: params.room_id } }
         }
 
         throw new Error(`unexpected method: ${method}`)
@@ -1634,7 +1673,7 @@ describe('hosted Group Chat runtime', () => {
       releaseLog = () => resolve({ events: [], has_more: false, latest_seq: 0 })
     })
 
-    const loaded = await loadRuntime(method => {
+    const loaded = await loadRuntime((method, params) => {
       if (method === 'groups.capabilities') {
         return {
           authority_gateway_id: 'install:home',
@@ -1682,8 +1721,12 @@ describe('hosted Group Chat runtime', () => {
         return heldLog
       }
 
-      if (method === 'groups.send' || method === 'groups.stop') {
-        return { ok: true }
+      if (method === 'groups.send') {
+        return sendReceipt(params)
+      }
+
+      if (method === 'groups.stop') {
+        return { cancelled: 1 }
       }
 
       throw new Error(`unexpected method: ${method}`)

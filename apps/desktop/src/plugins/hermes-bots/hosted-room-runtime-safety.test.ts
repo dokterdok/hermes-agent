@@ -192,6 +192,7 @@ describe('hosted Group Chat client safety', () => {
     remoteAttachments = true
     await expect(loaded.runtime.probeHostedRoomMembers(members)).resolves.toMatchObject({ attachmentParity: true })
     remoteAttachments = false
+    await loaded.runtime.startHostedRoomRuntime(loaded.storage)
     loaded.chat.$groupChats.set({
       Distributed: room({ continuityMode: 'distributed', members })
     })
@@ -202,6 +203,7 @@ describe('hosted Group Chat client safety', () => {
     ).rejects.toThrow('cannot reach builder')
     expect(loaded.calls.some(call => call.method === 'groups.attachment.put')).toBe(false)
     expect(loaded.chat.$groupChats.get().Distributed.log).toEqual([])
+    loaded.runtime.stopHostedRoomRuntime()
   })
 
   it('probes member gateways concurrently before a file send', async () => {

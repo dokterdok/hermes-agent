@@ -8,7 +8,11 @@ import {
   resetHostedRoomApprovalState,
   resolveHostedRoomApprovalAttention
 } from './hosted-room-approval-state'
-import { readHostedMessageAttachment, stageHostedMessageAttachments } from './hosted-room-attachments-client'
+import {
+  acquireHostedAttachmentRoute,
+  readHostedMessageAttachment,
+  stageHostedMessageAttachments
+} from './hosted-room-attachments-client'
 import { $hostedRoomCapabilities } from './hosted-room-capability-state'
 import {
   addHostedRoomCleanup,
@@ -1172,71 +1176,169 @@ export async function createAutonomousHostedGroupChat({
   }
 }
 
-async function hostedGroupChatSendCommand(group: string, message: GroupMessage, thread: string) {
+async function enqueueHostedGroupChatSend(group: string, message: GroupMessage, thread: string) {
+  // Capture before waiting for command order, discovery or any upload. A
+  // restarted runtime/renamed-or-replaced room cannot adopt this producer.
   const room = $groupChats.get()[group]
+  const roomId = String(room?.roomId || '')
+  const authorityId = groupChatHostedGateway(room)
+  const connectionId = String(room?.hostedConnectionId || '')
+  const epoch = room?.hostedEpoch
+  const lifecycle = hostedRoomLifecycleToken()
+  const storage = hostedRoomStorage
+  let retired = false
 
-  if (!room?.roomId || !groupChatHostedGateway(room)) {
-    throw new Error(botsText().group.hostRouteMissing)
+  const matchesRoom = () => {
+    const live = $groupChats.get()[group]
+
+    return Boolean(
+      live &&
+      roomId &&
+      authorityId &&
+      live.roomId === roomId &&
+      groupChatHostedGateway(live) === authorityId &&
+      live.hostedEpoch === epoch &&
+      String(live.hostedConnectionId || '') === connectionId &&
+      live.hostedStatus?.state !== 'deleted' &&
+      !hostedRoomLocallyDeleted.has(roomId)
+    )
   }
 
-  const commandId = String(message.id || '')
-
-  if (message.from.kind === 'user' && !message.seq && !message.eventId && room.log.includes(message)) {
-    updateGroupChat(group, current => ({
-      ...current,
-      log: (current.log || []).map(entry =>
-        entry === message ? outgoingHostedUserEvent(entry, room.roomId!, commandId) : entry
-      )
-    }))
-  }
-
-  const route = await hostedRouteForRoom(room)
-  const connectionId = String(route?.connectionId || room.hostedConnectionId || '')
-
-  if (!connectionId) {
-    throw new Error(botsText().group.hostRouteMissing)
-  }
-
-  const attachments = Array.isArray(message.images)
-    ? message.images.filter((attachment): attachment is Attachment => Boolean(attachment?.data))
-    : []
-
-  if (attachments.length) {
-    const parity = await probeHostedRoomMembers(room.members || [])
-
-    if (!route || !parity.attachmentParity) {
-      throw new Error(
-        botsText().group.hostedAttachmentMemberUnavailable(parity.attachmentUnavailableMembers.join(', '))
-      )
+  const assertProducerCurrent = () => {
+    if (
+      retired ||
+      !matchesRoom() ||
+      !hostedRoomLifecycleIsCurrent(lifecycle) ||
+      hostedRoomStorage !== storage ||
+      !storage
+    ) {
+      throw new Error('The Group Chat file send no longer belongs to this room and runtime.')
     }
   }
 
-  const manifest = attachments.length
-    ? await stageHostedMessageAttachments(requestHostedConnection, route as ProfileRoute, room.roomId, attachments)
-    : []
+  // Remember an observed removal even if the exact logical id is re-added.
+  const unlisten = $groupChats.listen(() => {
+    retired ||= !matchesRoom()
+  })
 
-  return {
-    commandId,
-    kind: 'send' as const,
-    roomId: room.roomId,
-    authorityId: groupChatHostedGateway(room),
-    connectionId,
-    payload: {
-      text: message.text || '',
-      thread_id: thread,
-      ...(manifest.length ? { attachments: manifest } : {})
+  try {
+    assertProducerCurrent()
+
+    if (!storage) {
+      throw new Error('Desktop storage is unavailable, so Group Chat changes cannot be secured.')
     }
+
+    return await withHostedRoomCommandOrder(roomId, async () => {
+      assertProducerCurrent()
+      const commandId = String(message.id || '')
+
+      if (message.from.kind === 'user' && !message.seq && !message.eventId && room.log.includes(message)) {
+        updateGroupChat(group, current => ({
+          ...current,
+          log: (current.log || []).map(entry =>
+            entry === message ? outgoingHostedUserEvent(entry, roomId, commandId) : entry
+          )
+        }))
+      }
+
+      const attachments = Array.isArray(message.images)
+        ? message.images.filter((attachment): attachment is Attachment => Boolean(attachment?.data))
+        : []
+
+      let lease: Awaited<ReturnType<typeof acquireHostedAttachmentRoute>> | undefined
+
+      try {
+        let route: ProfileRoute | null
+
+        if (attachments.length) {
+          const routes = await hostedDefaultRoutes()
+          assertProducerCurrent()
+          lease = await acquireHostedAttachmentRoute(routes, authorityId, connectionId, assertProducerCurrent)
+          route = lease.route
+        } else {
+          route = await hostedRouteForRoom(room)
+        }
+
+        assertProducerCurrent()
+
+        const assertCurrent = () => {
+          assertProducerCurrent()
+          lease?.assertCurrent()
+        }
+
+        const resolvedConnectionId = String(route?.connectionId || connectionId)
+
+        if (!resolvedConnectionId) {
+          throw new Error(botsText().group.hostRouteMissing)
+        }
+
+        if (attachments.length) {
+          const parity = await probeHostedRoomMembers(room.members || [])
+          assertCurrent()
+
+          if (!parity.attachmentParity) {
+            throw new Error(
+              botsText().group.hostedAttachmentMemberUnavailable(parity.attachmentUnavailableMembers.join(', '))
+            )
+          }
+        }
+
+        const manifest = lease
+          ? await stageHostedMessageAttachments({ request: lease.request, assertCurrent }, roomId, attachments)
+          : []
+
+        assertCurrent()
+
+        const command = {
+          commandId,
+          kind: 'send' as const,
+          roomId,
+          authorityId,
+          connectionId: resolvedConnectionId,
+          payload: {
+            text: message.text || '',
+            thread_id: thread,
+            ...(manifest.length ? { attachments: manifest } : {})
+          }
+        }
+
+        // A mutation can wait on the shared outbox lock or an async read. Guard
+        // the write itself, not only the renderer publication after persistence.
+        // An already-issued write retains its original storage/intent; never
+        // compensate by deleting a row that another command may now own.
+        const enqueueStorage: PluginContext['storage'] = {
+          get: (key, fallback) => storage.get(key, fallback),
+          set: (key, value) => {
+            assertCurrent()
+
+            return storage.set(key, value)
+          },
+          remove: key => storage.remove(key)
+        }
+
+        await transitionHostedRoomOutbox({ type: 'enqueue', command }, enqueueStorage, () => {
+          try {
+            assertCurrent()
+
+            return true
+          } catch {
+            return false
+          }
+        })
+        assertCurrent()
+
+        return command
+      } finally {
+        lease?.release()
+      }
+    })
+  } finally {
+    unlisten()
   }
 }
 
 export async function queueHostedGroupChat(group: string, message: GroupMessage, thread: string) {
-  const roomId = String($groupChats.get()[group]?.roomId || '')
-
-  await withHostedRoomCommandOrder(roomId, async () => {
-    const command = await hostedGroupChatSendCommand(group, message, thread)
-
-    await transitionHostedRoomOutbox({ type: 'enqueue', command })
-  })
+  await enqueueHostedGroupChatSend(group, message, thread)
   await dispatchHostedRoomOutbox()
 
   if (await reportImmediateHostedRoomCommandFailure(message.id)) {
@@ -1251,13 +1353,7 @@ export async function queueHostedGroupChat(group: string, message: GroupMessage,
 }
 
 export async function sendHostedGroupChat(group: string, message: GroupMessage, thread: string) {
-  const roomId = String($groupChats.get()[group]?.roomId || '')
-  let command: Partial<HostedRoomCommand> = {}
-
-  await withHostedRoomCommandOrder(roomId, async () => {
-    command = await hostedGroupChatSendCommand(group, message, thread)
-    await transitionHostedRoomOutbox({ type: 'enqueue', command })
-  })
+  const command = await enqueueHostedGroupChatSend(group, message, thread)
   await dispatchHostedRoomOutbox()
 
   if (await reportImmediateHostedRoomCommandFailure(command.commandId)) {

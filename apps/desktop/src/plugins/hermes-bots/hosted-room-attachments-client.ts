@@ -1,5 +1,8 @@
 /** Desktop byte staging and retrieval for capable hosted Group Chats. */
 
+import { classifyHostedRoomCapability, isHostedRoomContinuityEligible } from './hosted-room-client'
+import { acquireHostedInstallationRoute } from './hosted-room-installation-route'
+import type { HostedInstallationRequest } from './hosted-room-installation-route'
 import type { Attachment, ProfileRoute } from './types'
 
 type RequestHostedConnection = <T>(route: ProfileRoute, method: string, params?: Record<string, unknown>) => Promise<T>
@@ -41,9 +44,69 @@ function stagedAttachmentInput(attachment: Attachment) {
   }
 }
 
+export async function acquireHostedAttachmentRoute(
+  routes: ProfileRoute[],
+  installationId: string,
+  preferredConnectionId: string,
+  assertProducerCurrent: () => void
+) {
+  const ordered = [...routes].sort(
+    (left, right) =>
+      Number(right.connectionId === preferredConnectionId) - Number(left.connectionId === preferredConnectionId)
+  )
+
+  for (const route of ordered) {
+    assertProducerCurrent()
+    let lease: Awaited<ReturnType<typeof acquireHostedInstallationRoute>> | undefined
+
+    try {
+      // Discovery and qualification must already share the physical owner.
+      // A later matching installation string cannot resurrect an ABA socket.
+      lease = await acquireHostedInstallationRoute(route, installationId)
+      assertProducerCurrent()
+      const rawCapability = await lease.request<Record<string, unknown>>('groups.capabilities')
+
+      const capability = classifyHostedRoomCapability(rawCapability, {
+        connectionId: route.connectionId
+      })
+
+      const link = record(rawCapability.room_link)
+
+      // Match the already-published command consumer's protocol qualification:
+      // do not stage bytes for an action that its older surface cannot admit.
+      const canonical =
+        (Array.isArray(rawCapability.features) && rawCapability.features.includes('canonical_session_owner')) ||
+        (Array.isArray(rawCapability.methods) && rawCapability.methods.includes('groups.discard')) ||
+        link?.reason === 'canonical_driver_required'
+
+      assertProducerCurrent()
+
+      if (
+        canonical ||
+        !isHostedRoomContinuityEligible(capability) ||
+        !capability.limits.attachments ||
+        capability.authorityId !== installationId
+      ) {
+        throw new Error('The Group Chat attachment route is unavailable.')
+      }
+
+      return lease
+    } catch {
+      lease?.release()
+      assertProducerCurrent()
+    }
+  }
+
+  throw new Error('Group Chat files are waiting for their original installation and a supported Desktop route.')
+}
+
+interface AttachmentRouteOwner {
+  assertCurrent: () => void
+  request: HostedInstallationRequest
+}
+
 export async function stageHostedMessageAttachments(
-  request: RequestHostedConnection,
-  route: ProfileRoute,
+  owner: AttachmentRouteOwner,
   roomId: string,
   attachments: Attachment[]
 ) {
@@ -60,6 +123,7 @@ export async function stageHostedMessageAttachments(
   const manifest: Array<Record<string, unknown>> = []
 
   for (const [index, attachment] of attachments.entries()) {
+    owner.assertCurrent()
     const { byteSize: _byteSize, ...input } = prepared[index]
 
     const uploadId =
@@ -68,12 +132,14 @@ export async function stageHostedMessageAttachments(
     attachment.uploadId = uploadId
 
     const staged = record(
-      await request<Record<string, unknown>>(route, 'groups.attachment.put', {
+      await owner.request<Record<string, unknown>>('groups.attachment.put', {
         room_id: roomId,
         upload_id: `desktop:${uploadId}`,
         ...input
       })
     )
+
+    owner.assertCurrent()
 
     const value = record(staged?.attachment)
     const attachmentId = String(value?.attachment_id || '')
@@ -97,6 +163,8 @@ export async function stageHostedMessageAttachments(
       size: stagedSize
     })
   }
+
+  owner.assertCurrent()
 
   return manifest
 }
