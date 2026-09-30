@@ -1,4 +1,4 @@
-"""M73 presentation invariants adapted to canonical names/counts, not selectors."""
+"""List presentation invariants, adapted to canonical names and counts rather than selectors."""
 from types import SimpleNamespace
 
 import pytest

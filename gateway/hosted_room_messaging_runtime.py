@@ -1,7 +1,6 @@
 """Bounded canonical inventory consumer; no classic room store or execution path.
 
-List presentation selectively adapts M73 (dokterdok/hermes-agent,
-73fbc700664c56eabd9d7a55f178320662ef0c47), without selectors or status claims.
+List presentation keeps the messaging list format, without selectors or status claims.
 Offset enumeration retains canonical order, not a point-in-time store snapshot.
 """
 import unicodedata

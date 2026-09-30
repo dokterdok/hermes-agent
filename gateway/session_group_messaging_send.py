@@ -356,7 +356,7 @@ def commit_native_send_binding(prepared):
 
 
 def _stable_message_identity(event, recipient):
-    """Adapt M73's stable messaging-event identity to the current MessageEvent/source contract."""
+    """Adapt the stable messaging-event identity to the current MessageEvent/source contract."""
     if (
         event is None
         or getattr(event, "internal", False) is True

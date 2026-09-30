@@ -1,6 +1,5 @@
-"""Private receiver policy, selectively adapted from M73 group_chat_policy.py.
+"""Private receiver policy for Group Chat messaging.
 
-Source: dokterdok/hermes-agent 73fbc700664c56eabd9d7a55f178320662ef0c47.
 No unstamped-primary fallback or legacy Home enrollment is retained.
 """
 from gateway.session_group_messaging_identity import is_private_source, trusted_person

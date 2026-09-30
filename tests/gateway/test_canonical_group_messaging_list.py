@@ -63,7 +63,7 @@ async def consumer(bound, monkeypatch):
         monkeypatch.setattr(r, method, bound.forbidden)
     from gateway import session_ingress
     monkeypatch.setattr(session_ingress, 'admit_message', bound.forbidden)
-    # M73's existing numeric ledger is data to preserve, never to renumber.
+    # The existing numeric ledger is data to preserve, never to renumber.
     def classic_ledger(conn):
         conn.execute('CREATE TABLE hosted_room_messaging_refs ('
                      'room_ref INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL UNIQUE)')

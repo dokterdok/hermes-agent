@@ -498,7 +498,7 @@ def commit_native_binding(prepared):
 
 
 def _receiver(runner, event):
-    """M73 registered-receiver policy, without its legacy primary fallback."""
+    """Registered-receiver policy, without the legacy primary fallback."""
     source = event.source
     if not trusted_person(event) or not is_private_source(source):
         raise RuntimeStoreError('permission_denied')

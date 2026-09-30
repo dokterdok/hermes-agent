@@ -1,7 +1,5 @@
-"""Pure M73 person/private-source provenance, selectively retained.
+"""Pure person and private-source provenance for Group Chat messaging.
 
-Derived from group_home_identity.py and hosted_room_messaging.py at
-73fbc700664c56eabd9d7a55f178320662ef0c47 (dokterdok/hermes-agent).
 No Home enrollment, service resolution, mailbox or command authority is imported.
 """
 from collections.abc import Mapping

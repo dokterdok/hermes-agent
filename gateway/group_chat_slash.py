@@ -1,6 +1,5 @@
-"""Private list/help only, adapted from M73's messaging command and read buckets.
+"""Private /group list and help, on the messaging command and read buckets.
 
-Source: dokterdok/hermes-agent 73fbc700664c56eabd9d7a55f178320662ef0c47.
 Native owner consent remains owned by session_group_messaging_read.
 """
 import logging
