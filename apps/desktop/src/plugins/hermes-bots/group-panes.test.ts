@@ -16,9 +16,11 @@ const { host } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const nanostores = await import('nanostores')
+  const { registerPersistenceCodec } = await import('../../lib/storage')
 
   return {
     atom: nanostores.atom,
+    registerPersistenceCodec,
     computed: nanostores.computed,
     host,
     queryClient: { invalidateQueries: vi.fn() },

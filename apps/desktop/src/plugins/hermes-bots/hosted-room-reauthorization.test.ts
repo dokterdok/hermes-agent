@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => {
   }
 
   return {
-    addCleanup: vi.fn(async () => undefined),
+    addCleanup: vi.fn(async (_operation?: unknown) => undefined),
     armCleanup: vi.fn(async () => undefined),
     capabilities,
     dispatchCleanup: vi.fn(async () => undefined),
@@ -43,6 +43,19 @@ vi.mock('./hosted-room-runtime', () => ({
 
 vi.mock('./hosted-room-cleanup', () => ({
   addHostedRoomCleanup: mocks.addCleanup,
+  inviteHostedRoomGrant: async (operation: Record<string, unknown>, invite: () => Promise<Record<string, unknown>>) => {
+    const invitation = await invite()
+
+    if (invitation?.grant) {
+      await mocks.addCleanup({
+        ...operation,
+        grant: invitation.grant,
+        profile: invitation.target_profile || operation.profile
+      })
+    }
+
+    return invitation
+  },
   armHostedRoomCleanup: mocks.armCleanup,
   dispatchHostedRoomCleanup: mocks.dispatchCleanup,
   releaseHostedRoomCleanup: mocks.releaseCleanup
@@ -65,6 +78,27 @@ beforeEach(() => {
     }
   }
   Object.assign(mocks.host, {
+    acquireProfileRoute: async (route: { connectionId: string; targetProfile: string }) => ({
+      route,
+      generation: 1,
+      assertCurrent: () => undefined,
+      release: () => undefined,
+      request: async (method: string, params: Record<string, unknown> = {}) => {
+        if (method === 'groups.capabilities' && route.connectionId === 'home') {
+          return { driver: true, persistent_process: true, authority_gateway_id: 'install:home' }
+        }
+
+        if (['groups.peer.invite', 'groups.peer.revoke_exact', 'groups.control.register'].includes(method)) {
+          return mocks.requestForBot(
+            { connectionId: route.connectionId, targetProfile: route.targetProfile, route },
+            method,
+            params
+          )
+        }
+
+        return mocks.requestHosted(route, method, params)
+      }
+    }),
     profileRoutes: async () => [
       { connectionId: 'home', mode: 'remote', profile: 'default', targetProfile: 'default' },
       { connectionId: 'peer', mode: 'remote', profile: 'builder', targetProfile: 'builder' }

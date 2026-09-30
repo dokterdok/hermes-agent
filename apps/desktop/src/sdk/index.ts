@@ -99,6 +99,7 @@ import { desktopSettings } from './settings'
 
 const mutatePersistedVisibility = createSessionMutationClient()
 
+export type { RoomSecretEntry } from '../../electron/room-secret-types'
 export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 
 // -- state: readonly views over the app's live atoms -------------------------
@@ -1764,6 +1765,8 @@ export { SESSION_ROW_AREAS, type SessionRowSlotContribution, type SessionRowSlot
 /** A sibling WebSocket beside the route's `/api/ws` (voice PCM, Bot Screen RFB):
  *  same origin, same auth resolution as chat. */
 export { resolveSiblingWsUrl, type SiblingWsRoute } from '@/lib/sibling-ws-url'
+// Persistence codecs run before durable bytes or observable events escape.
+export { registerPersistenceCodec } from '@/lib/storage'
 /** Canonical time formatting — every surface pulls from here so timestamps read
  *  the same app-wide. For a row's AGE, bucket with `coarseElapsed` and render
  *  the compact suffixes (`t.sidebar.row.ageMin` → "52m"), which is what the

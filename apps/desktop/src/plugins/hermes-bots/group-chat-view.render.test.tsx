@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 
 import type * as groupRoundsModule from './group-rounds'
 const { stopGroupThread } = vi.hoisted(() => ({ stopGroupThread: vi.fn(async () => undefined) }))
@@ -13,6 +13,7 @@ import { translateBots } from './i18n-test-helper'
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
   const base = await pluginSdkMock(createGroupGateway().host)
+  const { useStore } = await import('@nanostores/react')
 
   const Button = ({ children, onClick, title }: { children?: ReactNode; onClick?: () => void; title?: string }) => (
     <button onClick={onClick} title={title}>
@@ -22,6 +23,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
   return {
     ...base,
+    useValue: useStore,
     Button,
     RowButton: Button,
     cn: (...values: unknown[]) => values.filter(Boolean).join(' '),
@@ -57,6 +59,10 @@ vi.mock('./group-rounds', async importOriginal => ({
   ...(await importOriginal<typeof groupRoundsModule>()),
   stopGroupThread
 }))
+// Module transformation is fixture setup, not a render deadline.
+beforeAll(async () => {
+  await import('./group-chat-view')
+}, 30_000)
 afterEach(cleanup)
 
 it('renders member replies through the shell message renderer, resolving media only for members on this gateway', async () => {
@@ -163,4 +169,17 @@ it('does not pass the latest display activity thread as Stop authority', async (
   fireEvent.click(getByRole('button', { name: 'Stop' }))
   await waitFor(() => expect(stopGroupThread).toHaveBeenCalledTimes(1))
   expect(stopGroupThread).toHaveBeenCalledWith('Room', null, expect.any(Array))
+})
+
+it('keeps volatile reconnect cleanup visible until its recovery owner completes', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { $groupChats } = await import('./group-chat')
+  const { $hostedRoomVolatileCleanup } = await import('./hosted-room-cleanup')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+  $groupChats.set({ Pending: { roomId: 'pending-room', log: [], sessions: {}, watermarks: {} } })
+  $hostedRoomVolatileCleanup.set([{ setupId: 'reconnect', roomId: 'pending-room', durability: 'volatile' }])
+  render(<GroupChatWorkspace group="Pending" members={[]} />)
+  await waitFor(() => expect(screen.getByText(/cleanup is pending in this window only/)).toBeTruthy())
+  act(() => $hostedRoomVolatileCleanup.set([]))
+  await waitFor(() => expect(screen.queryByText(/cleanup is pending in this window only/)).toBeNull())
 })

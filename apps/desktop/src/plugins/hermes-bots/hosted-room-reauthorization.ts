@@ -7,6 +7,7 @@ import {
   addHostedRoomCleanup,
   armHostedRoomCleanup,
   dispatchHostedRoomCleanup,
+  inviteHostedRoomGrant,
   releaseHostedRoomCleanup
 } from './hosted-room-cleanup'
 import {
@@ -17,6 +18,7 @@ import {
   ROOM_GRANT_STATUS_TTL_SECONDS,
   ROOM_GRANT_TTL_SECONDS
 } from './hosted-room-client'
+import { requestHostedInstallation } from './hosted-room-installation-route'
 import { registerHostedPeerControl } from './hosted-room-peer-setup'
 import {
   $hostedRoomCapabilities,
@@ -27,7 +29,6 @@ import {
   requestHostedConnection
 } from './hosted-room-runtime'
 import { botsText } from './i18n'
-import { requestForBot } from './routing'
 import type { GroupMember, ProfileRoute } from './types'
 
 const reconnectingPeers = new Map<string, { lifecycle: number; task: Promise<void> }>()
@@ -112,7 +113,7 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
   }
 
   const state = record(
-    await requestHostedConnection<Record<string, unknown>>(homeRoute, 'groups.state', {
+    await requestHostedInstallation<Record<string, unknown>>(homeRoute, homeAuthority, 'groups.state', {
       room_id: roomId
     })
   )
@@ -183,59 +184,36 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
     throw new Error('That Bot gateway cannot reconnect to this Group Chat yet.')
   }
 
-  const invitation = record(
-    await requestForBot(localMember, 'groups.peer.invite', {
-      room_id: roomId,
-      home_install_id: authorityId,
-      authority_gateway_id: authorityId,
-      authority_epoch: authorityEpoch,
-      member_id: memberId,
-      ttl_seconds: ROOM_GRANT_TTL_SECONDS,
-      status_ttl_seconds: ROOM_GRANT_STATUS_TTL_SECONDS,
+  const setupId = `reconnect:${roomId}:${memberId}:${globalThis.crypto?.randomUUID?.() || Date.now()}`
+  const operationId = `${setupId}:grant`
+
+  const invitation = await inviteHostedRoomGrant(
+    {
+      operationId,
+      setupId,
+      roomId,
+      kind: 'peer-revoke-exact',
+      connectionId: peerConnectionId,
+      installationId: targetAuthority,
       profile
-    })
+    },
+    () =>
+      requestHostedInstallation(peerRoute, targetAuthority, 'groups.peer.invite', {
+        room_id: roomId,
+        home_install_id: authorityId,
+        authority_gateway_id: authorityId,
+        authority_epoch: authorityEpoch,
+        member_id: memberId,
+        ttl_seconds: ROOM_GRANT_TTL_SECONDS,
+        status_ttl_seconds: ROOM_GRANT_STATUS_TTL_SECONDS,
+        profile
+      })
   )
 
   const catalog = record(invitation?.catalog)
   const grant = String(invitation?.grant || '')
   const targetProfile = String(invitation?.target_profile || profile)
   const targetUrl = profileScopedRoomLinkEndpoint(peerCapability.roomLink?.endpoint, invitation?.target_profile)
-  const setupId = `reconnect:${roomId}:${memberId}:${globalThis.crypto?.randomUUID?.() || Date.now()}`
-  const operationId = `${setupId}:grant`
-
-  const revokeFreshGrant = async () => {
-    if (!grant) {
-      return
-    }
-
-    await requestHostedConnection(peerRoute, 'groups.peer.revoke_exact', {
-      grant,
-      profile: targetProfile
-    })
-  }
-
-  if (grant) {
-    try {
-      await addHostedRoomCleanup({
-        operationId,
-        setupId,
-        kind: 'peer-revoke-exact',
-        connectionId: peerConnectionId,
-        profile: targetProfile,
-        grant,
-        roomId: null,
-        cancelId: null,
-        homeConnectionId: null,
-        homeProfile: null,
-        memberId: null,
-        targetUrl: null,
-        catalog: null
-      })
-    } catch (error) {
-      await revokeFreshGrant()
-      throw error
-    }
-  }
 
   const abandonIfStale = async () => {
     if (hostedRoomLifecycleIsCurrent(lifecycle)) {
@@ -294,6 +272,8 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
       controlAuthorityId: authorityId,
       controlAuthorityEpoch: authorityEpoch,
       connectionId: peerConnectionId,
+      installationId: targetAuthority,
+      homeInstallationId: homeAuthority,
       profile: targetProfile,
       grant,
       grantSha256,
@@ -315,7 +295,7 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
   await abandonIfStale()
 
   try {
-    await requestHostedConnection(homeRoute, 'groups.peer.register', {
+    await requestHostedInstallation(homeRoute, homeAuthority, 'groups.peer.register', {
       room_id: roomId,
       member_id: memberId,
       target_url: targetUrl,
@@ -337,7 +317,8 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
       targetAuthority,
       requestId: setupId,
       assertCurrent,
-      requestPeer: (method, params) => requestForBot(localMember, method, params)
+      requestHome: (method, params) => requestHostedInstallation(homeRoute, homeAuthority, method, params),
+      requestPeer: (method, params) => requestHostedInstallation(peerRoute, targetAuthority, method, params)
     })
     await abandonIfStale()
   } catch (error) {

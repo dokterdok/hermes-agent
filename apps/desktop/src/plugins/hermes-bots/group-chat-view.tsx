@@ -95,7 +95,7 @@ import {
 } from './group-panes'
 import { groupReplyMentionTag, sendToGroupChatDurably, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
-import { $hostedRoomCleanup } from './hosted-room-cleanup'
+import { $hostedRoomCleanup, $hostedRoomVolatileCleanup } from './hosted-room-cleanup'
 import { reconnectHostedGroupChatPeer } from './hosted-room-reauthorization'
 import {
   beginHostedRoomMutation,
@@ -940,6 +940,8 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // Subscribe: activity rows re-render as turn events land.
   useValue($groupActivity)
   const cleanup = useValue($hostedRoomCleanup)
+  const volatileCleanup = useValue($hostedRoomVolatileCleanup)
+  const volatileCleanupPending = volatileCleanup.some(operation => operation.roomId === room.roomId)
 
   const messagingReconnecting =
     Boolean(room.roomId) &&
@@ -1100,7 +1102,9 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     } catch {
       host.notify({
         kind: 'error',
-        message: b.group.reconnectFailed
+        message: $hostedRoomVolatileCleanup.get().some(operation => operation.roomId === room.roomId)
+          ? b.canonical.setupCleanupVolatile
+          : b.group.reconnectFailed
       })
     } finally {
       setReconnecting(false)
@@ -1196,6 +1200,11 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       </div>
       {room.continuityIssue ? (
         <div className="px-2.5 pb-1 text-[0.625rem] text-(--ui-text-quaternary)">{room.continuityIssue}</div>
+      ) : null}
+      {volatileCleanupPending ? (
+        <div className="px-2.5 pb-1 text-xs text-(--ui-text-secondary)" role="status">
+          {b.canonical.setupCleanupVolatile}
+        </div>
       ) : null}
       {messagingReconnecting ? (
         <div className="px-2.5 pb-1 text-xs text-(--ui-text-secondary)" role="status">

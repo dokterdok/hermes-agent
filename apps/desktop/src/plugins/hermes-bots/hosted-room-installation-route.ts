@@ -41,3 +41,18 @@ export async function acquireHostedInstallationRoute(route: ProfileRoute, instal
     throw error
   }
 }
+
+export async function requestHostedInstallation<T = unknown>(
+  route: ProfileRoute,
+  installationId: string,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  const lease = await acquireHostedInstallationRoute(route, installationId)
+
+  try {
+    return await lease.request<T>(method, params)
+  } finally {
+    lease.release()
+  }
+}

@@ -1381,7 +1381,13 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
             }
 
             if ((error as { fallbackSafe?: boolean })?.fallbackSafe === false) {
-              setCreateError(describeHostedRoomCreationError(error) || b.group.createFailed)
+              setCreateError(
+                describeHostedRoomCreationError(
+                  error,
+                  b.canonical.setupCleanupPending,
+                  b.canonical.setupCleanupVolatile
+                ) || b.group.createFailed
+              )
 
               return
             }

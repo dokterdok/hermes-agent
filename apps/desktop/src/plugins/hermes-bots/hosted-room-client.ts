@@ -740,7 +740,19 @@ export function profileScopedRoomLinkEndpoint(endpoint: unknown, profile: unknow
   return `${base}${suffix}`
 }
 
-export function describeHostedRoomCreationError(error: unknown) {
+export function describeHostedRoomCreationError(
+  error: unknown,
+  cleanupPendingMessage = 'Group Chat cleanup is pending. Reconnect the original Bot hosts before trying again.',
+  volatileCleanupMessage = 'Group Chat cleanup is pending in this window only. Keep Desktop open and reconnect the original Bot hosts.'
+) {
+  if (record(error)?.cleanupDurability === 'volatile') {
+    return volatileCleanupMessage
+  }
+
+  if (record(error)?.cleanupPending === true) {
+    return cleanupPendingMessage
+  }
+
   const message = errorMessage(error)
 
   if (/unreachable|name or service not known|timed? ?out|connection refused|network is unreachable/i.test(message)) {

@@ -19,6 +19,7 @@ import {
   armHostedRoomCleanup,
   dispatchHostedRoomCleanup,
   hostedRoomCleanupPending,
+  inviteHostedRoomGrant,
   releaseHostedRoomCleanup,
   resetHostedRoomCleanupForTests,
   startHostedRoomCleanup,
@@ -50,6 +51,7 @@ import {
   hostedRoomCommandFailure,
   surfaceHostedRoomCommandFailure
 } from './hosted-room-command-failures'
+import { acquireHostedInstallationRoute, requestHostedInstallation } from './hosted-room-installation-route'
 import {
   hostedReadOnlyState,
   hostedRoomCapabilityFingerprint,
@@ -71,7 +73,6 @@ import { performHostedRoomRefresh } from './hosted-room-runtime-refresh'
 import { requestHostedConnection, withHostedRoomProbeTimeout } from './hosted-room-transport'
 import { hostedUserEventReceipt, outgoingHostedUserEvent } from './hosted-user-events'
 import { botsText } from './i18n'
-import { requestForBot } from './routing'
 import type { Attachment, GroupChat, GroupMember, GroupMessage, GroupPrompt, ProfileRoute } from './types'
 
 export { $hostedRoomCapabilities } from './hosted-room-capability-state'
@@ -953,7 +954,10 @@ export async function probeHostedRoomMembers(members: GroupMember[]): Promise<Ho
   }
 }
 
-export async function createHostedGroupChat({ route, roomId, name, members }: HostedRoomCreateInput): Promise<{
+export async function createHostedGroupChat(
+  { route, roomId, name, members }: HostedRoomCreateInput,
+  home?: { route: ProfileRoute; installationId: string }
+): Promise<{
   authorityEpoch: number
   authorityId: string
   connectionId: string
@@ -962,47 +966,59 @@ export async function createHostedGroupChat({ route, roomId, name, members }: Ho
     throw new Error(botsText().group.botsNeedOneHost)
   }
 
-  const profileRoute = (await hostedDefaultRoutes()).find(candidate => candidate.connectionId === route.connectionId)
+  const profileRoute =
+    home?.route || (await hostedDefaultRoutes()).find(candidate => candidate.connectionId === route.connectionId)
 
   if (!profileRoute) {
     throw new Error(botsText().group.hostRouteMissing)
   }
 
-  let room: Record<string, unknown> | null = null
+  const lease = home ? await acquireHostedInstallationRoute(profileRoute, home.installationId) : null
+
+  const request =
+    lease?.request ||
+    (<T = unknown>(method: string, params: Record<string, unknown>) =>
+      requestHostedConnection<T>(profileRoute, method, params))
 
   try {
-    const result = await requestHostedConnection<Record<string, unknown>>(profileRoute, 'groups.create', {
-      room_id: roomId,
-      name,
-      members
-    })
+    let room: Record<string, unknown> | null = null
 
-    room = record(result.room)
-  } catch (createError) {
-    // A dropped response has an unknown outcome. Verify the idempotent room id
-    // before falling back to Desktop, or both drivers could start the first
-    // user turn. A true create failure has no state and safely falls through.
     try {
-      const state = await requestHostedConnection<Record<string, unknown>>(profileRoute, 'groups.state', {
-        room_id: roomId
+      const result = await request<Record<string, unknown>>('groups.create', {
+        room_id: roomId,
+        name,
+        members
       })
 
-      room = record(state.room)
-    } catch {
-      throw createError
+      room = record(result.room)
+    } catch (createError) {
+      // A dropped response has an unknown outcome. Verify the idempotent room id
+      // before falling back to Desktop, or both drivers could start the first
+      // user turn. A true create failure has no state and safely falls through.
+      try {
+        const state = await request<Record<string, unknown>>('groups.state', {
+          room_id: roomId
+        })
+
+        room = record(state.room)
+      } catch {
+        throw createError
+      }
     }
-  }
 
-  const authorityId = String(room?.authority_gateway_id || '')
+    const authorityId = String(room?.authority_gateway_id || '')
 
-  if (!authorityId) {
-    throw new Error(botsText().group.hostRejectedCommand)
-  }
+    if (!authorityId || (home && authorityId !== home.installationId)) {
+      throw new Error(botsText().group.hostRejectedCommand)
+    }
 
-  return {
-    authorityId,
-    authorityEpoch: Math.max(1, Number(room?.authority_epoch || 1)),
-    connectionId: route.connectionId
+    return {
+      authorityId,
+      authorityEpoch: Math.max(1, Number(room?.authority_epoch || 1)),
+      connectionId: route.connectionId
+    }
+  } finally {
+    lease?.release()
   }
 }
 
@@ -1034,6 +1050,8 @@ export async function createAutonomousHostedGroupChat({
       setupId: roomId,
       kind: 'home-disband',
       connectionId: homeConnectionId,
+      installationId: homeCapability.authorityId,
+      profile: homeRoute.targetProfile || homeRoute.profile,
       roomId,
       cancelId: `rollback-${roomId}`
     })
@@ -1060,48 +1078,41 @@ export async function createAutonomousHostedGroupChat({
         continue
       }
 
-      const invitation = record(
-        await requestForBot(item.member, 'groups.peer.invite', {
-          room_id: roomId,
-          home_install_id: homeCapability.authorityId,
-          authority_gateway_id: homeCapability.authorityId,
-          authority_epoch: 1,
-          member_id: memberId,
-          ttl_seconds: ROOM_GRANT_TTL_SECONDS,
-          status_ttl_seconds: ROOM_GRANT_STATUS_TTL_SECONDS,
+      const peerRoute = { ...probe.routes[connectionId], profile, targetProfile: profile }
+      const peerAuthority = String(probe.capabilities[connectionId]?.authorityId || '')
+
+      const requestPeer = (method: string, params: Record<string, unknown>) =>
+        requestHostedInstallation(peerRoute, peerAuthority, method, params)
+
+      const invitation = await inviteHostedRoomGrant(
+        {
+          operationId: `${roomId}:peer-revoke:${memberId}`,
+          setupId: roomId,
+          roomId,
+          kind: 'peer-revoke',
+          connectionId,
+          installationId: peerAuthority,
           profile
-        })
+        },
+        () =>
+          requestPeer('groups.peer.invite', {
+            room_id: roomId,
+            home_install_id: homeCapability.authorityId,
+            authority_gateway_id: homeCapability.authorityId,
+            authority_epoch: 1,
+            member_id: memberId,
+            ttl_seconds: ROOM_GRANT_TTL_SECONDS,
+            status_ttl_seconds: ROOM_GRANT_STATUS_TTL_SECONDS,
+            profile
+          })
       )
 
       const catalog = record(invitation?.catalog)
-      const invitedProfile = String(invitation?.target_profile || profile || '')
 
       const scopedTargetUrl = profileScopedRoomLinkEndpoint(
         probe.capabilities[connectionId]?.roomLink?.endpoint,
         invitation?.target_profile
       )
-
-      if (invitation?.grant && invitedProfile) {
-        await addHostedRoomCleanup({
-          operationId: `${roomId}:peer-revoke:${memberId}`,
-          setupId: roomId,
-          kind: 'peer-revoke',
-          connectionId,
-          profile: invitedProfile,
-          grant: String(invitation.grant)
-        }).catch(async error => {
-          try {
-            await requestForBot(item.member, 'groups.peer.revoke', {
-              grant: String(invitation.grant),
-              profile: invitedProfile
-            })
-          } catch {
-            throw Object.assign(new Error('Peer grant cleanup failed.'), { fallbackSafe: false })
-          }
-
-          throw error
-        })
-      }
 
       if (!hasRequestedRoomGrantLifetime(invitation)) {
         throw new Error(botsText().group.hostUpdateNeeded(item.displayName || item.handle || profile))
@@ -1130,7 +1141,7 @@ export async function createAutonomousHostedGroupChat({
       })
       peerRegistrations.push({
         capability: probe.capabilities[connectionId],
-        requestPeer: (method, params) => requestForBot(item.member, method, params),
+        requestPeer,
         registration: {
           room_id: roomId,
           member_id: memberId,
@@ -1142,12 +1153,15 @@ export async function createAutonomousHostedGroupChat({
       })
     }
 
-    const created = await createHostedGroupChat({
-      route: plan,
-      roomId,
-      name,
-      members: hostedMembers as HostedRoomCreateInput['members']
-    })
+    const created = await createHostedGroupChat(
+      {
+        route: plan,
+        roomId,
+        name,
+        members: hostedMembers as HostedRoomCreateInput['members']
+      },
+      { route: homeRoute, installationId: homeCapability.authorityId }
+    )
 
     await registerHostedPeers({ probe, roomId, name, members }, created, peerRegistrations)
 
@@ -1161,13 +1175,18 @@ export async function createAutonomousHostedGroupChat({
     await armHostedRoomCleanup(roomId).catch(() => undefined)
     await dispatchHostedRoomCleanup().catch(() => undefined)
 
+    if (record(error)?.cleanupDurability === 'volatile') {
+      throw error
+    }
+
     if (hostedRoomCleanupPending(roomId)) {
       throw Object.assign(
-        new Error('Some selected Bots could not finish cleanup. Reconnect them before trying again.', {
+        new Error('Group Chat cleanup is pending. Reconnect the original Bot hosts before trying again.', {
           cause: error
         }),
         {
-          fallbackSafe: false
+          fallbackSafe: false,
+          cleanupPending: true
         }
       )
     }

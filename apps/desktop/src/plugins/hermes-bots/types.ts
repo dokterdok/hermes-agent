@@ -295,8 +295,11 @@ export interface GroupChat {
   roomId?: null | string
   /** Classic mailbox incarnation; public commitment, never hosted authority. */
   desktopAuthorityHash?: string
-  /** Private preimage persisted only in Desktop plugin storage. */
+  /** Ephemeral preimage; durable renderer storage holds a native custody reference. */
   desktopAuthorityToken?: string
+  /** Private, non-authorizing custody retained while a commitment is uncertain.
+   * Tokens are ephemeral here; persistence replaces each with a native ref. */
+  desktopAuthorityCandidates?: Array<{ hash: string; token: string }>
   /** Conflicting incarnation claims fail closed until the room is recreated. */
   desktopAuthorityConflict?: true
   /** Bounded idempotency receipts for messaging commands already settled. */

@@ -18,6 +18,8 @@ export interface CanonicalGroupMessages {
   uploadFailed: string
   cleanupWaiting: string
   cleanupPending: string
+  setupCleanupPending: string
+  setupCleanupVolatile: string
   cleanupBlocked: string
   cleanupInventoryLimit: string
   cleanupScanPending: string
@@ -55,6 +57,9 @@ export const CANONICAL_GROUP_LOCALES = {
   en: {
     cleanupWaiting: 'Output cleanup is waiting for the original work to stop.',
     cleanupPending: 'Output cleanup is pending.',
+    setupCleanupVolatile:
+      'Group Chat cleanup is pending in this window only. Keep Desktop open and reconnect the original Bot hosts.',
+    setupCleanupPending: 'Group Chat cleanup is pending. Reconnect the original Bot hosts before trying again.',
     cleanupBlocked: 'Output cleanup is blocked.',
     cleanupInventoryLimit: 'Output cleanup is blocked by the inventory limit.',
     cleanupScanPending: 'Output cleanup scan is pending. More work may remain.',
@@ -110,6 +115,10 @@ export const CANONICAL_GROUP_LOCALES = {
   ja: {
     cleanupWaiting: '元の処理が停止するまで出力のクリーンアップを待機しています。',
     cleanupPending: '出力のクリーンアップは保留中です。',
+    setupCleanupVolatile:
+      'グループチャットのクリーンアップ情報はこのウィンドウにのみ保持されています。Desktopを開いたまま、元のボットホストに再接続してください。',
+    setupCleanupPending:
+      'グループチャットのクリーンアップは保留中です。元のボットホストに再接続してから、もう一度お試しください。',
     cleanupBlocked: '出力のクリーンアップはブロックされています。',
     cleanupInventoryLimit: '出力一覧の上限によりクリーンアップがブロックされています。',
     cleanupScanPending: 'クリーンアップ対象の走査は保留中です。対象がまだ残っている可能性があります。',
@@ -164,6 +173,8 @@ export const CANONICAL_GROUP_LOCALES = {
   zh: {
     cleanupWaiting: '输出清理正在等待原任务停止。',
     cleanupPending: '输出清理待处理。',
+    setupCleanupVolatile: '群聊清理信息仅保留在此窗口中。请保持 Desktop 打开并重新连接原来的机器人主机。',
+    setupCleanupPending: '群聊清理待处理。请重新连接原来的机器人主机后再试。',
     cleanupBlocked: '输出清理受阻。',
     cleanupInventoryLimit: '输出清理因清单数量上限而受阻。',
     cleanupScanPending: '清理扫描待处理，可能仍有未列出的任务。',
@@ -216,6 +227,8 @@ export const CANONICAL_GROUP_LOCALES = {
   'zh-hant': {
     cleanupWaiting: '輸出清理正在等待原工作停止。',
     cleanupPending: '輸出清理待處理。',
+    setupCleanupVolatile: '群組聊天清理資訊僅保留在此視窗中。請保持 Desktop 開啟並重新連接原來的機器人主機。',
+    setupCleanupPending: '群組聊天清理待處理。請重新連接原來的機器人主機後再試。',
     cleanupBlocked: '輸出清理受阻。',
     cleanupInventoryLimit: '輸出清理因清單數量上限而受阻。',
     cleanupScanPending: '清理掃描待處理，可能仍有未列出的工作。',
@@ -268,6 +281,10 @@ export const CANONICAL_GROUP_LOCALES = {
   ar: {
     cleanupWaiting: 'تنظيف المخرجات ينتظر توقف العمل الأصلي.',
     cleanupPending: 'تنظيف المخرجات قيد الانتظار.',
+    setupCleanupVolatile:
+      'معلومات تنظيف المحادثة الجماعية محفوظة في هذه النافذة فقط. أبقِ Desktop مفتوحًا وأعد الاتصال بمضيفي الروبوتات الأصليين.',
+    setupCleanupPending:
+      'تنظيف المحادثة الجماعية قيد الانتظار. أعد الاتصال بمضيفي الروبوتات الأصليين قبل المحاولة مجددًا.',
     cleanupBlocked: 'تنظيف المخرجات محظور.',
     cleanupInventoryLimit: 'تنظيف المخرجات محظور بسبب حد الجرد.',
     cleanupScanPending: 'فحص عناصر التنظيف قيد الانتظار. قد يتبقى عمل آخر.',
@@ -321,6 +338,10 @@ export const CANONICAL_GROUP_LOCALES = {
   ru: {
     cleanupWaiting: 'Очистка вывода ожидает остановки исходной работы.',
     cleanupPending: 'Очистка вывода ожидается.',
+    setupCleanupVolatile:
+      'Очистка группового чата ожидает завершения только в этом окне. Не закрывайте Desktop и подключитесь к исходным хостам ботов.',
+    setupCleanupPending:
+      'Очистка группового чата ожидается. Подключитесь к исходным хостам ботов перед повторной попыткой.',
     cleanupBlocked: 'Очистка вывода заблокирована.',
     cleanupInventoryLimit: 'Очистка вывода заблокирована лимитом списка объектов.',
     cleanupScanPending: 'Сканирование для очистки ожидается. Может оставаться другая работа.',
@@ -378,6 +399,10 @@ export const CANONICAL_GROUP_LOCALES = {
   fr: {
     cleanupWaiting: "Le nettoyage des sorties attend la fin du travail initial.",
     cleanupPending: "Le nettoyage des sorties est en attente.",
+    setupCleanupVolatile:
+      'Le nettoyage du groupe est en attente dans cette fenêtre uniquement. Gardez Desktop ouvert et reconnectez les hôtes d’origine des bots.',
+    setupCleanupPending:
+      'Le nettoyage du groupe est en attente. Reconnectez les hôtes d’origine des bots avant de réessayer.',
     cleanupBlocked: "Le nettoyage des sorties est bloqué.",
     cleanupInventoryLimit: "Le nettoyage est bloqué par la limite de l’inventaire.",
     cleanupScanPending: "L’analyse du nettoyage est en attente. Du travail peut subsister.",
@@ -431,6 +456,10 @@ export const CANONICAL_GROUP_LOCALES = {
   de: {
     cleanupWaiting: "Die Ausgabebereinigung wartet auf das Ende der ursprünglichen Arbeit.",
     cleanupPending: "Ausgabebereinigung ausstehend.",
+    setupCleanupVolatile:
+      'Die ausstehende Gruppenchat-Bereinigung ist nur in diesem Fenster gespeichert. Lassen Sie Desktop geöffnet und verbinden Sie die ursprünglichen Bot-Hosts erneut.',
+    setupCleanupPending:
+      'Die Gruppenchat-Bereinigung steht noch aus. Verbinden Sie die ursprünglichen Bot-Hosts erneut, bevor Sie es nochmals versuchen.',
     cleanupBlocked: "Ausgabebereinigung blockiert.",
     cleanupInventoryLimit: "Das Inventarlimit blockiert die Ausgabebereinigung.",
     cleanupScanPending: "Bereinigungssuche ausstehend. Weitere Arbeit kann verbleiben.",
@@ -485,6 +514,10 @@ export const CANONICAL_GROUP_LOCALES = {
   es: {
     cleanupWaiting: "La limpieza de salidas espera a que termine el trabajo original.",
     cleanupPending: "Limpieza de salidas pendiente.",
+    setupCleanupVolatile:
+      'La limpieza del chat de grupo está pendiente solo en esta ventana. Mantén Desktop abierto y vuelve a conectar los hosts originales de los bots.',
+    setupCleanupPending:
+      'La limpieza del chat de grupo está pendiente. Vuelve a conectar los hosts originales de los bots antes de intentarlo de nuevo.',
     cleanupBlocked: "Limpieza de salidas bloqueada.",
     cleanupInventoryLimit: "El límite del inventario bloquea la limpieza de salidas.",
     cleanupScanPending: "Análisis de limpieza pendiente. Puede quedar trabajo.",

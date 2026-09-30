@@ -14,6 +14,8 @@ const reconnectOperation = () => ({
   setupId: 'reconnect:room-1:builder',
   kind: 'peer-reconnect' as const,
   connectionId: 'peer',
+  installationId: 'install:peer',
+  homeInstallationId: 'install:home',
   profile: 'builder',
   grant: 'private-grant',
   grantSha256: 'a'.repeat(64),
@@ -98,7 +100,23 @@ beforeEach(() => {
       { connectionId: 'home', mode: 'remote', profile: 'default', targetProfile: 'default' },
       { connectionId: 'peer', mode: 'remote', profile: 'builder', targetProfile: 'builder' }
     ],
-    requestProfile: mocks.requestProfile
+    requestProfile: mocks.requestProfile,
+    acquireProfileRoute: async (route: { connectionId: string }) => ({
+      route,
+      generation: 1,
+      assertCurrent: () => undefined,
+      release: () => undefined,
+      request: async (method: string, params: unknown = {}) =>
+        method === 'groups.capabilities'
+          ? {
+              driver: true,
+              persistent_process: true,
+              authority_gateway_id: `install:${route.connectionId}`,
+              reciprocal_room_control: true,
+              room_link: { endpoint: `https://${route.connectionId}.example.test` }
+            }
+          : mocks.requestProfile(route, method, params)
+    })
   })
 })
 
@@ -348,6 +366,7 @@ describe('hosted Group Chat cleanup journal', () => {
       setupId: 'revoke:room-1:builder',
       kind: 'peer-revoke',
       connectionId: 'peer',
+      installationId: 'install:peer',
       profile: 'builder',
       grant: 'private-grant',
       roomId: null,

@@ -13,6 +13,32 @@ type PersistenceListener = (event: PersistenceEvent) => void
 
 const persistenceListeners = new Set<PersistenceListener>()
 
+/** Owners install codecs before hydration. Durable bytes and event payloads use
+ * the encoded representation; callers receive the decoded, ephemeral value. */
+export interface PersistenceCodec {
+  encode(value: string): string
+  decode(value: string): string
+  exclusive<T>(commit: () => T): T
+}
+const persistenceCodecs = new Map<string, PersistenceCodec>()
+const failedReads = new Set<string>()
+
+export function registerPersistenceCodec(key: string, codec: PersistenceCodec) {
+  persistenceCodecs.set(key, codec)
+}
+
+function writeRequired(key: string, value: string | null) {
+  if (value === null) {
+    window.localStorage.removeItem(key)
+  } else {
+    window.localStorage.setItem(key, value)
+  }
+
+  if (window.localStorage.getItem(key) !== value) {
+    throw new Error('Protected storage readback failed')
+  }
+}
+
 /** Observe every persisted get/set (e.g. pipe into telemetry/sync). */
 export function onPersistenceEvent(listener: PersistenceListener): () => void {
   persistenceListeners.add(listener)
@@ -32,10 +58,58 @@ export function readKey(key: string): null | string {
 
   try {
     value = window.localStorage.getItem(key)
-  } catch {
+  } catch (error) {
+    if (persistenceCodecs.has(key)) {
+      failedReads.add(key)
+      emitPersistence({ key, op: 'read', value: null })
+      throw error
+    }
     // Restricted contexts (private mode, disabled storage) read as absent.
   }
 
+  const codec = persistenceCodecs.get(key)
+
+  if (codec && value !== null) {
+    try {
+      // Native work is outside the short shared commit lock. Another renderer
+      // may progress meanwhile. Compare AND commit under that same main-owned
+      // lock used by every protected write/remove; never compare then unlock.
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const snapshot = value
+        const encoded = snapshot === null ? null : codec.encode(snapshot)
+        const decoded = encoded === null ? null : codec.decode(encoded)
+
+        const committed = codec.exclusive(() => {
+          value = window.localStorage.getItem(key)
+
+          if (value !== snapshot) {
+            return false
+          }
+
+          if (encoded !== snapshot) {
+            writeRequired(key, encoded)
+          }
+
+          return true
+        })
+
+        if (committed) {
+          failedReads.delete(key)
+          emitPersistence({ key, op: 'read', value: encoded })
+
+          return decoded
+        }
+      }
+
+      throw new Error('Protected storage changed during migration; retry hydration')
+    } catch (error) {
+      failedReads.add(key)
+      emitPersistence({ key, op: 'read', value: null })
+      throw error
+    }
+  }
+
+  failedReads.delete(key)
   emitPersistence({ key, op: 'read', value })
 
   return value
@@ -43,6 +117,33 @@ export function readKey(key: string): null | string {
 
 /** Raw write. A null value removes the key. Best-effort. */
 export function writeKey(key: string, value: null | string) {
+  const codec = persistenceCodecs.get(key)
+
+  if (codec) {
+    if (failedReads.has(key)) {
+      throw new Error('Protected storage must be recovered before it can be replaced')
+    }
+
+    // A write without prior hydration must not erase an unmigrated credential.
+    const previous = window.localStorage.getItem(key)
+
+    if (previous !== null) {
+      codec.decode(codec.encode(previous))
+    }
+
+    const encoded = value === null ? null : codec.encode(value)
+    codec.exclusive(() => {
+      if (window.localStorage.getItem(key) !== previous) {
+        throw new Error('Protected storage changed during write; reload before retrying')
+      }
+
+      writeRequired(key, encoded)
+    })
+    emitPersistence({ key, op: encoded === null ? 'remove' : 'write', value: encoded })
+
+    return
+  }
+
   try {
     if (value === null) {
       window.localStorage.removeItem(key)

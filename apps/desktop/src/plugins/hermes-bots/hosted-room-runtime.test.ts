@@ -194,6 +194,24 @@ async function loadRuntime(
 }
 
 beforeEach(() => {
+  // This Map-backed runtime unit suite does not exercise native persistence.
+  // Real preflight, IPC and failing custody are covered in room-secret-custody.
+  window.hermesDesktop = {
+    ...window.hermesDesktop,
+    roomSecrets: {
+      exchange: request => {
+        if (request.action !== 'preflight') {
+          throw new Error('Unexpected native operation')
+        }
+
+        return []
+      },
+      lock: () => {
+        throw new Error('Unexpected native lock')
+      },
+      unlock: () => undefined
+    }
+  }
   vi.useFakeTimers()
 })
 
@@ -1285,12 +1303,12 @@ describe('hosted Group Chat runtime', () => {
         return { registered: true, room_id: 'room-multi' }
       }
 
-      if (method === 'groups.disband' || method === 'groups.peer.revoke') {
-        if (method === 'groups.peer.revoke' && mode === 'journal-offline') {
+      if (method === 'groups.disband' || method === 'groups.peer.revoke' || method === 'groups.peer.revoke_exact') {
+        if (method === 'groups.peer.revoke_exact' && mode === 'journal-offline') {
           throw new Error('peer offline')
         }
 
-        return { ok: true }
+        return { ok: true, revoked: true }
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -1369,7 +1387,7 @@ describe('hosted Group Chat runtime', () => {
       const failure = await creation.catch(error => error)
       expect(failure).toBeInstanceOf(Error)
       expect(failure.fallbackSafe).toBe(mode === 'journal-offline' ? false : undefined)
-      expect(loaded.calls.find(call => call.method === 'groups.peer.revoke')?.params).toMatchObject({
+      expect(loaded.calls.find(call => call.method === 'groups.peer.revoke_exact')?.params).toMatchObject({
         grant: 'grant:builder'
       })
       expect(loaded.calls.some(call => call.method === 'groups.create' || call.method === 'groups.peer.register')).toBe(
@@ -1544,7 +1562,8 @@ describe('hosted Group Chat runtime', () => {
 
     expect(failure).toMatchObject({
       fallbackSafe: false,
-      message: expect.stringContaining('could not finish cleanup')
+      message: expect.stringContaining('cleanup is pending'),
+      cleanupPending: true
     })
     expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).not.toEqual([])
 

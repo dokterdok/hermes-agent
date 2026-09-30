@@ -2,6 +2,7 @@
 
 import { classifyHostedRoomCapability, profileScopedRoomLinkEndpoint } from './hosted-room-client'
 import type { HostedRoomCapability } from './hosted-room-client'
+import { requestHostedInstallation } from './hosted-room-installation-route'
 import type { HostedRoomProbe } from './hosted-room-runtime'
 import { requestHostedConnection } from './hosted-room-transport'
 import type { GroupMember, ProfileRoute } from './types'
@@ -41,6 +42,7 @@ interface PeerControlInput {
   requestId: string
   requestPeer: PeerRequest
   assertCurrent?: () => void
+  requestHome?: PeerRequest
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -49,6 +51,9 @@ function record(value: unknown): Record<string, unknown> {
 
 export async function registerHostedPeerControl(input: PeerControlInput) {
   const { homeCapability, peerCapability, requestPeer, assertCurrent = () => undefined } = input
+
+  const requestHome =
+    input.requestHome || ((method, params) => requestHostedConnection(input.homeRoute, method, params))
 
   if (!homeCapability.reciprocalRoomControl || !peerCapability?.reciprocalRoomControl) {
     return false
@@ -74,7 +79,7 @@ export async function registerHostedPeerControl(input: PeerControlInput) {
   assertCurrent()
 
   const invitation = record(
-    await requestHostedConnection(input.homeRoute, 'groups.control.invite', {
+    await requestHome('groups.control.invite', {
       room_id: input.roomId,
       member_id: input.memberId,
       caller_install_id: input.targetAuthority,
@@ -124,11 +129,9 @@ export async function registerHostedPeerControl(input: PeerControlInput) {
   return true
 }
 
-export type PeerControlRecoveryInput = Omit<
-  PeerControlInput,
-  'homeCapability' | 'peerCapability' | 'requestPeer' | 'assertCurrent'
-> & {
+export type PeerControlRecoveryInput = Omit<PeerControlInput, 'homeCapability' | 'peerCapability' | 'requestPeer'> & {
   peerRoute: ProfileRoute
+  requestPeer?: PeerRequest
 }
 
 export async function verifyHostedPeerControlScope(input: PeerControlRecoveryInput): Promise<
@@ -138,19 +141,19 @@ export async function verifyHostedPeerControlScope(input: PeerControlRecoveryInp
       peerCapability: HostedRoomCapability
     }
 > {
-  const homeCapability = classifyHostedRoomCapability(
-    await requestHostedConnection(input.homeRoute, 'groups.capabilities'),
-    {
-      connectionId: input.homeRoute.connectionId
-    }
-  )
+  const requestHome =
+    input.requestHome || ((method, params) => requestHostedConnection(input.homeRoute, method, params))
 
-  const peerCapability = classifyHostedRoomCapability(
-    await requestHostedConnection(input.peerRoute, 'groups.capabilities'),
-    {
-      connectionId: input.peerRoute.connectionId
-    }
-  )
+  const requestPeer =
+    input.requestPeer || ((method, params) => requestHostedConnection(input.peerRoute, method, params))
+
+  const homeCapability = classifyHostedRoomCapability(await requestHome('groups.capabilities', {}), {
+    connectionId: input.homeRoute.connectionId
+  })
+
+  const peerCapability = classifyHostedRoomCapability(await requestPeer('groups.capabilities', {}), {
+    connectionId: input.peerRoute.connectionId
+  })
 
   if (homeCapability.authorityId !== input.authorityId || peerCapability.authorityId !== input.targetAuthority) {
     throw new Error('Messaging connection identity changed.')
@@ -159,7 +162,7 @@ export async function verifyHostedPeerControlScope(input: PeerControlRecoveryInp
   let state: Record<string, unknown>
 
   try {
-    state = record(await requestHostedConnection(input.homeRoute, 'groups.state', { room_id: input.roomId }))
+    state = record(await requestHome('groups.state', { room_id: input.roomId }))
   } catch (error) {
     const code = record(error).code ?? record(record(error).error).code
 
@@ -197,12 +200,14 @@ export async function verifyHostedPeerControlScope(input: PeerControlRecoveryInp
 export async function recoverHostedPeerControl(input: PeerControlRecoveryInput): Promise<'complete' | 'gone'> {
   const scope = await verifyHostedPeerControlScope(input)
 
-  if (scope === 'gone') {return scope}
+  if (scope === 'gone') {
+    return scope
+  }
 
   const registered = await registerHostedPeerControl({
     ...input,
     ...scope,
-    requestPeer: (method, params) => requestHostedConnection(input.peerRoute, method, params)
+    requestPeer: input.requestPeer || ((method, params) => requestHostedConnection(input.peerRoute, method, params))
   })
 
   if (!registered) {
@@ -220,10 +225,14 @@ export async function registerHostedPeers(
   const homeRoute = input.probe.routes[created.connectionId]
   const homeCapability = input.probe.capabilities[created.connectionId]
 
+  const requestHome: PeerRequest = (method, params) =>
+    requestHostedInstallation(homeRoute, created.authorityId, method, params)
+
   for (const peer of peers) {
-    await requestHostedConnection(homeRoute, 'groups.peer.register', peer.registration)
+    await requestHome('groups.peer.register', peer.registration)
     await registerHostedPeerControl({
       homeRoute,
+      requestHome,
       homeCapability,
       peerCapability: peer.capability,
       roomId: input.roomId,

@@ -1,3 +1,5 @@
+import './room-secret-custody'
+
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 
@@ -88,21 +90,44 @@ export function classicAuthorityClaim(room: GroupChat): null | { authorityHash: 
   return token && hash === classicAuthorityHash(token) ? { authorityHash: hash, authorityToken: token } : null
 }
 
-/** Complete private record for plugin storage only. */
+/** Retain candidates without selecting or authorizing a winner. C-11 recovery
+ * belongs to the mailbox owner; a projection conflict is not credential deletion. */
+function retainedAuthorityCandidates(...rooms: (GroupChat | undefined)[]) {
+  const tokens = new Set<string>()
+
+  for (const room of rooms) {
+    const active = authorityToken(room?.desktopAuthorityToken)
+
+    if (active) {
+      tokens.add(active)
+    }
+
+    for (const candidate of room?.desktopAuthorityCandidates || []) {
+      const token = authorityToken(candidate?.token)
+
+      if (token && classicAuthorityHash(token) === candidate.hash) {
+        tokens.add(token)
+      }
+    }
+  }
+
+  return [...tokens].map(token => ({ hash: classicAuthorityHash(token), token }))
+}
+
+/** Ephemeral storage input; the room persistence codec seals private fields. */
 export function storedClassicDesktopAuthority(room: GroupChat) {
   const publicState = classicDesktopAuthority(room)
   const claim = classicAuthorityClaim(room)
+  const candidates = retainedAuthorityCandidates(room).filter(candidate => candidate.token !== claim?.authorityToken)
 
   return {
     ...publicState,
+    ...(candidates.length ? { desktopAuthorityCandidates: candidates } : {}),
     ...(claim ? { desktopAuthorityToken: claim.authorityToken } : {})
   }
 }
 
-export function ensureClassicDesktopAuthority(
-  room: GroupChat,
-  previous?: GroupChat
-): GroupChat {
+export function ensureClassicDesktopAuthority(room: GroupChat, previous?: GroupChat): GroupChat {
   if (room.tombstone || (typeof room.hosted === 'string' && room.hosted.trim())) {
     return room
   }
@@ -119,6 +144,7 @@ export function ensureClassicDesktopAuthority(
       ...room,
       desktopAuthorityHash: undefined,
       desktopAuthorityToken: undefined,
+      desktopAuthorityCandidates: retainedAuthorityCandidates(previous, room),
       desktopAuthorityConflict: true
     }
   }
@@ -151,6 +177,7 @@ export function ensureClassicDesktopAuthority(
       ...room,
       desktopAuthorityHash: undefined,
       desktopAuthorityToken: undefined,
+      desktopAuthorityCandidates: retainedAuthorityCandidates(previous, room),
       desktopAuthorityConflict: true
     }
   }
@@ -158,6 +185,7 @@ export function ensureClassicDesktopAuthority(
   return {
     ...room,
     desktopAuthorityConflict: undefined,
+    desktopAuthorityCandidates: replacement ? undefined : room.desktopAuthorityCandidates,
     desktopAuthorityHash: hash,
     desktopAuthorityToken: token
   }
