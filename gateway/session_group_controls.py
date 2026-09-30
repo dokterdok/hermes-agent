@@ -166,7 +166,9 @@ async def dispatch_group_control(connection, method, params):
 
 def _group(authority, actor, home, method, params, *, state_owner=None, inventory=None,
            room_read=None, room_send=None, room_control=None):
-    if method == 'groups.state':
+    if method == 'groups.state' and room_read is not None:
+        # Only a delegated messaging read takes the consent-bound reader; every
+        # other caller, Desktop included, keeps the base state handler below.
         from gateway.session_group_state import read_group_state
         if state_owner is None:
             raise RuntimeStoreError('group_state_unavailable')
