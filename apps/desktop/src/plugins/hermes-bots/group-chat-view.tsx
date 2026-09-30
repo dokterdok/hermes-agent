@@ -78,14 +78,16 @@ import {
 } from './group-membership'
 import { groupMentionComponents, groupMentionText } from './group-mention-text'
 import { hostedMessageSpeaker } from './group-message-author'
-import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
+import type { GroupComposerDraft, GroupDraftSetter, GroupMainTab } from './group-panes'
 import {
   clearGroupComposerDraft,
   closeGroupChatMainTab,
+  createGroupMainTab,
   dropGroupMainTab,
   groupChatMainTabs,
   groupComposerDraftKey,
   groupComposerDraftSnapshot,
+  groupMainTabViews,
   migrateGroupComposerDraft,
   recordGroupMainTab,
   restoreGroupComposerDraft,
@@ -459,9 +461,18 @@ async function renameGroupChatOwned(
     $groupChatWorkspace.set(next)
   }
 
-  if (groupChatMainTabs.has(oldName)) {
-    closeGroupChatMainTab(oldName)
-    openGroupChat(next)
+  const mainTab = groupChatMainTabs.get(oldName)
+
+  if (mainTab) {
+    if (hostedAlreadyRenamed) {
+      // A refresh rekeys the retained view; it is not a navigation gesture.
+      recordGroupMainTab(next, mainTab)
+      dropGroupMainTab(oldName)
+      groupMainTabViews.get(mainTab)?.group.set(next)
+    } else {
+      closeGroupChatMainTab(oldName)
+      openGroupChat(next)
+    }
   }
 
   // Same convergence as disband: drop the pre-rename roster snapshot so the
@@ -1837,10 +1848,11 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
  *  panes stay mounted while hidden, so the workspace needs the hidden →
  *  visible edge to re-anchor its log to the bottom (#89835 follow-up). */
 interface GroupChatMainViewProps {
-  group: string
+  tab: GroupMainTab
 }
 
-function GroupChatMainView({ group }: GroupChatMainViewProps) {
+function GroupChatMainView({ tab }: GroupChatMainViewProps) {
+  const group = useValue(tab.group)
   const allMeta = useValue($botMeta)
   // Subscribe: membership changes ride bot meta AND the room record.
   useValue($groupChats)
@@ -1850,11 +1862,8 @@ function GroupChatMainView({ group }: GroupChatMainViewProps) {
   // Older SDKs have no paneVisibility: fall back to an always-visible atom so
   // the hook order stays stable and behavior matches the previous build.
   const $visible = useMemo(
-    () =>
-      typeof host.paneVisibility === 'function'
-        ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugifyProfileName(group)}`)
-        : atom(true),
-    [group]
+    () => (typeof host.paneVisibility === 'function' ? host.paneVisibility(`plugin-workspace:${tab.id}`) : atom(true)),
+    [tab.id]
   )
 
   const visible = useValue($visible)
@@ -1893,19 +1902,36 @@ export function openGroupChat(group: string): void {
 
   if (typeof host.openWorkspace === 'function') {
     try {
-      const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
+      const existing = groupChatMainTabs.get(group)
+
+      const tab =
+        (existing && groupMainTabViews.get(existing)) ||
+        createGroupMainTab(group, `${ID}:group:${slugifyProfileName(group)}`)
+
+      const closeWorkspace = host.openWorkspace(tab.id, {
         title: group,
         minWidth: '24rem',
-        render: () => <GroupChatMainView group={group} />,
+        render: () => <GroupChatMainView tab={tab} />,
         onClose: () => {
-          dropGroupMainTab(group)
+          const currentGroup = tab.group.get()
 
-          if ($groupChatWorkspace.get() === group) {
-            $groupChatWorkspace.set(null)
+          if (groupChatMainTabs.get(currentGroup) === close) {
+            dropGroupMainTab(currentGroup)
+
+            if ($groupChatWorkspace.get() === currentGroup) {
+              $groupChatWorkspace.set(null)
+            }
           }
         }
       })
 
+      const close = () => {
+        if (groupChatMainTabs.get(tab.group.get()) === close) {
+          closeWorkspace()
+        }
+      }
+
+      groupMainTabViews.set(close, tab)
       recordGroupMainTab(group, close)
       // Tab ownership is on record — the atom now only drives the roster
       // highlight; shouldRenderGroupChatInPane stays false throughout.

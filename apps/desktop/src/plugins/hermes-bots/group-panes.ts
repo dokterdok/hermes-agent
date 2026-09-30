@@ -118,6 +118,26 @@ export type GroupDraftSetter<T> = T | ((current: T) => T)
  *  disband (or the room view's own Back) can retire the tab it opened. */
 export const groupChatMainTabs = new Map<string, () => void>()
 
+export interface GroupMainTab {
+  group: ReturnType<typeof atom<string>>
+  id: string
+}
+
+export const groupMainTabViews = new WeakMap<() => void, GroupMainTab>()
+
+/** A renamed pane keeps its id; reusing its former name must not replace it. */
+export function createGroupMainTab(group: string, preferredId: string): GroupMainTab {
+  const occupied = new Set([...groupChatMainTabs.values()].map(close => groupMainTabViews.get(close)?.id))
+  let id = preferredId
+  let suffix = 1
+
+  while (occupied.has(id)) {
+    id = `${preferredId}:${suffix++}`
+  }
+
+  return { group: atom(group), id }
+}
+
 /** Reactive shadow of `groupChatMainTabs` membership. The Map itself can't
  *  notify React, and #89788's first fix read it non-reactively: a BotsPane
  *  render that landed between selecting the group and recording its main
@@ -150,17 +170,22 @@ export function shouldRenderGroupChatInPane(group: null | string): group is stri
 
 export function closeGroupChatMainTab(group: string) {
   const close = groupChatMainTabs.get(group)
-  dropGroupMainTab(group)
-
-  if ($groupChatWorkspace.get() === group) {
-    $groupChatWorkspace.set(null)
-  }
 
   if (typeof close === 'function') {
     try {
       close()
     } catch {
       /* tab already gone */
+    }
+  }
+
+  // The closer must still own its tab when invoked. Do not retire a
+  // replacement registered synchronously by the host's close callback.
+  if (!groupChatMainTabs.has(group) || groupChatMainTabs.get(group) === close) {
+    dropGroupMainTab(group)
+
+    if ($groupChatWorkspace.get() === group) {
+      $groupChatWorkspace.set(null)
     }
   }
 }
