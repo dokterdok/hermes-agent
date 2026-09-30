@@ -49,6 +49,7 @@ let cleanupOwnerId = ''
 let cleanupStorage: null | PluginContext['storage'] = null
 let cleanupDispatching = false
 let cleanupDisposed = true
+let cleanupReady = false
 let cleanupGeneration = 0
 let cleanupMutationTail: Promise<void> = Promise.resolve()
 let cleanupOwnerLockRelease: null | (() => void) = null
@@ -292,6 +293,10 @@ async function replaceCleanup(previous: HostedRoomCleanup, next: HostedRoomClean
 
 async function mutateCleanup(update: (current: HostedRoomCleanup) => HostedRoomCleanup) {
   return withCleanupLock(async () => {
+    if (!cleanupReady) {
+      throw new Error('Group Chat cleanup recovery must finish before setup can be secured.')
+    }
+
     const current = await readPersistedCleanup()
     const next = normalizeHostedRoomCleanup(update(current))
 
@@ -539,7 +544,7 @@ async function runCleanup(operation: HostedRoomCleanupOperation) {
 }
 
 export async function dispatchHostedRoomCleanup() {
-  if (cleanupDispatching || cleanupDisposed) {
+  if (cleanupDispatching || cleanupDisposed || !cleanupReady) {
     return
   }
 
@@ -601,6 +606,7 @@ export async function dispatchHostedRoomCleanup() {
 
 export async function startHostedRoomCleanup(storage: PluginContext['storage']) {
   const generation = ++cleanupGeneration
+  cleanupReady = false
   const previousOwnerId = cleanupOwnerId
   cleanupOwnerId = newCleanupOwnerId()
   cleanupStorage = storage
@@ -608,13 +614,8 @@ export async function startHostedRoomCleanup(storage: PluginContext['storage']) 
   await holdCleanupOwnerLock(cleanupOwnerId)
 
   await withCleanupLock(async () => {
-    let persisted: unknown = null
-
-    try {
-      persisted = await storage?.get?.(HOSTED_ROOM_CLEANUP_KEY, null)
-    } catch {
-      /* empty cleanup is the safe fallback */
-    }
+    // An unreadable journal is unknown, not empty. Preserve pending cleanup.
+    const persisted = await storage.get(HOSTED_ROOM_CLEANUP_KEY, null)
 
     if (!cleanupDisposed && generation === cleanupGeneration) {
       const current = normalizeHostedRoomCleanup(persisted)
@@ -634,6 +635,7 @@ export async function startHostedRoomCleanup(storage: PluginContext['storage']) 
       })
 
       await replaceCleanup(current, next)
+      cleanupReady = !cleanupDisposed && generation === cleanupGeneration
     }
   })
 
@@ -656,5 +658,6 @@ export function resetHostedRoomCleanupForTests() {
   cleanupDispatching = false
   cleanupOwnerId = ''
   cleanupStorage = null
+  cleanupReady = false
   $hostedRoomCleanup.set({ version: 1, operations: [] })
 }
