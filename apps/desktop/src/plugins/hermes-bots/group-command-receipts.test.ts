@@ -16,7 +16,7 @@ const makeRoom = (): GroupChat => ({
 afterEach(() => vi.useRealTimers())
 
 describe('bounded Desktop command completion receipts', () => {
-  it('retains only the newest 128 results, including tied timestamps', () => {
+  it('pins unacknowledged results through pressure, tied timestamps and hydration limits', () => {
     vi.useFakeTimers()
     const room = makeRoom()
 
@@ -27,14 +27,37 @@ describe('bounded Desktop command completion receipts', () => {
       })
     }
 
-    expect(Object.keys(room.desktopCommandSettled!)).toHaveLength(128)
-    expect(desktopCommandResult('Workshop', room, 'send:0', 'send')).toBeNull()
-    expect(desktopCommandResult('Workshop', room, 'send:159', 'send')).toEqual({
-      room_name: 'Workshop',
-      thread_id: 'thread:159'
+    expect(Object.keys(room.desktopCommandSettled!)).toHaveLength(160)
+    expect(desktopCommandResult('Workshop', room, 'send:0', 'send')).toEqual({
+      room_name: 'Workshop', thread_id: 'thread:0'
     })
-    expect(Object.keys(boundedDesktopCommandSettled(room.desktopCommandSettled, 999))).toHaveLength(128)
-    expect(boundedDesktopCommandSettled(room.desktopCommandSettled, -1)).toEqual({})
+    expect(desktopCommandResult('Workshop', room, 'send:159', 'send')).toEqual({
+      room_name: 'Workshop', thread_id: 'thread:159'
+    })
+    expect(Object.keys(boundedDesktopCommandSettled(room.desktopCommandSettled))).toHaveLength(160)
+  })
+
+  it('does not infer safe retirement from unqualified ACK flags; legacy and corrupt markers survive pressure', () => {
+    const room = makeRoom()
+    room.desktopCommandSettled = settleDesktopCommand('Workshop', room, 'unacknowledged', 'send', {
+      room_name: 'Workshop', thread_id: 'original'
+    })
+    const saved = room.desktopCommandSettled.unacknowledged
+
+    const completed = Object.fromEntries(Array.from({ length: 160 }, (_, index) => [
+      `completed:${index}`, { ...(saved as object), at: index + 1, providerCompleted: true }
+    ]))
+
+    const retained = boundedDesktopCommandSettled({ ...completed, ...room.desktopCommandSettled, legacy: 0, corrupt: null })
+    expect(Object.keys(retained)).toHaveLength(163)
+    expect(retained['completed:0']).toBeDefined()
+    expect(retained['completed:159']).not.toHaveProperty('providerCompleted')
+    expect(retained.unacknowledged).toEqual(saved)
+    expect(retained.legacy).toBe(0)
+    expect(retained.corrupt).toBe(0)
+    room.desktopCommandSettled = boundedDesktopCommandSettled(JSON.parse(JSON.stringify(retained)))
+    expect(() => desktopCommandResult('Workshop', room, 'legacy', 'send')).toThrow('already settled')
+    expect(() => desktopCommandResult('Workshop', room, 'corrupt', 'send')).toThrow('already settled')
   })
 
   it('preserves the exact first result through JSON restart and stable-id rename', () => {

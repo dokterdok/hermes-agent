@@ -19,7 +19,6 @@ export interface DesktopCommandReceipt {
 // Numeric entries are pre-release settlements without recoverable results.
 // Keep them as fail-closed markers, never as permission to execute again.
 export type DesktopCommandSettled = Record<string, DesktopCommandReceipt | number>
-export const DESKTOP_COMMAND_RECEIPT_LIMIT = 128
 
 function receipt(value: unknown): DesktopCommandReceipt | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -70,10 +69,11 @@ function receipt(value: unknown): DesktopCommandReceipt | null {
   }
 }
 
-export function boundedDesktopCommandSettled(
-  value: unknown,
-  limit = DESKTOP_COMMAND_RECEIPT_LIMIT
-): DesktopCommandSettled {
+/** Bound receipt fields, not settlement custody. A local result does not prove
+ * groups.desktop.complete reached its provider. Count/age eviction would let a
+ * cold reclaim execute stopped or settled work again, including legacy unknowns.
+ * Keep these markers with the room until provider-qualified retirement exists. */
+export function boundedDesktopCommandSettled(value: unknown): DesktopCommandSettled {
   return Object.fromEntries(
     Object.entries(value && typeof value === 'object' && !Array.isArray(value) ? value : {})
       .filter(([id]) => Boolean(id) && id.length <= 160)
@@ -85,7 +85,6 @@ export function boundedDesktopCommandSettled(
         ([, left], [, right]) =>
           (typeof right === 'number' ? right : right.at) - (typeof left === 'number' ? left : left.at)
       )
-      .slice(0, Math.max(0, Math.min(DESKTOP_COMMAND_RECEIPT_LIMIT, limit)))
   )
 }
 
