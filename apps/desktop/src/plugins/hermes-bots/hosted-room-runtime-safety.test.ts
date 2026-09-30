@@ -33,6 +33,16 @@ function room(overrides: Partial<GroupChat> = {}): GroupChat {
   }
 }
 
+// Minimum identity-bearing groups.send projection from methods_groups.py.
+// Unlike a bare accepted flag, this can confirm a same-key Send replay.
+function sendReceipt(params: Record<string, unknown>) {
+  return {
+    accepted: true,
+    client_event_id: params.event_id,
+    event: { kind: 'message.user', room_id: params.room_id }
+  }
+}
+
 async function loadRuntime(
   handler: (method: string, params: Record<string, unknown>, route: Record<string, unknown>) => unknown,
   routes: Record<string, unknown>[] = [
@@ -47,16 +57,42 @@ async function loadRuntime(
     delete host[key]
   }
 
+  const request = async (route: Record<string, unknown>, method: string, params: Record<string, unknown>) => {
+    calls.push({ connectionId: String(route.connectionId || ''), method, params })
+
+    return handler(method, params, route)
+  }
+
   Object.assign(host, {
     activeConnectionId: () => String(routes[0]?.connectionId || ''),
     notify: vi.fn(),
     profileRoutes: async () => routes,
-    requestProfile: async (route: Record<string, unknown>, method: string, params: Record<string, unknown>) => {
-      const call = { connectionId: String(route.connectionId || ''), method, params }
+    requestProfile: request,
+    // These fixtures have fixed endpoints. Capture the route, not a fresh
+    // descriptor lookup; the actual SDK/registry replacement and ABA contract
+    // is exercised separately in sdk/hosted-outbox-registry.test.ts.
+    acquireProfileRoute: async (route: Record<string, unknown>) => {
+      const captured = Object.freeze({ ...route })
+      let released = false
 
-      calls.push(call)
+      const assertCurrent = () => {
+        if (released) {
+          throw new Error('Route lease has been released')
+        }
+      }
 
-      return handler(method, params, route)
+      return {
+        route: captured,
+        assertCurrent,
+        release: () => {
+          released = true
+        },
+        request: (method: string, params: Record<string, unknown> = {}) => {
+          assertCurrent()
+
+          return request(captured, method, params)
+        }
+      }
     },
     state: {
       connectionId: { get: () => String(routes[0]?.connectionId || ''), listen: () => () => undefined },
@@ -278,7 +314,7 @@ describe('hosted Group Chat client safety', () => {
           }
         })
 
-        return { accepted: true }
+        return sendReceipt(params)
       }
 
       if (method === 'groups.attachment.read') {
@@ -334,7 +370,7 @@ describe('hosted Group Chat client safety', () => {
     let releaseUpload: () => void = () => undefined
     let uploadStarted = false
 
-    const loaded = await loadRuntime((method, _params) => {
+    const loaded = await loadRuntime((method, params) => {
       if (method === 'groups.capabilities') {
         return {
           authority_gateway_id: 'install:home',
@@ -365,8 +401,12 @@ describe('hosted Group Chat client safety', () => {
         })
       }
 
-      if (method === 'groups.send' || method === 'groups.stop') {
-        return { accepted: true }
+      if (method === 'groups.send') {
+        return sendReceipt(params)
+      }
+
+      if (method === 'groups.stop') {
+        return { cancelled: 1 }
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -415,11 +455,12 @@ describe('hosted Group Chat client safety', () => {
     }
 
     expect(ordered).toEqual(['groups.send', 'groups.stop'])
+    expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({ commands: [] })
     expect(loaded.chat.$groupChats.get().Release.log).toHaveLength(1)
     loaded.runtime.stopHostedRoomRuntime()
   })
 
-  it('does not paint a send the authority rejects terminally', async () => {
+  it('does not paint or discard a Send refused before handler admission', async () => {
     vi.useFakeTimers()
     let releaseBlockingSend: () => void = () => undefined
 
@@ -435,11 +476,13 @@ describe('hosted Group Chat client safety', () => {
       if (method === 'groups.send') {
         if (params.event_id === 'blocking-send') {
           return new Promise(resolve => {
-            releaseBlockingSend = () => resolve({ accepted: true })
+            releaseBlockingSend = () => resolve(sendReceipt(params))
           })
         }
 
-        throw Object.assign(new Error('room retired'), { code: 4111 })
+        // Dispatcher validation refusal, not a HostedRoomError: service.send
+        // can raise 4111 after append_user_event has already committed.
+        throw Object.assign(new Error('invalid Send parameters'), { code: -32602 })
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -478,18 +521,35 @@ describe('hosted Group Chat client safety', () => {
     await expect(rejected).rejects.toThrow('rejected this action')
     expect(loaded.chat.$groupChats.get().Release.log).toEqual([])
     expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({
-      commands: []
+      commands: [{
+        attempts: 1,
+        failureCode: '-32602',
+        kind: 'send',
+        payload: { text: 'Do not paint' },
+        possibleAdmission: false,
+        roomId: 'room-1',
+        status: 'failed'
+      }]
     })
-    expect(loaded.chat.$groupChats.get().Release.hostedStatus).toMatchObject({ state: 'ready' })
+    expect(loaded.chat.$groupChats.get().Release.hostedStatus).toMatchObject({
+      canRetry: true,
+      state: 'failed'
+    })
+    expect(loaded.chat.$groupChats.get().Release.hostedStatus).toHaveProperty('dismissCommandId', expect.any(String))
+    expect(loaded.chat.$groupChats.get().Release.continuityIssue).toContain('rejected this action')
     loaded.runtime.stopHostedRoomRuntime()
   })
 
-  it('keeps an exhausted send visible and retryable without filling the active queue', async () => {
+  it.each([
+    { code: 4123, failureCode: '4123', possibleAdmission: false, state: 'failed', status: 'failed' },
+    { code: 4111, failureCode: 'outcome-unknown', possibleAdmission: true, state: 'indeterminate', status: 'unknown' }
+  ])('keeps an exhausted Send $status with saved intent and explicit recovery', async outcome => {
     vi.useFakeTimers()
     let available = false
+    let confirmed = true
     let attempts = 0
 
-    const loaded = await loadRuntime((method, _params) => {
+    const loaded = await loadRuntime((method, params) => {
       if (method === 'groups.capabilities') {
         return { authority_gateway_id: 'install:home', driver: true, persistent_process: true }
       }
@@ -502,10 +562,10 @@ describe('hosted Group Chat client safety', () => {
         attempts += 1
 
         if (!available) {
-          throw new Error('unexpected permanent rejection')
+          throw Object.assign(new Error('Send unavailable'), { code: outcome.code })
         }
 
-        return { accepted: true }
+        return confirmed ? sendReceipt(params) : { accepted: true }
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -538,26 +598,68 @@ describe('hosted Group Chat client safety', () => {
       commands: [
         expect.objectContaining({
           commandId: 'stuck-send',
-          failureCode: 'retry-exhausted',
-          status: 'failed'
+          attempts: 5,
+          failureCode: outcome.failureCode,
+          payload: { text: 'stuck', thread_id: 'thread-1' },
+          possibleAdmission: outcome.possibleAdmission,
+          status: outcome.status
         })
       ]
     })
     expect(loaded.chat.$groupChats.get().Release.hostedStatus).toMatchObject({
+      canRetry: true,
       retryCommandId: 'stuck-send',
-      state: 'failed'
+      state: outcome.state
     })
+    expect(loaded.runtime.groupChatContinuityReady(room({
+      hostedStatus: { label: 'Cached ready', state: 'ready' }
+    }))).toBe(false)
+    // Remote task uncertainty alone is not an unresolved local command. Keep
+    // unrelated rooms usable; do not blanket-disable the indeterminate state.
+    expect(loaded.runtime.groupChatContinuityReady(room({
+      roomId: 'room-independent',
+      hostedStatus: { label: 'Remote task uncertain', state: 'indeterminate' }
+    }))).toBe(true)
     await expect(loaded.rounds.sendToGroupChatDurably('Release', MEMBERS, 'Blocked work')).resolves.toBeNull()
     expect(loaded.chat.$groupChats.get().Release.log).toEqual([])
 
     loaded.runtime.stopHostedRoomRuntime()
     await loaded.runtime.startHostedRoomRuntime(loaded.storage)
     expect(loaded.chat.$groupChats.get().Release.hostedStatus).toMatchObject({
+      canRetry: true,
       retryCommandId: 'stuck-send',
-      state: 'failed'
+      state: outcome.state
     })
 
     available = true
+
+    if (outcome.possibleAdmission) {
+      // A bare ACK does not settle a possibly committed Send. Only the same
+      // client event and room receipt may retire this saved intent.
+      confirmed = false
+      // This API reports successful requeue, not receipt confirmation. Send
+      // remains replayable under its same event key within the bounded budget;
+      // the saved row, not this boolean, proves whether it was acknowledged.
+      await expect(loaded.runtime.retryFailedHostedRoomCommand('Release', 'stuck-send')).resolves.toBe(true)
+      expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({
+        commands: [{ commandId: 'stuck-send', status: 'pending', attempts: 1, possibleAdmission: true }]
+      })
+
+      for (let attempt = 1; attempt < 5; attempt++) {
+        await loaded.runtime.dispatchHostedRoomOutbox()
+      }
+
+      expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({
+        commands: [{ commandId: 'stuck-send', status: 'unknown', attempts: 5, possibleAdmission: true }]
+      })
+      expect(loaded.calls.filter(call => call.method === 'groups.send')).toHaveLength(10)
+      expect(loaded.calls.filter(call => call.method === 'groups.send').every(call =>
+        call.params.event_id === 'stuck-send' && call.params.room_id === 'room-1'
+      )).toBe(true)
+      expect(loaded.chat.$groupChats.get().Release.hostedStatus).toMatchObject({ state: 'indeterminate' })
+      confirmed = true
+    }
+
     await expect(loaded.runtime.retryFailedHostedRoomCommand('Release', 'stuck-send')).resolves.toBe(true)
     expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({ commands: [] })
     await expect(loaded.rounds.sendToGroupChatDurably('Release', MEMBERS, 'Fresh work')).resolves.toBeTruthy()
@@ -565,7 +667,10 @@ describe('hosted Group Chat client safety', () => {
     loaded.runtime.stopHostedRoomRuntime()
   })
 
-  it('keeps Stop durable beyond the ordinary retry budget', async () => {
+  it.each([
+    { code: 4115, attempts: 5, failureCode: '4115', possibleAdmission: false, state: 'failed', status: 'failed' },
+    { code: undefined, attempts: 1, failureCode: 'outcome-unknown', possibleAdmission: true, state: 'indeterminate', status: 'unknown' }
+  ])('keeps Stop $status durable beyond the retry budget without indefinite replay', async outcome => {
     vi.useFakeTimers()
     let attempts = 0
 
@@ -580,7 +685,7 @@ describe('hosted Group Chat client safety', () => {
 
       if (method === 'groups.stop') {
         attempts += 1
-        throw new Error('gateway temporarily unavailable')
+        throw Object.assign(new Error('Stop response unavailable'), { code: outcome.code })
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -608,20 +713,44 @@ describe('hosted Group Chat client safety', () => {
       await loaded.runtime.dispatchHostedRoomOutbox()
     }
 
-    expect(attempts).toBe(8)
+    expect(attempts).toBe(outcome.attempts)
     expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({
       commands: [
         expect.objectContaining({
-          attempts: 8,
+          attempts: outcome.attempts,
           commandId: 'durable-stop',
-          status: 'pending'
+          failureCode: outcome.failureCode,
+          payload: {},
+          possibleAdmission: outcome.possibleAdmission,
+          status: outcome.status
         })
       ]
+    })
+    expect(loaded.chat.$groupChats.get().Release.hostedStatus).toMatchObject({
+      canRetry: true,
+      retryCommandId: 'durable-stop',
+      state: outcome.state
+    })
+    expect(loaded.chat.$groupChats.get().Release.running).toBe(true)
+
+    if (outcome.status === 'unknown') {
+      await expect(loaded.runtime.stopHostedGroupChat('Release')).resolves.toBe(false)
+      expect(loaded.chat.$groupChats.get().Release.hostedStatus).not.toHaveProperty('dismissCommandId')
+    }
+
+    loaded.runtime.stopHostedRoomRuntime()
+    await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+    expect(attempts).toBe(outcome.attempts)
+    expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({
+      commands: [{ commandId: 'durable-stop', attempts: outcome.attempts, status: outcome.status }]
     })
     loaded.runtime.stopHostedRoomRuntime()
   })
 
-  it('lets Stop supersede a failed send in the same room', async () => {
+  it.each([
+    { status: 'failed', state: 'failed', failureCode: '4123', possibleAdmission: false },
+    { status: 'unknown', state: 'indeterminate', failureCode: 'retry-exhausted', possibleAdmission: undefined }
+  ])('lets Stop bypass a $status Send without erasing its intent', async outcome => {
     const loaded = await loadRuntime(method => {
       if (method === 'groups.capabilities') {
         return { authority_gateway_id: 'install:home', driver: true, persistent_process: true }
@@ -646,7 +775,8 @@ describe('hosted Group Chat client safety', () => {
           authorityId: 'install:home',
           commandId: 'failed-send',
           connectionId: 'gateway-a',
-          failureCode: 'retry-exhausted',
+          failureCode: outcome.failureCode,
+          possibleAdmission: outcome.possibleAdmission,
           kind: 'send',
           payload: { text: 'stuck', thread_id: 'thread-1' },
           roomId: 'room-1',
@@ -660,11 +790,28 @@ describe('hosted Group Chat client safety', () => {
     await expect(loaded.runtime.stopHostedGroupChat('Release')).resolves.toBe(true)
 
     expect(loaded.calls.filter(call => call.method === 'groups.stop')).toHaveLength(1)
-    expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({ commands: [] })
+    expect(loaded.calls.filter(call => call.method === 'groups.send')).toEqual([])
+    expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({
+      commands: [{
+        commandId: 'failed-send',
+        kind: 'send',
+        payload: { text: 'stuck', thread_id: 'thread-1' },
+        status: outcome.status
+      }]
+    })
+    expect(loaded.chat.$groupChats.get().Release.hostedStatus).toMatchObject({
+      retryCommandId: 'failed-send',
+      state: outcome.state
+    })
     loaded.runtime.stopHostedRoomRuntime()
   })
 
-  it('retires a Stop rejected because its room no longer exists', async () => {
+  it.each([
+    { code: 5116, state: 'indeterminate', status: 'unknown' },
+    { code: -32602, state: 'failed', status: 'failed' }
+  ])('retains Stop intent on room-error $code rather than inventing acknowledgement', async outcome => {
+    vi.useFakeTimers()
+
     const loaded = await loadRuntime(method => {
       if (method === 'groups.capabilities') {
         return { authority_gateway_id: 'install:home', driver: true, persistent_process: true }
@@ -675,7 +822,9 @@ describe('hosted Group Chat client safety', () => {
       }
 
       if (method === 'groups.stop') {
-        throw Object.assign(new Error('hosted room not found'), { code: 5116 })
+        // 5116 wraps every service.stop_room exception, including errors
+        // after request_room_stop commits; its message cannot prove refusal.
+        throw Object.assign(new Error('hosted room not found'), { code: outcome.code })
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -684,14 +833,46 @@ describe('hosted Group Chat client safety', () => {
     loaded.chat.$groupChats.set({ Release: room({ running: true }) })
     await loaded.runtime.startHostedRoomRuntime(loaded.storage)
 
-    await expect(loaded.runtime.stopHostedGroupChat('Release')).rejects.toThrow('rejected this action')
-    expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({ commands: [] })
+    const stop = loaded.runtime.stopHostedGroupChat('Release')
+
+    if (outcome.status === 'failed') {
+      await expect(stop).rejects.toThrow('rejected this action')
+    } else {
+      await expect(stop).resolves.toBe(false)
+    }
+
+    const stopCall = loaded.calls.find(call => call.method === 'groups.stop')!
+
+    expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({
+      commands: [{
+        attempts: 1,
+        commandId: stopCall.params.cancel_id,
+        kind: 'stop',
+        payload: {},
+        possibleAdmission: outcome.status === 'unknown',
+        roomId: 'room-1',
+        status: outcome.status
+      }]
+    })
+    expect(loaded.chat.$groupChats.get().Release.hostedStatus).toMatchObject({ state: outcome.state })
+    expect(loaded.chat.$groupChats.get().Release.running).toBe(true)
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await loaded.runtime.dispatchHostedRoomOutbox()
+    }
+
+    loaded.runtime.stopHostedRoomRuntime()
+    await loaded.runtime.startHostedRoomRuntime(loaded.storage)
     expect(loaded.calls.filter(call => call.method === 'groups.stop')).toHaveLength(1)
+    expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({
+      commands: [{ commandId: stopCall.params.cancel_id, status: outcome.status }]
+    })
     loaded.runtime.stopHostedRoomRuntime()
   })
 
   it('keeps FIFO inside one room while another room can continue', async () => {
     vi.useFakeTimers()
+    let available = false
 
     const loaded = await loadRuntime((method, params) => {
       if (method === 'groups.capabilities') {
@@ -702,16 +883,16 @@ describe('hosted Group Chat client safety', () => {
         return { rooms: [] }
       }
 
-      if (method === 'groups.send' && params.event_id === 'send-a') {
+      if (method === 'groups.send' && params.event_id === 'send-a' && !available) {
         throw new Error('temporary outage')
       }
 
       if (method === 'groups.send') {
-        return { accepted: true }
+        return sendReceipt(params)
       }
 
       if (method === 'groups.stop') {
-        throw new Error('Stop overtook the earlier send')
+        return { cancelled: 1 }
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -758,8 +939,14 @@ describe('hosted Group Chat client safety', () => {
       'send-c'
     ])
     expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({
-      commands: [{ commandId: 'send-a' }, { commandId: 'stop-b' }]
+      commands: [{ commandId: 'send-a', status: 'pending', possibleAdmission: true }, { commandId: 'stop-b' }]
     })
+    available = true
+    await loaded.runtime.dispatchHostedRoomOutbox()
+    expect(loaded.calls.filter(call => ['groups.send', 'groups.stop'].includes(call.method)).map(call =>
+      call.params.event_id || call.params.cancel_id
+    )).toEqual(['send-a', 'send-c', 'send-a', 'stop-b'])
+    expect(loaded.values.get('hosted-room-outbox-v1')).toMatchObject({ commands: [] })
     loaded.runtime.stopHostedRoomRuntime()
   })
 
@@ -771,7 +958,7 @@ describe('hosted Group Chat client safety', () => {
       { connectionId: 'gateway-new', mode: 'remote', profile: 'default', targetProfile: 'default' }
     ]
 
-    const loaded = await loadRuntime((method, _params, route) => {
+    const loaded = await loadRuntime((method, params, route) => {
       if (method === 'groups.capabilities') {
         if (route.connectionId === 'gateway-old') {
           throw new Error('stale endpoint')
@@ -785,7 +972,7 @@ describe('hosted Group Chat client safety', () => {
       }
 
       if (method === 'groups.send') {
-        return { accepted: true }
+        return sendReceipt(params)
       }
 
       throw new Error(`unexpected method: ${method}`)

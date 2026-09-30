@@ -200,10 +200,12 @@ export interface FriendlyHostedRoomStatus {
 }
 
 export type HostedRoomCommandKind = 'create' | 'disband' | 'rename' | 'retry' | 'send' | 'stop'
-export type HostedRoomCommandStatus = 'failed' | 'in-flight' | 'pending'
+export type HostedRoomCommandStatus = 'dismissed' | 'failed' | 'in-flight' | 'pending' | 'unknown'
 
 export interface HostedRoomCommand {
   attempts: number
+  /** Durable history: a later refusal cannot negate an earlier possible admission. */
+  possibleAdmission?: boolean
   authorityId: null | string
   commandId: string
   connectionId: string
@@ -222,8 +224,12 @@ export interface HostedRoomOutbox {
 export type HostedRoomOutboxAction =
   | { command: Partial<HostedRoomCommand>; type: 'enqueue' }
   | { command: Partial<HostedRoomCommand>; type: 'enqueue-safety' }
-  | { commandId: string; type: 'acknowledge' | 'dispatch' | 'retry' | 'transient-failure' }
-  | { commandId: string; failureCode?: string; type: 'terminal-failure' }
+  | {
+      commandId: string
+      failureCode?: string
+      type: 'acknowledge' | 'dismiss' | 'dispatch' | 'retry' | 'transient-failure'
+    }
+  | { commandId: string; failureCode?: string; type: 'terminal-failure' | 'unknown-outcome' }
 
 const STATUS_EVENT_KINDS = new Set([
   'authority.lost',
@@ -1229,9 +1235,28 @@ function normalizeCommand(raw: Partial<HostedRoomCommand>): HostedRoomCommand {
     authorityId: text(raw.authorityId),
     connectionId,
     payload: jsonRecord(raw.payload, 'command payload'),
-    status: ['failed', 'in-flight', 'pending'].includes(String(raw.status))
-      ? (raw.status as HostedRoomCommandStatus)
-      : 'pending',
+    // The legacy pending shape records only the LAST failure. Once attempted,
+    // migrate controls before stamping the new complete-history bit below.
+    status:
+      raw.possibleAdmission === undefined &&
+      raw.status === 'pending' &&
+      ['retry', 'stop', 'disband'].includes(kind) &&
+      nonNegativeInteger(raw.attempts) > 0 &&
+      !(nonNegativeInteger(raw.attempts) === 1 && ['4115', '4123'].includes(String(raw.failureCode)))
+        ? 'unknown'
+        : ['dismissed', 'failed', 'in-flight', 'pending', 'unknown'].includes(String(raw.status))
+          ? (raw.status as HostedRoomCommandStatus)
+          : 'pending',
+    possibleAdmission:
+      typeof raw.possibleAdmission === 'boolean'
+        ? raw.possibleAdmission
+        : raw.status === 'unknown' ||
+          raw.status === 'in-flight' ||
+          (nonNegativeInteger(raw.attempts) > 0 &&
+            !(
+              nonNegativeInteger(raw.attempts) === 1 &&
+              ['-32601', '-32602', '4000', '4115', '4123'].includes(String(raw.failureCode))
+            )),
     attempts: nonNegativeInteger(raw.attempts),
     failureCode: text(raw.failureCode)
   }
@@ -1269,7 +1294,21 @@ export function createHostedRoomOutbox(
       const command = normalizeCommand((record(raw) || {}) as Partial<HostedRoomCommand>)
       const existing = commands.find(entry => entry.commandId === command.commandId)
 
-      command.status = recoverInFlight && command.status === 'in-flight' ? 'pending' : command.status
+      // A lost process is not proof that a mutation was refused. In particular
+      // older groups.retry has no idempotency key or generation precondition.
+      if (recoverInFlight && command.status === 'in-flight') {
+        command.possibleAdmission = true
+        command.status =
+          command.kind === 'send' || command.kind === 'rename' || command.kind === 'create' ? 'pending' : 'unknown'
+      }
+
+      if (
+        recoverInFlight &&
+        command.status === 'failed' &&
+        (command.possibleAdmission || !['-32601', '-32602', '4000', '4115', '4123'].includes(command.failureCode || ''))
+      ) {
+        command.status = 'unknown'
+      }
 
       if (!existing) {
         commands.push(command)
@@ -1302,12 +1341,8 @@ export function reduceHostedRoomOutbox(state: HostedRoomOutbox, action: HostedRo
 
   if (action.type === 'enqueue' || action.type === 'enqueue-safety') {
     const command = normalizeCommand(action.command)
-    const roomHasFailure = current.commands.some(entry => entry.roomId === command.roomId && entry.status === 'failed')
-
-    const commands =
-      action.type === 'enqueue-safety' && roomHasFailure
-        ? current.commands.filter(entry => entry.roomId !== command.roomId)
-        : current.commands
+    // Safety commands may bypass a blocked head, never erase its intent.
+    const commands = current.commands
 
     const existing = commands.find(entry => entry.commandId === command.commandId)
 
@@ -1321,7 +1356,10 @@ export function reduceHostedRoomOutbox(state: HostedRoomOutbox, action: HostedRo
       return current
     }
 
-    if (commands.filter(entry => entry.status !== 'failed').length >= MAX_HOSTED_ROOM_OUTBOX_COMMANDS) {
+    if (
+      commands.filter(entry => entry.status !== 'failed' && entry.status !== 'dismissed').length >=
+      MAX_HOSTED_ROOM_OUTBOX_COMMANDS
+    ) {
       throw new TypeError(
         'Too many Group Chat changes are waiting to sync. Reconnect the affected device and try again.'
       )
@@ -1353,7 +1391,24 @@ export function reduceHostedRoomOutbox(state: HostedRoomOutbox, action: HostedRo
         return command
       }
 
+      if (action.type === 'dismiss') {
+        return command.status === 'failed' ? { ...command, status: 'dismissed' as const } : command
+      }
+
+      if (action.type === 'unknown-outcome') {
+        return {
+          ...command,
+          possibleAdmission: true,
+          status: 'unknown' as const,
+          failureCode: text(action.failureCode) || 'outcome-unknown'
+        }
+      }
+
       if (action.type === 'dispatch') {
+        if (command.status !== 'pending') {
+          return command
+        }
+
         return {
           ...command,
           status: 'in-flight' as const,
@@ -1365,12 +1420,19 @@ export function reduceHostedRoomOutbox(state: HostedRoomOutbox, action: HostedRo
       if (action.type === 'terminal-failure') {
         return {
           ...command,
-          status: 'failed' as const,
+          status: command.possibleAdmission ? ('unknown' as const) : ('failed' as const),
           failureCode: text(action.failureCode) || 'command-failed'
         }
       }
 
       if (action.type === 'retry') {
+        if (
+          !['failed', 'unknown'].includes(command.status) ||
+          (command.status === 'unknown' && command.kind === 'retry')
+        ) {
+          return command
+        }
+
         return {
           ...command,
           status: 'pending' as const,
@@ -1381,7 +1443,10 @@ export function reduceHostedRoomOutbox(state: HostedRoomOutbox, action: HostedRo
 
       return {
         ...command,
-        status: 'pending' as const
+        status: 'pending' as const,
+        possibleAdmission:
+          command.possibleAdmission || !['-32601', '-32602', '4000', '4115', '4123'].includes(action.failureCode || ''),
+        failureCode: text(action.failureCode)
       }
     })
   }

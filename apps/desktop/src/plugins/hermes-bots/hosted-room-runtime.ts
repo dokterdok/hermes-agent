@@ -39,11 +39,11 @@ import {
   ROOM_GRANT_STATUS_TTL_SECONDS,
   ROOM_GRANT_TTL_SECONDS
 } from './hosted-room-client'
+import { requestHostedCommand } from './hosted-room-command-dispatch'
 import {
   failedHostedRoomCommand,
-  hostedRoomCommandFailureCode,
-  pendingHostedRoomSafetyCommand,
-  safetyCommandsBlockedByFailure,
+  hostedCommandCanRetry,
+  hostedRoomCommandFailure,
   surfaceHostedRoomCommandFailure
 } from './hosted-room-command-failures'
 import {
@@ -55,6 +55,7 @@ import {
 import { HostedRoomObservations } from './hosted-room-observations'
 import {
   mutateHostedRoomOutbox,
+  readHostedRoomOutbox,
   recoverHostedRoomOutbox,
   resetHostedRoomOutboxLocksForTests,
   withHostedRoomCommandOrder,
@@ -155,7 +156,12 @@ export function groupChatContinuityReady(room: GroupChat | null | undefined) {
   }
 
   if (groupChatHostedGateway(room)) {
-    return !['deleted', 'failed', 'read-only', 'unsupported'].includes(String(room.hostedStatus?.state || ''))
+    // A presentation refresh must not hide a saved, unresolved command or admit
+    // later input that would only queue behind it and overwrite its guidance.
+    return (
+      !failedHostedRoomCommand($hostedRoomOutbox.get(), String(room.roomId || '')) &&
+      !['deleted', 'failed', 'read-only', 'unsupported'].includes(String(room.hostedStatus?.state || ''))
+    )
   }
 
   return hostedRoomObservations.classicReady(room)
@@ -526,22 +532,23 @@ function scheduleHostedRoomSync(delay = HOSTED_ROOM_SYNC_INTERVAL_MS) {
   timer?.unref?.()
 }
 
-async function transitionHostedRoomOutbox(action: Parameters<typeof reduceHostedRoomOutbox>[1]) {
-  const previous = $hostedRoomOutbox.get()
+async function transitionHostedRoomOutbox(
+  action: Parameters<typeof reduceHostedRoomOutbox>[1],
+  storage = hostedRoomStorage,
+  stillCurrent: () => boolean = () => true
+) {
+  const next = await mutateHostedRoomOutbox(storage, action)
 
-  try {
-    const next = await mutateHostedRoomOutbox(hostedRoomStorage, action)
-
+  // Persistence is not optimistic. A failed write must not restore an older
+  // snapshot over later input, and a retired runtime must not publish its row.
+  if (stillCurrent()) {
     $hostedRoomOutbox.set(next)
-
-    return next
-  } catch (error) {
-    $hostedRoomOutbox.set(previous)
-    throw error
   }
+
+  return next
 }
 
-async function consumeImmediateHostedRoomCommandFailure(commandId: unknown) {
+async function reportImmediateHostedRoomCommandFailure(commandId: unknown) {
   const id = String(commandId || '')
 
   const failed = $hostedRoomOutbox
@@ -552,24 +559,10 @@ async function consumeImmediateHostedRoomCommandFailure(commandId: unknown) {
     return false
   }
 
-  await transitionHostedRoomOutbox({ type: 'acknowledge', commandId: id })
-  const roomName = Object.entries($groupChats.get()).find(([, room]) => room.roomId === failed.roomId)?.[0]
-
-  if (roomName) {
-    updateGroupChat(
-      roomName,
-      room => ({
-        ...room,
-        hostedStatus: {
-          canStop: room.hostedStatus?.canStop,
-          label: botsText().roster.ready,
-          state: 'ready'
-        },
-        continuityIssue: null
-      }),
-      { sync: false }
-    )
-  }
+  // A definite rejection is not an acknowledgement and must not erase the
+  // user's saved intent or invent a ready remote state. Explicit Skip releases
+  // the queue; authoritative refresh alone decides whether the room is idle.
+  surfaceHostedRoomCommandFailure(failed)
 
   hostedRoomPollCache.delete(failed.roomId)
   await refreshHostedRooms().catch(() => undefined)
@@ -578,42 +571,57 @@ async function consumeImmediateHostedRoomCommandFailure(commandId: unknown) {
 }
 
 export function dispatchHostedRoomOutbox(): Promise<void> {
-  if (hostedRoomSyncDisposed) {
+  const lifecycle = hostedRoomLifecycleToken()
+  const storage = hostedRoomStorage
+  const current = () => hostedRoomLifecycleIsCurrent(lifecycle) && hostedRoomStorage === storage
+
+  const transition = (action: Parameters<typeof reduceHostedRoomOutbox>[1]) =>
+    transitionHostedRoomOutbox(action, storage, current)
+
+  if (!current()) {
     return Promise.resolve()
   }
 
   if (hostedOutboxDispatchPromise) {
-    return hostedOutboxDispatchPromise.then(() => dispatchHostedRoomOutbox())
+    return hostedOutboxDispatchPromise.then(() => (current() ? dispatchHostedRoomOutbox() : undefined))
   }
 
   const run = withHostedRoomOutboxDispatch(async () => {
-    if (hostedRoomSyncDisposed) {
+    if (!current()) {
       return
     }
 
-    let state = await recoverHostedRoomOutbox(hostedRoomStorage)
+    let state = await recoverHostedRoomOutbox(storage)
+
+    if (!current()) {
+      return
+    }
+
     const routes = await hostedDefaultRoutes()
 
-    for (const safety of safetyCommandsBlockedByFailure(state)) {
-      state = await transitionHostedRoomOutbox({ type: 'enqueue-safety', command: safety })
+    if (!current()) {
+      return
     }
 
     const blockedRooms = new Set(
-      state.commands.filter(command => command.status === 'failed').map(command => command.roomId)
+      state.commands.filter(command => ['failed', 'unknown'].includes(command.status)).map(command => command.roomId)
     )
 
     $hostedRoomOutbox.set(state)
 
-    for (const failed of state.commands.filter(command => command.status === 'failed')) {
+    for (const failed of state.commands.filter(command => ['failed', 'unknown'].includes(command.status))) {
       surfaceHostedRoomCommandFailure(failed)
     }
 
     for (const command of state.commands.filter(entry => entry.status === 'pending')) {
-      if (hostedRoomSyncDisposed) {
+      if (!current()) {
         return
       }
 
-      if (blockedRooms.has(command.roomId)) {
+      const bypass =
+        (command.kind === 'stop' || command.kind === 'disband') && failedHostedRoomCommand(state, command.roomId)
+
+      if (blockedRooms.has(command.roomId) && !bypass) {
         continue
       }
 
@@ -623,16 +631,24 @@ export function dispatchHostedRoomOutbox(): Promise<void> {
         ? await verifiedHostedAuthorityRoute(routes, command.authorityId, command.connectionId)
         : exact
 
+      if (!current()) {
+        return
+      }
+
       if (!route) {
         blockedRooms.add(command.roomId)
 
         continue
       }
 
-      state = await transitionHostedRoomOutbox({
+      state = await transition({
         type: 'dispatch',
         commandId: command.commandId
       })
+
+      if (!current()) {
+        return
+      }
 
       const claimed = state.commands.find(entry => entry.commandId === command.commandId)
 
@@ -665,8 +681,7 @@ export function dispatchHostedRoomOutbox(): Promise<void> {
             : command.kind === 'retry'
               ? {
                   room_id: command.roomId,
-                  task_id: command.payload.task_id,
-                  command_id: command.commandId
+                  task_id: command.payload.task_id
                 }
               : command.kind === 'stop' || command.kind === 'disband'
                 ? {
@@ -676,12 +691,12 @@ export function dispatchHostedRoomOutbox(): Promise<void> {
                 : command.payload
 
       try {
-        const reply = await requestHostedConnection(route, method[command.kind], params)
+        const reply = await requestHostedCommand(route, claimed, method[command.kind], params, current)
 
         // Keep the persisted in-flight command untouched when the window is
-        // disposed mid-request. Rehydration returns it to pending with the
-        // same idempotency key, covering an unknown server outcome safely.
-        if (hostedRoomSyncDisposed) {
+        // disposed mid-request. Recovery only replays keyed input mutations;
+        // controls stay unknown rather than manufacturing Retry idempotency.
+        if (!current()) {
           return
         }
 
@@ -702,45 +717,28 @@ export function dispatchHostedRoomOutbox(): Promise<void> {
           }))
         }
 
-        state = await transitionHostedRoomOutbox({
+        state = await transition({
           type: 'acknowledge',
           commandId: command.commandId
         })
       } catch (error) {
-        const failureCode = hostedRoomCommandFailureCode(error, claimed)
-        const terminal = Boolean(failureCode)
-
-        state = await transitionHostedRoomOutbox(
-          terminal
-            ? {
-                type: 'terminal-failure',
-                commandId: command.commandId,
-                failureCode
-              }
-            : {
-                type: 'transient-failure',
-                commandId: command.commandId
-              }
-        )
-
-        if (terminal) {
-          const failed = state.commands.find(entry => entry.commandId === command.commandId)
-
-          const safety = pendingHostedRoomSafetyCommand(state, command.roomId)
-
-          if (failed) {
-            surfaceHostedRoomCommandFailure(failed)
-          }
-
-          if (safety) {
-            state = await transitionHostedRoomOutbox({ type: 'enqueue-safety', command: safety })
-            blockedRooms.delete(command.roomId)
-          } else {
-            blockedRooms.add(command.roomId)
-          }
-        } else {
-          blockedRooms.add(command.roomId)
+        if (!current()) {
+          return
         }
+
+        state = await transition(hostedRoomCommandFailure(error, claimed))
+
+        if (!current()) {
+          return
+        }
+
+        const unresolved = state.commands.find(entry => entry.commandId === command.commandId)
+
+        if (unresolved) {
+          surfaceHostedRoomCommandFailure(unresolved)
+        }
+
+        blockedRooms.add(command.roomId)
       }
     }
   })
@@ -758,19 +756,46 @@ export function dispatchHostedRoomOutbox(): Promise<void> {
 }
 
 async function enqueueHostedRoomCommand(command: Partial<HostedRoomCommand>) {
-  await withHostedRoomCommandOrder(String(command.roomId || ''), () =>
-    transitionHostedRoomOutbox({
+  const inserted = await withHostedRoomCommandOrder(String(command.roomId || ''), async () => {
+    const current = await readHostedRoomOutbox(hostedRoomStorage)
+
+    const existing = current.commands.find(
+      entry =>
+        entry.roomId === command.roomId &&
+        entry.kind === command.kind &&
+        ['pending', 'in-flight', 'unknown'].includes(entry.status) &&
+        (entry.kind !== 'retry' || entry.payload.task_id === command.payload?.task_id)
+    )
+
+    if (existing && ['retry', 'stop', 'disband'].includes(String(command.kind))) {
+      surfaceHostedRoomCommandFailure(existing)
+
+      return false
+    }
+
+    await transitionHostedRoomOutbox({
       type: command.kind === 'disband' || command.kind === 'stop' ? 'enqueue-safety' : 'enqueue',
       command
     })
-  )
+
+    return true
+  })
+
+  if (!inserted) {
+    return false
+  }
+
   await dispatchHostedRoomOutbox()
 
-  if (await consumeImmediateHostedRoomCommandFailure(command.commandId)) {
+  if (await reportImmediateHostedRoomCommandFailure(command.commandId)) {
     throw new Error(botsText().group.hostRejectedCommand)
   }
 
   const pending = $hostedRoomOutbox.get().commands.find(entry => entry.commandId === command.commandId)
+
+  if (pending) {
+    surfaceHostedRoomCommandFailure(pending)
+  }
 
   scheduleHostedRoomSync(0)
 
@@ -1214,7 +1239,7 @@ export async function queueHostedGroupChat(group: string, message: GroupMessage,
   })
   await dispatchHostedRoomOutbox()
 
-  if (await consumeImmediateHostedRoomCommandFailure(message.id)) {
+  if (await reportImmediateHostedRoomCommandFailure(message.id)) {
     throw new Error(botsText().group.hostRejectedCommand)
   }
 
@@ -1235,7 +1260,7 @@ export async function sendHostedGroupChat(group: string, message: GroupMessage, 
   })
   await dispatchHostedRoomOutbox()
 
-  if (await consumeImmediateHostedRoomCommandFailure(command.commandId)) {
+  if (await reportImmediateHostedRoomCommandFailure(command.commandId)) {
     throw new Error(botsText().group.hostRejectedCommand)
   }
 
@@ -1327,7 +1352,7 @@ export async function retryFailedHostedRoomCommand(group: string, commandId: str
   const room = $groupChats.get()[group]
   const failed = failedHostedRoomCommand($hostedRoomOutbox.get(), String(room?.roomId || ''))
 
-  if (!room || !failed || failed.commandId !== String(commandId || '')) {
+  if (!room || !failed || failed.commandId !== String(commandId || '') || !hostedCommandCanRetry(failed)) {
     return false
   }
 

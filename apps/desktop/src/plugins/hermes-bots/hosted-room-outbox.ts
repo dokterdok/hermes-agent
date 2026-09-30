@@ -70,7 +70,16 @@ export async function readHostedRoomOutbox(storage: null | PluginContext['storag
   const invalidEnvelope = raw !== null && (!candidate || !Array.isArray(candidate.commands))
   const dropped = Math.max(invalidEnvelope ? 1 : 0, rows.length - outbox.commands.length)
 
-  if (!dropped) {
+  // Normalization can migrate a legacy pending control without dropping it.
+  // Persist that change too; returning only the normalized in-memory view
+  // would leave the old replayable command on disk after every restart.
+  const migrated = outbox.commands.some(command =>
+    rows.some(
+      row => row && typeof row === 'object' && row.commandId === command.commandId && row.status !== command.status
+    )
+  )
+
+  if (!dropped && !migrated) {
     return outbox
   }
 
@@ -81,7 +90,7 @@ export async function readHostedRoomOutbox(storage: null | PluginContext['storag
     throw new Error('Desktop storage could not repair the Group Chat queue.')
   }
 
-  if (!repairNotified) {
+  if (dropped && !repairNotified) {
     repairNotified = true
     host.notify({ kind: 'warning', message: botsText().group.hostedQueueRepaired(dropped) })
   }
