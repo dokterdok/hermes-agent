@@ -21,6 +21,8 @@ import type {
   ShippedGroupImportResult
 } from './canonical-groups'
 import { $groupChats, groupChatHostedGateway, persistGroupChatRoomsRequired } from './group-chat'
+import { acquireGroupRoomOwner, inheritGroupRoomSnapshot } from './group-room-ownership'
+import type { GroupRoomWriteOptions } from './group-room-ownership'
 import { beginGroupChatHandoff } from './group-rounds'
 import { classifyHostedRoomCapability } from './hosted-room-client'
 import type {
@@ -548,7 +550,8 @@ async function persistRoom(
   storage: PluginStorage,
   group: string,
   expected: GroupChat,
-  mutate: (room: GroupChat) => GroupChat
+  mutate: (room: GroupChat) => GroupChat,
+  options: Omit<GroupRoomWriteOptions, 'target'> = {}
 ): Promise<boolean> {
   const before = $groupChats.get()
 
@@ -557,6 +560,7 @@ async function persistRoom(
   }
 
   const next = { ...before, [group]: mutate(expected) }
+  inheritGroupRoomSnapshot(expected, next[group])
 
   // Revoke old closures before publishing ownership or awaiting durable storage.
   // A failed save must not resurrect an already-mounted descriptor alias.
@@ -569,7 +573,7 @@ async function persistRoom(
   $groupChats.set(next)
 
   try {
-    await persistGroupChatRoomsRequired(next, storage)
+    await persistGroupChatRoomsRequired(next, storage, group, options)
 
     return $groupChats.get() === next
   } catch (error) {
@@ -586,7 +590,8 @@ async function persistCheckpoint(
   group: string,
   expectedRoom: GroupChat,
   adoption: ShippedGroupAdoption,
-  roomPatch: Partial<GroupChat> = {}
+  roomPatch: Partial<GroupChat> = {},
+  options: Omit<GroupRoomWriteOptions, 'target'> = {}
 ): Promise<boolean> {
   return persistRoom(storage, group, expectedRoom, room => ({
     ...room,
@@ -596,7 +601,7 @@ async function persistCheckpoint(
     ...(adoption.state === 'waiting' && !room.shippedAdoption
       ? { shippedPreflight: adoption }
       : { shippedAdoption: adoption, shippedPreflight: undefined })
-  }))
+  }), options)
 }
 
 async function persistIssue(
@@ -1097,46 +1102,51 @@ async function prepareShippedGroupHandoff(
   const room = $groupChats.get()[group]
 
   if (!current() || !handoff.isCurrent() || !checkpointMatches(room, adoption)) { return null }
-  const snapshot = JSON.stringify(room)
-
-  const unchanged = () => current() && handoff.isCurrent() &&
-    $groupChats.get()[group] === room && JSON.stringify(room) === snapshot
-
-  if (selection === 'inferred') {
-    const inferred = await chooseOwner(room)
-
-    if (!unchanged() || inferred?.connectionId !== owner.connectionId || inferred?.profile !== owner.profile) {
-      return null
-    }
-  }
-
-  let built: BuiltShippedGroupImport
+  const releaseOwner = acquireGroupRoomOwner(group, room)
 
   try {
-    built = await buildShippedGroupImport(group, room, owner.connectionId)
-  } catch (error) {
-    if (unchanged()) {
-      await persistIssue(storage, group, adoption, 'conflict', error instanceof Error
-        ? error.message
-        : 'This Group Chat could not be mapped safely. Its original data was kept.')
+    const snapshot = JSON.stringify(room)
+
+    const unchanged = () => current() && handoff.isCurrent() &&
+      $groupChats.get()[group] === room && JSON.stringify(room) === snapshot
+
+    if (selection === 'inferred') {
+      const inferred = await chooseOwner(room)
+
+      if (!unchanged() || inferred?.connectionId !== owner.connectionId || inferred?.profile !== owner.profile) {
+        return null
+      }
     }
 
-    return null
-  }
+    let built: BuiltShippedGroupImport
 
-  if (!unchanged()) { return null }
+    try {
+      built = await buildShippedGroupImport(group, room, owner.connectionId)
+    } catch (error) {
+      if (unchanged()) {
+        await persistIssue(storage, group, adoption, 'conflict', error instanceof Error
+          ? error.message
+          : 'This Group Chat could not be mapped safely. Its original data was kept.')
+      }
 
-  const prepared: ShippedGroupAdoption = {
-    ...adoption, state: 'prepared', sourceId: built.request.source_id, roomId: built.request.room_id,
-    requestHash: built.requestHash, ownerSelection: selection,
-    route: { ...owner, authorityGatewayId: capability.authorityGatewayId }, issue: undefined
-  }
+      return null
+    }
 
-  if (!(await persistCheckpoint(storage, group, room, prepared)) || !current() || !handoff.isCurrent()) {
-    return null
-  }
+    if (!unchanged()) { return null }
 
-  return { prepared, built }
+    const prepared: ShippedGroupAdoption = {
+      ...adoption, state: 'prepared', sourceId: built.request.source_id, roomId: built.request.room_id,
+      requestHash: built.requestHash, ownerSelection: selection,
+      route: { ...owner, authorityGatewayId: capability.authorityGatewayId }, issue: undefined
+    }
+
+    if (!(await persistCheckpoint(storage, group, room, prepared, {}, { preparation: releaseOwner })) ||
+        !current() || !handoff.isCurrent()) {
+      return null
+    }
+
+    return { prepared, built }
+  } finally { releaseOwner() }
 }
 
 async function importPreparedGroup(
@@ -1207,7 +1217,7 @@ async function importPreparedGroup(
     continuityIssue: null,
     epoch: Number(room.epoch || 0) + 1,
     running: false
-  })
+  }, { acknowledgement: true })
 
   routeOwner.assertCurrent()
 

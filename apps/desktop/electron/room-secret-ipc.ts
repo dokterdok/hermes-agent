@@ -49,9 +49,12 @@ export function registerRoomSecretIpc(options: {
           throw new Error('Untrusted room credential sender')
         }
 
-        if (request?.action === 'lock' || request?.action === 'unlock') {
+        if (request?.action === 'lock' || request?.action === 'unlock' || request?.action === 'check') {
+          const roomKey = request.key.startsWith('hermes.plugin.hermes-bots.group-chats.room:') &&
+            request.key.length <= 1024 && request.key.length > 'hermes.plugin.hermes-bots.group-chats.room:'.length
+
           if (
-            !['hermes.plugin.hermes-bots.group-chats', 'hermes.plugin.hermes-bots.hosted-room-cleanup-v1'].includes(
+            !roomKey && !['hermes.plugin.hermes-bots.group-chats', 'hermes.plugin.hermes-bots.hosted-room-cleanup-v1'].includes(
               request.key
             )
           ) {
@@ -65,7 +68,23 @@ export function registerRoomSecretIpc(options: {
             held = undefined
           }
 
-          if (request.action === 'lock') {
+          if (request.action === 'check') {
+            if (!roomKey || (held && (held.sender !== event.sender || held.frame !== event.senderFrame)) ||
+                (request.token !== undefined && (!held || held.token !== request.token))) {
+              throw new Error('Room execution belongs to another window')
+            }
+
+            event.returnValue = { ok: true, values: [] }
+          } else if (request.action === 'lock') {
+            // No room admission may interleave with a protected map's
+            // compare/check/commit. The shared lock remains short and sync.
+            const writing = locks.get('hermes.plugin.hermes-bots.group-chats')
+
+            if (roomKey && writing && !writing.sender.isDestroyed() && writing.sender.mainFrame === writing.frame &&
+                (writing.sender !== event.sender || writing.frame !== event.senderFrame)) {
+              throw new Error('Room persistence is committing')
+            }
+
             if (held) {
               throw new Error('Protected storage busy')
             }

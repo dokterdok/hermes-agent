@@ -224,9 +224,10 @@ export async function groupChatRemoteSnapshot(job: GroupChatSyncJob) {
 }
 
 export async function adoptGroupChatSyncRooms(rooms: Record<string, GroupChat>) {
-  const authorityChanged = classicAuthorityState(rooms) !== classicAuthorityState($groupChats.get())
+  const before = $groupChats.get()
+  const authorityChanged = classicAuthorityState(rooms) !== classicAuthorityState(before)
   $groupChats.set(rooms)
-  await persistGroupChatRooms(rooms)
+  await persistGroupChatRooms(rooms, before)
 
   // A newly learned commitment or conflict must reach the other gateways too.
   // No changedRooms: equal projections settle without revision ping-pong.

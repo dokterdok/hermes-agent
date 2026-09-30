@@ -1,6 +1,7 @@
 import { atom } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
+import { recordCommittedGroupRooms } from './group-chat-ownership'
 import { storedHostedPeerProbeHint, storedShippedGroupAdoption } from './group-chat-stored-records'
 import {
   adoptGroupChatSyncRooms,
@@ -31,6 +32,10 @@ import {
   mergeGroupMessageCopies
 } from './group-message-author'
 import {
+  equalGroupRoomSnapshot, inheritGroupRoomSnapshot, rememberGroupRoomSnapshot, withGroupRoomWrite
+} from './group-room-ownership'
+import type { GroupRoomWriteOptions } from './group-room-ownership'
+import {
   outgoingHostedUserEvent,
   projectedGroupMessage,
   reconcileHostedUserEvents,
@@ -56,6 +61,9 @@ import type {
 /** Group-chat rooms: { [group]: { log: [{from:{kind,name},text,at}], watermarks:{[member]:idx}, epoch, running } }.
  *  Log + watermarks persist via plugin storage; epoch/running are runtime-only. */
 export const $groupChats = atom<Record<string, GroupChatRoom>>({})
+
+export { observeGroupChatExecutionOwner, persistGroupChatRooms, refreshGroupChatExecutionOwner } from './group-chat-ownership'
+
 /** Group whose room view is open in the Bots pane (secondary navigation
  *  inside the pane; a normal row click returns to the roster). */
 export const $groupChatWorkspace = atom<null | string>(null)
@@ -1049,6 +1057,12 @@ export function hydrateGroupChatRooms(value: unknown): Record<string, GroupChat>
     }
   }
 
+  const projections = durableGroupChatRooms(rooms)
+
+  for (const [name, room] of Object.entries(rooms)) {
+    rememberGroupRoomSnapshot(name, room, (value as Record<string, GroupChat>)[name], projections[name])
+  }
+
   return rooms
 }
 
@@ -1105,42 +1119,74 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       sectionId: room.sectionId ?? null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
+    inheritGroupRoomSnapshot(room, durable[name])
   }
 
   return durable
 }
 
-export function persistGroupChatRooms(all: Record<string, GroupChat> = $groupChats.get()) {
-  try {
-    return Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durableGroupChatRooms(all))).catch(
-      () => undefined
-    )
-  } catch {
-    return Promise.resolve()
-  }
-}
-
 /** Mailbox startup cannot advertise private authority before it is durable. */
 export async function persistGroupChatRoomsRequired(
   all: Record<string, GroupChat> = $groupChats.get(),
-  storage = getPluginCtx()?.storage
+  storage = getPluginCtx()?.storage,
+  requiredGroup?: string,
+  options: Omit<GroupRoomWriteOptions, 'target'> = {}
 ) {
   if (!storage?.set || !storage?.get) {
     throw new Error('Group Chat storage unavailable')
   }
 
   const durable = durableGroupChatRooms(all)
-  const expected = JSON.stringify(durable)
   const wasCurrent = all === $groupChats.get()
-  await storage.set('group-chats', durable)
+  const receipt = withGroupRoomWrite(durable, { ...options, target: requiredGroup }, () => storage.set('group-chats', durable))
+  await receipt.value
+  const saved = await storage.get<Record<string, GroupChat>>('group-chats', {}) || {}
+
+  // Adoption commits one exact room. A different window may legitimately edit
+  // or rename an independent room while the importer is awaiting its ACK.
+  if (requiredGroup !== undefined) {
+    if (!equalGroupRoomSnapshot(saved[requiredGroup], durable[requiredGroup]) ||
+        (options.renameFrom !== undefined && saved[options.renameFrom] !== undefined) ||
+        (wasCurrent && !equalGroupRoomSnapshot(durableGroupChatRooms()[requiredGroup], durable[requiredGroup]))) {
+      throw new Error('Group Chat changes could not be saved. Check available storage and try again.')
+    }
+
+    recordCommittedGroupRooms(all, durable, saved)
+
+    return
+  }
+
+  const reconciled = receipt.committed || durable
 
   // PluginStorage.set deliberately swallows write errors. Verify the exact
   // snapshot, including the private authority and any settlement receipts.
   if (
-    JSON.stringify(await storage.get('group-chats', null)) !== expected ||
-    (wasCurrent && JSON.stringify(durableGroupChatRooms()) !== expected)
+    !equalGroupRoomSnapshot(saved, reconciled) ||
+    (wasCurrent && all !== $groupChats.get() && !equalGroupRoomSnapshot(durableGroupChatRooms(), durable))
   ) {
     throw new Error('Group Chat changes could not be saved. Check available storage and try again.')
+  }
+
+  recordCommittedGroupRooms(all, durable, saved)
+
+  if (wasCurrent && all === $groupChats.get()) {
+    const refreshed: Record<string, GroupChatRoom> = { ...all }
+    let changed = false
+
+    for (const [name, room] of Object.entries(saved)) {
+      if (!equalGroupRoomSnapshot(room, durable[name])) {
+        const hydrated = hydrateGroupChatRooms({ [name]: room })[name]
+
+        const retained: GroupChatRoom = { ...all[name], ...hydrated,
+          epoch: all[name]?.epoch, running: all[name]?.running }
+
+        inheritGroupRoomSnapshot(hydrated, retained)
+        refreshed[name] = retained
+        changed = true
+      }
+    }
+
+    if (changed) { $groupChats.set(refreshed) }
   }
 }
 
@@ -1508,13 +1554,14 @@ export function trimGroupChatLog(
 
 interface UpdateGroupChatOptions {
   sync?: boolean
+  renameFrom?: string
 }
 
 /** Mutate one group's room state through the atom + persist the durable part. */
 export function updateGroupChat(
   group: string,
   mutate: (room: GroupChat) => GroupChat,
-  { sync = true }: UpdateGroupChatOptions = {}
+  { sync = true, renameFrom }: UpdateGroupChatOptions = {}
 ) {
   const all = {
     ...$groupChats.get()
@@ -1536,6 +1583,7 @@ export function updateGroupChat(
   })
 
   const next = ensureClassicDesktopAuthority(mutated, current)
+  inheritGroupRoomSnapshot(current, next)
 
   const bounded = trimGroupChatLog(next.log, next.watermarks)
   next.log = bounded.log
@@ -1599,9 +1647,16 @@ export function updateGroupChat(
         sectionId: room.sectionId ?? null,
         syncRevision: Math.max(0, Number(room.syncRevision || 0))
       }
+      inheritGroupRoomSnapshot(room, durable[name])
     }
 
-    Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durable)).catch(() => undefined)
+    const storage = getPluginCtx()?.storage
+
+    const receipt = withGroupRoomWrite(durable, { target: group, renameFrom },
+      () => storage?.set?.('group-chats', durable))
+
+    recordCommittedGroupRooms(all, durable, receipt.committed)
+    Promise.resolve(receipt.value).catch(() => undefined)
   } catch {
     /* storage unavailable — room survives for this window only */
   }

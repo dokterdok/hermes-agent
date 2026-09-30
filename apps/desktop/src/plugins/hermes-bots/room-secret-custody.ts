@@ -1,6 +1,8 @@
 import { registerPersistenceCodec } from '@hermes/plugin-sdk'
 import type { RoomSecretEntry } from '@hermes/plugin-sdk'
 
+import { reconcileGroupRoomWrite, sealGroupRoomWriteBaseline } from './group-room-ownership'
+
 // This module is loaded by both credential owners before plugin hydration.
 // Protect at the actual persistence boundary, not just one serializer: reads,
 // ordinary updates, required readback and compensation all use the same codec.
@@ -146,8 +148,15 @@ for (const [key, family] of [
   ['hosted-room-cleanup-v1', 'cleanup']
 ] as const) {
   registerPersistenceCodec(`hermes.plugin.hermes-bots.${key}`, {
-    encode: value => transform(value, family, 'seal'),
+    encode: value => {
+      if (family === 'rooms') {
+        sealGroupRoomWriteBaseline(raw => transform(raw, family, 'seal'), raw => transform(raw, family, 'open'))
+      }
+
+      return transform(value, family, 'seal')
+    },
     decode: value => transform(value, family, 'open'),
+    ...(family === 'rooms' ? { reconcile: reconcileGroupRoomWrite } : {}),
     exclusive: commit => {
       const bridge = window.hermesDesktop?.roomSecrets
 

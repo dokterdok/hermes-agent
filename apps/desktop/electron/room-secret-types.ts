@@ -9,7 +9,7 @@ export interface RoomSecretRequest {
   entries: RoomSecretEntry[]
 }
 export interface RoomStorageLockRequest {
-  action: 'lock' | 'unlock'
+  action: 'lock' | 'unlock' | 'check'
   key: string
   token?: string
 }
@@ -18,5 +18,6 @@ export interface RoomSecretApi {
   exchange(request: RoomSecretRequest): string[]
   lock(key: string): string
   unlock(key: string, token: string): void
+  check?(key: string, token?: string): void
 }
 export const ROOM_SECRET_CHANNEL = 'hermes:room-secrets:exchange'

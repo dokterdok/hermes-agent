@@ -20,6 +20,7 @@ import {
   groupThreadOf,
   mintGroupThreadId,
   persistGroupChatRoomsRequired,
+  refreshGroupChatExecutionOwner,
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
@@ -1125,6 +1126,11 @@ export function sendToGroupChat(
   }
 
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
+
+  try {
+    if (!$groupChats.get()[group]?.hosted && !refreshGroupChatExecutionOwner(group)) { return null }
+  } catch { return null }
+
   const roomBeforeSend = $groupChats.get()[group]
   const hosted = groupChatHostedGateway(roomBeforeSend)
   const externalId = String(options.entryId || '').trim()

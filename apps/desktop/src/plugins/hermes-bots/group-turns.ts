@@ -11,7 +11,7 @@ import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
 import { noteBotAttention } from './data'
 import { desktopRoomIdentity } from './desktop-room-command-client'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
-import { $groupChats, $groupClarify, appendGroupChatEntry, durableGroupChatRooms, updateGroupChat } from './group-chat'
+import { $groupChats, $groupClarify, appendGroupChatEntry, durableGroupChatRooms, observeGroupChatExecutionOwner, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupCommandFenceLive, groupCommandFenceMatches } from './group-command-fence'
 import type { GroupCommandFence } from './group-command-fence'
@@ -29,6 +29,7 @@ import {
   groupSessionOwner,
   hasThreadScopedGroupSession
 } from './group-membership'
+import { acquireGroupRoomOwner } from './group-room-ownership'
 import { GROUP_PROMPT_HEADER_PREFIX } from './group-round-prompt'
 import { approveHostedGroupChat } from './hosted-room-runtime'
 import { botConnectionRoute, requestForBot } from './routing'
@@ -921,8 +922,15 @@ export async function runGroupChatMemberTurn(
   })
 
   let releaseTurnLease: (() => void) | undefined
+  let releaseRoomOwner: (() => void) | undefined
 
   try {
+    const room = $groupChats.get()[group] || { log: [], watermarks: {} }
+
+    try { releaseRoomOwner = acquireGroupRoomOwner(group, room) } catch { return null }
+    const saved = await getPluginCtx()?.storage.get<Record<string, GroupChatRoom>>('group-chats', {})
+
+    if (!observeGroupChatExecutionOwner(group, saved || {})) { return null }
     releaseTurnLease = await retainGroupTurnRoute(member)
 
     return binding.isLive() && groupCommandFenceLive(fence)
@@ -930,6 +938,7 @@ export async function runGroupChatMemberTurn(
       : null
   } finally {
     releaseTurnLease?.()
+    releaseRoomOwner?.()
     binding.dispose()
   }
 }
@@ -1373,6 +1382,9 @@ async function runGroupChatMemberTurnLeased(
 
       // A submit rejection may be a lost acknowledgement. Leave its durable
       // marker for reconciliation/import instead of declaring the work settled.
+      const saved = await getPluginCtx()?.storage.get<Record<string, GroupChatRoom>>('group-chats', {})
+
+      if (!observeGroupChatExecutionOwner(group, saved || {}) || !leaseLive()) { return null }
       const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText, fence)
 
       if (!leaseLive()) { return null }

@@ -17,6 +17,7 @@ export function createRoomSecretBridge(sendSync: (channel: string, request: unkn
   return {
     exchange,
     lock: key => exchange({ action: 'lock', key })[0],
+    check: (key, token) => { exchange({ action: 'check', key, token }) },
     unlock: (key, token) => {
       exchange({ action: 'unlock', key, token })
     }

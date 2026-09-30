@@ -19,9 +19,11 @@ export interface PersistenceCodec {
   encode(value: string): string
   decode(value: string): string
   exclusive<T>(commit: () => T): T
+  reconcile?(value: string | null, previous: string | null, observed: string | null): string | null
 }
 const persistenceCodecs = new Map<string, PersistenceCodec>()
 const failedReads = new Set<string>()
+const observedValues = new Map<string, string | null>()
 
 export function registerPersistenceCodec(key: string, codec: PersistenceCodec) {
   persistenceCodecs.set(key, codec)
@@ -95,6 +97,7 @@ export function readKey(key: string): null | string {
 
         if (committed) {
           failedReads.delete(key)
+          observedValues.set(key, encoded)
           emitPersistence({ key, op: 'read', value: encoded })
 
           return decoded
@@ -110,6 +113,7 @@ export function readKey(key: string): null | string {
   }
 
   failedReads.delete(key)
+  observedValues.set(key, value)
   emitPersistence({ key, op: 'read', value })
 
   return value
@@ -131,14 +135,19 @@ export function writeKey(key: string, value: null | string) {
       codec.decode(codec.encode(previous))
     }
 
-    const encoded = value === null ? null : codec.encode(value)
+    let encoded = value === null ? null : codec.encode(value)
     codec.exclusive(() => {
       if (window.localStorage.getItem(key) !== previous) {
         throw new Error('Protected storage changed during write; reload before retrying')
       }
 
+      if (codec.reconcile) {
+        encoded = codec.reconcile(encoded, previous, observedValues.get(key) ?? null)
+      }
+
       writeRequired(key, encoded)
     })
+    observedValues.set(key, encoded)
     emitPersistence({ key, op: encoded === null ? 'remove' : 'write', value: encoded })
 
     return

@@ -479,6 +479,28 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
 
 /** Plugin storage backed by a plain map, for `setPluginCtx`. */
 export function scriptedStorage(storage: Map<string, unknown>): PluginContext {
+  // Explicit inert native adapter for legacy single-renderer wire tests. The
+  // cross-window regression instead drives real main IPC and protected storage.
+  {
+    // Each map-backed test transport owns a fresh inert window generation.
+    const locks = new Map<string, string>()
+    window.hermesDesktop = { ...window.hermesDesktop, roomSecrets: {
+      exchange: () => { throw new Error('No credential exchange in map-backed fixture') },
+      check: () => undefined,
+      lock: key => {
+        if (locks.has(key)) { throw new Error('Room busy') }
+        const token = crypto.randomUUID()
+        locks.set(key, token)
+
+        return token
+      },
+      unlock: (key, token) => {
+        if (locks.get(key) !== token) { throw new Error('Wrong fixture owner') }
+        locks.delete(key)
+      }
+    } } as Window['hermesDesktop']
+  }
+
   return {
     storage: {
       get: async (key: string) => storage.get(key) ?? null,

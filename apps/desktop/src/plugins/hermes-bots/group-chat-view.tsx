@@ -395,6 +395,20 @@ async function renameGroupChatOwned(
 
   $groupChats.set(all)
 
+  // Rekey a passive view in the same synchronous transition as its room.
+  // Neither membership writes nor required readback may expose a missing row.
+  const mainTab = groupChatMainTabs.get(oldName)
+
+  if (hostedAlreadyRenamed) {
+    if ($groupChatWorkspace.get() === oldName) { $groupChatWorkspace.set(next) }
+
+    if (mainTab) {
+      recordGroupMainTab(next, mainTab)
+      dropGroupMainTab(oldName)
+      groupMainTabViews.get(mainTab)?.group.set(next)
+    }
+  }
+
   const needs: Record<string, boolean> = {
     ...$groupNeedsYou.get()
   }
@@ -437,15 +451,14 @@ async function renameGroupChatOwned(
 
   // Persist the re-keyed map (updateGroupChat writes the whole durable map).
   updateGroupChat(next, (r: GroupChatRoom) => r, {
-    sync: false
+    sync: false,
+    renameFrom: oldName
   })
 
-  if (room?.shippedAdoption) {
-    const storage = getPluginCtx()?.storage
+  const storage = getPluginCtx()?.storage
 
-    if (storage) {
-      await persistGroupChatRoomsRequired($groupChats.get(), storage)
-    }
+  if (storage && room) {
+    await persistGroupChatRoomsRequired($groupChats.get(), storage, next, { renameFrom: oldName })
   }
 
   // A rename is one revisioned state transition: the new identity is updated
@@ -461,18 +474,9 @@ async function renameGroupChatOwned(
     $groupChatWorkspace.set(next)
   }
 
-  const mainTab = groupChatMainTabs.get(oldName)
-
-  if (mainTab) {
-    if (hostedAlreadyRenamed) {
-      // A refresh rekeys the retained view; it is not a navigation gesture.
-      recordGroupMainTab(next, mainTab)
-      dropGroupMainTab(oldName)
-      groupMainTabViews.get(mainTab)?.group.set(next)
-    } else {
-      closeGroupChatMainTab(oldName)
-      openGroupChat(next)
-    }
+  if (mainTab && !hostedAlreadyRenamed) {
+    closeGroupChatMainTab(oldName)
+    openGroupChat(next)
   }
 
   // Same convergence as disband: drop the pre-rename roster snapshot so the
