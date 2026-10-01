@@ -1,0 +1,153 @@
+{
+  "schema": 1,
+  "finalIntegrationRevision": "3319d75dfd21be40b5fe524c711720ed22b02211",
+  "finalTree": "9a6db72222b757582cf0f525094a00767e4e9792",
+  "artifactAsarSha256": "8e0db64201473faf1e4991ec5e6bf02b3124dd8de7a401f39eeadf2e17599cbf",
+  "boundary": "Actual packaged macOS Desktop, explicit matching source-runtime override, real isolated gateways/SSH/storage; only the loopback model is scripted. Native storage policy OFF. No installer provisioning/notarization claim.",
+  "privacyReview": "All six images were viewed. Only test fixture identities/content are visible; the core-mac-packaged label is a synthetic sandbox folder, not a real machine identifier. Dialog blur is the app\u2019s own rendering. Images are byte-identical copies, with no crop, resize or retouch.",
+  "earlierImageScope": {
+    "revision": "b8e6b3a3289869590519078e2cf108247d06c12b",
+    "uiPathsVerifiedUnchangedAt": "3319d75dfd21be40b5fe524c711720ed22b02211",
+    "paths": [
+      "apps/desktop/src/plugins/hermes-bots/canonical-group-files.tsx",
+      "apps/desktop/src/plugins/hermes-bots/canonical-files-client.ts",
+      "apps/desktop/src/plugins/hermes-bots/canonical-group-workspace.tsx",
+      "apps/desktop/src/plugins/hermes-bots/canonical-group-history.tsx",
+      "apps/desktop/src/plugins/hermes-bots/canonical-group-attachments.tsx"
+    ],
+    "warning": "Earlier captures illustrate tested Files/approval controls; they are not a claim that the b8e6 full recovery journey passed."
+  },
+  "images": [
+    {
+      "file": "01-native-peer-create.png",
+      "source": "final-3319d75d/two-gateway/01-native-peer-create.png",
+      "revision": "3319d75dfd21be40b5fe524c711720ed22b02211",
+      "prs": [
+        130790,
+        98307
+      ],
+      "caption": "Create a gateway-hosted room with Hermes and a Bot from the SSH peer gateway. Credentials follow Desktop\u2019s configured native storage policy.",
+      "sha256": "8bbc65fbeb807cb5a8b2a9860d38379d3ff6f4c59dc881eec86d8df51c3256d0",
+      "width": 2560,
+      "height": 1718,
+      "bytes": 334599,
+      "visualReview": {
+        "readable": true,
+        "realAmbientProfiles": false,
+        "credentials": false,
+        "keyPaths": false,
+        "realMachineIds": false,
+        "retouched": false
+      }
+    },
+    {
+      "file": "02-peer-text-turn.png",
+      "source": "final-3319d75d/two-gateway/02-peer-text-turn.png",
+      "revision": "3319d75dfd21be40b5fe524c711720ed22b02211",
+      "prs": [
+        130790,
+        98307
+      ],
+      "caption": "The peer gateway executes a text turn and publishes its reply into the shared room.",
+      "sha256": "daa234e60b2c46529c555420b5bb093d2128730de11dbc7156365b6c81433bae",
+      "width": 2560,
+      "height": 1718,
+      "bytes": 135185,
+      "visualReview": {
+        "readable": true,
+        "realAmbientProfiles": false,
+        "credentials": false,
+        "keyPaths": false,
+        "realMachineIds": false,
+        "retouched": false
+      }
+    },
+    {
+      "file": "03-retained-room-reopened.png",
+      "source": "final-3319d75d/reopen/02-same-userdata-reopened.png",
+      "revision": "3319d75dfd21be40b5fe524c711720ed22b02211",
+      "prs": [
+        130790,
+        98307
+      ],
+      "caption": "Desktop restores the existing room and work that completed while its viewer was closed, without a manual Refresh action.",
+      "sha256": "2225c8188fae5019de2c68e42a18b0d68be0368518ec285d19bfdedd18e0274b",
+      "width": 2560,
+      "height": 1718,
+      "bytes": 264767,
+      "visualReview": {
+        "readable": true,
+        "realAmbientProfiles": false,
+        "credentials": false,
+        "keyPaths": false,
+        "realMachineIds": false,
+        "retouched": false
+      }
+    },
+    {
+      "file": "04-room-files-b8e6.png",
+      "source": "final-b8e6b3a3/same-gateway/03-files.png",
+      "revision": "b8e6b3a3289869590519078e2cf108247d06c12b",
+      "prs": [
+        98307,
+        104199
+      ],
+      "caption": "Room Files shows an uploaded shared file, its sharer, type, size and download action. Captured at b8e6b3a3; the Files UI paths are unchanged at 3319d75d.",
+      "sha256": "b6a7bfabe590bf0e77d939b18edc0187b72973f34510d9092b58b9b1a818e685",
+      "width": 2560,
+      "height": 1718,
+      "bytes": 190708,
+      "visualReview": {
+        "readable": true,
+        "realAmbientProfiles": false,
+        "credentials": false,
+        "keyPaths": false,
+        "realMachineIds": false,
+        "retouched": false
+      }
+    },
+    {
+      "file": "05-room-approval-b8e6.png",
+      "source": "final-b8e6b3a3/same-gateway/04-approval-pending.png",
+      "revision": "b8e6b3a3289869590519078e2cf108247d06c12b",
+      "prs": [
+        98307
+      ],
+      "caption": "A room pauses for approval and offers Allow once or Deny. Captured at b8e6b3a3; the approval workspace and history UI paths are unchanged at 3319d75d.",
+      "sha256": "f93ded974f83805f9ad634a5257f6519bf68f25c9189d62f957cdd656300cd27",
+      "width": 2560,
+      "height": 1718,
+      "bytes": 186132,
+      "visualReview": {
+        "readable": true,
+        "realAmbientProfiles": false,
+        "credentials": false,
+        "keyPaths": false,
+        "realMachineIds": false,
+        "retouched": false
+      }
+    },
+    {
+      "file": "06-custody-recovery.png",
+      "source": "final-3319d75d/two-gateway/05-custody-refused.png",
+      "revision": "3319d75dfd21be40b5fe524c711720ed22b02211",
+      "prs": [
+        130790,
+        98307
+      ],
+      "caption": "Unreadable setup custody blocks creation and offers Retry now. The controlled recovery test verifies pending cleanup returns to zero.",
+      "sha256": "f165fe4c5939ac20e3bd055c88fafcef50b2b672eba0c0298a6d90ef74f5c001",
+      "width": 2844,
+      "height": 1910,
+      "bytes": 384999,
+      "visualReview": {
+        "readable": true,
+        "realAmbientProfiles": false,
+        "credentials": false,
+        "keyPaths": false,
+        "realMachineIds": false,
+        "retouched": false
+      }
+    }
+  ]
+}
