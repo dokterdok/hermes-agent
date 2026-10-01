@@ -190,12 +190,18 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             def authorize(operation, identity, generation):
                 with self.authority.db._read_ctx() as conn:
                     return authorized(conn, operation, identity, generation)
+            def authorize_write(conn, identity, generation):
+                # Raise to refuse rather than return False: a guard that only returns False
+                # is ignored wherever the admission hook signals refusal by raising.
+                if not authorized(conn, 'submit', identity, generation):
+                    raise RuntimeStoreError('permission_denied')
+                return True
             principal = Principal(owner, self.authority.profile_id,
                 frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}),
                 'hosted:' + binding.room_id + ':' + member)
             self.member_rpcs[key] = HostedRoomAuthorityRPC(self.authority, self.loop,
                 room_id=binding.room_id, member_id=member, profile=profile, principal=principal, authorize=authorize,
-                authorize_write=lambda conn, identity, generation: authorized(conn, 'submit', identity, generation))
+                authorize_write=authorize_write)
         return self.member_rpcs[key]
 
     def check_admission(self, ref, row):
