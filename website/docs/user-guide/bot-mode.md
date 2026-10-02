@@ -285,6 +285,10 @@ reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 
 ### Transferring hosted room authority
 
+The [Layer 7 host-loss proposal](../developer-guide/group-chat-host-loss.md)
+describes future full-history replication and successor authority. It does not
+enable automatic takeover or replace the operator-fencing requirements below.
+
 :::caution Kept, but disabled
 `groups.replicate`, `groups.promote` and `groups.demote` stay in the protocol but are disabled
 until Hermes has exclusive-authority recovery. A takeover is only safe when exactly one gateway
