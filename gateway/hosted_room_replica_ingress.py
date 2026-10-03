@@ -15,19 +15,24 @@ from gateway.hosted_room_peer import HostedRoomGrantError, decode_room_grant, ro
 def ingest_granted_page(
     db_path: Path | str, *, token: str, secret: bytes, target_install_id: str,
     target_profile: str, room_id: str, room_name: str, members: list[dict[str, Any]],
-    page: dict[str, Any],
+    page: dict[str, Any], custody: Any = None,
 ) -> dict[str, Any]:
     """Store one history page sent with a ``replicate`` grant this gateway issued.
 
     Copying never confers execution authority. The grant must name this gateway, this
     profile and the room's member, and it is checked again inside the replica writer.
+    ``custody`` is the authority's protection report sent beside the page.
     """
+    from gateway.hosted_room_custody import local_consent
     authority = page.get("authority") if isinstance(page, dict) else None
     authorize = authorize_granted_room(
         token=token, secret=secret, target_install_id=target_install_id, target_profile=target_profile,
         room_id=room_id, members=members, authority=authority, permission="replicate")
-    return replicas.ingest_page(
-        db_path, room_id=room_id, room_name=room_name, members=members, page=page, _authorize=authorize)
+    result = replicas.ingest_page(
+        db_path, room_id=room_id, room_name=room_name, members=members, page=page, _authorize=authorize,
+        custody_report=custody)
+    # The host learns this installation's consent to continue the group from each acknowledgment.
+    return {**result, "custody": {"allowed": local_consent(db_path, room_id)}}
 
 
 def authorize_granted_room(
@@ -44,6 +49,12 @@ def authorize_granted_room(
         or claims["home_install_id"] != claims["authority_gateway_id"]
     ):
         raise HostedRoomGrantError("replica scope does not match its grant")
+    from gateway.hosted_room_custody import CUSTODY_MEMBER_ID
+    if claims["member_id"] == CUSTODY_MEMBER_ID:
+        # A custodian-only installation has no Bot in the room: its copy-only grant is the consent.
+        if "dispatch" in claims["permissions"]:
+            raise HostedRoomGrantError("a custodian-only grant never runs work")
+        return _recheck(token, secret, claims, permission)
     matching = [
         member for member in members if isinstance(member, dict)
         and member.get("member_id") == claims["member_id"]
@@ -55,6 +66,10 @@ def authorize_granted_room(
     ):
         raise HostedRoomGrantError("replica does not name the authorized participant")
 
+    return _recheck(token, secret, claims, permission)
+
+
+def _recheck(token: str, secret: bytes, claims: dict[str, Any], permission: str) -> Callable[[sqlite3.Connection], None]:
     def authorize_locked(conn: sqlite3.Connection) -> None:
         # Expiry or revocation may land while the request waits for the SQLite writer.
         now = time.time()

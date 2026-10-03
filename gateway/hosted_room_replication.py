@@ -45,7 +45,7 @@ WORKERS = 2
 ROUTES_TABLE = "hosted_room_replication_publishers"
 TARGETS_TABLE = "hosted_room_replication_targets"
 # Route states that wait for a new grant or a new route instead of retrying.
-_BLOCKED = {"needs_reauthorization", "replica_rejected", "invalid_ack", "source_gap"}
+_BLOCKED = {"needs_reauthorization", "replica_rejected", "invalid_ack", "source_gap", "divergent_copy"}
 
 
 def _digest(value: Any) -> str:
@@ -76,6 +76,37 @@ def _replication_hint(token: str) -> dict:
     return {}
 
 
+# Publisher keys of custodian-only installations: (room_id, "custody@<install_id>"). They have no Bot,
+# hence no member route; their copy-only grant lives in the custody routes table.
+_CUSTODY_PREFIX = "custody@"
+
+
+def _custody_link_locked(conn: sqlite3.Connection, key: tuple[str, str]) -> links.StoredRoomLink | None:
+    from gateway import hosted_room_custody as custody
+    from gateway.hosted_room_peer import GatewayRoomCatalog
+    if not table_exists(conn, custody.ROUTES_TABLE):
+        return None
+    row = conn.execute(f"""SELECT r.* FROM {custody.ROUTES_TABLE} r JOIN {custody.CUSTODIANS_TABLE} c
+        ON c.room_id=r.room_id AND c.install_id=r.install_id
+        WHERE r.room_id=? AND r.install_id=? AND c.role='custodian_only' AND c.state IN ('active','unsupported')""",
+                       (key[0], key[1][len(_CUSTODY_PREFIX):])).fetchone()
+    if row is None:
+        return None
+    return links.make_stored_link(
+        room_id=row["room_id"], member_id=custody.CUSTODY_MEMBER_ID, target_url=row["target_url"],
+        target_profile=row["target_profile"], grant=row["grant"],
+        catalog=GatewayRoomCatalog.from_mapping(json.loads(row["catalog_json"])),
+        cancellation_scope_id="custody", trace_id="custody")
+
+
+def _link_locked(conn: sqlite3.Connection, key: tuple[str, str]) -> links.StoredRoomLink | None:
+    """The member route, or the custodian-only route, behind one publisher key, when it carries a copy."""
+    if key[1].startswith(_CUSTODY_PREFIX):
+        return _custody_link_locked(conn, key)
+    raw = conn.execute("SELECT * FROM hosted_room_links WHERE room_id=? AND member_id=?", key).fetchone()
+    return links.StoredRoomLink.from_record(raw) if raw is not None and _replication_hint(raw["grant"]) else None
+
+
 def _eligible(link: links.StoredRoomLink, room: dict, local_id: str) -> bool:
     if (
         room["authority_gateway_id"] != local_id
@@ -95,6 +126,10 @@ def _eligible(link: links.StoredRoomLink, room: dict, local_id: str) -> bool:
     # No unsigned timing is trusted here: the participant enforces the grant's horizon.
     if any(hint.get(k) != v for k, v in expected.items()):
         return False
+    from gateway.hosted_room_custody import CUSTODY_MEMBER_ID
+    if link.member_id == CUSTODY_MEMBER_ID:
+        # A custodian-only installation keeps a copy without a Bot; its grant can never run work.
+        return "dispatch" not in hint.get("permissions", ())
     matching = [m for m in room["members"] if m.get("member_id") == link.member_id]
     if len(matching) != 1:
         return False
@@ -155,6 +190,7 @@ class HostedRoomReplicationPublisher:
         self._scan_at = 0.0
         self._error: str | None = None
         self._work_record_error: str | None = None
+        self._custody_error: str | None = None
 
     @contextmanager
     def _transaction(self):
@@ -197,8 +233,11 @@ class HostedRoomReplicationPublisher:
             self._start_workers()
 
     def _has_work(self) -> bool:
+        from gateway.hosted_room_custody import ROUTES_TABLE as CUSTODY_ROUTES
         with closing(open_sqlite(self.db_path, timeout=0.25)) as conn:
             if retirement.has_open_obligations(conn):
+                return True
+            if table_exists(conn, CUSTODY_ROUTES) and conn.execute(f"SELECT 1 FROM {CUSTODY_ROUTES} LIMIT 1").fetchone():
                 return True
             if not table_exists(conn, "hosted_room_links"):
                 return False
@@ -237,16 +276,26 @@ class HostedRoomReplicationPublisher:
 
     # -- scheduling -----------------------------------------------------------------------
     def _scan(self, now: float) -> None:
+        from gateway import hosted_room_custody as custody
         with self._transaction() as conn:
+            custody.initialize_locked(conn)
             has_retirement = table_exists(conn, retirement.HOME_TABLE)
             keys: list[_Work] = [(row["room_id"], row["member_id"]) for row in conn.execute(
                 "SELECT room_id, member_id, grant FROM hosted_room_links ORDER BY room_id, member_id LIMIT ?",
                 (links.MAX_LINKS,),
             ) if _replication_hint(row["grant"])]
+            keys.extend((row[0], _CUSTODY_PREFIX + row[1]) for row in conn.execute(
+                f"""SELECT r.room_id, r.install_id FROM {custody.ROUTES_TABLE} r JOIN {custody.CUSTODIANS_TABLE} c
+                    ON c.room_id=r.room_id AND c.install_id=r.install_id
+                    WHERE c.role='custodian_only' AND c.state IN ('active','unsupported')
+                    ORDER BY r.room_id, r.install_id LIMIT ?""", (links.MAX_LINKS,)))
             conn.execute(f"""UPDATE {ROUTES_TABLE} SET status='stopped_route_removed'
                 WHERE status!='stopped_route_removed' AND NOT EXISTS (
                     SELECT 1 FROM hosted_room_links AS l
-                    WHERE l.room_id={ROUTES_TABLE}.room_id AND l.member_id={ROUTES_TABLE}.member_id)""")
+                    WHERE l.room_id={ROUTES_TABLE}.room_id AND l.member_id={ROUTES_TABLE}.member_id)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM {custody.ROUTES_TABLE} AS c
+                    WHERE c.room_id={ROUTES_TABLE}.room_id AND '{_CUSTODY_PREFIX}' || c.install_id={ROUTES_TABLE}.member_id)""")
             conn.execute(f"""UPDATE {ROUTES_TABLE} SET source_latest_seq=MAX(source_latest_seq, COALESCE(
                 (SELECT next_seq-1 FROM hosted_rooms WHERE room_id={ROUTES_TABLE}.room_id), source_latest_seq))
                 WHERE status='stopped_route_removed'""")
@@ -265,7 +314,35 @@ class HostedRoomReplicationPublisher:
         self._routes.extend(k for k in keys if k not in self._routes)
         self._due = {k: due for k, due in self._due.items() if k in current}
         self._retirement_delays = {k: delay for k, delay in self._retirement_delays.items() if k in current}
+        self._maintain_custody()
         self._scan_at = now + POLL_SECONDS
+
+    def _maintain_custody(self) -> None:
+        """Record each hosted room's custodians in its log when they changed."""
+        from gateway import hosted_room_custody as custody
+        from gateway.hosted_room_identity import local_public_key
+        from gateway.hosted_room_peer import local_room_link_endpoint
+        with closing(open_sqlite(self.db_path, timeout=0.25)) as conn:
+            if not table_exists(conn, custody.CUSTODIANS_TABLE):
+                return
+            room_ids = [str(row[0]) for row in conn.execute(
+                f"SELECT DISTINCT room_id FROM {custody.CUSTODIANS_TABLE} ORDER BY room_id")]
+        endpoint = local_room_link_endpoint()
+        url, key, failed = endpoint.get("url") if endpoint.get("available") else None, local_public_key(), None
+        name, owner_name = custody.local_names()
+        for room_id in room_ids:
+            try:
+                custody.maintain_configuration(
+                    self.db_path, room_id=room_id, local_gateway_id=self.local_id, public_key=key, endpoint=url,
+                    name=name, owner_name=owner_name)
+            except (rooms.HostedRoomError, sqlite3.Error):
+                failed = "custody_configuration_unavailable"  # one room never stalls the others' copies
+        self._custody_error = failed
+
+    def wait_protected(self, room_id: str, seq: int, timeout: float) -> bool:
+        """Whether an eligible successor holds ``seq`` of this hosted room within ``timeout``."""
+        from gateway.hosted_room_custody import wait_protected
+        return wait_protected(self.db_path, room_id, seq, timeout)
 
     def _take(self) -> _Work | None:
         with self._condition:
@@ -342,14 +419,11 @@ class HostedRoomReplicationPublisher:
 
     # -- one route ------------------------------------------------------------------------
     def _load_route(self, key: tuple[str, str]) -> _Route | None:
-        with closing(open_sqlite(self.db_path, timeout=0.25)) as conn:
-            raw = conn.execute(
-                "SELECT * FROM hosted_room_links WHERE room_id=? AND member_id=?", key,
-            ).fetchone()
-        if raw is None or not _replication_hint(raw["grant"]):
-            return None
         try:
-            link = links.StoredRoomLink.from_record(raw)
+            with closing(open_sqlite(self.db_path, timeout=0.25)) as conn:
+                link = _link_locked(conn, key)
+            if link is None:
+                return None
             room = rooms.room_state(self.db_path, room_id=key[0], include_disbanded=True)
             if _eligible(link, room, self.local_id):
                 return _Route(key, link, room, _generation(link, room))
@@ -363,15 +437,16 @@ class HostedRoomReplicationPublisher:
 
     def _current(self, conn, route: _Route) -> bool:
         """Re-read the route and room inside a writer: a change since loading wins."""
-        raw = conn.execute("SELECT * FROM hosted_room_links WHERE room_id=? AND member_id=?", route.key).fetchone()
         room = conn.execute("SELECT * FROM hosted_rooms WHERE room_id=?", (route.key[0],)).fetchone()
         quarantine = conn.execute(
             "SELECT 1 FROM hosted_room_quarantine WHERE room_id=?", (route.key[0],),
         ).fetchone()
-        if raw is None or room is None or quarantine is not None:
+        if room is None or quarantine is not None:
             return False
         try:
-            link = links.StoredRoomLink.from_record(raw)
+            link = _link_locked(conn, route.key)
+            if link is None:
+                return False
             state = {**dict(room), "members": json.loads(room["members_json"])}
             return _eligible(link, state, self.local_id) and _generation(link, state) == route.generation
         except (ValueError, rooms.HostedRoomError):
@@ -428,6 +503,10 @@ class HostedRoomReplicationPublisher:
         it, so a refused record never hides an otherwise healthy history path.
         """
         target_install_id = initial.link.catalog.installation_id
+        if initial.key[1].startswith(_CUSTODY_PREFIX):
+            # A custodian-only installation has exactly one route: its copy-only grant.
+            checkpoint = self._checkpoint(initial)
+            return initial if checkpoint is not None and checkpoint["status"] not in _BLOCKED else None
         with closing(open_sqlite(self.db_path, timeout=0.25)) as conn:
             candidates = conn.execute(
                 "SELECT * FROM hosted_room_links WHERE room_id=? ORDER BY member_id LIMIT ?",
@@ -561,9 +640,13 @@ class HostedRoomReplicationPublisher:
             checkpoint.update(values)
         if self._stop.is_set():
             return False
+        from gateway import hosted_room_custody as custody
+        with closing(open_sqlite(self.db_path, timeout=0.25)) as conn:
+            report = custody.report_locked(conn, key[0], route.link.catalog.installation_id)
         try:
             reply = client.replicate_page(
-                grant=route.link.grant, room_id=key[0], room_name=name, members=route.room["members"], page=page)
+                grant=route.link.grant, room_id=key[0], room_name=name, members=route.room["members"], page=page,
+                custody=report)
         except PeerRunsHTTPError as exc:
             return self._http_failure(route, checkpoint, exc)
         if (
@@ -574,6 +657,24 @@ class HostedRoomReplicationPublisher:
         ):
             self._save(route, checkpoint, status="invalid_ack")
             return False
+        install_id = route.link.catalog.installation_id
+        allowed = reply.get("custody", {}).get("allowed") if isinstance(reply.get("custody"), dict) else None
+        if isinstance(allowed, bool):
+            # The operator's current consent to continue the group, from an authenticated acknowledgment.
+            custody.record_allowed(self.db_path, room_id=key[0], install_id=install_id, allowed=allowed)
+        if "watermark" not in reply:
+            # An older Hermes keeps the pages but no custody watermark: it never counts as holding history.
+            custody.mark_unsupported(self.db_path, room_id=key[0], install_id=install_id)
+        else:
+            # The custodian's durable watermark counts only if it is a prefix of this log.
+            try:
+                acknowledged = custody.record_acknowledgment(
+                    self.db_path, room_id=key[0], install_id=install_id, watermark=reply["watermark"])
+            except custody.CustodyError:
+                acknowledged = "invalid"
+            if acknowledged in {"divergent", "invalid"}:
+                self._save(route, checkpoint, status="divergent_copy" if acknowledged == "divergent" else "invalid_ack")
+                return False
         saved = self._save(
             route, checkpoint, acked_seq=page["cursor"], source_latest_seq=page["latest_seq"],
             pending_end=None, pending_latest=None, pending_name=None,
@@ -702,6 +803,13 @@ class HostedRoomReplicationPublisher:
                 retirements = retirement.home_status(self.db_path, room_id=room_id)
         except (OSError, sqlite3.Error):
             routes, deliveries, retirements, error = None, None, None, "publisher_status_unavailable"
+        custody = None
+        if room_id is not None:
+            from gateway.hosted_room_custody import custody_status
+            try:
+                custody = custody_status(self.db_path, room_id)
+            except (rooms.HostedRoomError, OSError, sqlite3.Error):
+                custody = None
         capture_errors = sorted({
             row["work_record_status"] for row in routes or []
             if row["work_record_status"] in {"source_prefix_expired", "work_record_capture_unavailable",
@@ -713,4 +821,5 @@ class HostedRoomReplicationPublisher:
             "retirements": retirements,
             "work_records_error": capture_errors[0] if capture_errors else self._work_record_error,
             "error": error, "mode": "passive_async_copy", "source_loss_safe": False,
+            "custody": custody, "custody_error": self._custody_error,
         }
