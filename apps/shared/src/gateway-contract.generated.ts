@@ -1376,6 +1376,7 @@ export interface RoomDriverStatus {
   peer_cleanup?: Record<string, unknown>[] | null
   retiring?: boolean | null
   replication?: Record<string, unknown> | null
+  tasks?: Record<string, unknown>[] | null
 }
 export interface PeerRouteStatus {
   room_id: string
@@ -1609,6 +1610,7 @@ export interface GroupsPeerInviteParams {
   passive_only?: boolean | null
   successor?: boolean | null
   custody_only?: boolean | null
+  continuation?: boolean | null
 }
 export interface GroupsPeerInviteResult {
   grant: string
@@ -1802,6 +1804,148 @@ export interface GroupsCustodyAutomaticResult {
   room_id: string
   automatic: boolean
   configuration_seq: number
+}
+export interface GroupsSuccessionStatusParams {
+  profile?: string | null
+  room_id: string
+}
+/** What this computer knows about the group's host (C7). Codes and parameters only. */
+export interface GroupsSuccessionStatusResult {
+  state: string
+  host: SuccessionHost
+  this_install: SuccessionThisInstall
+  owner: SuccessionOwner
+  backups: SuccessionBackup[]
+  at_risk: SuccessionAtRisk
+  moving?: SuccessionMoving | null
+  conflict?: SuccessionConflict | null
+  moved?: SuccessionMoved | null
+  work?: SuccessionWork | null
+  actions: Record<string, unknown>[]
+  unavailable_reason?: string | null
+  previous_host?: SuccessionPreviousHost | null
+  unavailable_bots: SuccessionBot[]
+  last_attempt?: SuccessionAttempt | null
+}
+export interface SuccessionHost {
+  install_id?: string | null
+  name?: string | null
+  reachable: boolean
+  since?: number | null
+  restarting_until?: number | null
+}
+export interface SuccessionThisInstall {
+  install_id: string
+  name?: string | null
+  role: string
+}
+export interface SuccessionOwner {
+  name?: string | null
+}
+export interface SuccessionBackup {
+  install_id: string
+  name?: string | null
+  successor: boolean
+  readiness: string
+  behind_by?: number | null
+  last_seen?: number | null
+  allowed: boolean
+  designated: boolean
+  kind: string
+  operator_name?: string | null
+}
+export interface SuccessionAtRisk {
+  count: number
+}
+export interface SuccessionMoving {
+  to: SuccessionComputer
+  step: string
+  started_at?: number | null
+}
+export interface SuccessionComputer {
+  install_id?: string | null
+  name?: string | null
+}
+export interface SuccessionConflict {
+  hosts: SuccessionConflictHost[]
+}
+export interface SuccessionConflictHost {
+  install_id?: string | null
+  name?: string | null
+  since?: number | null
+}
+export interface SuccessionMoved {
+  to: SuccessionComputer
+  at?: number | null
+  separate_events: number
+  branch_id?: string | null
+}
+export interface SuccessionWork {
+  completed: number
+  elsewhere: number
+  unknown: number
+  waiting_for_host: number
+}
+export interface SuccessionPreviousHost {
+  install_id?: string | null
+  name?: string | null
+  offline_since?: number | null
+}
+export interface SuccessionBot {
+  member_id?: string | null
+  name?: string | null
+}
+export interface SuccessionAttempt {
+  to?: SuccessionComputer | null
+  error: string
+  at?: number | null
+}
+export interface GroupsSuccessionPrepareParams {
+  profile?: string | null
+  room_id: string
+  target_install_id: string
+}
+export interface GroupsSuccessionPrepareResult {
+  preview_id: string
+  target: SuccessionTarget
+  owner: SuccessionOwner
+  behind_by: number
+  at_risk: SuccessionAtRisk
+  work: SuccessionWork
+  unavailable_bots: SuccessionBot[]
+  cautions: Record<string, unknown>[]
+}
+export interface SuccessionTarget {
+  install_id?: string | null
+  name?: string | null
+  operator_name?: string | null
+}
+export interface GroupsSuccessionPromoteParams {
+  profile?: string | null
+  room_id: string
+  target_install_id: string
+  preview_id: string
+  confirm: boolean
+}
+export interface GroupsSuccessionKeepParams {
+  profile?: string | null
+  room_id: string
+  install_id: string
+}
+export interface GroupsSuccessionBranchLogParams {
+  profile?: string | null
+  room_id: string
+  branch_id: string
+  after_seq?: number | null
+  limit?: number | null
+}
+export interface GroupsSuccessionBranchLogResult {
+  room_id: string
+  branch_id: string
+  events: Record<string, unknown>[]
+  cursor: number
+  latest_seq: number
+  has_more: boolean
 }
 export interface BotRelayRosterSyncParams {
   profile?: string | null
@@ -5111,6 +5255,16 @@ export interface RpcMethods {
   'groups.state': { params: GroupsStateParams; result: GroupsStateResult }
   /** Durably cancel queued or running work for one hosted room. */
   'groups.stop': { params: GroupsStopParams; result: GroupsStopResult }
+  /** Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape). */
+  'groups.succession.branch_log': { params: GroupsSuccessionBranchLogParams; result: GroupsSuccessionBranchLogResult }
+  /** Resolve a group continued on two computers, from either one. */
+  'groups.succession.keep': { params: GroupsSuccessionKeepParams; result: GroupsSuccessionStatusResult }
+  /** On the target computer: what continuing the group there would mean. Changes nothing. */
+  'groups.succession.prepare': { params: GroupsSuccessionPrepareParams; result: GroupsSuccessionPrepareResult }
+  /** On the target computer: continue the group there, for its owner; returns the status (poll while moving). */
+  'groups.succession.promote': { params: GroupsSuccessionPromoteParams; result: GroupsSuccessionStatusResult }
+  /** Whether the group's host can be reached from this computer, and what the owner may do (C7). */
+  'groups.succession.status': { params: GroupsSuccessionStatusParams; result: GroupsSuccessionStatusResult }
   /** Fail a not-yet-claimed handoff (client poll timeout); CAS against the watcher. */
   'handoff.fail': { params: HandoffFailParams; result: HandoffFailResult }
   /** Queue a handoff to a messaging platform's home channel; the gateway watcher claims it. */
@@ -5526,6 +5680,11 @@ export const RPC_METHODS = [
   'groups.send',
   'groups.state',
   'groups.stop',
+  'groups.succession.branch_log',
+  'groups.succession.keep',
+  'groups.succession.prepare',
+  'groups.succession.promote',
+  'groups.succession.status',
   'handoff.fail',
   'handoff.request',
   'handoff.state',

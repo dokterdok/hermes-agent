@@ -153,6 +153,26 @@ def _effective_watchdog_leash(runner: object) -> float:
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
 
 
+# How long a planned restart may keep the group's backups waiting before they treat the host as lost.
+GROUP_RESTART_WINDOW_SECONDS = 180.0
+
+
+def _announce_group_restarts(runner) -> None:
+    """A planned restart is not loss: each Group Chat this gateway hosts tells its backups when it
+    will be back (``succession.state host_restarting``). Best effort; it never delays the restart."""
+    from gateway.session_authorities import all_authorities
+    until = time.time() + GROUP_RESTART_WINDOW_SECONDS
+    for authority in all_authorities(runner):
+        service = getattr(authority, "hosted_room_service", None)
+        announce = getattr(service, "announce_restart", None)
+        if announce is None:
+            continue
+        try:
+            announce(until)
+        except Exception as exc:
+            logger.debug("Group restart announcement skipped: %s", exc)
+
+
 class GatewayShutdownMixin:
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
@@ -1654,6 +1674,7 @@ class GatewayShutdownMixin:
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
             return False
+        _announce_group_restarts(self)
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
@@ -2216,6 +2237,8 @@ class GatewayShutdownMixin:
         if callable(_stop_guards):
             _stop_guards()
         if restart:
+            if not self._restart_requested:
+                _announce_group_restarts(self)
             self._restart_requested = True
             self._restart_detached = detached_restart
             self._restart_via_service = service_restart

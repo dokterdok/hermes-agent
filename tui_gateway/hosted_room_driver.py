@@ -677,8 +677,9 @@ class HostedRoomRuntime:
                 try:
                     if self.defer_not_admitted_members and task["payload"].get("target_member_id"):
                         deferred = state.defer_not_admitted_task(
-                            self.db_path, attempt, reason="member_unavailable", clock=self.clock,
-                            retry_binding=getattr(transport, "nonadmission_retry_binding", None))
+                            self.db_path, attempt, reason=getattr(exc, "defer_reason", None) or "member_unavailable",
+                            clock=self.clock, retry_binding=getattr(transport, "nonadmission_retry_binding", None),
+                            detail=getattr(exc, "defer_detail", None))
                     else:
                         state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:

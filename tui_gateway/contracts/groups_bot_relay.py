@@ -229,6 +229,9 @@ class RoomDriverStatus(Result):
     peer_cleanup: list[dict[str, JsonValue]] | None = None
     retiring: bool | None = None
     replication: dict[str, JsonValue] | None = None
+    #: Turns waiting for another computer: ``{task_id, member_id, state: "waiting_for_host", resource,
+    #: host_name}``; ``resource`` is ``bot`` or ``file`` (``tool``/``secret`` reserved).
+    tasks: list[dict[str, JsonValue]] | None = None
 
 
 class GroupsStateResult(Result):
@@ -540,6 +543,8 @@ class GroupsPeerInviteParams(ProfileParams):
     successor: bool | None = None
     # A copy-only grant for an installation without a Bot in the room (no ``member_id``).
     custody_only: bool | None = None
+    # The same grant is re-issued to a verified successor of the room unless this is ``false``.
+    continuation: bool | None = None
 
 
 class GroupsPeerInviteResult(Result):
@@ -791,6 +796,187 @@ method("groups.custody.allow", params=GroupsCustodyAllowParams, result=GroupsCus
        doc="On a member installation: allow (or not) the room owner to continue the group here.")
 method("groups.custody.automatic", params=GroupsCustodyAutomaticParams, result=GroupsCustodyAutomaticResult,
        doc="On the host: the room owner (or the operator) lets the group move by itself, or asks first.")
+
+
+# ── succession (a group's host is lost) ──────────────────────────────────────────────────────────
+
+
+class SuccessionComputer(Result):
+    install_id: str | None = None
+    name: str | None = None
+
+
+class SuccessionHost(Result):
+    install_id: str | None = None
+    name: str | None = None
+    reachable: bool
+    #: When the host was last heard from, once it counts as offline (Unix seconds).
+    since: float | None = None
+    #: The end of a restart the host announced.
+    restarting_until: float | None = None
+
+
+class SuccessionThisInstall(Result):
+    install_id: str
+    name: str | None = None
+    #: ``host``, ``backup`` (keeps a copy), ``member`` (a Bot without a copy) or ``none``.
+    role: str
+
+
+class SuccessionOwner(Result):
+    name: str | None = None
+
+
+class SuccessionBackup(Result):
+    install_id: str
+    name: str | None = None
+    #: May continue the group: ``allowed`` (its operator) and ``designated`` (the owner).
+    successor: bool
+    #: ``caught_up``, ``behind``, ``offline``, ``unknown`` or ``unsupported`` (an older Hermes).
+    readiness: str
+    behind_by: int | None = None
+    last_seen: float | None = None
+    allowed: bool
+    designated: bool
+    #: ``member`` (has a Bot in the group) or ``backup`` (keeps a copy only).
+    kind: str
+    operator_name: str | None = None
+
+
+class SuccessionAtRisk(Result):
+    count: int
+
+
+class SuccessionMoving(Result):
+    to: SuccessionComputer
+    #: ``fencing``, ``catching_up``, ``reconciling`` or ``finishing``.
+    step: str
+    started_at: float | None = None
+
+
+class SuccessionConflictHost(SuccessionComputer):
+    since: float | None = None
+
+
+class SuccessionConflict(Result):
+    hosts: list[SuccessionConflictHost]
+
+
+class SuccessionMoved(Result):
+    to: SuccessionComputer
+    at: float | None = None
+    #: Events this computer wrote while cut off, kept apart (``groups.succession.branch_log``).
+    separate_events: int
+    branch_id: str | None = None
+
+
+class SuccessionWork(Result):
+    completed: int
+    elsewhere: int
+    unknown: int
+    waiting_for_host: int
+
+
+class SuccessionPreviousHost(SuccessionComputer):
+    offline_since: float | None = None
+
+
+class SuccessionBot(Result):
+    member_id: str | None = None
+    name: str | None = None
+
+
+class SuccessionAttempt(Result):
+    to: SuccessionComputer | None = None
+    error: str
+    at: float | None = None
+
+
+class GroupsSuccessionStatusParams(RoomParams):
+    pass
+
+
+class GroupsSuccessionStatusResult(Result):
+    """What this computer knows about the group's host (C7). Codes and parameters only."""
+
+    #: ``ok``, ``host_unreachable``, ``host_restarting``, ``moving``, ``continued_on_two`` or ``moved_away``.
+    state: str
+    host: SuccessionHost
+    this_install: SuccessionThisInstall
+    owner: SuccessionOwner
+    backups: list[SuccessionBackup]
+    at_risk: SuccessionAtRisk
+    moving: SuccessionMoving | None = None
+    conflict: SuccessionConflict | None = None
+    moved: SuccessionMoved | None = None
+    work: SuccessionWork | None = None
+    #: ``{action: continue|keep|designate|remove_backup, targets}``, ``{action: open_on, target}`` or
+    #: ``{action: add_backup}``; ``continue`` targets come best placed first.
+    actions: list[dict[str, JsonValue]]
+    #: ``not_owner``, ``no_successor``, ``successor_behind_offline`` or ``host_reachable``.
+    unavailable_reason: str | None = None
+    previous_host: SuccessionPreviousHost | None = None
+    unavailable_bots: list[SuccessionBot]
+    last_attempt: SuccessionAttempt | None = None
+
+
+class GroupsSuccessionPrepareParams(RoomParams):
+    #: Runs on that computer's own gateway; any other answers ``target_not_local``.
+    target_install_id: str
+
+
+class SuccessionTarget(SuccessionComputer):
+    operator_name: str | None = None
+
+
+class GroupsSuccessionPrepareResult(Result):
+    preview_id: str
+    target: SuccessionTarget
+    owner: SuccessionOwner
+    behind_by: int
+    at_risk: SuccessionAtRisk
+    work: SuccessionWork
+    unavailable_bots: list[SuccessionBot]
+    #: ``{code: "host_may_be_running"}`` or ``{code: "participant_not_fenced", names, count}``.
+    cautions: list[dict[str, JsonValue]]
+
+
+class GroupsSuccessionPromoteParams(RoomParams):
+    target_install_id: str
+    preview_id: str
+    confirm: bool
+
+
+class GroupsSuccessionKeepParams(RoomParams):
+    #: The computer to keep; runs on either of the two.
+    install_id: str
+
+
+class GroupsSuccessionBranchLogParams(RoomParams):
+    branch_id: str
+    after_seq: int | None = None
+    limit: int | None = None
+
+
+class GroupsSuccessionBranchLogResult(Result):
+    room_id: str
+    branch_id: str
+    events: list[dict[str, JsonValue]]
+    cursor: int
+    latest_seq: int
+    has_more: bool
+
+
+method("groups.succession.status", params=GroupsSuccessionStatusParams, result=GroupsSuccessionStatusResult,
+       doc="Whether the group's host can be reached from this computer, and what the owner may do (C7).")
+method("groups.succession.prepare", params=GroupsSuccessionPrepareParams, result=GroupsSuccessionPrepareResult,
+       doc="On the target computer: what continuing the group there would mean. Changes nothing.")
+method("groups.succession.promote", params=GroupsSuccessionPromoteParams, result=GroupsSuccessionStatusResult,
+       doc="On the target computer: continue the group there, for its owner; returns the status (poll while moving).")
+method("groups.succession.keep", params=GroupsSuccessionKeepParams, result=GroupsSuccessionStatusResult,
+       doc="Resolve a group continued on two computers, from either one.")
+method("groups.succession.branch_log", params=GroupsSuccessionBranchLogParams, result=GroupsSuccessionBranchLogResult,
+       doc="Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape).")
 
 
 # ── bot relay ─────────────────────────────────────────────────────────────────────────────────
