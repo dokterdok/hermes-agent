@@ -242,6 +242,137 @@ belong to its span: its epoch, and for a gateway actor that span's host. A page 
 sender: a new host relays the old host's history before its own transition, and the copy moves
 only when the transition arrives. Without a verifier, a change of host is refused.
 
+## Who may ask a computer to continue a group
+
+Continuing always runs on the eligible computer's own gateway (`target_not_local` otherwise), and
+the caller must act for the room's owner on that computer:
+
+- the subject recorded as the owner there (on the host, the room's creator; on another computer,
+  whoever consented there; after a move, the owner who continued it), or
+- that computer's operator.
+
+Anyone else gets `not_owner`. The same rule covers `prepare`, `promote` and `keep`.
+
+## Continuing by hand (`groups.succession.prepare`, `groups.succession.promote`)
+
+When nothing moves the group by itself, the owner continues it on one eligible computer:
+pause, preserve, continue by hand. Nothing is elected.
+
+`prepare` changes nothing. It asks every configured computer, signed with this installation's
+room identity key, whom it follows. It refuses with `host_reachable` while the host answers or a
+restart it announced is still running. Otherwise it returns a preview: how far this copy is
+behind the most complete reachable one, the tail at risk, inherited work, the host's Bots that
+stay unavailable, and cautions.
+
+`promote` runs the owner's decision in recorded steps, so a crash resumes instead of repeating
+one:
+
+1. **Fencing.** Every reachable computer fences the host's epoch `N` in its Runs store and promises
+   `N+1` to this computer (`fence_and_promise`, #105079). It answers with a signed **fence
+   receipt** carrying its watermark, a digest of its run evidence and, where its operator did not
+   opt out, fresh member grants for this computer. Receipts are fences, not votes.
+   - A computer that already promised the epoch to another one refuses. The attempt then stops
+     with `room_authority_promised`, naming the other computer. An operator's retry moves past
+     every epoch seen so far.
+2. **Catching up.** The successor adopts the most complete fenced copy. Pages come from the
+   custodian that holds it, and each transition in them is verified on the way.
+3. **The transition.** The successor writes one `authority.transition`: proof kind `attested`, the
+   owner's statement signed with its key and every receipt. It is marked verified in the same
+   transaction (#99107). The payload also carries the notice clients render (`text`, `from_name`,
+   `to_name`, `offline_since`, `reason`, `at_risk`), outside the proof.
+4. **Reconciling, then finishing.**
+   - The successor records itself as authority in the next `custody.configured`. The old host
+     stays a custodian, no longer eligible.
+   - It classifies inherited work, takes ownership, and registers its members' routes from the
+     grants.
+   - It announces the transition to every computer. Each one verifies the proof against its own
+     copy before it follows: the successor was eligible and signed, its own receipt and every
+     other one are genuine, the replaced host was the configured one, and nothing more complete
+     was left behind.
+
+A copy that holds more of the old host's events than the successor adopted sets them aside as a
+separate branch when it learns the move. Nothing is merged.
+
+## Accepted work
+
+Outside majority mode, dispatch never waits for copies: a tail no eligible successor holds is
+reported as at risk, and clients keep unsent messages in their outbox.
+
+Every dispatch decision is announced with `task.admitted` (#104601). The successor classifies
+each admission without a published outcome, using the run evidence in the receipts:
+
+| State | Meaning | What the successor does |
+| --- | --- | --- |
+| `completed` / `elsewhere` | The participant ran it, or is running it. | Observes that run with its new grant. Status and Stop passed to it with the fence. Then it publishes the outcome. |
+| `unknown` | No evidence either way. | Keeps it as indeterminate work, never "never ran". Today's controls apply. |
+| `waiting_for_host` | It needs a Bot (or a file) that is only on the old host. | Defers it with `turn.deferred {reason: "waiting_for_host", resource, host_name}`. |
+
+At the participant, a successor's dispatch of a task it already admitted under an earlier epoch
+re-attaches to that run (`room_task_inherited`) instead of running it again. A new generation runs
+only after every earlier attempt ended without success.
+
+A participant keys a hosted member session to the room's original home, so a successor continues
+the same conversation. A room that never moved keeps exactly today's session id.
+
+## The old host returns
+
+The old host asks the group's computers about its epoch, at start and whenever a peer refuses
+its work. It pauses at once while another computer holds a later promise, and executes and
+appends nothing. Once it sees a verified transition out of its epoch, it steps down
+(`demote_to_custody`), in one writer transaction:
+
+- its events after the shared history move into a branch, readable with
+  `groups.succession.branch_log`;
+- the shared prefix becomes a copy that follows the new host;
+- its driver, link and policy state goes.
+
+It then catches up, verifying the transition itself, and reports what it did while cut off. The
+new host keeps that report beside its own reconciliation. The old host executes nothing from the
+branch.
+
+## Continued on two computers
+
+A partition and two taps can continue a group on two computers at the same epoch. The first
+contact between them, directly or through a copy, records `continued_on_two`. Both pause
+(sends are refused with `room_authority_conflict`). The owner keeps one with
+`groups.succession.keep`, from either computer, without needing both reachable:
+
+- **On the kept computer.** The owner's choice is signed with its key. It then continues its own
+  group once more, at a fresh epoch: it fences everywhere reachable and writes a transition with
+  the choice. Every computer can follow that epoch, whichever one it followed before. The fence
+  record keeps one authority per epoch, never rewritten.
+- **On the other computer.** It steps aside at once. Its own transition, its messages and its
+  verified mark (`move_transition_mark_to_branch`) go into a branch. It sends the signed choice to
+  the kept computer on first contact.
+
+Copies that followed the computer that was not kept rebase the same way when the kept host's
+announcement reaches them.
+
+## Status for clients (C7)
+
+`groups.succession.status` answers from this computer's own records. Every field is a code or a
+parameter, and times are Unix seconds:
+
+- `state` is `ok`, `host_unreachable`, `host_restarting`, `moving`, `continued_on_two` or
+  `moved_away`;
+- the rest describes the host, this computer, the backups (with readiness), the tail at risk, any
+  move, conflict or set-aside branch, inherited work and the owner's actions.
+
+`actions[continue].targets` comes best placed first: always on, then readiness, then the owner's
+order.
+
+The host counts as offline only after a bounded window without an answer (five minutes of signed
+heartbeat queries), never after one missed poll. The best-placed eligible computer then tells the
+owner once per incident, through the owner's private chats when messaging offers them, otherwise
+through the home channel. Another eligible computer waits five minutes and speaks only while
+every better-placed one still looks offline from it.
+
+Errors are JSON-RPC `4001` with `error.data.reason`. `room_authority_promised` adds `data.other`,
+and `target_not_local` adds `data.target`.
+
+The host appends a quiet `succession.state` event on every change. Clients connected only to a
+backup poll the status every 15 seconds.
+
 ## Catching up from any custodian
 
 When the host is gone, the most complete copy may be anywhere.
@@ -283,7 +414,16 @@ Nobody else sees it, and a copy is never written to.
   room's log within the room's budget. The relaxations that session replay may adopt ("a valid
   replay or an authoritative snapshot") don't apply to room logs.
 - **Mixed versions.** An installation without room identity keys or watermarks is `unsupported`:
-  shown, never counted, never a voter.
+  shown, never counted, never a voter. A copy whose Hermes has no succession endpoints is never
+  assumed fenced: `prepare` cautions `participant_not_fenced` with its name and count.
+- **A successor's re-dispatch is not a second owner.** It maps onto the participant's existing
+  admission (`room_task_inherited`), and each Bot's conversation stays with its own installation's
+  canonical session authority.
+- **A planned restart is not loss.** Before a planned restart the host announces
+  `succession.state {state: "host_restarting", until}`. Backups report `host_restarting` until
+  `until` plus a grace period, offer no continuation and send no notice.
+- **Scopes.** Continuation grants, fence receipts and succession controls stay room-scoped: never
+  installation-wide operator rights. Peers are found only among the room's recorded custodians.
 
 ## Limits
 

@@ -283,6 +283,50 @@ a NAT boundary, put the room's authority on the host every participant can
 reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 :::
 
+### When a group's host goes offline
+
+Every computer with a Bot in a Group Chat keeps a full backup copy of the group, unless its
+operator opts out. When the computer hosting the group goes offline, the group pauses. Nothing new
+runs, and nothing is lost. The group's owner then continues the group on another computer:
+
+- one of the owner's own computers, or
+- a member's computer the owner designated, whose own operator allowed it.
+
+**Continue on…** in Hermes Desktop lists those computers, best placed first. From a terminal on
+that computer, run:
+
+```bash
+hermes groups status "Weekend plans"      # is the host reachable? which computers keep a copy?
+hermes groups continue "Weekend plans"    # continue the group on this computer (asks to confirm)
+```
+
+`continue` shows what moving means before it acts:
+
+- the host's own Bots stay unavailable until it's back;
+- work in progress is finished, still running elsewhere, or unknown, and unknown work never runs
+  again by itself;
+- any recent messages this computer doesn't have yet are listed.
+
+The other computers stop accepting work from the old host as soon as you continue. When the old
+host comes back, it rejoins as a member. Anything it did while it was cut off is shown separately,
+never mixed in.
+
+A planned restart of the host is not an outage, so no move is offered while it lasts.
+
+If two computers were both told to continue the group while they couldn't reach each other, the
+group pauses again when they reconnect, and the owner keeps one:
+
+```bash
+hermes groups keep "Weekend plans" "Home VPS"
+```
+
+`hermes groups backups` lists the computers keeping a copy:
+
+- `backups allow` / `backups disallow` set whether a computer may continue the group;
+- `backups add` keeps a copy on another computer you reach with `hermes peer`.
+
+How it works: [Group Chat host loss](../developer-guide/group-chat-host-loss.md).
+
 ### Transferring hosted room authority
 
 :::caution Kept, but disabled
