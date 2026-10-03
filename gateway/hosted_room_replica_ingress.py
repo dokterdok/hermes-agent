@@ -16,12 +16,14 @@ def ingest_granted_page(
     db_path: Path | str, *, token: str, secret: bytes, target_install_id: str,
     target_profile: str, room_id: str, room_name: str, members: list[dict[str, Any]],
     page: dict[str, Any], custody: Any = None,
+    _verify_transition: Callable[[sqlite3.Connection, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Store one history page sent with a ``replicate`` grant this gateway issued.
 
     Copying never confers execution authority. The grant must name this gateway, this
     profile and the room's member, and it is checked again inside the replica writer.
-    ``custody`` is the authority's protection report sent beside the page.
+    ``custody`` is the authority's protection report sent beside the page;
+    ``_verify_transition`` lets the copy follow a verified change of host (``ingest_page``).
     """
     from gateway.hosted_room_custody import local_consent
     authority = page.get("authority") if isinstance(page, dict) else None
@@ -30,7 +32,7 @@ def ingest_granted_page(
         room_id=room_id, members=members, authority=authority, permission="replicate")
     result = replicas.ingest_page(
         db_path, room_id=room_id, room_name=room_name, members=members, page=page, _authorize=authorize,
-        custody_report=custody)
+        custody_report=custody, _verify_transition=_verify_transition)
     # The host learns this installation's consent to continue the group from each acknowledgment.
     return {**result, "custody": {"allowed": local_consent(db_path, room_id)}}
 
