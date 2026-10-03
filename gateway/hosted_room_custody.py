@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+import secrets
 import socket
 import sqlite3
 import time
@@ -729,6 +731,109 @@ def read_copy_page(conn: sqlite3.Connection, room_id: str, *, after_seq: int, li
     events = [_event_from_row(row) for row in _page_rows(conn, table, room_id, after_seq, limit)]
     return {"room_name": head["name"], "members": json.loads(head["members_json"]),
             "page": _bounded_page(events, after_seq, latest, authority)}
+
+
+# -- catch-up from another custodian -------------------------------------------------------------
+
+PAGES_PATH = "/v1/room-members/custody/pages"
+PAGES_DOMAIN = b"hermes.group.custody.pages.v1"
+PAGES_REPLY_DOMAIN = b"hermes.group.custody.pages-reply.v1"
+# A signed request stays valid this long either side of its issue time.
+REQUEST_SKEW_SECONDS = 300.0
+_PAGES_REQUEST_FIELDS = frozenset({
+    "room_id", "requester_install_id", "source_install_id", "after_seq", "limit", "issued_at", "nonce"})
+_PAGES_REPLY_FIELDS = frozenset({
+    "room_id", "source_install_id", "requester_install_id", "nonce", "room_name", "members", "page"})
+_ANSWERS = ("room_id", "source_install_id", "requester_install_id", "nonce")
+_NONCE_RE = re.compile(r"[0-9a-f]{32}")
+
+
+class CustodyAuthorizationError(CustodyError):
+    """A catch-up request or reply is not signed by a custodian of the Group Chat."""
+
+    reason = "custody_not_authorized"
+
+
+def fetch_custodian_pages(
+    db_path: DbPath, *, room_id: str, source_install_id: str, after_seq: int, limit: int, timeout: float = 10.0,
+) -> dict[str, Any]:
+    """One page of another custodian's history of the room, from its own room or copy.
+
+    The request names both installations and is signed with this installation's room identity key;
+    the source answers only an installation its configuration lists, and its signed reply is checked
+    here against the key pinned for it. Returns ``{room_id, room_name, members, page,
+    source_install_id}`` for ``ingest_custodian_page``. Catch-up resumes from this copy's own
+    watermark: ask again from there, from this custodian or another.
+    """
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    room_id = rooms._room_id(room_id)
+    with closing(open_sqlite(db_path, timeout=1)) as conn:
+        entry = next((custodian for custodian in configuration_locked(conn, room_id)["custodians"]
+                      if custodian["install_id"] == source_install_id), None)
+        pinned = identity.pinned_key_locked(conn, room_id=room_id, install_id=source_install_id)
+    if entry is None or entry["endpoint"] is None or pinned is None:
+        raise CustodyError("that custodian of the Group Chat is unknown here or has no endpoint")
+    request = {"room_id": room_id, "requester_install_id": rooms.local_authority_gateway_id(),
+               "source_install_id": source_install_id, "after_seq": after_seq, "limit": limit,
+               "issued_at": time.time(), "nonce": secrets.token_hex(16)}
+    client = PeerRunsHTTPClient(base_url=entry["endpoint"], api_key="", timeout_seconds=timeout,
+                                proof_install_id=source_install_id)
+    reply = dict(client.custody_pages(body={**request, "signature": identity.sign(PAGES_DOMAIN, request)}))
+    signature = reply.pop("signature", None)
+    if set(reply) != _PAGES_REPLY_FIELDS or any(reply[key] != request[key] for key in _ANSWERS):
+        raise CustodyError("the custodian's reply does not answer this request")
+    with closing(open_sqlite(db_path, timeout=1)) as conn:
+        if not identity.verify_locked(conn, room_id, source_install_id, PAGES_REPLY_DOMAIN, reply, signature):
+            raise CustodyAuthorizationError("the custodian's reply is not signed with its pinned key")
+    return {"room_id": room_id, "room_name": reply["room_name"], "members": reply["members"], "page": reply["page"],
+            "source_install_id": source_install_id}
+
+
+def serve_custodian_pages(db_path: DbPath, body: Any, *, now: float | None = None) -> dict[str, Any]:
+    """Answer one custodian's signed catch-up request with a signed page of the history held here.
+
+    Only an installation that the room's latest configuration here lists may ask, signed with the
+    key pinned for it, in a request issued within ``REQUEST_SKEW_SECONDS`` that names this
+    installation as its source.
+    """
+    if not isinstance(body, Mapping) or set(body) != _PAGES_REQUEST_FIELDS | {"signature"}:
+        raise CustodyError("catch-up request fields are invalid")
+    request = {key: body[key] for key in _PAGES_REQUEST_FIELDS}
+    room_id = rooms._room_id(request["room_id"])
+    issued_at, now = request["issued_at"], time.time() if now is None else float(now)
+    if (request["source_install_id"] != rooms.local_authority_gateway_id()
+            or not isinstance(request["requester_install_id"], str)
+            or isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)) or not math.isfinite(issued_at)
+            or abs(now - issued_at) > REQUEST_SKEW_SECONDS
+            or not isinstance(request["nonce"], str) or _NONCE_RE.fullmatch(request["nonce"]) is None):
+        raise CustodyAuthorizationError("catch-up request is not current or not addressed to this installation")
+    with closing(open_sqlite(db_path, timeout=1)) as conn:
+        conn.execute("BEGIN")  # one snapshot; nothing is written
+        listed = {custodian["install_id"] for custodian in configuration_locked(conn, room_id)["custodians"]}
+        if request["requester_install_id"] not in listed or not identity.verify_locked(
+                conn, room_id, request["requester_install_id"], PAGES_DOMAIN, request, body["signature"]):
+            raise CustodyAuthorizationError("catch-up request is not signed by a custodian of the Group Chat")
+        page = read_copy_page(conn, room_id, after_seq=request["after_seq"], limit=request["limit"])
+        conn.rollback()
+    reply = {**{key: request[key] for key in _ANSWERS}, "room_id": room_id, **page}
+    return {**reply, "signature": identity.sign(PAGES_REPLY_DOMAIN, reply)}
+
+
+def ingest_custodian_page(
+    db_path: DbPath, fetched: Mapping[str, Any], *, _verify_transition: Any = None, _authorize: Any = None,
+) -> dict[str, Any]:
+    """Store a page that ``fetch_custodian_pages`` returned, with every check a host's page gets.
+
+    It needs no grant: the source signed it. The copy's name follows the page's renames, a source
+    that holds less than the host once announced is fine, and the authority still moves only
+    through transitions ``_verify_transition`` accepts.
+    """
+    from gateway import hosted_room_replicas as replicas
+    if not isinstance(fetched, Mapping) or not {"room_id", "room_name", "members", "page"} <= set(fetched):
+        raise CustodyError("fetched catch-up page is invalid")
+    return replicas.ingest_page(
+        db_path, room_id=fetched["room_id"], room_name=fetched["room_name"], members=fetched["members"],
+        page=fetched["page"], _authorize=_authorize, _verify_transition=_verify_transition, _from_custodian=True)
 
 
 # -- admissions --------------------------------------------------------------------------------
