@@ -1,4 +1,7 @@
 """Custody on the canonical surface: custody-only invitations, consent, owner controls and reading a copy."""
+import sqlite3
+from contextlib import closing
+
 import pytest
 
 from gateway import hosted_room_custody as custody
@@ -116,3 +119,24 @@ async def test_owner_controls_refuse_what_custody_cannot_be(gateway):
                       catalog=catalog('install:backup').as_mapping(), grant=grant.replace('.', '!')) == 'invalid_params'
     assert await call(gateway.owner, 'groups.custody.remove', room_id='hosted',
                       install_id='install:nobody') == 'room_custody_invalid'
+
+
+@pytest.mark.asyncio
+async def test_the_owner_or_the_operator_switches_automatic_moves(gateway):
+    await call(gateway.owner, 'groups.create', room_id='hosted', name='Hosted', members=[
+        MEMBERS[0], member('reviewer', target='install:participant')])
+    methods = (await call(gateway.owner, 'groups.capabilities'))['methods']
+    assert 'groups.custody.automatic' in methods
+    # The room's recorded owner, from any of its sessions (for example its private chat).
+    owner = AuthorityConnection(gateway.authority, object(), {'user_id': 'owner'})
+    switched = await call(owner, 'groups.custody.automatic', room_id='hosted', enabled=False)
+    assert switched == {'room_id': 'hosted', 'automatic': False, 'configuration_seq': 0}
+    contract.GroupsCustodyAutomaticResult.model_validate(switched)
+    with closing(sqlite3.connect(gateway.authority.db.db_path)) as conn:
+        assert custody.automatic_locked(conn, 'hosted') is False  # rides in the next configuration
+    stranger = AuthorityConnection(gateway.authority, object(), {'user_id': 'stranger'})
+    assert await call(stranger, 'groups.custody.automatic', room_id='hosted', enabled=True) == 'not_owner'
+    operator = AuthorityConnection(gateway.authority, object(), {'user_id': 'stranger'}, operator=True)
+    assert (await call(operator, 'groups.custody.automatic', room_id='hosted', enabled=True))['automatic'] is True
+    for params in ({'enabled': 'no'}, {'enabled': True, 'extra': 1}, {}):
+        assert await call(owner, 'groups.custody.automatic', room_id='hosted', **params) == 'invalid_params'

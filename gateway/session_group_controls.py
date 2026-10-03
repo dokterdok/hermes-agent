@@ -29,6 +29,8 @@ GROUP_METHODS = {
     'groups.custody.add': 'session:control',
     'groups.custody.remove': 'session:control',
     'groups.custody.allow': 'session:operator',
+    # The room's owner, or this installation's operator: checked inside (4001 not_owner).
+    'groups.custody.automatic': 'session:control',
     'groups.peer.register': 'session:control',
     'groups.peer.invite': 'session:operator',
     'groups.peer.revoke': 'session:operator',
@@ -64,6 +66,7 @@ _FIELDS = {
     'groups.custody.add': {'room_id', 'target_url', 'catalog', 'grant', 'successor'},
     'groups.custody.remove': {'room_id', 'install_id'},
     'groups.custody.allow': {'room_id', 'successor'},
+    'groups.custody.automatic': {'room_id', 'enabled'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -131,6 +134,11 @@ def _group(authority, actor, home, method, params):
             db_path, params['room_id']):
         # A copy of another gateway's room: read-only, shown to the operator or the room's recorded owner.
         return replication.read_copy(authority, actor, method, params)
+    if method == 'groups.custody.automatic':
+        # The owner's switch, reachable from the owner's private chat: its own owner check.
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        return replication.custody_automatic(service, actor, params)
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
@@ -267,8 +275,12 @@ def _execution_control(service, method, params):
         event = service.send(room_id=params.get('room_id'),
                              event_id=user_event_id(params.get('event_id')),
                              payload=params.get('payload'))
+        # Stored on a majority of the room's voters; majority mode waits for it, briefly.
+        replication = getattr(service, 'replication', None)
+        protected = replication.protect(params['room_id'], event['seq']) if replication is not None and type(
+            event.get('seq')) is int else None
         return {'event': event, 'client_event_id': params.get('event_id'),
-                'accepted': True, 'driver_started': True}
+                'accepted': True, 'driver_started': True, **({} if protected is None else {'protected': protected})}
 
     def attempt_control():
         if (type(params.get('execution_generation')) is not int

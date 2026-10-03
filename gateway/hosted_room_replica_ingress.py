@@ -24,8 +24,12 @@ def ingest_granted_page(
     profile and the room's member, and it is checked again inside the replica writer.
     ``custody`` is the authority's protection report sent beside the page;
     ``_verify_transition`` lets the copy follow a verified change of host (``ingest_page``).
+
+    The acknowledgment tells the host this installation's consent to continue the group, whether
+    it is always on, and, when the report carried a lease request from the authority this copy
+    follows, the lease layer's answer (``lease_grant``).
     """
-    from gateway.hosted_room_custody import local_consent
+    from gateway import hosted_room_custody as custody_records
     authority = page.get("authority") if isinstance(page, dict) else None
     authorize = authorize_granted_room(
         token=token, secret=secret, target_install_id=target_install_id, target_profile=target_profile,
@@ -33,8 +37,13 @@ def ingest_granted_page(
     result = replicas.ingest_page(
         db_path, room_id=room_id, room_name=room_name, members=members, page=page, _authorize=authorize,
         custody_report=custody, _verify_transition=_verify_transition)
-    # The host learns this installation's consent to continue the group from each acknowledgment.
-    return {**result, "custody": {"allowed": local_consent(db_path, room_id)}}
+    reply = {"allowed": custody_records.local_consent(db_path, room_id), "always_on": custody_records.local_always_on()}
+    request = custody.get("lease_request") if isinstance(custody, dict) else None
+    if request is not None and result["copy_authority"] == authority:
+        grant = custody_records.lease_grant(room_id, authority["epoch"], authority["gateway_id"], request)
+        if grant is not None:
+            reply["lease_grant"] = grant
+    return {**result, "custody": reply}
 
 
 def authorize_granted_room(

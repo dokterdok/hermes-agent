@@ -131,13 +131,13 @@ def test_custodians_acknowledge_with_watermarks_and_successors_bound_the_tail_at
     assert held["seq"] == rooms.room_state(pair.source, room_id="room")["latest_seq"]
     # Not designated: its copy holds everything, and still nothing is safe from losing this host.
     assert status["at_risk_after_seq"] == 0
-    assert not custody.wait_protected(pair.source, "room", 1, timeout=0)
+    # A laptop never votes: the host alone does, so protection is only its own log (mode ask).
+    assert (status["voters"], status["mode"], status["protected_seq"]) == ([HOME], "ask", held["seq"])
     custody.designate_successor(pair.source, room_id="room", install_id=TARGET, successor=True)
     _configure(pair.source)
     pub._publish_one(KEY)
     latest = rooms.room_state(pair.source, room_id="room")["latest_seq"]
     assert custody.custody_status(pair.source, "room")["at_risk_after_seq"] == latest
-    assert custody.wait_protected(pair.source, "room", latest, timeout=0)
     append(pair.source, "only-here")
     assert custody.custody_status(pair.source, "room")["at_risk_after_seq"] == latest  # the new tail is at risk
     # The custodian holds the configuration and pins every custodian's key from it.
