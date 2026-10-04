@@ -378,6 +378,64 @@ describe('session-gone classification', () => {
     expect(room.chat.$groupChats.get().Room.sessions?.['thread:t1::helper']).toBeTruthy()
   })
 
+  it('retries an explicitly refused submission identity once on the same local or remote route', async () => {
+    for (const member of [LOCAL_MEMBER, ROUTED_MEMBER]) {
+      const room = await loadRoom({ turn: () => 'legacy member replied' })
+      const method = member.remoteSource ? 'requestProfile' : 'request'
+      const original = host[method] as (...args: any[]) => Promise<unknown>
+      const submitted: Record<string, unknown>[] = []
+
+      host[method] = async (...args: any[]) => {
+        const offset = member.remoteSource ? 1 : 0
+
+        if (args[offset] === 'prompt.submit') {
+          const params = args[offset + 1] as Record<string, unknown>
+          submitted.push(params)
+
+          if ('submission_id' in params) {
+            throw Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'), { code: 4000 })
+          }
+        }
+
+        return original(...args)
+      }
+
+      expect(await room.turns.runGroupChatMemberTurn('Room', member, 'hello', 't1', [])).toBe('legacy member replied')
+      expect(submitted).toHaveLength(2)
+      expect(submitted[0].submission_id).toBeTruthy()
+      const { submission_id: _id, ...withoutIdentity } = submitted[0]
+      expect(submitted[1]).toEqual(withoutIdentity)
+      expect(room.gateway.calls).toHaveLength(1)
+      expect(room.gateway.calls[0].profile).toBe(member.name)
+    }
+  })
+
+  it('never downgrades an ambiguous rejection or replays an attempted identityless submission', async () => {
+    const refusal = Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'), { code: 4000 })
+    const timeout = new Error('submission_id acknowledgement timed out')
+    const gone = Object.assign(new Error('session not found'), { code: 4001 })
+    const unrelated = Object.assign(new Error('invalid params for prompt.submit: text: Extra inputs are not permitted'), { code: 4000 })
+    const generic = Object.assign(new Error('submission_id failed'), { code: 4000 })
+
+    for (const failures of [[timeout], [unrelated], [generic], [refusal, timeout], [refusal, gone], [refusal, refusal]]) {
+      const room = await loadRoom()
+      const original = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+      let attempts = 0
+
+      host.request = async (method: string, params: Record<string, unknown>) => {
+        if (method === 'prompt.submit') {
+          throw failures[attempts++] ?? new Error('unexpected replay')
+        }
+
+        return original(method, params)
+      }
+
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hello', 't1', [])).rejects.toThrow(failures.at(-1)!.message)
+      expect(attempts).toBe(failures.length)
+      expect(room.gateway.calls).toHaveLength(0)
+    }
+  })
+
   it('does not retry a persistent non-4001 submit failure', async () => {
     const room = await loadRoom({ failEverySubmitWith: new Error('backend exploded') })
 

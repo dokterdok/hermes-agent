@@ -586,16 +586,37 @@ async function submitGroupTurnPrompt(
 ): Promise<string> {
   // One intended member submission keeps its identity across session recovery.
   const submissionId = crypto.randomUUID()
+  let legacyAttempted = false
+
+  const submit = async (sessionId: string) => {
+    try {
+      await requestForBot(member, 'prompt.submit', {
+        session_id: sessionId,
+        submission_id: submissionId,
+        text
+      })
+    } catch (error: unknown) {
+      const refusal = error as { code?: unknown; message?: unknown } | null
+      // The legacy contract rejects unknown keys before invoking the handler.
+      // Only that exact refusal proves this intended turn has not started.
+      if (legacyAttempted || refusal?.code !== 4000 || typeof refusal.message !== 'string' ||
+        !refusal.message.startsWith('invalid params for prompt.submit: submission_id: Extra inputs are not permitted')) {
+        throw error
+      }
+
+      // Mark BEFORE dispatch: a lost reply cannot safely replay an identityless turn.
+      legacyAttempted = true
+
+      await requestForBot(member, 'prompt.submit', { session_id: sessionId, text })
+    }
+  }
+
   try {
-    await requestForBot(member, 'prompt.submit', {
-      session_id: runtime,
-      submission_id: submissionId,
-      text
-    })
+    await submit(runtime)
 
     return runtime
   } catch (error: any) {
-    if (!isSessionGoneError(error) || !stored) {
+    if (legacyAttempted || !isSessionGoneError(error) || !stored) {
       throw error
     }
 
@@ -611,11 +632,7 @@ async function submitGroupTurnPrompt(
       throw error
     }
 
-    await requestForBot(member, 'prompt.submit', {
-      session_id: fresh,
-      submission_id: submissionId,
-      text
-    })
+    await submit(fresh)
 
     return fresh
   }
