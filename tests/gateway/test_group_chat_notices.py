@@ -20,12 +20,12 @@ from gateway import session_group_controls as controls
 from gateway.config import HomeChannel, Platform
 from hermes_state_runtime import RuntimeStoreError
 from tests.gateway.group_chat_fixtures import OWNER, Buttons
-from tests.gateway.test_group_chat_hosts import (  # noqa: F401 - fixtures
-    BOOK, MAC, MEMBERS, SHARED, VPS, advertised, connect, hosting, refused, run, setup)
+from tests.gateway.test_group_chat_hosts import (
+    BOOK, MAC, MEMBERS, SHARED, VPS, advertised as advertised, connect, hosting, refused, run, setup as setup)
 
 
 @pytest.fixture
-def watched(advertised, monkeypatch):  # noqa: F811 - the fixture imported above
+def watched(advertised, monkeypatch):
     """The owner's private chat and a shared chat, a room log the test writes, and one notice pass."""
     runner, bot = advertised.runner, advertised.bot
     adapters = {'default': {Platform.TELEGRAM: bot}}

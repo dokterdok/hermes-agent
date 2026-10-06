@@ -384,6 +384,7 @@ from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.groups import build_groups_parser
+from hermes_cli.subcommands._shared import attach_plugin_cli_command
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
@@ -3366,17 +3367,6 @@ def _advertise_agent_env() -> None:
     os.environ.setdefault("HERMES_AGENT", "true")
 
 
-def _attach_plugin_cli_command(subparsers, cmd_info) -> None:
-    """Register one plugin-provided top-level command from its descriptor."""
-    plugin_parser = subparsers.add_parser(
-        cmd_info["name"],
-        help=cmd_info["help"],
-        description=cmd_info.get("description", ""),
-        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-    )
-    cmd_info["setup_fn"](plugin_parser)
-    if cmd_info.get("handler_fn") is not None:
-        plugin_parser.set_defaults(func=cmd_info["handler_fn"])
 
 
 def _register_plugin_cli_commands(subparsers) -> None:
@@ -3393,7 +3383,7 @@ def _register_plugin_cli_commands(subparsers) -> None:
 
         seen_plugin_commands = set()
         for cmd_info in discover_plugin_cli_commands():
-            _attach_plugin_cli_command(subparsers, cmd_info)
+            attach_plugin_cli_command(subparsers, cmd_info)
             seen_plugin_commands.add(cmd_info["name"])
 
         discover_plugins()
@@ -3403,7 +3393,7 @@ def _register_plugin_cli_commands(subparsers) -> None:
         _resolve_deferred_platform_cli_command(_first_positional_argv())
         for cmd_info in get_plugin_manager()._cli_commands.values():
             if cmd_info["name"] not in seen_plugin_commands:
-                _attach_plugin_cli_command(subparsers, cmd_info)
+                attach_plugin_cli_command(subparsers, cmd_info)
     except Exception as _exc:
         logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 

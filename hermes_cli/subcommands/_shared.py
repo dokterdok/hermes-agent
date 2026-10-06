@@ -24,3 +24,16 @@ def add_yes_flag(parser: argparse.ArgumentParser, help: str = "Skip confirmation
 def add_json_flag(parser: argparse.ArgumentParser, help: str) -> None:
     """Attach ``--json`` (store_true) with the given help text."""
     parser.add_argument("--json", action="store_true", help=help)
+
+
+def attach_plugin_cli_command(subparsers, cmd_info) -> None:
+    """Register one plugin-provided top-level command from its descriptor."""
+    plugin_parser = subparsers.add_parser(
+        cmd_info["name"],
+        help=cmd_info["help"],
+        description=cmd_info.get("description", ""),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    cmd_info["setup_fn"](plugin_parser)
+    if cmd_info.get("handler_fn") is not None:
+        plugin_parser.set_defaults(func=cmd_info["handler_fn"])
