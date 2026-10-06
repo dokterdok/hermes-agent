@@ -116,6 +116,25 @@ const validUnsaved = (value: PreparedCanonicalGroupSend['unsaved']) => value ===
   Number.isSafeInteger(value.seq) && value.seq > 0 && typeof value.event_id === 'string' && value.event_id.length > 0 &&
   [undefined, true, false].includes(value.reoffer) && (value.refused === undefined || typeof value.refused === 'string' && value.refused.length > 0))
 
+function matchesSendPayload(entry: PreparedCanonicalGroupSend, binding: CanonicalGroupBinding, room: string): boolean {
+  return Boolean(entry && typeof entry === 'object' && entry.binding && roomKey(entry.binding) === room &&
+    entry.params?.room_id === binding.roomId && typeof entry.params.event_id === 'string' && entry.params.event_id &&
+    entry.params.payload && typeof entry.params.payload === 'object' && !Array.isArray(entry.params.payload))
+}
+
+function matchesJournalVersion(key: unknown[], entry: PreparedCanonicalGroupSend): boolean {
+  return key[0] === 'canonical-group-send-v1'
+    ? key.length === 4
+    : key.length === 5 && key[4] === entry.params.event_id && Boolean(entry.journal)
+}
+
+function validJournalState(entry: PreparedCanonicalGroupSend, storageKey: string): boolean {
+  return (!entry.journal || (entry.journal.storageKey === storageKey &&
+    typeof entry.journal.owner === 'string' && Boolean(entry.journal.owner))) &&
+    [entry.attempted, entry.acknowledged, entry.held].every(flag => flag === undefined || typeof flag === 'boolean') &&
+    validUnsaved(entry.unsaved)
+}
+
 /** Every valid entry of this room, including accepted ones still in the journal. */
 async function journalRecords(binding: CanonicalGroupBinding): Promise<RecoverableCanonicalGroupSend[]> {
   const room = roomKey(binding)
@@ -129,13 +148,7 @@ async function journalRecords(binding: CanonicalGroupBinding): Promise<Recoverab
     if (!Array.isArray(key) || !['canonical-group-send-v1', 'canonical-group-send-v2'].includes(key[0]) ||
         JSON.stringify(key.slice(1, 4)) !== room) {continue}
 
-    if (!entry || typeof entry !== 'object' || !entry.binding || roomKey(entry.binding) !== room ||
-        entry.params?.room_id !== binding.roomId || typeof entry.params.event_id !== 'string' || !entry.params.event_id ||
-        !entry.params.payload || typeof entry.params.payload !== 'object' || Array.isArray(entry.params.payload) ||
-        (key[0] === 'canonical-group-send-v1' && key.length !== 4) ||
-        (key[0] === 'canonical-group-send-v2' && (key.length !== 5 || key[4] !== entry.params.event_id || !entry.journal)) ||
-        (entry.journal && (entry.journal.storageKey !== storageKey || typeof entry.journal.owner !== 'string' || !entry.journal.owner)) ||
-        [entry.attempted, entry.acknowledged, entry.held].some(flag => flag !== undefined && typeof flag !== 'boolean') || !validUnsaved(entry.unsaved)) {
+    if (!matchesSendPayload(entry, binding, room) || !matchesJournalVersion(key, entry) || !validJournalState(entry, storageKey)) {
       throw new Error('Invalid canonical group Send entry')
     }
 
