@@ -3473,14 +3473,9 @@ class GatewayRunner(
 
     def _session_state(self, session_key: str) -> "SessionState":
         """Get-or-create the :class:`SessionState` for ``session_key``."""
-        from gateway.session_state import selection_lock
-        with selection_lock(self):
-            sessions = self._sessions_map()
-            state = sessions.get(session_key)
-            if state is None:
-                state = SessionState()
-                sessions[session_key] = state
-            return state
+        from gateway.session_state import get_or_create_session_state
+        return get_or_create_session_state(self, session_key)
+
 
     def _peek_session_state(self, session_key: str) -> Optional["SessionState"]:
         """Return the SessionState for ``session_key`` without creating one."""

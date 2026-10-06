@@ -91,7 +91,7 @@ class SessionRuntimeSelection:
         if key and self.override is None and store is not None and not local_policy:
             try:
                 self.persisted = _copy(store.get_model_override(key))
-            except Exception:
+            except (OSError, sqlite3.Error, RuntimeError, ValueError):
                 # Match the existing rehydration read-failure branch.
                 self.persisted = None
         self.last = {k: (s.conversation.last_resolved_model if (s := runner._peek_session_state(k)) else '')
@@ -137,7 +137,7 @@ class SessionRuntimeSelection:
                     persisted = store.get_model_override(self.key)
                 if persisted != self.persisted:
                     return False
-            except Exception:
+            except (OSError, sqlite3.Error, RuntimeError, ValueError):
                 if self.persisted is not None:
                     return False
         return all((s.conversation.last_resolved_model if (s := self.runner._peek_session_state(k)) else '') == v
