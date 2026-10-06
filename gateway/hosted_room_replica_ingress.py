@@ -83,8 +83,10 @@ def renewed_copy_grant(db_path: Path | str, *, token: str, secret: bytes, now: f
         target_install_id=claims["target_install_id"], target_profile=claims["target_profile"],
         execution_policy_digest=claims["execution_policy_digest"], permissions=claims["permissions"],
         issued_at=start, ttl_seconds=float(claims["expires_at"]) - issued, status_ttl_seconds=life)
+    # Revocation may commit after the history page but before its acknowledgment. Authorize the
+    # original token again under the reservation writer; it cannot revive itself by issuing a new one.
     rooms.reserve_peer_room(db_path, claims=decode_room_grant(secret, renewed, permission="status", now=now),
-                            expires_at=start + life, now=now)
+                            expires_at=start + life, now=now, _authorize=_recheck(token, secret, claims, "replicate"))
     return renewed
 
 
