@@ -295,6 +295,11 @@ def test_slack_choice_is_bound_to_the_workspace_that_received_the_notice(watched
     assert asyncio.run(choose(None)) is None
     result = asyncio.run(choose('T1'))
     assert result['text'] == '“Research” keeps going on Home VPS.'
+    watched.state.gateway.status = hosting()
+    source = {'platform': Platform.SLACK, 'scope_id': 'T1', 'is_one_to_one': True}
+    run(watched.state, '/group 1 continue', **source)
+    assert buttons.offers[-1].buttons[0][1].startswith('hg:cont!:')
+    assert 'now continues on Home VPS' in run(watched.state, '/group 1 continue confirm', **source)
 
 
 def test_the_computer_the_careful_move_went_to_asks_which_one_keeps_the_group(watched):
