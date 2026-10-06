@@ -87,6 +87,25 @@ async function compareJournal(key: string, expected: string | null, entry: strin
   })
 }
 
+function matchesSendPayload(entry: PreparedCanonicalGroupSend, binding: CanonicalGroupBinding, room: string): boolean {
+  return Boolean(entry && typeof entry === 'object' && entry.binding && roomKey(entry.binding) === room &&
+    entry.params?.room_id === binding.roomId && typeof entry.params.event_id === 'string' && entry.params.event_id &&
+    entry.params.payload && typeof entry.params.payload === 'object' && !Array.isArray(entry.params.payload))
+}
+
+function matchesJournalVersion(key: unknown[], entry: PreparedCanonicalGroupSend): boolean {
+  return key[0] === 'canonical-group-send-v1'
+    ? key.length === 4
+    : key.length === 5 && key[4] === entry.params.event_id && Boolean(entry.journal)
+}
+
+function validJournalState(entry: PreparedCanonicalGroupSend, storageKey: string): boolean {
+  return (!entry.journal || (entry.journal.storageKey === storageKey &&
+    typeof entry.journal.owner === 'string' && Boolean(entry.journal.owner))) &&
+    (entry.attempted === undefined || typeof entry.attempted === 'boolean') &&
+    (entry.acknowledged === undefined || typeof entry.acknowledged === 'boolean')
+}
+
 async function records(binding: CanonicalGroupBinding): Promise<RecoverableCanonicalGroupSend[]> {
   const room = roomKey(binding)
   const result: RecoverableCanonicalGroupSend[] = []
@@ -99,14 +118,7 @@ async function records(binding: CanonicalGroupBinding): Promise<RecoverableCanon
     if (!Array.isArray(key) || !['canonical-group-send-v1', 'canonical-group-send-v2'].includes(key[0]) ||
         JSON.stringify(key.slice(1, 4)) !== room) {continue}
 
-    if (!entry || typeof entry !== 'object' || !entry.binding || roomKey(entry.binding) !== room ||
-        entry.params?.room_id !== binding.roomId || typeof entry.params.event_id !== 'string' || !entry.params.event_id ||
-        !entry.params.payload || typeof entry.params.payload !== 'object' || Array.isArray(entry.params.payload) ||
-        (key[0] === 'canonical-group-send-v1' && key.length !== 4) ||
-        (key[0] === 'canonical-group-send-v2' && (key.length !== 5 || key[4] !== entry.params.event_id || !entry.journal)) ||
-        (entry.journal && (entry.journal.storageKey !== storageKey || typeof entry.journal.owner !== 'string' || !entry.journal.owner)) ||
-        (entry.attempted !== undefined && typeof entry.attempted !== 'boolean') ||
-        (entry.acknowledged !== undefined && typeof entry.acknowledged !== 'boolean')) {
+    if (!matchesSendPayload(entry, binding, room) || !matchesJournalVersion(key, entry) || !validJournalState(entry, storageKey)) {
       throw new Error('Invalid canonical group Send entry')
     }
 
