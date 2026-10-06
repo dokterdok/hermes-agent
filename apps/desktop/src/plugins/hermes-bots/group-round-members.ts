@@ -156,6 +156,20 @@ async function runVisibleMemberTurn(
   }
 }
 
+function recordMemberFailure(context: GroupRoundMemberContext, member: GroupMember, error: any) {
+  const memberKey = groupMemberKey(member)
+  const reason = groupFailureReason(error)
+
+  recordGroupActivity(context.group, {
+    kind: 'failed',
+    member: memberKey,
+    thread: context.thread,
+    ...(reason ? { reason } : {})
+  })
+  noteBotAttention(memberKey, reason || error?.message || error)
+  context.failedMembers?.add(memberKey)
+}
+
 export async function runGroupRoundMember(
   context: GroupRoundMemberContext,
   member: GroupMember
@@ -196,19 +210,7 @@ export async function runGroupRoundMember(
       return null
     }
 
-    const reason = groupFailureReason(error)
-    recordGroupActivity(context.group, {
-      kind: 'failed',
-      member: groupMemberKey(member),
-      thread,
-      ...(reason
-        ? {
-            reason
-          }
-        : {})
-    })
-    noteBotAttention(groupMemberKey(member), reason || error?.message || error)
-    context.failedMembers?.add(groupMemberKey(member))
+    recordMemberFailure(context, member, error)
     reply = null // a failed turn is a pass, never a room error
   }
 
