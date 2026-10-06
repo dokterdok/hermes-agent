@@ -12,7 +12,12 @@ import {
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberAuthor, groupMemberKey } from './group-membership'
-import { buildGroupChatTurnPrompt, formatGroupDeltaLines, isGroupChatSelf } from './group-round-prompt'
+import {
+  buildGroupChatTurnPrompt,
+  formatGroupDeltaLines,
+  GROUP_ADDRESSED_NUDGE_SUFFIX,
+  isGroupChatSelf
+} from './group-round-prompt'
 import { groupTurnMarkerMatches, isGroupPassText, retireGroupTurnMarker, runGroupChatMemberTurn } from './group-turns'
 import type { GroupTurnMarker } from './group-turns'
 import type { Attachment, GroupMember, GroupMessage } from './types'
@@ -25,6 +30,12 @@ export interface GroupRoundMemberContext {
   binding: { isLive(): boolean }
   isCurrent(): boolean
   failedMembers?: Set<string>
+  /** #129443: member keys the driving user send explicitly addressed
+   *  (@everyone / @mention). An addressed member's "(pass)" gets one bounded
+   *  nudge; a second "(pass)" is recorded as explicit noncompliance — never
+   *  ordinary silence. Absent/empty = collaborative turn, where a plain
+   *  "(pass)" stays legitimate. */
+  addressedKeys?: null | Set<string>
 }
 
 /** #93129: a held member's skip must consume its delta exactly once —
@@ -170,6 +181,35 @@ function recordMemberFailure(context: GroupRoundMemberContext, member: GroupMemb
   context.failedMembers?.add(memberKey)
 }
 
+async function runAddressedMemberTurn(
+  context: GroupRoundMemberContext,
+  member: GroupMember,
+  prompt: string,
+  images: Attachment[],
+  onSubmitted: (marker: GroupTurnMarker) => void
+) {
+  const reply = await runVisibleMemberTurn(context, member, prompt, images, onSubmitted)
+
+  // A directly addressed member gets one bounded nudge after a pass. Both
+  // attempts report their own marker, so completion retires only the last one.
+  if (context.isCurrent() && reply !== null && isGroupPassText(reply) && context.addressedKeys?.has(groupMemberKey(member))) {
+    return runVisibleMemberTurn(context, member, `${prompt}${GROUP_ADDRESSED_NUDGE_SUFFIX}`, images, onSubmitted)
+  }
+
+  return reply
+}
+
+function recordUnansweredAddress(context: GroupRoundMemberContext, member: GroupMember) {
+  if (!context.isCurrent() || !context.addressedKeys?.has(groupMemberKey(member))) {
+    return
+  }
+
+  const reason = 'explicitly addressed member passed twice'
+
+  recordGroupActivity(context.group, { kind: 'failed', member: groupMemberKey(member), reason, thread: context.thread })
+  noteBotAttention(groupMemberKey(member), reason)
+}
+
 export async function runGroupRoundMember(
   context: GroupRoundMemberContext,
   member: GroupMember
@@ -192,7 +232,7 @@ export async function runGroupRoundMember(
   let marker: GroupTurnMarker | undefined
 
   try {
-    reply = await runVisibleMemberTurn(context, member, prompt, deltaImages, submitted => {
+    reply = await runAddressedMemberTurn(context, member, prompt, deltaImages, submitted => {
       marker = submitted
     })
 
@@ -315,6 +355,10 @@ export async function runGroupRoundMember(
   if (reply !== null && spoke) {
     appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread, undefined, commit)
   } else {
+    if (reply !== null) {
+      recordUnansweredAddress(context, member)
+    }
+
     updateGroupChat(context.group, (r: GroupChatRoom) => {
       commit(r)
 
