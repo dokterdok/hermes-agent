@@ -75,7 +75,7 @@ describe('MarkdownTextContent remote images', () => {
         <MessageTextContent
           media={false}
           previewOnly
-          text={`![Foreign image](${REMOTE_IMAGE_PATH})\n\n[Owner notes](/home/user/project/notes.md)\n\n::foreign-history\n\nMEDIA:/home/user/project/private.mp3`}
+          text={`![Foreign image](${REMOTE_IMAGE_PATH})\n\n[Owner notes](/home/user/project/notes.md)\n\n::foreign-history\n\nMEDIA:/home/user/project/private.mp3\n\n[Relative notes](notes.md) [File URI](file:///home/peer/private.md) [Credential URL](https://user:secret@example.com/private) [Unsafe script](javascript:alert(1))`}
         />
       )
 
