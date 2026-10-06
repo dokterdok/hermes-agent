@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -637,16 +638,24 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             _api_server._api_request_profile.reset(token)
 
 
+def _run_session_key(self, request, _openai_error):
+    """A room grant cannot select an unrelated conversation through the session header."""
+    key, error = self._parse_session_key_header(request)
+    if error is not None:
+        return key, error
+    if key and self._room_grant_token(request):
+        return key, _json_error(_openai_error, "Room grants cannot select an unrelated conversation.",
+                                code="invalid_room_dispatch", status=403)
+    return key, None
+
+
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
     # Long-term memory scope header (see chat_completions for details).
-    gateway_session_key, key_err = self._parse_session_key_header(request)
+    gateway_session_key, key_err = _run_session_key(self, request, _openai_error)
     if key_err is not None:
         return key_err
-    if gateway_session_key and self._room_grant_token(request):
-        return _json_error(_openai_error, "Room grants cannot select an unrelated conversation.",
-                           code="invalid_room_dispatch", status=403)
     try:
         body = await request.json()
     except Exception:
@@ -658,6 +667,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
+    has_documents = bool(room_dispatch and room_dispatch.get("document_inputs"))
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
     if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
         return _json_error(
@@ -699,61 +709,27 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         return _json_error(_openai_error, selection_error, status=400)
     # A lost-acceptance replay must resolve even while the original run holds the last
     # concurrency slot; this read reserves nothing (the atomic reserve below closes the race).
-    if idempotency_key:
-        outcome, record = self._run_idempotency_store.lookup(
-            idempotency_scope, idempotency_key, idempotency_fingerprint,
-            retention_until=_room_retention_until(request))
-        if outcome == "reused" and record is not None and room_dispatch and room_dispatch.get("document_inputs"):
-            from gateway.platforms.api_server_room_documents import recover_unaccepted
-            from hermes_state_runtime import RuntimeStoreError
-            try:
-                if recover_unaccepted(self, record, scope=idempotency_scope, key=idempotency_key,
-                                      fingerprint=idempotency_fingerprint, session_id=session_id):
-                    outcome, record = "missing", None
-            except RuntimeStoreError as exc:
-                return _json_error(_openai_error, exc.reason, code=exc.reason, status=503)
-        if outcome == "conflict" or (outcome == "reused" and record is not None):
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+    from gateway.platforms.api_server_room_documents import lookup_run_response
+    replay = lookup_run_response(
+        self, request, scope=idempotency_scope, key=idempotency_key, fingerprint=idempotency_fingerprint,
+        session_id=session_id, gateway_session_key=gateway_session_key,
+        has_documents=has_documents, _openai_error=_openai_error)
+    if replay is not None:
+        return replay
     document_bytes = None
-    if room_dispatch and room_dispatch.get("document_inputs"):
-        # A missing batch is only reported after the exact accepted-run lookup above.
-        # The authenticated manifest remains in the fingerprint; transfer bytes never do.
-        from gateway.platforms.api_server_room_documents import accepted_document_run
-        from hermes_state_runtime import RuntimeStoreError
-        document_run_id = "run_" + hashlib.sha256((idempotency_scope + "\0" + idempotency_key).encode()).hexdigest()[:32]
-        try:
-            accepted_status = accepted_document_run(self, run_id=document_run_id, session_id=session_id,
-                                                    dispatch=room_dispatch, scope=idempotency_scope)
-        except RuntimeStoreError as exc:
-            return _json_error(_openai_error, exc.reason, code=exc.reason,
-                               status=409 if exc.reason == "admission_conflict" else 503)
-        if accepted_status is not None:
-            return _accepted_response(document_run_id, accepted_status, gateway_session_key, replayed=True)
-        from gateway.hosted_room_documents import advertised_capability, manifest
-        limits = advertised_capability(self)
-        try:
-            if limits is None:
-                raise ValueError("document inputs unavailable")
-            manifest(room_dispatch["document_inputs"], member_id=room_dispatch["member_id"], capability=limits)
-        except ValueError:
-            return _json_error(_openai_error, "This document batch is not supported.",
-                               code="unsupported_room_document_input", status=409)
-        if request.get("room_document_bytes") is None:
-            return _json_error(_openai_error, "This attempt requires its document bytes.",
-                               code="room_document_input_required", status=409)
-        from gateway.hosted_room_documents import decode_batch
-        try:
-            document_bytes = decode_batch(room_dispatch["document_inputs"], request["room_document_bytes"])
-        except ValueError:
-            return _json_error(_openai_error, "Invalid document transfer.", code="invalid_room_document_input", status=400)
-        from gateway.hosted_room_peer import HostedMemberDispatch
-        await self._ensure_hosted_member_session(HostedMemberDispatch.from_mapping(room_dispatch))
+    if has_documents:
+        from gateway.platforms.api_server_room_documents import prepare_document_input
+        document_bytes, document_response = await prepare_document_input(
+            self, request, room_dispatch, idempotency_scope=idempotency_scope, idempotency_key=idempotency_key,
+            session_id=session_id, gateway_session_key=gateway_session_key, _openai_error=_openai_error)
+        if document_response is not None:
+            return document_response
     # Enforce concurrency only for a genuinely new run.
     limited = self._concurrency_limited_response()
     if limited is not None:
         return limited
     run_id = ("run_" + hashlib.sha256((idempotency_scope + "\0" + idempotency_key).encode()).hexdigest()[:32]
-              if room_dispatch and room_dispatch.get("document_inputs") else f"run_{uuid.uuid4().hex}")
+              if has_documents else f"run_{uuid.uuid4().hex}")
     self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).
@@ -779,24 +755,14 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     session_history_delivery = not previous_response_id and not conversation_history
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
-    if room_dispatch and room_dispatch.get("document_inputs"):
-        # History resolution above can yield. Recheck before allocating the deterministic
-        # run's process state: another request may now own its reservation/admission.
-        outcome, record = self._run_idempotency_store.lookup(
-            idempotency_scope, idempotency_key, idempotency_fingerprint,
-            retention_until=_room_retention_until(request))
-        if outcome == "conflict":
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
-        if outcome == "reused" and record is not None:
-            from gateway.platforms.api_server_room_documents import recover_unaccepted
-            from hermes_state_runtime import RuntimeStoreError
-            try:
-                retired = recover_unaccepted(self, record, scope=idempotency_scope, key=idempotency_key,
-                                             fingerprint=idempotency_fingerprint, session_id=session_id)
-            except RuntimeStoreError as exc:
-                return _json_error(_openai_error, exc.reason, code=exc.reason, status=503)
-            if not retired:
-                return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+    if has_documents:
+        # History resolution can yield; recheck before allocating this deterministic run.
+        replay = lookup_run_response(
+            self, request, scope=idempotency_scope, key=idempotency_key, fingerprint=idempotency_fingerprint,
+            session_id=session_id, gateway_session_key=gateway_session_key,
+            has_documents=has_documents, _openai_error=_openai_error)
+        if replay is not None:
+            return replay
     q = self._run_streams[run_id] = _RunStream()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
@@ -830,41 +796,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # Under session authority the same call admits the turn to the Bot Chat's own FIFO, which is
     # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
-    if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
-        from gateway.session_api_turn import admit_api_turn
-        from gateway.platforms.api_server_room_grants import authorize_room_admission
-        from hermes_state_runtime import RuntimeStoreError
-        try:
-            with self._profile_scope(launch.request_profile):
-                launch.admission = admit_api_turn(self, user_message=launch.user_message,
-                    conversation_history=launch.conversation_history, active_run_id=run_id,
-                    run_owner_scope=self._run_owners[run_id],
-                    turn_author=launch.turn_author,
-                    history_from_session=session_history_delivery,
-                    session_history_delivery='1' if session_history_delivery else '',
-                    bind_declared_conversation=_declared_selected,
-                    _authorize_write=authorize_room_admission(self, request),
-                    _room_document_bytes=document_bytes,
-                    **launch.agent_kwargs)
-        except RuntimeStoreError as exc:
-            if room_dispatch and room_dispatch.get("document_inputs"):
-                from gateway.platforms.api_server_authority_runs import run_admission
-                try:
-                    accepted = run_admission(self, run_id)
-                except Exception:
-                    return _json_error(_openai_error, "Document admission outcome is unknown.",
-                                       code="room_document_outcome_unknown", status=503)
-                if accepted is not None:
-                    return _json_error(_openai_error, "Document admission outcome is unknown.",
-                                       code="room_document_outcome_unknown", status=503)
-            # A refused admission owns no run: drop every reservation so an exact
-            # retry is refused again instead of replaying a run nobody executes.
-            _forget_run(
-                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners, self._run_idempotency_ids)
-            if idempotency_key:
-                self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
-            return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+    admission_error = _canonical_run_admission(
+        self, request, launch, admitted=admitted, idempotency_scope=idempotency_scope,
+        idempotency_key=idempotency_key, has_documents=has_documents,
+        document_bytes=document_bytes, _openai_error=_openai_error)
+    if admission_error is not None:
+        return admission_error
     self._activate_admitted_request()
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
@@ -876,6 +813,47 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+
+
+def _canonical_run_admission(self, request, launch, *, admitted, idempotency_scope, idempotency_key,
+                             has_documents, document_bytes, _openai_error):
+    """Admit through the canonical writer without discarding an uncertain document reservation."""
+    if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
+        from gateway.session_api_turn import admit_api_turn
+        from gateway.platforms.api_server_room_grants import authorize_room_admission
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            with self._profile_scope(launch.request_profile):
+                launch.admission = admit_api_turn(self, user_message=launch.user_message,
+                    conversation_history=launch.conversation_history, active_run_id=launch.run_id,
+                    run_owner_scope=self._run_owners[launch.run_id],
+                    turn_author=launch.turn_author,
+                    history_from_session=launch.session_history_delivery,
+                    session_history_delivery='1' if launch.session_history_delivery else '',
+                    bind_declared_conversation=launch.declared_selected,
+                    _authorize_write=authorize_room_admission(self, request),
+                    _room_document_bytes=document_bytes,
+                    **launch.agent_kwargs)
+        except RuntimeStoreError as exc:
+            if has_documents:
+                from gateway.platforms.api_server_authority_runs import run_admission
+                try:
+                    accepted = run_admission(self, launch.run_id)
+                except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+                    return _json_error(_openai_error, "Document admission outcome is unknown.",
+                                       code="room_document_outcome_unknown", status=503)
+                if accepted is not None:
+                    return _json_error(_openai_error, "Document admission outcome is unknown.",
+                                       code="room_document_outcome_unknown", status=503)
+            # A refused admission owns no run: drop every reservation so an exact
+            # retry is refused again instead of replaying a run nobody executes.
+            _forget_run(
+                self, launch.run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+                self._run_statuses, self._run_owners, self._run_idempotency_ids)
+            if idempotency_key:
+                self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
+            return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+    return None
 
 
 def _run_usage(agent) -> Dict[str, int]:
