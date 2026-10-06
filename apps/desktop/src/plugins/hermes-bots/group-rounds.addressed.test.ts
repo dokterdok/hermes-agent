@@ -147,6 +147,33 @@ describe('an addressed member that (pass)ed', () => {
     ])
   })
 
+  it('keeps the user input unacknowledged when the addressed nudge is refused', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const original = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+    let submits = 0
+
+    host.request = async (method: string, params: Record<string, unknown>) => {
+      if (method === 'prompt.submit' && ++submits === 2) {
+        throw Object.assign(new Error('permission denied'), { code: 4007 })
+      }
+
+      return original(method, params)
+    }
+    room.rounds.sendToGroupChat('Refused nudge', MEMBERS, '@builder status?')
+    await settle(room, 'Refused nudge')
+
+    const state = room.chat.$groupChats.get()['Refused nudge']
+    const member = room.membership.groupMemberKey(MEMBERS[1])
+    const thread = room.chat.groupThreadOf(state.log[0])
+
+    expect(submits).toBe(2)
+    expect(state.watermarks[`${thread}::${member}`] || 0).toBe(0)
+    expect(state.log.filter(entry => entry.from.kind === 'member')).toEqual([])
+    expect(room.activity.currentGroupActivity('Refused nudge').filter(event => event.kind === 'failed')).toEqual([
+      expect.objectContaining({ member, reason: 'permission denied' })
+    ])
+  })
+
   it('leaves an ordinary collaborative pass alone (no mention, no nudge, no failure)', async () => {
     const room = await loadRoom({ turn: () => '(pass)' })
 
