@@ -475,6 +475,20 @@ def verify_proof_locked(conn: sqlite3.Connection, room_id: str, *, proof_kind: s
                             fork_seq=fork_seq, configuration=configuration)
 
 
+def recovery_witnesses(configuration: Mapping[str, Any], stalled: Mapping[str, Any],
+                       successor: str) -> frozenset[str]:
+    """Computers that must witness recovery past an abandoned promise.
+
+    A fresh majority intersects every earlier majority and fences its authority. The abandoned
+    promise's holder must also answer and promise the fresh step. Without majority leases, every
+    eligible successor must do so: an unreachable successor could still be serving independently.
+    """
+    required = {stalled["install_id"]}
+    if _custody().mode_of(configuration) != "majority":
+        required.update(key for key in custodians_by_id(configuration) if is_eligible(configuration, key))
+    return frozenset(required - {successor})
+
+
 def _verify_attested_locked(conn, room_id, proof, *, from_epoch, to_epoch, successor, fork_seq, configuration):
     """The successor must be an eligible computer of the configuration and must have signed; its own
     fence receipt and every other one must be genuine and distinct; the host it replaced must be the
@@ -499,7 +513,8 @@ def _verify_attested_locked(conn, room_id, proof, *, from_epoch, to_epoch, succe
             raise ProofInvalid("only the paused host itself is continued anyway")
     elif proof.get("statement") == RECOVER_TEXT:
         if (successor != host["install_id"] or not isinstance(stalled.get("install_id"), str)
-                or stalled["install_id"] == successor or stalled["install_id"] not in custodians):
+                or stalled["install_id"] == successor or stalled["install_id"] not in custodians
+                or type(stalled.get("epoch")) is not int or not from_epoch < stalled["epoch"] < to_epoch):
             raise ProofInvalid("only the host continues past a step another computer of the group never took")
     elif proof.get("statement") != ATTESTATION_TEXT or not is_eligible(configuration, successor):
         raise ProofInvalid("the successor is not a computer the owner allowed to continue this group")
@@ -511,12 +526,10 @@ def _verify_attested_locked(conn, room_id, proof, *, from_epoch, to_epoch, succe
     if len(set(fenced)) != len(fenced) or successor not in fenced:
         raise ProofInvalid("the continuation's fence receipts are duplicated or miss the successor's own")
     if proof.get("statement") == RECOVER_TEXT:
-        # Every computer that could have continued the group (each eligible successor, and the one that
-        # never took the step) promised this fresh step instead, so no step taken or still pending runs
-        # beside it; in majority mode a majority of the voters did too.
-        could = {install_id for install_id in custodians if is_eligible(configuration, install_id)}
+        # Apply the same witness rule as the producer, and independently require fresh quorum receipts.
+        required = recovery_witnesses(configuration, stalled, successor)
         voters = voters_of(configuration)
-        if ((could | {stalled["install_id"]}) - {successor} - set(fenced)) or (
+        if (required - set(fenced)) or (
                 _custody().mode_of(configuration) == "majority"
                 and len(set(fenced) & set(voters)) < majority(len(voters))):
             raise ProofInvalid("every computer that could have continued the group must have promised this step")
