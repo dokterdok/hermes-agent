@@ -62,6 +62,31 @@ def _blob(outbox, artifact_id) -> Path:
     return outbox.blob_root / name
 
 
+def test_outbox_operations_release_their_database_connections(tmp_path, monkeypatch):
+    opened, connect = [], sqlite3.connect
+
+    def tracked_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(artifacts.sqlite3, "connect", tracked_connect)
+    try:
+        outbox, scope = RoomArtifactOutbox(tmp_path / "state.db"), _scope()
+        stored = _put(outbox, scope, _file(tmp_path))
+        assert outbox.read(scope, stored["artifact_id"])[1] == b"# Handoff\n"
+        with pytest.raises(RoomArtifactError):
+            outbox.read(_scope(task_id="other"), stored["artifact_id"])
+        _ack(outbox, scope, stored["artifact_id"])
+        assert opened
+        for connection in opened:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                connection.execute("SELECT 1")
+    finally:
+        for connection in opened:
+            connection.close()
+
+
 def test_outbox_is_idempotent_scoped_and_acknowledged_once(tmp_path: Path):
     outbox = RoomArtifactOutbox(tmp_path / "state.db")
     scope = _scope()
