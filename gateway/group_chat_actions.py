@@ -24,6 +24,7 @@ import re
 import secrets
 import time
 from types import SimpleNamespace
+from weakref import WeakValueDictionary
 
 from gateway.group_chat_hosts import (
     OWNER_ONLY, STATUS, Summary, _obj, _promote, ask_first, computer, go_back_prompt, go_back_target, keep_on,
@@ -40,7 +41,7 @@ _FIELDS = frozenset({'v', 'token', 'owner', 'grant_id', 'platform', 'chat_id', '
                      'kind', 'data', 'text', 'view', 'confirm', 'outcome', 'created_at', 'updated_at'})
 _ACTIONS = {'careful': {'go', 'ask', 'back', 'back!', 'no'}, 'conflict': {'k0', 'k1', 'k0!', 'k1!', 'no'},
             'continue': {'cont', 'cont!', 'no'}}
-_LOCKS: dict[str, asyncio.Lock] = {}
+_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 def label(prefix: str, name: str = '') -> str:
@@ -209,17 +210,15 @@ class _Tap:
                        'before trying again.')
 
 
-async def act(runner, platform: str, chat_id, user_id, data: str) -> dict | None:
+async def act(runner, platform: str, chat_id, user_id, data: str, *, scope_id: str | None = None) -> dict | None:
     """Resolve one tap: ``{'text', 'buttons'}`` to show in its place, or None when this person in
     this chat may not act on it (the adapter answers as for any refused tap)."""
     parsed = _DATA.match(str(data or ''))
     if parsed is None:
         return None
     action, token = parsed.groups()
+    # Active and waiting taps hold a strong reference. Only idle locks may disappear.
     lock = _LOCKS.setdefault(token, asyncio.Lock())
-    if len(_LOCKS) > 4 * MAX_RECORDS:
-        _LOCKS.clear()
-        lock = _LOCKS.setdefault(token, asyncio.Lock())
     async with lock:  # a double tap acts once
         found = await asyncio.to_thread(_find, runner, token)
         if found is None:
@@ -230,6 +229,8 @@ async def act(runner, platform: str, chat_id, user_id, data: str) -> dict | None
         from gateway.group_chat_access import _load, private_grant_holds
         with authority.db._read_ctx() as conn:
             grant = _load(conn, record['grant_id'])
+        if grant is not None and platform == 'slack' and grant['scope_id'] != scope_id:
+            return None
         if (grant is None or grant['owner'] != record['owner'] or grant['user_id'] != str(user_id)
                 or not await asyncio.to_thread(private_grant_holds, runner, authority, grant)):
             return None

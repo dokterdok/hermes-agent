@@ -253,7 +253,8 @@ def chat_target(runner, grant: dict):
     try:
         platform = Platform(grant['platform'])
         adapter = runner._adapters_for_profile(grant['bot']).get(platform)
-    except Exception:
+    except (AttributeError, KeyError, TypeError, ValueError):
+        logger.warning('Group Chat delivery could not resolve its granted Bot', exc_info=True)
         return None
     if adapter is None:
         return None
@@ -368,12 +369,13 @@ def _announce(runner, loop, request):
     text = f'This chat is connected to Group Chats. Send {prefix}group list to see them.'
     if request.chat.kind == 'shared':
         text += f' Everyone here can read what {prefix}group shows.'
+    import asyncio
+    notice = request.adapter.send(request.chat.chat_id, text, metadata=metadata)
     try:
-        import asyncio
-        asyncio.run_coroutine_threadsafe(
-            request.adapter.send(request.chat.chat_id, text, metadata=metadata), loop)
-    except Exception:
-        pass
+        asyncio.run_coroutine_threadsafe(notice, loop)
+    except (RuntimeError, TypeError):
+        notice.close()
+        logger.warning('Group Chat connection notice could not be scheduled', exc_info=True)
 
 
 def _owned(runner, subject):
@@ -387,7 +389,7 @@ def _owned(runner, subject):
 
 def _list(runner, params, subject, loop):
     from gateway.group_chat_rules import applies, grant_rules
-    from gateway.hosted_rooms import room_state
+    from gateway.hosted_rooms import RoomNotFoundError, room_state
     chats = []
     for authority, grant in _owned(runner, subject):
         with authority.db._read_ctx() as conn:
@@ -396,7 +398,7 @@ def _list(runner, params, subject, loop):
         for rule in rules:
             try:
                 room = room_state(authority.db.db_path, room_id=rule['room_id'])
-            except Exception:
+            except RoomNotFoundError:
                 continue  # the room is gone; the rule can never apply again
             if not applies(rule, room):
                 continue

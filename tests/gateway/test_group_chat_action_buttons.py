@@ -27,10 +27,11 @@ class Runner:
     """What an adapter hands the gateway on a tap, and the gateway's answer."""
 
     def __init__(self, answer=CONFIRM):
-        self.taps, self.answer = [], answer
+        self.taps, self.answer, self.scopes = [], answer, []
 
-    async def _group_chat_action(self, platform, chat_id, user_id, data):
+    async def _group_chat_action(self, platform, chat_id, user_id, data, *, scope_id=None):
         self.taps.append((platform, chat_id, user_id, data))
+        self.scopes.append(scope_id)
         return self.answer
 
 
@@ -128,6 +129,30 @@ async def test_slack_sends_block_kit_buttons_and_updates_the_message_on_a_click(
     update = client.chat_update.call_args.kwargs
     assert update['ts'] == '1.2' and update['text'] == CONFIRM['text']
     assert [e['value'] for e in update['blocks'][1]['elements']] == [data for _, data in CONFIRM['buttons']]
+
+
+@pytest.mark.asyncio
+async def test_slack_notice_preserves_its_workspace_for_delivery_and_clicks():
+    adapter = slack_adapter()
+    other = adapter._team_clients['T2'] = AsyncMock()
+    other.chat_postMessage.return_value = {'ok': True, 'ts': '2.3'}
+    adapter._channel_team['D1'] = 'T1'
+    sent = await adapter.send_group_actions('D1', 'Notice', BUTTONS, {'scope_id': 'T2'})
+    assert sent.success and sent.message_id == '2.3'
+    other.chat_postMessage.assert_awaited_once()
+    adapter._team_clients['T1'].chat_postMessage.assert_not_awaited()
+
+
+    adapter = slack_adapter()
+    adapter.gateway_runner = SimpleNamespace(_group_chat_action=AsyncMock(return_value=CONFIRM))
+    adapter._is_interactive_user_authorized = MagicMock(return_value=True)
+    body = {'team': {'id': 'T1'}, 'channel': {'id': 'D1'}, 'user': {'id': 'U42', 'name': 'Alice'},
+            'message': {'ts': '1.2'}}
+    await adapter._handle_group_action(AsyncMock(), body, {'action_id': 'hermes_group_1',
+                                                       'value': f'hg:back:{TOKEN}'})
+    assert adapter._is_interactive_user_authorized.call_args.kwargs['team_id'] == 'T1'
+    adapter.gateway_runner._group_chat_action.assert_awaited_once_with(
+        'slack', 'D1', 'U42', f'hg:back:{TOKEN}', scope_id='T1')
 
 
 @pytest.mark.asyncio

@@ -201,11 +201,11 @@ class GroupChatSlashCommandsMixin:
         from gateway.group_chat_notices import notify
         return await notify(self, room_id, kind, data)
 
-    async def _group_chat_action(self, platform, chat_id, user_id, data):
+    async def _group_chat_action(self, platform, chat_id, user_id, data, *, scope_id=None):
         """An adapter's tap on a group notice button (``hg:…``): ``{'text', 'buttons'}`` to show
         in place of the message, or None when this tapper may not act on it."""
         from gateway.group_chat_actions import act
-        return await act(self, platform, chat_id, user_id, data)
+        return await act(self, platform, chat_id, user_id, data, scope_id=scope_id)
 
 
 class _GroupCommand:

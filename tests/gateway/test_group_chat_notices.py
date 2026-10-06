@@ -236,6 +236,67 @@ def test_only_the_owners_private_chat_and_person_may_choose(watched):
     assert tap(watched, go) is None  # the chat lost its grant
 
 
+def test_busy_action_stays_serialized_when_other_notices_fill_the_lock_cache(watched, monkeypatch):
+    """An in-flight choice cannot run twice when unrelated taps put pressure on the cache."""
+    buttons = Buttons()
+    watched.adapters['default'] = {Platform.TELEGRAM: buttons}
+    watched.notify()
+    moved_here(watched, proof_kind='evidence')
+    watched.notify()
+    data = buttons.offers[0].buttons[0][1]
+    monkeypatch.setattr(actions, 'MAX_RECORDS', 1)
+    calls = []
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def direct(function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        async def apply(_tap, record, _action):
+            calls.append(record['token'])
+            entered.set()
+            await release.wait()
+            return {**record, 'outcome': 'The group continues here.'}
+
+        monkeypatch.setattr(asyncio, 'to_thread', direct)
+        monkeypatch.setattr(actions, '_apply', apply)
+        first = asyncio.create_task(actions.act(watched.runner, 'telegram', 'chat-1', 'alice', data))
+        await entered.wait()
+        for index in range(5):
+            await actions.act(watched.runner, 'telegram', 'chat-1', 'alice', f'hg:go:{index:012d}')
+        second = asyncio.create_task(actions.act(watched.runner, 'telegram', 'chat-1', 'alice', data))
+        await asyncio.sleep(0)  # let the second tap reach the held lock
+        release.set()
+        return await asyncio.gather(first, second)
+
+    first, second = asyncio.run(scenario())
+    assert len(calls) == 1
+    assert first['text'] == 'The group continues here.'
+    assert second['text'] == 'Already resolved: The group continues here.'
+
+
+def test_slack_choice_is_bound_to_the_workspace_that_received_the_notice(watched):
+    buttons = Buttons()
+    watched.adapters['default'][Platform.SLACK] = buttons
+    connect(watched.state, platform=Platform.SLACK, scope_id='T1', is_one_to_one=True)
+    with watched.state.db._read_ctx() as conn:
+        grant = next(grant for grant in access.grants(conn) if grant['platform'] == 'slack')
+    assert asyncio.run(actions.offer(
+        watched.runner, watched.state.authority, grant, room_id='mine', group='“Research”', kind='careful',
+        data={'to': 'Home VPS', 'from': 'Mac mini'}, text=CAREFUL))
+    data = buttons.offers[0].buttons[0][1]
+
+    async def choose(scope):
+        return await slash.GroupChatSlashCommandsMixin._group_chat_action(
+            watched.runner, 'slack', 'chat-1', 'alice', data, scope_id=scope)
+
+    assert asyncio.run(choose('T2')) is None
+    assert asyncio.run(choose(None)) is None
+    result = asyncio.run(choose('T1'))
+    assert result['text'] == '“Research” keeps going on Home VPS.'
+
+
 def test_the_computer_the_careful_move_went_to_asks_which_one_keeps_the_group(watched):
     buttons = Buttons()
     watched.adapters['default'] = {Platform.TELEGRAM: buttons}

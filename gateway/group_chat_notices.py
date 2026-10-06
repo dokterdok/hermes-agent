@@ -171,7 +171,8 @@ async def _incidents(authority, owner: str) -> list[Notice]:
     call = _reader(authority, owner)
     try:
         here = local_authority_gateway_id()
-    except Exception:
+    except (OSError, ValueError):
+        logger.warning('Group Chat notices could not read the installation identity', exc_info=True)
         here = None  # no install identity: nothing can have moved here
     before, told, notices = await asyncio.to_thread(_told, authority, owner), {}, []
     for room in await _rooms(call):
@@ -179,7 +180,7 @@ async def _incidents(authority, owner: str) -> list[Notice]:
         known = before.get(room_id)
         try:
             cursor, events = await _events(call, room_id, known['seq'] if known else None)
-        except Exception:
+        except (OSError, RuntimeStoreError):
             logger.debug('Group Chat notices skipped a room this time', exc_info=True)
             if known is not None:
                 told[room_id] = known
@@ -188,7 +189,8 @@ async def _incidents(authority, owner: str) -> list[Notice]:
         if room.get('copy') is not True:  # hosted here: a pause can't reach the log, so ask
             try:
                 current = await call(STATUS, {'room_id': room_id})
-            except Exception:
+            except (OSError, RuntimeStoreError):
+                logger.debug('Group Chat notices could not read this group status', exc_info=True)
                 current = None  # can't tell this time: keep what the owner was told
         # The first look at a room still tells a move here that has only just happened.
         recent = time.time() - FIRST_LOOK_SECONDS
