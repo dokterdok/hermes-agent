@@ -261,8 +261,9 @@ def chat_target(runner, grant: dict):
         metadata = runner._thread_metadata_for_source(SessionSource(
             platform=platform, chat_id=grant['chat_id'], chat_type='dm' if grant['kind'] == 'private' else 'group',
             user_id=grant['user_id'], thread_id=grant['thread_id'], scope_id=grant['scope_id']))
-    except Exception:
-        metadata = None
+    except (AttributeError, KeyError, TypeError, ValueError):
+        logger.warning('Group Chat delivery could not resolve its granted audience', exc_info=True)
+        return None
     return adapter, metadata
 
 
@@ -361,8 +362,9 @@ def _announce(runner, loop, request):
     try:
         prefix = runner._typed_command_prefix_for(request.source.platform)
         metadata = runner._thread_metadata_for_source(request.source)
-    except Exception:
-        prefix, metadata = '/', None
+    except (AttributeError, KeyError, TypeError, ValueError):
+        logger.warning('Group Chat connection notice could not resolve its original audience', exc_info=True)
+        return
     text = f'This chat is connected to Group Chats. Send {prefix}group list to see them.'
     if request.chat.kind == 'shared':
         text += f' Everyone here can read what {prefix}group shows.'

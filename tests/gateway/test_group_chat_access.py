@@ -123,6 +123,43 @@ def test_another_account_cannot_take_over_and_sees_none_of_the_grants(setup):
     assert setup.verb({'action': 'revoke', 'grant': chat.key[:8]}, 'uid:999') == {'error': 'unknown_grant'}
     listed = setup.verb({'action': 'list'}, OWNER)['chats']
     assert [(row['grant'], row['kind'], row['user']) for row in listed] == [(chat.key[:8], 'private', 'Alice')]
+
+
+def test_a_failed_thread_resolution_never_falls_back_to_the_parent_chat(setup, monkeypatch):
+    chat, allowed = connect(setup, message('/group', chat='team', chat_type='group', thread='private-topic'))
+    assert 'grant' in allowed
+    grant = access.current_grant(setup.authority, chat)
+
+    def adapters(profile):
+        assert profile == grant['bot']
+        return {Platform.TELEGRAM: setup.bot}
+
+    def unavailable(_source):
+        raise RuntimeStoreError('profile_unavailable')
+
+    monkeypatch.setattr(setup.runner, '_adapters_for_profile', adapters, raising=False)
+    monkeypatch.setattr(setup.runner, '_thread_metadata_for_source', unavailable)
+    assert access.chat_target(setup.runner, grant) is None
+
+
+def test_connection_announcement_is_not_sent_without_its_original_thread(setup, monkeypatch):
+    event = message('/group', chat='team', chat_type='group', thread='private-topic')
+    chat, adapter = access.resolve_chat(setup.runner, event)
+    code, _ = access.request_code(setup.runner, setup.authority, chat, event.source, adapter)
+    scheduled = []
+
+    def unavailable(_source):
+        raise RuntimeStoreError('profile_unavailable')
+
+    def schedule(coroutine, loop):
+        scheduled.append(loop)
+        coroutine.close()
+
+    monkeypatch.setattr(setup.runner, '_thread_metadata_for_source', unavailable)
+    monkeypatch.setattr('asyncio.run_coroutine_threadsafe', schedule)
+    result = access.control_verb(setup.runner, 'loop')({'action': 'allow', 'code': code}, OWNER)
+    assert result['grant'] == chat.key[:8]
+    assert scheduled == []
     assert access.current_grant(setup.authority, chat)['owner'] == OWNER
 
 
