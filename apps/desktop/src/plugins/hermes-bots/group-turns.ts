@@ -265,6 +265,55 @@ interface GroupMemberSessionHandle {
   stored?: null | string | true
 }
 
+function canonicalSessionNotFound(error: unknown): boolean {
+  const failure = error as { code?: unknown; data?: { reason?: unknown } } | null
+  return failure?.code === 4001 && failure.data?.reason === 'not_found'
+}
+
+function validateGroupSessionSnapshot(snapshot: GroupSessionSnapshot): void {
+  if (typeof snapshot?.session_id !== 'string' || !snapshot.session_id.trim()) {
+    throw new Error('The owner did not return a valid conversation identity')
+  }
+  for (const field of ['session_key', 'stored_session_id'] as const) {
+    const value = snapshot[field]
+    if (value != null && (typeof value !== 'string' || !value.trim())) {
+      throw new Error('The owner did not return a valid saved conversation identity')
+    }
+  }
+}
+
+/** Only an exact legacy miss or a completed canonical title lookup proves absence. */
+async function resumeGroupSessionTarget(
+  member: GroupMember,
+  target: string,
+  titleTarget: boolean
+): Promise<GroupSessionSnapshot | null> {
+  let titleChecked = false
+  try {
+    let snapshot: GroupSessionSnapshot
+    try {
+      snapshot = await resumeGroupSession(member, { session_id: target, profile: member.name, omit_messages: true })
+    } catch (error) {
+      if (!titleTarget || !canonicalSessionNotFound(error)) {
+        throw error
+      }
+      titleChecked = true
+      snapshot = await resumeGroupSession(member, { title: target, profile: member.name, omit_messages: true })
+    }
+    validateGroupSessionSnapshot(snapshot)
+    return snapshot
+  } catch (error) {
+    const failure = error as { code?: unknown } | null
+    if (failure?.code === 4007 || (titleChecked && canonicalSessionNotFound(error))) {
+      return null
+    }
+    const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
+    throw new Error(`Could not check ${member.name || 'member'}'s group session${detail} — not starting a new one`, {
+      cause: error
+    })
+  }
+}
+
 /** Ensure the member's session FOR THIS THREAD exists and return a LIVE
  *  runtime session id for it. Gateway-native: session.create mints the
  *  session (lazy until its first message), session.resume by stored id — or
@@ -318,76 +367,28 @@ export async function ensureGroupChatSession(
     // that speaks instead of being stranded behind an unreferenced sid.
     const targets = [known, title, ...(legacy === null ? [] : [legacy, roomTitle])]
 
-    const canonicalNotFound = (error: unknown) => {
-      const failure = error as {code?: unknown; data?: {reason?: unknown}} | null
-      return failure?.code === 4001 && failure.data?.reason === 'not_found'
-    }
-
     for (const target of targets) {
       if (!target || target === true) {
         continue
       }
-
-      let canonicalTitleChecked = false
-      try {
-        let res: GroupSessionSnapshot
-        try {
-          res = await resumeGroupSession(member, {session_id: target, profile: member.name, omit_messages: true})
-        } catch (error) {
-          // The canonical owner resolves names through its explicit title field.
-          // A stored-ID refusal stays closed; it is never proof to create a replacement.
-          if ((target !== title && target !== roomTitle) || !canonicalNotFound(error)) {throw error}
-          canonicalTitleChecked = true
-          res = await resumeGroupSession(member, {title: target, profile: member.name, omit_messages: true})
-        }
-
-        if (!binding.isLive()) {
-          return { runtime: null }
-        }
-
-        if (res?.session_id) {
-          // TODO(bot-mode-types): `known` is `room.sessions[key]`, which the
-          // domain model types `string | true` — and the `target === true` skip
-          // above shows the legacy `true` sentinel is expected here. A backend
-          // that answers the title resume without a `session_key` therefore
-          // stores `true` back into room.sessions and hands `true` on as the
-          // durable id, which later rides into `session_id` on the recovery
-          // resume and on session.interrupt. Typed as-written.
-          //
-          // The fallback is the id we resumed BY, which on the adoption pass
-          // is the pre-thread pointer — the two title targets are titles, not
-          // ids, and were never eligible.
-          const stored = res.session_key || res.stored_session_id || (target === title || target === roomTitle ? known : target)
-
-          if (stored) {
-            updateGroupChat(group, (current: GroupChatRoom) => {
-              current.sessions = {
-                ...(current.sessions || {}),
-                [key]: stored
-              }
-              current.sessionOwners = {
-                ...(current.sessionOwners || {}),
-                [key]: groupSessionOwner(member)
-              }
-
-              return current
-            })
-          }
-
-          return {
-            runtime: res.session_id,
-            stored
-          }
-        }
-      } catch (error: any) {
-        if (error?.code !== 4007 && !(canonicalTitleChecked && canonicalNotFound(error))) {
-          const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
-          throw new Error(
-            `Could not check ${member?.name || 'member'}'s group session${detail} — not starting a new one`
-          )
-        }
-        /* Exact old-runtime absence or a completed canonical title miss; creation remains owner-guarded. */
+      const titleTarget = target === title || target === roomTitle
+      const res = await resumeGroupSessionTarget(member, target, titleTarget)
+      if (!binding.isLive()) {
+        return { runtime: null }
       }
+      if (!res) {
+        continue
+      }
+      const fallback = titleTarget ? (typeof known === 'string' ? known : undefined) : target
+      const stored = res.session_key || res.stored_session_id || fallback
+      if (stored) {
+        updateGroupChat(group, (current: GroupChatRoom) => {
+          current.sessions = { ...(current.sessions || {}), [key]: stored }
+          current.sessionOwners = { ...(current.sessionOwners || {}), [key]: groupSessionOwner(member) }
+          return current
+        })
+      }
+      return { runtime: res.session_id!, stored }
     }
 
     if (!binding.isLive()) {
@@ -599,8 +600,12 @@ async function submitGroupTurnPrompt(
       const refusal = error as { code?: unknown; message?: unknown } | null
       // The legacy contract rejects unknown keys before invoking the handler.
       // Only that exact refusal proves this intended turn has not started.
-      if (legacyAttempted || refusal?.code !== 4000 || typeof refusal.message !== 'string' ||
-        !refusal.message.startsWith('invalid params for prompt.submit: submission_id: Extra inputs are not permitted')) {
+      if (
+        legacyAttempted ||
+        refusal?.code !== 4000 ||
+        typeof refusal.message !== 'string' ||
+        !refusal.message.startsWith('invalid params for prompt.submit: submission_id: Extra inputs are not permitted')
+      ) {
         throw error
       }
 
