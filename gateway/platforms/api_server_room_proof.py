@@ -1,6 +1,7 @@
 """Canonical RoomLink proof handling and durable, exact grant-refresh receipts."""
 import hashlib
 import json
+import sqlite3
 import time
 from collections.abc import MutableMapping
 
@@ -87,7 +88,7 @@ def wrap(adapter, handler, *, max_bytes=None):
                 header, secret=adapter._room_grant_secret(),
                 installation_id=hosted_rooms.local_authority_gateway_id(),
                 method=request.method, path=request.raw_path, body=wire_body, headers=request.headers)
-        except Exception:
+        except (KeyError, TypeError, ValueError, OverflowError, RecursionError):
             return web.json_response({'error': {'code': 'invalid_room_proof'}}, status=401)
         if len(body) > plaintext_limit:
             return _seal(web.json_response({'error': {'code': 'body_too_large'}}, status=413), key, request_mac)
@@ -140,7 +141,7 @@ def wrap(adapter, handler, *, max_bytes=None):
                                            (response.status, response.body, cache_key))
                     if updated.rowcount != 1:
                         raise ValueError('room refresh issuance was retired during the request')
-        except Exception as exc:
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError, web.HTTPException) as exc:
             from gateway.platforms.api_server_room_grants import RoomGrantReauthorizationRequired
             if isinstance(exc, RoomGrantReauthorizationRequired):
                 response = web.json_response({'error': {'code': 'room_reauthorization_required'}}, status=403)

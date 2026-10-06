@@ -230,6 +230,7 @@ def _group(authority, actor, home, method, params):
 
     def disband_unlocked():
         from gateway.hosted_room_driver import list_tasks
+        from tui_gateway.hosted_room_service import RoomStopPendingError
         if rooms.quarantine_reason(db_path, room_id=params.get('room_id')) is not None:
             # Stop and route revocation would act as the room's authority: a quarantined room only
             # ends here, after explicit confirmation, with its history kept.
@@ -240,9 +241,12 @@ def _group(authority, actor, home, method, params):
             begin = getattr(service, 'begin_disband', None)
             if begin is not None:
                 begin(params.get('room_id'))
-            service.stop_room(params.get('room_id'),
-                              cancel_id=params.get('cancel_id') or 'room-disbanded',
-                              require_acknowledged=True)
+            try:
+                service.stop_room(params.get('room_id'),
+                                  cancel_id=params.get('cancel_id') or 'room-disbanded',
+                                  require_acknowledged=True)
+            except RoomStopPendingError as exc:
+                raise RuntimeStoreError('room_retiring') from exc
             service.revoke_room_routes(params.get('room_id'))
         # Metadata control must not destroy an active execution or bypass Stop,
         # nor forget a peer route whose target grant only the driver can revoke.

@@ -11,7 +11,7 @@ from hermes_state_runtime import (
     RuntimeStoreError, begin_runtime_epoch, claim_session_input, get_session_admission,
     recover_session_inputs, settle_session_input,
 )
-from tests.gateway.test_session_hosted_rpc import owner  # noqa: F401
+from tests.gateway.test_session_hosted_rpc import owner as owner  # noqa: F401
 
 
 @pytest.mark.parametrize('producer_state', ['queued', 'started', 'restart_unknown'])

@@ -636,16 +636,24 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             _api_server._api_request_profile.reset(token)
 
 
+def _run_session_key(self, request, _openai_error):
+    """A room grant cannot select an unrelated conversation through the session header."""
+    key, error = self._parse_session_key_header(request)
+    if error is not None:
+        return key, error
+    if key and self._room_grant_token(request):
+        return key, _json_error(_openai_error, "Room grants cannot select an unrelated conversation.",
+                                code="invalid_room_dispatch", status=403)
+    return key, None
+
+
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
     # Long-term memory scope header (see chat_completions for details).
-    gateway_session_key, key_err = self._parse_session_key_header(request)
+    gateway_session_key, key_err = _run_session_key(self, request, _openai_error)
     if key_err is not None:
         return key_err
-    if gateway_session_key and self._room_grant_token(request):
-        return _json_error(_openai_error, "Room grants cannot select an unrelated conversation.",
-                           code="invalid_room_dispatch", status=403)
     try:
         body = await request.json()
     except Exception:

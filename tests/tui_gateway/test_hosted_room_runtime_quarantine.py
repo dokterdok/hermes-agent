@@ -12,7 +12,7 @@ from gateway import hosted_room_driver as state
 from tests.gateway.test_hosted_room_driver import FakeClock
 from tests.gateway.test_hosted_room_driver_quarantine import quarantine
 from tests.tui_gateway.test_hosted_room_driver_runtime import (
-    BINDING, FakeSessionRPC, TerminalPeerClient, _admit, _identity, _peer_resolver, _runtime, db,
+    BINDING, FakeSessionRPC, TerminalPeerClient, _admit, _identity, _peer_resolver, _runtime, db as db,
 )
 
 
