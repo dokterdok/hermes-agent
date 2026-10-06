@@ -42,6 +42,42 @@ logger = logging.getLogger("gateway.run")
 _SERVICE_TIER_CURRENT = object()
 
 
+def _select_local_policy_runtime(runner, policy):
+    """Resolve the immutable LOCAL launch policy and its own fallback chain."""
+    from gateway.run import _runtime_agent_kwargs
+    from gateway.session_policy import launch_key
+    from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    frozen = policy.config(authority)
+    key = launch_key(authority, policy)
+    import json
+    runtime = _resolve_named_custom_runtime(requested_provider=policy.provider,
+        explicit_api_key=key, explicit_base_url=json.loads(policy.request_json).get('base_url'),
+        target_model=policy.model, config=frozen)
+    if runtime is None:
+        if key is None:
+            key = frozen.get('model', {}).get('api_key')
+        # Same resolution-time walker the in-process one-shot used (#81209): an AuthError from
+        # the frozen primary (expired token, Portal down, exhausted pool) tries the route's own
+        # ``fallback_providers`` before the turn is refused.
+        from hermes_cli.runtime_provider import resolve_runtime_with_fallback
+        # Only a launch-supplied URL is explicit (classic one-shot parity): config's own
+        # ``model.base_url`` is resolved by the provider chain, which keeps the credential pool
+        # an explicit URL would drop (no pool = no refresh/rotation on a 401).
+        runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=policy.provider,
+            explicit_api_key=key, explicit_base_url=json.loads(policy.request_json).get('base_url'),
+            target_model=policy.model)
+        if fallback_entry is not None:
+            from hermes_cli.fallback_config import pre_agent_fallback_notice
+            runner._pre_agent_fallback_notice = pre_agent_fallback_notice(
+                policy.provider or '', policy.model or '',
+                runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
+                fallback_entry.get('model') or 'default')
+            return fallback_entry['model'], _runtime_agent_kwargs(runtime)
+    return policy.model, _runtime_agent_kwargs(runtime)
+
+
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(self, **kwargs) -> tuple[str, dict]:
         selected = self._prepare_session_agent_runtime(**kwargs)
@@ -70,6 +106,7 @@ class GatewayTurnPrepareMixin:
             selected.release_snapshots()
             raise
 
+
     def _select_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None, selection,
@@ -88,38 +125,7 @@ class GatewayTurnPrepareMixin:
         self._pre_agent_fallback_notice = None
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
-            from gateway.run import _runtime_agent_kwargs
-            from gateway.session_policy import launch_key
-            from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
-            from gateway.session_authorities import active_authority
-            authority = active_authority(self)
-            frozen = policy.config(authority)
-            key = launch_key(authority, policy)
-            import json
-            runtime = _resolve_named_custom_runtime(requested_provider=policy.provider,
-                explicit_api_key=key, explicit_base_url=json.loads(policy.request_json).get('base_url'),
-                target_model=policy.model, config=frozen)
-            if runtime is None:
-                if key is None:
-                    key = frozen.get('model', {}).get('api_key')
-                # Same resolution-time walker the in-process one-shot used (#81209): an AuthError from
-                # the frozen primary (expired token, Portal down, exhausted pool) tries the route's own
-                # ``fallback_providers`` before the turn is refused.
-                from hermes_cli.runtime_provider import resolve_runtime_with_fallback
-                # Only a launch-supplied URL is explicit (classic one-shot parity): config's own
-                # ``model.base_url`` is resolved by the provider chain, which keeps the credential pool
-                # an explicit URL would drop (no pool = no refresh/rotation on a 401).
-                runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=policy.provider,
-                    explicit_api_key=key, explicit_base_url=json.loads(policy.request_json).get('base_url'),
-                    target_model=policy.model)
-                if fallback_entry is not None:
-                    from hermes_cli.fallback_config import pre_agent_fallback_notice
-                    self._pre_agent_fallback_notice = pre_agent_fallback_notice(
-                        policy.provider or '', policy.model or '',
-                        runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
-                        fallback_entry.get('model') or 'default')
-                    return fallback_entry['model'], _runtime_agent_kwargs(runtime)
-            return policy.model, _runtime_agent_kwargs(runtime)
+            return _select_local_policy_runtime(self, policy)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
         override = selection.override
@@ -164,7 +170,7 @@ class GatewayTurnPrepareMixin:
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
                     override["provider"], target_model=override.get("model") or None)
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- provider resolution crosses plugin and credential transports; retain the override and expose the existing fallback notice
                 # Layering the override on the default runtime sent its model to the default provider's
                 # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say
                 # so; the persisted override is kept, so the next turn retries it.

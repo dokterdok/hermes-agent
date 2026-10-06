@@ -337,3 +337,38 @@ def prepare_api_runtime(model, runtime_kwargs, *, current=_CURRENT_API, pending_
         gateway_session_key=None, session_id=None,
         **({'pending_models': pending_models} if pending_models is not None else {}))
     return model, runtime_kwargs
+
+
+def recover_or_record_model(adapter, model, runtime_kwargs, gateway_session_key, *, pending_models=None):
+    """Fill an empty resolved model: provider's default catalog model, then the last-known-good
+    model for this key / process-wide. Non-empty non-virtual models are recorded instead."""
+    from contextlib import suppress
+    from gateway.platforms.api_server import logger
+    # No model.default but a provider resolved (e.g. `hermes auth add` without `hermes model`).
+    if not model and runtime_kwargs.get("provider"):
+        with suppress(Exception):
+            from hermes_cli.models import get_default_model_for_provider
+            model = get_default_model_for_provider(runtime_kwargs["provider"])
+            if model:
+                logger.info(
+                    "No model configured — defaulting to %s for provider %s",
+                    model, runtime_kwargs["provider"])
+    # Keyed by gateway_session_key only (session_id is per-request -> unbounded growth).
+    _resolved_key = gateway_session_key or ""
+    models = adapter._last_resolved_model if pending_models is None else pending_models
+    if not model:
+        _recovered = (models.get(_resolved_key) or models.get("*"))
+        if _recovered and _recovered != adapter._model_name:
+            logger.warning(
+                "Empty model resolved for session=%s — recovering "
+                "last-known-good model %s (config read likely returned "
+                "empty; see #35314)",
+                _resolved_key, _recovered)
+            model = _recovered
+    elif model != adapter._model_name:
+        from gateway.session_selected_route import publication_lock
+        with publication_lock(self):
+            if _resolved_key:
+                models[_resolved_key] = model
+            models["*"] = model
+    return model

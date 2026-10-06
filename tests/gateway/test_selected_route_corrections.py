@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.gateway.test_selected_route import selection, scoped  # noqa: F401
+from tests.gateway.test_selected_route import selection as selection, scoped
 
 
 def test_real_moa_resolution_is_not_files_sdk(selection):
@@ -311,7 +311,9 @@ def test_operation_hold_coordinates_actual_writers(selection, monkeypatch, write
     def mutate():
         if writer == 'model': t.runner._session_model_overrides[t.key] = {'model': 'new'}
         if writer == 'reset': t.runner._clear_conversation_scope(t.key, reason='test')
-        if writer == 'adapter': t.adapter._recover_or_record_model('new', {}, None)
+        if writer == 'adapter':
+            from gateway.session_api_turn import recover_or_record_model
+            recover_or_record_model(t.adapter, 'new', {}, None)
         if writer == 'persisted': t.runner.session_store.set_model_override(t.key, {'model': 'new', 'provider': 'anthropic'})
         done.set(); progress.set()
     with ThreadPoolExecutor(1, thread_name_prefix='mutator') as worker:

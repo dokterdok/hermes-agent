@@ -2236,37 +2236,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _apply_runtime_agent_overrides(runtime_kwargs, provider_runtime)
         return bool(provider_runtime)
 
-    def _recover_or_record_model(self, model: str, runtime_kwargs: Dict[str, Any], gateway_session_key, *, pending_models=None) -> str:
-        """Fill an empty resolved model: provider's default catalog model, then the last-known-good
-        model for this key / process-wide. Non-empty non-virtual models are recorded instead."""
-        # No model.default but a provider resolved (e.g. `hermes auth add` without `hermes model`).
-        if not model and runtime_kwargs.get("provider"):
-            with suppress(Exception):
-                from hermes_cli.models import get_default_model_for_provider
-                model = get_default_model_for_provider(runtime_kwargs["provider"])
-                if model:
-                    logger.info(
-                        "No model configured — defaulting to %s for provider %s",
-                        model, runtime_kwargs["provider"])
-        # Keyed by gateway_session_key only (session_id is per-request -> unbounded growth).
-        _resolved_key = gateway_session_key or ""
-        models = self._last_resolved_model if pending_models is None else pending_models
-        if not model:
-            _recovered = (models.get(_resolved_key) or models.get("*"))
-            if _recovered and _recovered != self._model_name:
-                logger.warning(
-                    "Empty model resolved for session=%s — recovering "
-                    "last-known-good model %s (config read likely returned "
-                    "empty; see #35314)",
-                    _resolved_key, _recovered)
-                model = _recovered
-        elif model != self._model_name:
-            from gateway.session_selected_route import publication_lock
-            with publication_lock(self):
-                if _resolved_key:
-                    models[_resolved_key] = model
-                models["*"] = model
-        return model
 
     def _select_agent_runtime(
         self, runtime_kwargs: Dict[str, Any], model: str, *, requested_model: Optional[str],
@@ -2335,7 +2304,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 logger.debug(
                     "api_server request selection applied: model=%s provider=%s route_provider=%s request_provider=%s",
                     model, runtime_kwargs.get("provider"), route_provider or "", request_provider or "")
-        model = self._recover_or_record_model(model, runtime_kwargs, gateway_session_key, pending_models=pending_models)
+        from gateway.session_api_turn import recover_or_record_model
+        model = recover_or_record_model(self, model, runtime_kwargs, gateway_session_key, pending_models=pending_models)
         return model, session_override, request_model, request_provider
 
     def _create_agent(

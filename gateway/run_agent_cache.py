@@ -254,7 +254,7 @@ class GatewayAgentCacheMixin:
         with selection_lock(self):
             if snapshot.get("had_override"):
                 self._session_model_overrides[session_key] = dict(snapshot.get("override") or {})
-            elif (state := self._peek_session_state(session_key)) is not None:
+            elif self._peek_session_state(session_key) is not None:
                 self._session_model_overrides[session_key] = None
         self._evict_cached_agent(session_key)
 

@@ -23,6 +23,17 @@ def selection_lock(owner):
     return owner.__dict__.setdefault('_selected_route_publication_lock', threading.RLock())
 
 
+def get_or_create_session_state(owner, key):
+    """Create under the same lock used by model selection and its mutation paths."""
+    with selection_lock(owner):
+        sessions = owner._sessions_map()
+        state = sessions.get(key)
+        if state is None:
+            state = SessionState()
+            sessions[key] = state
+        return state
+
+
 _SELECTION_FIELDS = frozenset({'model_override', 'reasoning_override',
                                'service_tier_override', 'last_resolved_model'})
 

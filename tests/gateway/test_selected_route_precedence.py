@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.gateway.test_selected_route import selection  # noqa: F401
+from tests.gateway.test_selected_route import selection as selection
 
 
 @pytest.mark.parametrize('branch,expected', [
