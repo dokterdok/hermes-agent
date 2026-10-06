@@ -117,6 +117,6 @@ it('removes Stop controls from historical working rows after the room settles', 
 
   expect(screen.getByText('builder is working…')).toBeTruthy()
   expect(screen.getByText('builder replied')).toBeTruthy()
-  expect(screen.getByText('turn settled')).toBeTruthy()
+  expect(screen.getByText('Replies finished')).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
 })

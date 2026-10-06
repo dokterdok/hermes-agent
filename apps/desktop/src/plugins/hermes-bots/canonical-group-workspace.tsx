@@ -1,15 +1,14 @@
-import { Button, Codicon, composerInputSurface, PRIMARY_ICON_BTN, Tip } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
-import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { CanonicalGroupBackups } from './canonical-group-backups'
-import { CanonicalGroupComposerInput } from './canonical-group-composer'
+import { CanonicalGroupComposer } from './canonical-group-composer'
 import { carryOwnMessages, RoomComposerSlot, RoomContinuityBanners, useRoomContinuity } from './canonical-group-continuity'
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalGroupPendingActions } from './canonical-group-pending-actions'
+import { CanonicalGroupRecoveryNotices, CanonicalGroupSavedMessages } from './canonical-group-recovery'
 import { moveCanonicalGroup, updateCanonicalGroupName } from './canonical-group-registry'
 import { acceptedCanonicalGroupSend, attemptCanonicalGroupSend, claimCanonicalGroupSend, listCanonicalGroupSends, prepareCanonicalGroupSend, readCanonicalGroupSend, rehomeCanonicalGroupSends, retireCanonicalGroupSend, sendOutcome } from './canonical-group-send'
 import type { AcceptedCanonicalGroupSend, PreparedCanonicalGroupSend, RecoverableCanonicalGroupSend } from './canonical-group-send'
@@ -98,6 +97,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   const [uploading, setUploading] = useState(false)
   const uploadingRef = useRef(false)
   const [restored, setRestored] = useState(false)
+  const [journalError, setJournalError] = useState('')
+  const [journalLoading, setJournalLoading] = useState(true)
+  const [journalReload, setJournalReload] = useState(0)
+  const pendingRecord = useRef<PreparedCanonicalGroupSend | null>(null)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
   const [recoveries, setRecoveries] = useState<RecoverableCanonicalGroupSend[]>([])
   const inputRevision = useRef(0)
@@ -116,27 +119,65 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
   const continuity = useRoomContinuity({ binding, visible, readError, events, roomName: state?.room.name ?? '', onMoved, restored, composer: { setDraft, setAttachments, setHint: setSendHint } })
 
-  const show = (entry: PreparedCanonicalGroupSend) => {setPending(entry); setDraft(String(entry.params.payload.text ?? '')); setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])}
+  const showPending = (entry: PreparedCanonicalGroupSend | null) => {
+    pendingRecord.current = entry
+    setPending(entry)
+  }
 
-  // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
+  const show = (entry: PreparedCanonicalGroupSend) => {showPending(entry); setDraft(String(entry.params.payload.text ?? '')); setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])}
+
+  // Mount lifetime is separate from a read-only journal retry.
+  // eslint-disable-next-line no-restricted-syntax -- component lifetime, not a mirror of reactive atom values
   useEffect(() => {
     alive.current = true
+
+    return () => {
+      alive.current = false
+      revision.current++
+    }
+  }, [])
+
+
+  useEffect(() => {
     let cancelled = false
+    const editing = inputRevision.current
+    const emptyDraft = !draft.trim() && !attachments.length
+    setJournalLoading(true)
+    setJournalError('')
+    setRestored(false)
     void Promise.all([readCanonicalGroupSend(binding), listCanonicalGroupSends(binding)]).then(([entry, recoverable]) => {
       if (cancelled) {return}
 
-      if (entry) {
-        setPending(entry)
+      if (entry && !pendingRecord.current && emptyDraft && inputRevision.current === editing) {
+          showPending(entry)
         setDraft(String(entry.params.payload.text ?? ''))
         setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])
       }
 
-      setRecoveries(recoverable)
-      setRestored(true)
-    }).catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
+      setRecoveries(current => {
+          const byKey = new Map(current.map(recovery => [recovery.storageKey, recovery]))
 
-    return () => { cancelled = true; alive.current = false; revision.current++ }
-  }, [binding])
+          for (const recovery of recoverable) {
+            byKey.set(recovery.storageKey, recovery)
+          }
+
+          return [...byKey.values()]
+        })
+      setRestored(true)
+    }).catch(e => { if (!cancelled) {
+          setJournalError(e instanceof Error ? e.message : String(e))} })
+      .finally(() => {
+        if (!cancelled) {
+          setJournalLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+    // Capture the editor revision at the start; changing a draft never triggers another storage read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [binding, journalReload])
 
   const refresh = async () => {
     const version = ++revision.current
@@ -217,7 +258,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   }
 
   const send = (message = { text: draft, attachments }) => {
-    if (!restored || busyRef.current || uploadingRef.current || !(state?.driver_status || continuity.paused) || (!pending && !message.text.trim() && !message.attachments.length)) {return}
+    if (!visible || !restored || busyRef.current || uploadingRef.current || !(state?.driver_status || continuity.paused) || (!pending && !message.text.trim() && !message.attachments.length)) {return}
     setSendHint('')
     const editing = inputRevision.current
     const held = continuity.paused
@@ -245,7 +286,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
         if (outcome === 'refused' && alive.current) {
           await retireCanonicalGroupSend(binding, exact.params.event_id, exact)
 
-          if (alive.current) {setPending(current => current?.params.event_id === exact.params.event_id ? null : current)}
+          if (alive.current && pendingRecord.current?.params.event_id === exact.params.event_id) {showPending(null)}
         }
 
         if (alive.current) {setSendHint(outcome === 'refused' ? labels.sendRefused : outcome === 'retryable' ? labels.sendNotYet : labels.sendMaybe)}
@@ -255,7 +296,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
       await continuity.settle(exact, accepted)
 
       if (alive.current) {
-        setPending(current => current?.params.event_id === exact.params.event_id ? null : current)
+        if (pendingRecord.current?.params.event_id === exact.params.event_id) {showPending(null)}
         if (inputRevision.current === editing) {setDraft(''); setAttachments([])}
         try {
           const recoverable = await listCanonicalGroupSends(binding)
@@ -318,7 +359,6 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   const name = state?.room.name || labels.loadingGroup
   const pendingActions = state?.driver_status?.pending_actions ?? []
   const ready = continuity.composable(state?.driver_status)
-  const inputDisabled = !restored || busy || !!pending || !ready
   const occupied = [!visible, busy, uploading, !!pending, !!draft.trim(), !!attachments.length]
 
   // `running` reports gateway-worker health, including while this chat is idle.
@@ -352,53 +392,34 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
       </div>
       <RoomHints error={error} explained={continuity.explained} labels={labels} notice={notice} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
         onRestore={restore} pausedHint={continuity.pausedHint} pending={pending} readError={readError} recoveries={recoveries}
-        restoreBlocked={occupied} sendHint={sendHint} state={state} />
-      <RoomComposerSlot continuity={continuity}><form className={`${composerInputSurface} rounded-2xl border border-(--ui-stroke-tertiary) p-2`} data-slot="composer-root"
-        onSubmit={event => { event.preventDefault(); send() }}>
-        <CanonicalGroupComposerInput disabled={inputDisabled} members={members} name={name} onChange={value => {inputRevision.current++; setDraft(value)}} onSubmit={send} value={draft} />
-        <div className="mt-1 flex items-end gap-2">
-          <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={inputDisabled} onChange={value => {inputRevision.current++; setAttachments(value)}}
-            onUploadingChange={uploading => { uploadingRef.current = uploading;
-
- if (alive.current) {setUploading(uploading)} }} />
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {canStop && <Button disabled={stopping} loading={stopping} onClick={() => void stop()} size="xs" type="button" variant="ghost"><Codicon name="debug-stop" />{labels.stop}</Button>}
-            <Tip label={pending ? labels.retry : labels.send}><Button aria-label={pending ? labels.retry : labels.send} className={PRIMARY_ICON_BTN}
-              disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !ready} loading={busy}
-              size="icon-xs" type="submit" variant="ghost"><Codicon name={pending ? 'refresh' : 'arrow-up'} /></Button></Tip>
-          </div>
-        </div>
-      </form></RoomComposerSlot>
+        restoreBlocked={occupied} sendHint={sendHint} state={state} busy={busy} journalError={journalError}
+        journalLoading={journalLoading} onJournalReload={() => setJournalReload(current => current + 1)} />
+      <RoomComposerSlot continuity={continuity}>
+        <CanonicalGroupComposer attachments={attachments} binding={binding} busy={busy} draft={draft} hasDriver={ready}
+          members={members} name={name} canStop={canStop} onDraft={value => {inputRevision.current++; setDraft(value)}}
+          onAttachments={value => {inputRevision.current++; setAttachments(value)}}
+          onUploading={value => {uploadingRef.current = value; if (alive.current) {setUploading(value)}}}
+          onSend={send} onStop={() => void stop()} pending={Boolean(pending)} restored={restored}
+          stopping={stopping} uploading={uploading} visible={visible} />
+      </RoomComposerSlot>
     </div>
   </section>
 }
 
 /** The lines between the pending work and the composer: notices, refusals, unconfirmed Sends and their recovery. */
-function RoomHints({ notice, pausedHint, readError, error, explained, state, pending, sendHint, recoveries, restoreBlocked, labels, onRefresh, onRestore }: {
+function RoomHints({ notice, pausedHint, readError, error, explained, state, pending, sendHint, recoveries, restoreBlocked,
+  onRefresh, onRestore, busy, journalError, journalLoading, onJournalReload }: {
   notice: string; pausedHint: string; readError: string; error: string; explained: boolean; state: RoomState | null
   pending: PreparedCanonicalGroupSend | null; sendHint: string; recoveries: RecoverableCanonicalGroupSend[]; restoreBlocked: boolean[]
   labels: Labels; onRefresh: () => void; onRestore: (recovery: RecoverableCanonicalGroupSend) => void
+  busy: boolean; journalError: string; journalLoading: boolean; onJournalReload: () => void
 }) {
-  // A status from the group's computers explains an unreachable host better than the generic line.
-  const unreadable = explained ? '' : readError
-  const unavailable = !!state && !state.driver_status && !explained
-
   return <div className="grid gap-2 pb-2 text-xs text-(--ui-text-secondary)">
-    {notice && <p aria-live="polite">{notice}</p>}
+    <CanonicalGroupRecoveryNotices notice={notice} readError={explained ? '' : readError} error={error}
+      journalError={journalError} journalLoading={journalLoading} busy={busy}
+      unavailable={Boolean(state && !state.driver_status && !explained)} onRefresh={onRefresh} onJournalReload={onJournalReload} />
     {pausedHint && <p aria-live="polite" data-slot="paused-composer-hint">{pausedHint}</p>}
-    {unreadable && <div className="grid gap-1" role="alert"><div className="flex items-center gap-2"><span>{labels.driverUnavailable}</span><Button onClick={onRefresh} size="inline" variant="text">{labels.refresh}</Button></div>
-      <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{unreadable}</p></details>
-    </div>}
-    {error && <div className="grid gap-1 text-destructive" role="alert"><p>{labels.pendingActionUnconfirmed}</p>
-      <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{error}</p></details>
-    </div>}
-    {unavailable && <p>{labels.driverUnavailable}</p>}
-    {pending && <p role="status">{labels.restoredPendingSend}</p>}
-    {sendHint && <p aria-live="polite">{sendHint}</p>}
-    {recoveries.filter(recovery => recovery.entry.params.event_id !== pending?.params.event_id).map(recovery =>
-      <div className="flex items-center gap-2" key={recovery.storageKey}>
-        <span className="min-w-0 flex-1 truncate">{String(recovery.entry.params.payload.text || labels.groupMessage)}</span>
-        <Button disabled={restoreBlocked.some(Boolean)} onClick={() => onRestore(recovery)} size="inline" variant="text">{labels.restorePendingSend}</Button>
-      </div>)}
+    <CanonicalGroupSavedMessages pending={pending} hint={sendHint} recoveries={recoveries}
+      disabled={restoreBlocked.some(Boolean)} onRestore={onRestore} />
   </div>
 }

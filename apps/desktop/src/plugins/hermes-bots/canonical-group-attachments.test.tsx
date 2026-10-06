@@ -1,17 +1,19 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ComponentProps } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
 
 const request = vi.hoisted(() => vi.fn())
-vi.mock('@hermes/plugin-sdk', async () => {
-  const sdk = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof HermesSdk>()
   const { captureGroupRequests } = await import('./group-test-utils')
 
   return {
     ...sdk,
-    host: { requestProfile: captureGroupRequests(request).request }
+    host: { requestProfile: captureGroupRequests(request).request },
+    Button: (props: ComponentProps<'button'>) => <button {...props} />
   }
 })
 vi.mock('./canonical-group-labels', () => ({

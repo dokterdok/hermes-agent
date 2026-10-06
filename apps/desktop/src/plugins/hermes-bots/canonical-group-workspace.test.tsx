@@ -6,22 +6,56 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
+import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('electron', () => ({ app: {}, ipcMain: {} }))
 const nativeModule = '../../../electron/prepared-submissions'
 const { preparedJournal } = await import(/* @vite-ignore */ nativeModule)
-vi.mock('@hermes/plugin-sdk', async () => {
-  const sdk = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof HermesSdk>()
   const { pluginSdkMock, createGroupGateway, captureGroupRequests } = await import('./group-test-utils')
   const gateway = createGroupGateway()
   const { en } = await import('@/i18n/en')
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 
-  return { ...sdk, ...await pluginSdkMock(gateway.host), atom, useValue: useStore, MessageTextContent: sdk.MessageTextContent,
+  return { ...(await pluginSdkMock(gateway.host)),
+    atom,
+    useValue: useStore,
+    ...Object.fromEntries(
+      [
+        'Input',
+        'Dialog',
+        'DialogContent',
+        'DialogFooter',
+        'DialogHeader',
+        'DialogTitle',
+        'DropdownMenu',
+        'DropdownMenuContent',
+        'DropdownMenuItem',
+        'DropdownMenuSeparator',
+        'DropdownMenuTrigger',
+        'Popover',
+        'PopoverContent',
+        'PopoverTrigger'
+      ].map(key => [key, sdk[key as keyof typeof sdk]])
+    ),
+    composerInputSurface: sdk.composerInputSurface,
+    composerPanelCard: sdk.composerPanelCard,
+    PRIMARY_ICON_BTN: sdk.PRIMARY_ICON_BTN,
+    Textarea: sdk.Textarea,
+    RowButton: sdk.RowButton,
+    profileColor: sdk.profileColor,
+    Codicon: sdk.Codicon,
+    Tip: sdk.Tip,
+    StatusDot: sdk.StatusDot,
+    CopyButton: sdk.CopyButton,
+    MessageTextContent: sdk.MessageTextContent,
     useI18n: () => ({ locale: 'en', t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
+    Button: (p: ComponentProps<'button'>) => <button {...p} />,
+    ConfirmDialog: (await import('@/components/ui/confirm-dialog')).ConfirmDialog,
     host: { ...gateway.host, requestProfile: captureGroupRequests(request).request } }
 })
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
@@ -32,14 +66,18 @@ import { GroupChatWorkspace } from './group-chat-view'
 import { CANONICAL_GROUP_CAPABILITIES } from './group-test-utils'
 const originalDesktop = window.hermesDesktop
 const labels = CANONICAL_GROUP_LOCALES.en
+beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
+afterEach(() => { cleanup()
+  request.mockReset()
+  localStorage.clear()
+  window.hermesDesktop = originalDesktop
+})
 
-const chooseGroupAction = async (name: string) => {
-  fireEvent.pointerDown(await screen.findByRole('button', { name: labels.groupActions }), { button: 0, ctrlKey: false })
+async function chooseGroupAction(name: string) {
+  const menu = await screen.findByRole('button', { name: CANONICAL_GROUP_LOCALES.en.groupActions })
+  fireEvent.pointerDown(menu, { button: 0, ctrlKey: false })
   fireEvent.click(await screen.findByRole('menuitem', { name }))
 }
-
-beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
-afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
 
 it.each(['entire journal', 'read', 'owner', 'compareSend'])('does not Send or write browser storage after incomplete native storage: missing %s', async missing => {
   const binding = { connectionId: 'remote', profile: 'team', roomId: `missing-native-${missing}` }
@@ -995,4 +1033,113 @@ it('does not offer Stop for file cleanup alone but keeps it for unknown executio
   }
   render(<CanonicalGroupWorkspace binding={binding} />)
   expect(await screen.findByRole('button', { name: 'Stop' })).toBeTruthy()
+})
+
+it('shows the actual approval operation and never allows a missing or description-only preview', async () => {
+  let action: Record<string, unknown> = {
+    kind: 'approval',
+    member_id: 'bot',
+    task_id: 'task',
+    execution_generation: 1,
+    request_id: 'prompt',
+    approval: { request_id: 'prompt', description: 'Plugin requires approval for terminal', choices: ['once', 'deny'] }
+  }
+
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room' }, driver_status: { pending_actions: [action] } }
+      : method === 'groups.log'
+        ? { events: [] }
+        : {}
+  )
+
+  const view = render(
+    <CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'default', roomId: 'approval-preview' }} />
+  )
+
+  await screen.findByRole('button', { name: labels.deny })
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull()
+  action = {
+    ...action,
+    approval: { request_id: 'prompt', command: 'pytest -q tests/focused', choices: ['once', 'deny'] }
+  }
+  view.unmount()
+  render(
+    <CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'default', roomId: 'approval-preview' }} />
+  )
+  await screen.findByText('pytest -q tests/focused')
+  expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy()
+})
+
+it('sends one Disband intent for rapid confirmations and retries its exact unknown outcome', async () => {
+  let reject!: (error: Error) => void
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.capabilities'
+      ? CANONICAL_GROUP_CAPABILITIES
+      : method === 'groups.state'
+        ? { room: { name: 'Leaving' }, driver_status: {} }
+        : method === 'groups.log'
+          ? { events: [] }
+          : method === 'groups.disband'
+            ? new Promise((_resolve, fail) => {
+                reject = fail
+              })
+            : {}
+  )
+
+  const key = registerCanonicalGroup(
+    { connectionId: 'rapid-end-owner', profile: 'default' },
+    { room_id: 'end-once', name: 'Leaving', members: [] }
+  )
+
+  render(<GroupChatWorkspace group={key} members={[]} />)
+  await chooseGroupAction(CANONICAL_GROUP_LOCALES.en.disband)
+
+  const confirm = within(screen.getByRole('dialog')).getByRole('button', {
+    name: CANONICAL_GROUP_LOCALES.en.confirmDisband
+  })
+
+  await act(async () => {
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+  })
+  const calls = () => request.mock.calls.filter(call => call[1] === 'groups.disband')
+  expect(calls()).toHaveLength(1)
+  await act(async () => {
+    reject(new Error('lost End reply'))
+  })
+  await act(async () => {
+    fireEvent.click(confirm)
+  })
+  expect(calls().map(call => call[2].cancel_id)).toEqual([calls()[0][2].cancel_id, calls()[0][2].cancel_id])
+  await act(async () => {
+    reject(new Error('still unknown'))
+  })
+})
+
+it('keeps a late End receipt scoped to the departed view without navigating or removing its room', async () => {
+  let complete!: (value: unknown) => void
+  const held = new Promise(resolve => {complete = resolve})
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
+    if (method === 'groups.state') {return {room: {name: 'Departed'}, driver_status: {}}}
+
+    if (method === 'groups.log') {return {events: []}}
+
+    if (method === 'groups.disband') {return held}
+
+    return {}
+  })
+  const binding = {connectionId: 'late-end-owner', profile: 'team', roomId: 'departed'}
+  const key = registerCanonicalGroup(binding, {room_id: binding.roomId, name: 'Departed', members: []})
+  const onBack = vi.fn()
+  const view = render(<GroupChatWorkspace group={key} members={[]} onBack={onBack} />)
+  await chooseGroupAction(CANONICAL_GROUP_LOCALES.en.disband)
+  fireEvent.click(screen.getByRole('button', {name: CANONICAL_GROUP_LOCALES.en.confirmDisband}))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.disband')).toBe(true))
+  view.unmount()
+  await act(async () => complete({tombstone: {room_id: binding.roomId, disbanded_at: 1}}))
+  expect(onBack).not.toHaveBeenCalled()
+  expect($canonicalGroupBindings.get()[key]).toEqual(binding)
 })

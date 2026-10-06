@@ -62,7 +62,8 @@ import {
   currentGroupActivity,
   GROUP_ACTIVITY_GLYPHS,
   groupActivityLabel,
-  groupActivityTone
+  groupActivityTone,
+  groupFailureDetail
 } from './group-activity'
 import type { GroupActivityEntry } from './group-activity'
 import { filesToGroupAttachments, pickGroupAttachments } from './group-attachments'
@@ -626,7 +627,9 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     <div className="grid gap-3 p-3">
     {mode !== 'canonical' && !existingClassicRoom && <h2>{props.group}</h2>}
     <p>{mode === 'canonical' ? b.canonical.legacyRoom : mode === 'unavailable' ? b.canonical.driverUnavailable : b.canonical.checkingDriver}</p>
-    {error && <p role="alert">{error}</p>}
+    {error && <div className="grid gap-1 text-sm" role="alert"><p>{b.canonical.pendingActionUnconfirmed}</p>
+      <details><summary>{b.canonical.setupDetails}</summary><p className="whitespace-pre-wrap break-words">{groupFailureDetail(error)}</p></details>
+    </div>}
     {mode === 'unavailable' && <Button className="justify-self-start" onClick={() => setRefresh(value => value + 1)} size="sm" variant="secondary">{b.roster.retryNow}</Button>}
     <Button className="justify-self-start" disabled={mode !== 'canonical' || busy} onClick={() => {
       const route = { connectionId: connectionId ?? '', profile }
@@ -997,7 +1000,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           {summaryActivity ? (
             <span
               className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}
-            >{`${groupActivityLabel(summaryActivity, group)} · ${relativeTime(summaryActivity.at)}`}</span>
+            >{`${groupActivityLabel(summaryActivity, group, b.canonical)} · ${relativeTime(summaryActivity.at)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (
@@ -1024,7 +1027,13 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
                   name={GROUP_ACTIVITY_GLYPHS[event.kind] || 'circle-outline'}
                 />
                 <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(event.kind))}>
-                  {groupActivityLabel(event, group)}
+                  {groupActivityLabel(event, group, b.canonical)}
+                  {event.kind === 'failed' && event.reason && (
+                    <details className="mt-1 whitespace-normal">
+                      <summary>{b.canonical.setupDetails}</summary>
+                      <p className="whitespace-pre-wrap break-words">{groupFailureDetail(event.reason)}</p>
+                    </details>
+                  )}
                 </span>
                 <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
                 {room.running && event.kind === 'working' ? (

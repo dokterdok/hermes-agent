@@ -116,7 +116,7 @@ import { planPluginOpenSession } from './plugin-open-session-plan'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
-export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+export { composerInputSurface, composerPanelCard, MessageTextContent, PRIMARY_ICON_BTN } from './chat-presentation'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -1642,6 +1642,10 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+
+// -- ui: the design language --------------------------------------------------
+
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1652,9 +1656,6 @@ export const host = {
  *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
  *  Advanced section is the reference consumer. */
 export { CapabilitiesView } from '@/app/capabilities'
-
-// -- ui: the design language --------------------------------------------------
-
 /** THE Connectors tab core Capabilities renders — managed apps, the user's
  *  own MCP servers, plugin servers and the catalog, with per-server enable,
  *  sign-in and live probes. Renders anywhere under the app router (a plugin
@@ -1673,7 +1674,6 @@ export {
   type ComposerModelPillContext,
   type ComposerModelPillProvider
 } from '@/app/chat/composer/contrib'
-export { PRIMARY_ICON_BTN } from '@/app/chat/composer/control-classes'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1771,11 +1771,6 @@ export {
 } from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
-/** Canonical raw message renderer: applies Desktop message transforms (including
- * `MEDIA:` delivery directives) and the same rich Markdown/media components as
- * core chat. Prefer this over raw Streamdown for transcript-style messages. */
-export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
-export { composerInputSurface, composerPanelCard } from '@/components/chat/composer-dock'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'

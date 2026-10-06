@@ -133,6 +133,130 @@ function rowText(event: CanonicalGroupEvent, notice: string | undefined, labels:
     .replace('{name}', canonicalMemberName(member, labels.unknownBot)) : '') }
 }
 
+function eventTime(event: CanonicalGroupEvent) {
+  if (!event.created_at || !Number.isFinite(event.created_at)) {
+    return null
+  }
+
+  const timestamp = new Date(event.created_at < 1e12 ? event.created_at * 1000 : event.created_at)
+
+  return Number.isFinite(timestamp.getTime()) ? timestamp : null
+}
+
+function eventIdentity(event: CanonicalGroupEvent, members: CanonicalRoomMember[], labels: Labels) {
+  const isBot = event.actor?.kind === 'member' || event.kind === 'message.member'
+  const isHuman = event.actor?.kind === 'user' || event.kind === 'message.user'
+  const member = members.find(candidate => candidate.member_id === (isBot ? event.actor?.id : event.payload.member_id))
+  let name = ''
+
+  if (isBot) {
+    name = event.actor?.display_name?.trim() || canonicalMemberName(member, labels.unknownBot)
+  } else if (isHuman) {
+    name = event.actor?.id === 'desktop' ? labels.you : event.actor?.display_name?.trim() || labels.unknownPerson
+  }
+
+  return { isBot, isHuman, member, name }
+}
+
+function HistoryText({
+  event,
+  text,
+  system,
+  labels
+}: {
+  event: CanonicalGroupEvent
+  text: string
+  system: boolean
+  labels: Labels
+}) {
+  if (!text) {
+    return null
+  }
+
+  return system ? (
+    <div className="select-text text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)">
+      <p className={event.kind === 'turn.failed' ? 'text-destructive' : 'text-(--ui-text-tertiary)'}>{text}</p>
+      <details className="mt-1 text-(--ui-text-quaternary)">
+        <summary className="cursor-pointer">{labels.setupDetails}</summary>
+        <p className="mt-1 break-words font-mono text-[length:var(--conversation-tool-font-size)]">{event.kind}</p>
+        {(event.payload.error || event.payload.reason) && (
+          <p className="mt-1 whitespace-pre-wrap break-words">{event.payload.error || event.payload.reason}</p>
+        )}
+      </details>
+    </div>
+  ) : (
+    <div className="select-text break-words text-[length:var(--conversation-text-font-size)] leading-(--conversation-line-height)">
+      <MessageTextContent media={false} previewOnly text={text} />
+    </div>
+  )
+}
+
+function HistoryRow({
+  event,
+  binding,
+  members,
+  disabled,
+  labels,
+  locale,
+  words,
+  computerName,
+  unsaved,
+  missing
+}: {
+  event: CanonicalGroupEvent
+  binding: CanonicalGroupBinding
+  members: CanonicalRoomMember[]
+  disabled: boolean
+  labels: Labels
+  locale?: string
+  words: Words
+  computerName?: (installId: string) => string | undefined
+  unsaved?: ReadonlySet<string | undefined>
+  missing?: MissingMessages
+}) {
+  const { isBot, isHuman, member, name } = eventIdentity(event, members, labels)
+  const { text, system } = rowText(event, localizedNotice(event, labels, words, locale, computerName), labels, member)
+  const at = eventTime(event)
+
+  return (
+    <article
+      className={`group flex min-w-0 items-start gap-3 py-3 ${isHuman ? 'rounded-lg bg-(--chrome-action-hover) px-3' : 'px-3'}`}
+    >
+      {isBot && (
+        <div aria-hidden className="mt-0.5 shrink-0">
+          <CanonicalMemberFace member={member} name={name} seed={event.actor?.id} />
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        {(name || at) && (
+          <div className="mb-1 flex min-w-0 items-center gap-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)">
+            {name && (
+              <span className="truncate font-medium text-(--ui-text-primary)">
+                <bdi>{name}</bdi>
+              </span>
+            )}
+            {at && (
+              <time className="shrink-0 text-(--ui-text-quaternary)" dateTime={at.toISOString()}>
+                {new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(at)}
+              </time>
+            )}
+            {!!text && (
+              <div className="ml-auto opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                <CopyButton appearance="icon" buttonSize="icon-xs" text={text} />
+              </div>
+            )}
+          </div>
+        )}
+        <HistoryText event={event} labels={labels} system={system} text={text} />
+        <RowAttachments binding={binding} disabled={disabled || !!missing?.events.includes(event)} event={event} />
+        <MissingMark event={event} missing={missing} />
+        {unsaved?.has(event.event_id) && <p className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-quaternary)"
+          data-slot="unsaved-message">{words.unsavedMessage}</p>}
+      </div>
+    </article>
+  )
+}
+
 export function CanonicalGroupHistory({ binding, events, members = [], disabled = false, computerName, unsaved, missing }: {
   binding: CanonicalGroupBinding; events: CanonicalGroupEvent[]; members?: CanonicalRoomMember[]; disabled?: boolean
   computerName?: (installId: string) => string | undefined
@@ -143,45 +267,9 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
   const labels = useCanonicalGroupLabels()
   const words = useBots().succession
   const { locale } = useI18n()
-
-  return <>{inPlace(events.filter(event => !quiet(event)), missing?.events ?? []).map(event => {
-    const isBot = event.actor?.kind === 'member' || event.kind === 'message.member'
-    const isHuman = event.actor?.kind === 'user' || event.kind === 'message.user'
-    const member = members.find(candidate => candidate.member_id === (isBot ? event.actor?.id : event.payload.member_id))
-
-    const name = isBot ? event.actor?.display_name?.trim() || canonicalMemberName(member, labels.unknownBot)
-      : isHuman ? event.actor?.id === 'desktop' ? labels.you : event.actor?.display_name?.trim() || labels.unknownPerson : ''
-
-    const { system, text } = rowText(event, localizedNotice(event, labels, words, locale, computerName), labels, member)
-
-    const timestamp = event.created_at && Number.isFinite(event.created_at)
-      ? new Date(event.created_at < 1e12 ? event.created_at * 1000 : event.created_at) : null
-
-    const at = timestamp && Number.isFinite(timestamp.getTime()) ? timestamp : null
-
-    return <article className={`group flex min-w-0 items-start gap-3 py-3 ${isHuman ? 'rounded-lg bg-(--chrome-action-hover) px-3' : 'px-3'}`}
-      key={event.event_id ?? event.seq}>
-      {isBot && <div aria-hidden className="mt-0.5 shrink-0"><CanonicalMemberFace member={member} name={name} seed={event.actor?.id} /></div>}
-      <div className="min-w-0 flex-1">
-        {(name || at) && <div className="mb-1 flex min-w-0 items-center gap-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)">
-          {name && <span className="truncate font-medium text-(--ui-text-primary)"><bdi>{name}</bdi></span>}
-          {at && <time className="shrink-0 text-(--ui-text-quaternary)" dateTime={at.toISOString()}>{new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(at)}</time>}
-          {!!text && <div className="ml-auto opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"><CopyButton appearance="icon" buttonSize="icon-xs" text={text} /></div>}
-        </div>}
-        {!!text && (system ? <div className="select-text text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)">
-          <p className={event.kind === 'turn.failed' ? 'text-destructive' : 'text-(--ui-text-tertiary)'}>{text}</p>
-          <details className="mt-1 text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary>
-            <p className="mt-1 break-words font-mono text-[length:var(--conversation-tool-font-size)]">{event.kind}</p>
-            {(event.payload.error || event.payload.reason) && <p className="mt-1 whitespace-pre-wrap break-words">{event.payload.error || event.payload.reason}</p>}
-          </details>
-        </div> : <div className="select-text break-words text-[length:var(--conversation-text-font-size)] leading-(--conversation-line-height)">
-          <MessageTextContent media={false} previewOnly text={text} />
-        </div>)}
-        <RowAttachments binding={binding} disabled={disabled || !!missing?.events.includes(event)} event={event} />
-        <MissingMark event={event} missing={missing} />
-        {unsaved?.has(event.event_id) && <p className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-quaternary)"
-          data-slot="unsaved-message">{words.unsavedMessage}</p>}
-      </div>
-    </article>
-  })}</>
+  return <>{inPlace(events.filter(event => !quiet(event)), missing?.events ?? []).map(event => (
+    <HistoryRow binding={binding} disabled={disabled} event={event} key={event.event_id ?? event.seq}
+      labels={labels} locale={locale} members={members} words={words} computerName={computerName}
+      unsaved={unsaved} missing={missing} />
+  ))}</>
 }

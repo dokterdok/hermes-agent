@@ -127,6 +127,11 @@ export interface CanonicalGroupMessages {
   waitingForHostFile: string
   waitingForUnnamedHostBot: string
   waitingForUnnamedHostFile: string
+  journalLoadFailed: string
+  journalLoadHint: string
+  journalReload: string
+  classicActivitySettled: string
+  classicActivityStopped: string
 }
 
 export const HOSTED_PROFILE_OWNERS_URL =
@@ -264,7 +269,12 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: 'Waiting for {host}: this needs a Bot that’s only there.',
     waitingForHostFile: 'Waiting for {host}: this needs a file that’s only there.',
     waitingForUnnamedHostBot: 'Waiting for another computer: this needs a Bot that’s only there.',
-    waitingForUnnamedHostFile: 'Waiting for another computer: this needs a file that’s only there.'
+    waitingForUnnamedHostFile: 'Waiting for another computer: this needs a file that’s only there.',
+    journalLoadFailed: 'Saved messages couldn’t be loaded.',
+    journalLoadHint: 'Sending is paused to avoid sending a saved message twice. Your current draft will stay here.',
+    journalReload: 'Try loading again',
+    classicActivitySettled: 'Replies finished',
+    classicActivityStopped: 'Requested Stop; further replies are paused until you continue'
   },
   ja: {
     legacyRoom: 'このチャットを続けるか、同じBotで新しいグループを始められます。新しいグループはDesktopを閉じても作業を続けられます。これまでのメッセージはここに残ります。',
@@ -400,7 +410,13 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: '{host}を待っています：そこにしかないBotが必要です。',
     waitingForHostFile: '{host}を待っています：そこにしかないファイルが必要です。',
     waitingForUnnamedHostBot: '別のコンピューターを待っています：そこにしかないBotが必要です。',
-    waitingForUnnamedHostFile: '別のコンピューターを待っています：そこにしかないファイルが必要です。'
+    waitingForUnnamedHostFile: '別のコンピューターを待っています：そこにしかないファイルが必要です。',
+    journalLoadFailed: '保存済みメッセージを読み込めませんでした。',
+    journalLoadHint:
+      '保存済みメッセージを重複して送信しないよう、送信を一時停止しています。現在の下書きはそのまま残ります。',
+    journalReload: 'もう一度読み込む',
+    classicActivitySettled: '返信が完了しました',
+    classicActivityStopped: '停止を要求しました。続行するまで、その後の返信は一時停止します'
   },
   zh: {
     legacyRoom: '继续在这里聊天，或用相同的Bot开始一个新群聊，让它们在Desktop关闭后仍能继续工作。之前的消息会保留在这里。',
@@ -531,7 +547,12 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: '正在等待{host}：这需要一个只在那里的Bot。',
     waitingForHostFile: '正在等待{host}：这需要一个只在那里的文件。',
     waitingForUnnamedHostBot: '正在等待另一台电脑：这需要一个只在那里的Bot。',
-    waitingForUnnamedHostFile: '正在等待另一台电脑：这需要一个只在那里的文件。'
+    waitingForUnnamedHostFile: '正在等待另一台电脑：这需要一个只在那里的文件。',
+    journalLoadFailed: '无法加载已保存的消息。',
+    journalLoadHint: '发送已暂停，以免重复发送已保存的消息。当前草稿会保留。',
+    journalReload: '重新加载',
+    classicActivitySettled: '回复已完成',
+    classicActivityStopped: '已请求停止；后续回复将暂停，直到你继续'
   },
   'zh-hant': {
     legacyRoom: '繼續在這裡聊天，或用相同的Bot開始一個新群聊，讓它們在Desktop關閉後仍能繼續工作。之前的訊息會保留在這裡。',
@@ -662,7 +683,12 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: '正在等待{host}：這需要一個只在那裡的Bot。',
     waitingForHostFile: '正在等待{host}：這需要一個只在那裡的檔案。',
     waitingForUnnamedHostBot: '正在等待另一台電腦：這需要一個只在那裡的Bot。',
-    waitingForUnnamedHostFile: '正在等待另一台電腦：這需要一個只在那裡的檔案。'
+    waitingForUnnamedHostFile: '正在等待另一台電腦：這需要一個只在那裡的檔案。',
+    journalLoadFailed: '無法載入已儲存的訊息。',
+    journalLoadHint: '傳送已暫停，以免重複傳送已儲存的訊息。目前的草稿會保留。',
+    journalReload: '重新載入',
+    classicActivitySettled: '回覆已完成',
+    classicActivityStopped: '已要求停止；後續回覆將暫停，直到你繼續'
   },
   ar: {
     legacyRoom: 'تابع المحادثة هنا، أو ابدأ مجموعة جديدة مع البوتات نفسها. يمكن للمجموعة الجديدة مواصلة العمل حتى عند إغلاق Desktop. ستبقى رسائلك السابقة هنا.',
@@ -795,7 +821,12 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: 'بانتظار {host}: يحتاج هذا إلى بوت موجود هناك فقط.',
     waitingForHostFile: 'بانتظار {host}: يحتاج هذا إلى ملف موجود هناك فقط.',
     waitingForUnnamedHostBot: 'بانتظار جهاز كمبيوتر آخر: يحتاج هذا إلى بوت موجود هناك فقط.',
-    waitingForUnnamedHostFile: 'بانتظار جهاز كمبيوتر آخر: يحتاج هذا إلى ملف موجود هناك فقط.'
+    waitingForUnnamedHostFile: 'بانتظار جهاز كمبيوتر آخر: يحتاج هذا إلى ملف موجود هناك فقط.',
+    journalLoadFailed: 'تعذّر تحميل الرسائل المحفوظة.',
+    journalLoadHint: 'توقف الإرسال مؤقتًا لمنع إرسال رسالة محفوظة مرتين. ستبقى مسودتك الحالية هنا.',
+    journalReload: 'إعادة التحميل',
+    classicActivitySettled: 'اكتملت الردود',
+    classicActivityStopped: 'طُلب الإيقاف؛ تتوقف الردود اللاحقة مؤقتًا حتى تتابع'
   },
   ru: {
     legacyRoom: 'Продолжайте общаться здесь или начните новую группу с теми же Ботами, которые смогут продолжать работу после закрытия Desktop. Ваши предыдущие сообщения останутся здесь.',
@@ -931,7 +962,13 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: 'Ожидание компьютера {host}: для этого нужен Бот, который есть только там.',
     waitingForHostFile: 'Ожидание компьютера {host}: для этого нужен файл, который есть только там.',
     waitingForUnnamedHostBot: 'Ожидание другого компьютера: для этого нужен Бот, который есть только там.',
-    waitingForUnnamedHostFile: 'Ожидание другого компьютера: для этого нужен файл, который есть только там.'
+    waitingForUnnamedHostFile: 'Ожидание другого компьютера: для этого нужен файл, который есть только там.',
+    journalLoadFailed: 'Не удалось загрузить сохранённые сообщения.',
+    journalLoadHint:
+      'Отправка приостановлена, чтобы не отправить сохранённое сообщение дважды. Текущий черновик остаётся здесь.',
+    journalReload: 'Загрузить ещё раз',
+    classicActivitySettled: 'Ответы завершены',
+    classicActivityStopped: 'Запрошена остановка; дальнейшие ответы приостановлены до продолжения'
   },
   fr: {
     legacyRoom: 'Continuez à discuter ici, ou démarrez un nouveau groupe avec les mêmes Bots qui pourront continuer à travailler quand Desktop sera fermé. Vos messages précédents resteront ici.',
@@ -1071,7 +1108,13 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: 'En attente de l’ordinateur {host} : il faut un Bot qui ne se trouve que là-bas.',
     waitingForHostFile: 'En attente de l’ordinateur {host} : il faut un fichier qui ne se trouve que là-bas.',
     waitingForUnnamedHostBot: 'En attente d’un autre ordinateur : il faut un Bot qui ne se trouve que là-bas.',
-    waitingForUnnamedHostFile: 'En attente d’un autre ordinateur : il faut un fichier qui ne se trouve que là-bas.'
+    waitingForUnnamedHostFile: 'En attente d’un autre ordinateur : il faut un fichier qui ne se trouve que là-bas.',
+    journalLoadFailed: 'Impossible de charger les messages enregistrés.',
+    journalLoadHint:
+      'L’envoi est suspendu pour éviter d’envoyer deux fois un message enregistré. Votre brouillon actuel reste ici.',
+    journalReload: 'Réessayer le chargement',
+    classicActivitySettled: 'Réponses terminées',
+    classicActivityStopped: 'Arrêt demandé ; les réponses suivantes sont suspendues jusqu’à votre reprise'
   },
   de: {
     legacyRoom: 'Chatte hier weiter oder starte mit denselben Bots eine neue Gruppe, die weiterarbeiten kann, wenn Desktop geschlossen ist. Deine bisherigen Nachrichten bleiben hier.',
@@ -1214,7 +1257,13 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: 'Warten auf {host}: Dafür wird ein Bot gebraucht, den es nur dort gibt.',
     waitingForHostFile: 'Warten auf {host}: Dafür wird eine Datei gebraucht, die es nur dort gibt.',
     waitingForUnnamedHostBot: 'Warten auf einen anderen Computer: Dafür wird ein Bot gebraucht, den es nur dort gibt.',
-    waitingForUnnamedHostFile: 'Warten auf einen anderen Computer: Dafür wird eine Datei gebraucht, die es nur dort gibt.'
+    waitingForUnnamedHostFile: 'Warten auf einen anderen Computer: Dafür wird eine Datei gebraucht, die es nur dort gibt.',
+    journalLoadFailed: 'Gespeicherte Nachrichten konnten nicht geladen werden.',
+    journalLoadHint:
+      'Das Senden ist pausiert, damit gespeicherte Nachrichten nicht doppelt gesendet werden. Dein aktueller Entwurf bleibt erhalten.',
+    journalReload: 'Erneut laden',
+    classicActivitySettled: 'Antworten abgeschlossen',
+    classicActivityStopped: 'Stopp angefordert; weitere Antworten sind bis zum Fortsetzen pausiert'
   },
   es: {
     legacyRoom: 'Sigue chateando aquí o inicia un nuevo grupo con los mismos Bots, que pueden seguir trabajando cuando Desktop esté cerrado. Tus mensajes anteriores permanecerán aquí.',
@@ -1350,6 +1399,12 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: 'Esperando a {host}: esto necesita un Bot que solo está allí.',
     waitingForHostFile: 'Esperando a {host}: esto necesita un archivo que solo está allí.',
     waitingForUnnamedHostBot: 'Esperando a otro equipo: esto necesita un Bot que solo está allí.',
-    waitingForUnnamedHostFile: 'Esperando a otro equipo: esto necesita un archivo que solo está allí.'
+    waitingForUnnamedHostFile: 'Esperando a otro equipo: esto necesita un archivo que solo está allí.',
+    journalLoadFailed: 'No se pudieron cargar los mensajes guardados.',
+    journalLoadHint:
+      'El envío está en pausa para evitar enviar un mensaje guardado dos veces. Tu borrador actual se conserva.',
+    journalReload: 'Volver a cargar',
+    classicActivitySettled: 'Respuestas terminadas',
+    classicActivityStopped: 'Se solicitó detener; las siguientes respuestas están en pausa hasta que continúes'
   }
 } satisfies Record<string, CanonicalGroupMessages>

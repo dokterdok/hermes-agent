@@ -44,6 +44,66 @@ function ActionTitle({ action, labels, memberName, unknownTitle }: { action: Can
   return <p className="text-sm font-medium"><bdi>{title.replace('{name}', memberName)}</bdi></p>
 }
 
+function approvalControls({
+  action,
+  busy,
+  submitting,
+  disabled,
+  labels,
+  invoke,
+  onAction,
+  onRefresh
+}: {
+  action: CanonicalPendingAction
+  busy: boolean
+  submitting: boolean
+  disabled: boolean
+  labels: Labels
+  invoke: (operation: () => Promise<void> | void) => Promise<void>
+  onAction: CanonicalGroupPendingActionsProps['onAction']
+  onRefresh?: CanonicalGroupPendingActionsProps['onRefresh']
+}) {
+  const approval = canonicalApprovalDetails({ action, labels })
+  const choices = Array.isArray(action.approval?.choices) ? action.approval.choices : []
+
+  return (
+    <>
+      {choices.includes('deny') && (
+        <Button
+          disabled={disabled || !text(action.request_id)}
+          onClick={() => void invoke(() => onAction(snapshot(action), 'deny'))}
+          size="sm"
+          type="button"
+          variant="secondary"
+        >
+          {labels.deny}
+        </Button>
+      )}
+      {approval.reviewable && choices.includes('once') && (
+        <Button
+          disabled={disabled}
+          onClick={() => void invoke(() => onAction(snapshot(action), 'once'))}
+          size="sm"
+          type="button"
+        >
+          {labels.allowOnce}
+        </Button>
+      )}
+      {(!approval.reviewable || !choices.some(choice => choice === 'once' || choice === 'deny')) && onRefresh && (
+        <Button
+          disabled={busy || submitting}
+          onClick={() => void invoke(onRefresh)}
+          size="sm"
+          type="button"
+          variant="secondary"
+        >
+          {labels.refresh}
+        </Button>
+      )}
+    </>
+  )
+}
+
 function PendingActionRow({ action, member, memberName, canSkip, busy, labels, unknownTitle, onAction, onSkip, onRefresh }: {
   action: CanonicalPendingAction; member?: CanonicalRoomMember; memberName: string; canSkip: boolean; busy: boolean; labels: Labels
   unknownTitle?: string
@@ -61,7 +121,6 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, u
   }
   const disabled = busy || submitting || !validAttempt(action)
   const approval = action.kind === 'approval' ? canonicalApprovalDetails({ action, labels }) : null
-  const choices = Array.isArray(action.approval?.choices) ? action.approval.choices : []
   const fileOutput = action.kind === 'output_retry'
   const filePending = isPendingFileAction(action)
   return <article aria-busy={submitting || undefined} className="grid min-w-0 gap-3 border-t border-(--ui-stroke-secondary) py-3"
@@ -73,14 +132,7 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, u
     {approval?.content}
     {fileOutput && !filePending && <p className="text-sm text-(--ui-text-secondary)" role="status">{labels.pendingFilesBlockedHelp}</p>}
     <div className="flex flex-wrap items-center justify-end gap-2">
-      {approval && <>
-        {choices.includes('deny') && <Button disabled={disabled || !text(action.request_id)}
-          onClick={() => void invoke(() => onAction(snapshot(action), 'deny'))} size="sm" type="button" variant="secondary">{labels.deny}</Button>}
-        {approval.reviewable && choices.includes('once') && <Button disabled={disabled}
-          onClick={() => void invoke(() => onAction(snapshot(action), 'once'))} size="sm" type="button">{labels.allowOnce}</Button>}
-        {(!approval.reviewable || !choices.some(choice => choice === 'once' || choice === 'deny')) && onRefresh && <Button disabled={busy || submitting}
-          onClick={() => void invoke(onRefresh)} size="sm" type="button" variant="secondary">{labels.refresh}</Button>}
-      </>}
+      {approval && approvalControls({ action, busy, submitting, disabled, labels, invoke, onAction, onRefresh })}
       {fileOutput && !filePending && onRefresh && <Button disabled={busy || submitting}
         onClick={() => void invoke(onRefresh)} size="sm" type="button" variant="text">{labels.refresh}</Button>}
       {canSkip && <Button disabled={disabled} onClick={onSkip} size="sm" type="button" variant="text">{labels.skipReply}</Button>}
