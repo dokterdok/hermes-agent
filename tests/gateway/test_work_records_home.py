@@ -14,7 +14,7 @@ from gateway import hosted_room_work_storage as storage
 from gateway import hosted_rooms as rooms
 from gateway.hosted_room_replication import HostedRoomReplicationPublisher
 from gateway.hosted_rooms_common import open_sqlite
-from tests.gateway.fixtures.passive_copy import HOME, KEY, MEMBERS, TASK, admit, copying, pair, start  # noqa: F401
+from tests.gateway.fixtures.passive_copy import HOME, KEY, MEMBERS, TASK, admit, copying as copying, pair, start  # noqa: F401
 
 TABLES = (records.SOURCE_TABLE, records.TARGET_TABLE, records.PENDING_TABLE)
 

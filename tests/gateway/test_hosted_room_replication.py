@@ -16,11 +16,36 @@ from gateway import hosted_room_replicas as replicas
 from gateway import hosted_room_replication as publisher
 from gateway import hosted_rooms as rooms
 from tests.gateway.fixtures.passive_copy import (  # noqa: F401
-    HOME, HTTP, KEY, SECRET, TARGET, add_route, append, pair, reserve, save_link)
+    HOME, HTTP, KEY, SECRET, TARGET, add_route, append, pair as pair, reserve, save_link)
 
 
 def state(pub, index=0):
     return pub.status("room")["routes"][index]
+
+
+def test_workers_keep_the_installation_context_that_started_them(pair, monkeypatch):
+    from contextvars import ContextVar
+    from tui_gateway.hosted_room_peer_http import room_grant_request_budget, room_grant_request_budget_remaining
+    marker = ContextVar('replication-owner', default=None)
+    pub = publisher.HostedRoomReplicationPublisher(pair.source)
+    observed = []
+    ready = threading.Event()
+    def observe():
+        observed.append((marker.get(), room_grant_request_budget_remaining()))
+        if len(observed) == publisher.WORKERS:
+            ready.set()
+        return None
+    monkeypatch.setattr(pub, '_take', observe)
+    token = marker.set('originating-installation')
+    try:
+        pub._enabled = True
+        with room_grant_request_budget(1):
+            pub._start_workers()
+            assert ready.wait(3)
+        assert pub.stop(timeout=5)
+    finally:
+        marker.reset(token)
+    assert observed == [('originating-installation', None)] * publisher.WORKERS
 
 
 def remove_routes(db):

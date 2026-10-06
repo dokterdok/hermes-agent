@@ -15,7 +15,7 @@ from gateway import hosted_room_replicas as replicas
 from gateway import hosted_room_replication as publisher
 from gateway import hosted_rooms as rooms
 from tests.gateway.fixtures.passive_copy import (  # noqa: F401
-    HOME, KEY, TARGET, add_route, admit, append, pair, start)
+    HOME, KEY, TARGET, add_route, admit, append, pair as pair, start)
 
 TARGET_KEY = identity.local_public_key(secret=b"participant-room-identity-secret-32b")
 OTHER_KEY = identity.local_public_key(secret=b"another-installation-identity-secret")

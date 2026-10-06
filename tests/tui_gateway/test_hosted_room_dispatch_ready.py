@@ -4,7 +4,7 @@ import threading
 
 from gateway import hosted_room_driver as state
 from tests.tui_gateway.test_hosted_room_driver_runtime import (  # noqa: F401
-    ROOM_ID, FakeSessionRPC, _admit, _identity, _runtime, _wait_for, db)
+    ROOM_ID, FakeSessionRPC, _admit, _identity, _runtime, _wait_for, db as db)
 
 
 def test_a_queued_task_waits_until_dispatch_is_ready(db):

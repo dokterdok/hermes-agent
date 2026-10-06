@@ -16,7 +16,7 @@ from gateway import hosted_rooms as rooms
 from gateway.hosted_room_passive_protocol import passive_capabilities
 from gateway.hosted_room_replication import HostedRoomReplicationPublisher
 from gateway.platforms import api_server_room_replicas as ingress
-from tests.gateway.fixtures.passive_copy import API_KEY, HOME, MEMBERS, api, append, invite  # noqa: F401
+from tests.gateway.fixtures.passive_copy import API_KEY, HOME, MEMBERS, api as api, append, invite  # noqa: F401
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 
 

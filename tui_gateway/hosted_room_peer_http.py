@@ -223,6 +223,16 @@ def room_grant_request_budget(seconds: float, *, clock: Callable[[], float] = ti
         _ROOM_GRANT_REQUEST_BUDGET.reset(token)
 
 
+@contextmanager
+def independent_room_grant_requests():
+    """A durable background owner keeps its installation context, not its caller's request deadline."""
+    token = _ROOM_GRANT_REQUEST_BUDGET.set(None)
+    try:
+        yield
+    finally:
+        _ROOM_GRANT_REQUEST_BUDGET.reset(token)
+
+
 def digest_reauthorization_error(
     catalog: GatewayRoomCatalog, *, capability_digest: str | None,
     execution_policy_digest: str | None) -> PeerRunsHTTPError | None:

@@ -161,7 +161,7 @@ def local_names() -> tuple[str | None, str | None]:
     try:
         from gateway.run import _load_gateway_config
         section = _load_gateway_config().get("gateway") or {}
-    except Exception:
+    except (OSError, RuntimeError, TypeError, ValueError):
         section = {}
     section = section if isinstance(section, Mapping) else {}
     try:
@@ -186,19 +186,30 @@ def local_always_on(*, refresh: bool = False) -> bool:
     try:
         from gateway.run import _load_gateway_config
         section = _load_gateway_config().get("group_chat") or {}
-    except Exception:
+    except (OSError, RuntimeError, TypeError, ValueError):
         section = {}
     override = section.get("always_on") if isinstance(section, Mapping) else None
     if isinstance(override, bool):
         value = override
     else:
-        try:
-            import psutil
-            value = psutil.sensors_battery() is None
-        except Exception:
-            value = False
+        value = _batteryless_installation()
     _always_on[:] = [(now, value)]
     return value
+
+
+def _batteryless_installation() -> bool:
+    """An unavailable battery probe never opts this installation into automatic voting."""
+    try:
+        import psutil
+    except ImportError:
+        return False
+    probe = getattr(psutil, "sensors_battery", None)
+    if probe is None:
+        return False
+    try:
+        return probe() is None
+    except (OSError, RuntimeError, psutil.Error):
+        return False
 
 
 # -- the hash chain ----------------------------------------------------------------------------

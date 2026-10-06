@@ -298,13 +298,14 @@ class HostedRoomReplicationPublisher:
                 "SELECT grant FROM hosted_room_links LIMIT ?", (links.MAX_LINKS,)))
 
     def _start_workers(self) -> None:
+        from agent.memory_provider import spawn_context_thread
         with self._condition:
             if self._alive() or not self._enabled or self._stop.is_set():
                 return
             self._scan_at = 0.0
             self._error = None
-            self._threads = [threading.Thread(
-                target=self._worker, name=f"hosted-room-replication-{i}", daemon=True,
+            self._threads = [spawn_context_thread(
+                self._worker, name=f"hosted-room-replication-{i}", daemon=True,
             ) for i in range(WORKERS)]
             try:
                 for thread in self._threads:
@@ -437,6 +438,11 @@ class HostedRoomReplicationPublisher:
         return None
 
     def _worker(self) -> None:
+        from tui_gateway.hosted_room_peer_http import independent_room_grant_requests
+        with independent_room_grant_requests():
+            self._work_loop()
+
+    def _work_loop(self) -> None:
         while not self._stop.is_set():
             key, more = None, False
             try:
@@ -445,7 +451,7 @@ class HostedRoomReplicationPublisher:
                     return
                 more = self._publish_retirement(key) if isinstance(key, _RetirementWork) else self._publish_one(key)
                 self._error = None
-            except Exception:
+            except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
                 # Never include transport exceptions, grant material, URLs or raw rows.
                 self._error = "publisher_local_error"
                 self._stop.wait(POLL_SECONDS)
@@ -744,6 +750,22 @@ class HostedRoomReplicationPublisher:
         ):
             self._save(route, checkpoint, status="invalid_ack")
             return False
+        reported = self._record_custody_ack(route, checkpoint, reply, install_id=install_id, request=request)
+        if reported is None:
+            return False
+        saved = self._save(
+            route, checkpoint, acked_seq=page["cursor"], source_latest_seq=page["latest_seq"],
+            pending_end=None, pending_latest=None, pending_name=None,
+            status="pending" if page["has_more"] else "acked",
+        )
+        if key[1].startswith(_CUSTODY_PREFIX) and isinstance(reported.get("renewed_grant"), str):
+            self._keep_renewed_grant(route, reported["renewed_grant"])  # the next push uses it
+        return saved and page["has_more"]
+
+    def _record_custody_ack(self, route, checkpoint, reply, *, install_id, request):
+        """Record consent, lease and signed-history acknowledgment before advancing the route cursor."""
+        from gateway import hosted_room_custody as custody
+        key = route.key
         reported = reply["custody"] if isinstance(reply.get("custody"), dict) else {}
         allowed, always_on = reported.get("allowed"), reported.get("always_on")
         # The operator's current consent to continue the group and whether the computer is always on,
@@ -766,20 +788,13 @@ class HostedRoomReplicationPublisher:
                 acknowledged = "invalid"
             if acknowledged in {"divergent", "invalid"}:
                 self._save(route, checkpoint, status="divergent_copy" if acknowledged == "divergent" else "invalid_ack")
-                return False
+                return None
             if acknowledged == "acknowledged" and callable(self.on_acknowledged):
                 try:
                     self.on_acknowledged(key[0])  # protection may have moved: queued work can look again
-                except Exception:
+                except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
                     self._custody_error = "custody_wakeup_failed"
-        saved = self._save(
-            route, checkpoint, acked_seq=page["cursor"], source_latest_seq=page["latest_seq"],
-            pending_end=None, pending_latest=None, pending_name=None,
-            status="pending" if page["has_more"] else "acked",
-        )
-        if key[1].startswith(_CUSTODY_PREFIX) and isinstance(reported.get("renewed_grant"), str):
-            self._keep_renewed_grant(route, reported["renewed_grant"])  # the next push uses it
-        return saved and page["has_more"]
+        return reported
 
     def _keep_renewed_grant(self, route: _Route, renewed: str) -> None:
         """Keep the fresh copy-only grant a custodian returned as its old one nears its horizon.

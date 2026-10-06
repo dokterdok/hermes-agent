@@ -1,6 +1,7 @@
 """``POST /v1/room-members/work-records``: opt-in passive task evidence, never admission or recovery."""
 
 import asyncio
+import sqlite3
 
 try:
     from aiohttp import web
@@ -24,7 +25,7 @@ def http_routes(adapter):
         try:
             claims = adapter._room_grant_claims(request, permission=records.PERMISSION)
             profile, installation_id = _local_target(claims, api_server._api_request_profile)
-        except Exception as exc:
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             return _room_grant_error_response(exc, _openai_error=api_server._openai_error)
         body, error = await adapter._read_json_body((request if request.get("verified_room_grant") else request.clone(client_max_size=records.MAX_BYTES + 1024)))
         if error is not None:

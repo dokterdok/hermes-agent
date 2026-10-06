@@ -22,8 +22,8 @@ from gateway import hosted_room_work_records as records
 from gateway import hosted_rooms as rooms
 from gateway.hosted_rooms_common import open_sqlite
 from tests.gateway.fixtures.passive_copy import (  # noqa: F401
-    API_KEY, EVIDENCE, HOME, KEY, MEMBERS, SECRET, TARGET, TASK, add_task, admit, api, append,
-    both_routes_carry_evidence, copying, http_error, invite, pair, reserve, save_link, start)
+    API_KEY, EVIDENCE, HOME, KEY, MEMBERS, SECRET, TARGET, TASK, add_task, admit, api as api, append,
+    both_routes_carry_evidence, copying as copying, http_error, invite, pair as pair, reserve, save_link, start)
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 
 OTHER = ("room", "z-other")

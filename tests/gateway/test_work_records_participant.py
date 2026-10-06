@@ -16,7 +16,7 @@ from gateway import hosted_room_work_storage as storage
 from gateway import hosted_rooms as rooms
 from gateway.hosted_rooms_common import open_sqlite
 from tests.gateway.fixtures.passive_copy import (  # noqa: F401
-    EVIDENCE, HOME, KEY, MEMBERS, SECRET, TARGET, admit, append, copying, grant, pair, reserve, start)
+    EVIDENCE, HOME, KEY, MEMBERS, SECRET, TARGET, admit, append, copying as copying, grant, pair, reserve, start)
 
 
 def rows(path, table=records.TARGET_TABLE):
@@ -71,18 +71,15 @@ def test_revision_scope_prefix_and_privacy_schema_reject_conflicts(copied, mutat
     first = capture(source)
     deliver(target, token, first)
     bad = copy.deepcopy(first)
-    if mutation == "digest":
-        bad["digest"] = "a" * 64
-    elif mutation == "revision":
-        bad["tasks"][0]["phase"] = "running"
-    elif mutation == "prefix":
-        bad["history"]["event_sha256"] = "a" * 64
-    elif mutation == "extra":
-        bad["tasks"][0]["prompt"] = "MUST_NOT_STORE"
-    elif mutation == "authority":
-        bad["authority"]["epoch"] = 2
-    else:
-        bad["roster_sha256"] = "a" * 64
+    mutations = {
+        "digest": lambda: bad.update(digest="a" * 64),
+        "revision": lambda: bad["tasks"][0].update(phase="running"),
+        "prefix": lambda: bad["history"].update(event_sha256="a" * 64),
+        "extra": lambda: bad["tasks"][0].update(prompt="MUST_NOT_STORE"),
+        "authority": lambda: bad["authority"].update(epoch=2),
+        "roster": lambda: bad.update(roster_sha256="a" * 64),
+    }
+    mutations[mutation]()
     if mutation != "digest":
         bad["digest"] = records.digest({k: v for k, v in bad.items() if k not in {"revision", "digest"}})
     with pytest.raises((records.WorkRecordError, peer.HostedRoomGrantError)):
