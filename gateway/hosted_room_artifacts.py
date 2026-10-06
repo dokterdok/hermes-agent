@@ -22,7 +22,7 @@ import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, ContextManager, Iterator, Mapping, Sequence
 
 from gateway.hosted_room_attachments import (
     MAX_ATTACHMENT_BYTES,
@@ -334,14 +334,11 @@ class RoomArtifactOutbox:
             except OSError:
                 continue
 
-    def _connect(self) -> sqlite3.Connection:
-        from hermes_state_wal import apply_wal_with_fallback
+    def _connect(self) -> ContextManager[sqlite3.Connection]:
+        from hermes_cli.sqlite_util import open_db, transaction
 
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        apply_wal_with_fallback(conn, db_label="state.db (hosted room artifact outbox)")
-        return conn
+        return transaction(open_db(
+            self.db_path, db_label="state.db (hosted room artifact outbox)", busy_timeout_ms=10_000))
 
     def _reclaim_blob_rows(
         self,
