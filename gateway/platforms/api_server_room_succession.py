@@ -92,6 +92,12 @@ def backup_context(adapter):
         replace_grants=continuation_minter(adapter, custody_db, replace_same_epoch=True), service=_service(adapter))
 
 
+def _answer_handover(context, body):
+    """Load the handover implementation only for its own endpoint."""
+    from gateway.hosted_room_succession_handover import answer_handover
+    return answer_handover(context, body)
+
+
 def http_routes(adapter):
     from gateway import hosted_room_succession as succession
     from gateway import hosted_room_succession_backup as backup
@@ -112,19 +118,11 @@ def http_routes(adapter):
                 return denied
             context = backup_context(adapter)
             try:
-                if name == "fence":
-                    reply = await asyncio.to_thread(backup.answer_fence, context, body)
-                elif name == "learn":
-                    reply = await asyncio.to_thread(backup.answer_learn, context, body)
-                elif name == "query":
-                    reply = await asyncio.to_thread(backup.answer_query, context, body)
-                elif name == "decision":
-                    reply = await asyncio.to_thread(backup.answer_decision, context, body)
-                elif name == "handover":
-                    from gateway.hosted_room_succession_handover import answer_handover
-                    reply = await asyncio.to_thread(answer_handover, context, body)
-                else:
-                    reply = await asyncio.to_thread(backup.answer_report, context.custody_db, body)
+                handlers = {"fence": backup.answer_fence, "learn": backup.answer_learn,
+                            "query": backup.answer_query, "decision": backup.answer_decision,
+                            "handover": _answer_handover, "report": backup.answer_report}
+                target = context.custody_db if name == "report" else context
+                reply = await asyncio.to_thread(handlers[name], target, body)
             except succession.ProofInvalid as exc:
                 return failure(exc.reason, 422)
             except succession.SuccessionError as exc:
