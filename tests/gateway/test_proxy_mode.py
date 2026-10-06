@@ -1,6 +1,7 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
 import types
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -354,6 +355,24 @@ class TestStreamingResilience:
     """Tests for SSE streaming robustness — hang avoidance and malformed-chunk tolerance."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('compact', [False, True], ids=['spaced-field', 'compact-field'])
+    async def test_proxy_preserves_unicode_across_network_chunks_and_stops_at_done(self, monkeypatch, compact):
+        monkeypatch.setenv('GATEWAY_PROXY_URL', 'http://host:8642')
+        monkeypatch.delenv('GATEWAY_PROXY_KEY', raising=False)
+        expected = 'Bonjour Zürich — 🧑🏽‍💻'
+        prefix = 'data:' if compact else 'data: '
+        payload = (prefix + json.dumps({'choices': [{'delta': {'content': expected}}]}, ensure_ascii=False) + '\n').encode()
+        chunks = [payload[index:index + 1] for index in range(len(payload))]
+        chunks += [(prefix + '[DONE]\n').encode(), b'data: {"choices":[{"delta":{"content":"unexpected"}}]}\n']
+        response = _FakeSSEResponse(sse_chunks=chunks)
+        with patch('gateway.run._load_gateway_config', return_value={}):
+            with _patch_aiohttp(_FakeSession(response)):
+                result = await _make_runner()._run_agent_via_proxy(
+                    message='hi', context_prompt='', history=[], source=_make_source(), session_id='test')
+        assert result['final_response'] == expected
+        assert response.chunks_requested == len(chunks) - 1
+
+    @pytest.mark.asyncio
     async def test_done_marker_stops_reading_trailing_chunks(self, monkeypatch):
         """After `[DONE]`, no further SSE chunks must be processed.
 
@@ -525,7 +544,11 @@ class TestStreamingResilience:
                 'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
                 'data: {"choices":[null]}\n',
                 'data: {"choices":"wrong-type"}\n',
+                'data: {"choices":{"first":{"delta":{"content":"unexpected"}}}}\n',
                 'data: {"choices":[{"delta":"wrong-type"}]}\n',
+                'data: {"choices":[{"delta":{"content":123}}]}\n',
+                'data: {"choices":[{"delta":{"content":["unexpected"]}}]}\n',
+                'data: {"choices":[{"delta":{"content":{"text":"unexpected"}}}]}\n',
                 'data: {"choices":[{"delta":{"content":" world"}}]}\n',
                 'data: [DONE]\n',
             ],
