@@ -107,6 +107,26 @@ def _prepared_override_runtime(override, model, skey):
     return None
 
 
+def _finish_selected_model(selection, skey, model):
+    # Final safety net: an empty model (transient config-cache miss) makes every API call 400 and
+    # the session goes silent — reuse the last model resolved for this session, else process-wide.
+    if not model:
+        _recovered = selection.last.get(skey, '') or selection.last.get('*', '')
+        selection.used_global_recovery = not selection.last.get(skey) and bool(_recovered)
+        if _recovered:
+            logger.warning(
+                "Empty model resolved for session=%s — recovering "
+                "last-known-good model %s (config read likely returned "
+                "empty; see #35314)", skey or "", _recovered,
+            )
+            model = _recovered
+    else:
+        # Cache the good resolution for future recovery turns.
+        selection.pending_model = model
+
+    return model
+
+
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(self, **kwargs) -> tuple[str, dict]:
         selected = self._prepare_session_agent_runtime(**kwargs)
@@ -231,21 +251,7 @@ class GatewayTurnPrepareMixin:
                         "No model configured — defaulting to %s for provider %s", model, runtime_kwargs["provider"],
                     )
 
-        # Final safety net: an empty model (transient config-cache miss) makes every API call 400 and
-        # the session goes silent — reuse the last model resolved for this session, else process-wide.
-        if not model:
-            _recovered = selection.last.get(skey, '') or selection.last.get('*', '')
-            selection.used_global_recovery = not selection.last.get(skey) and bool(_recovered)
-            if _recovered:
-                logger.warning(
-                    "Empty model resolved for session=%s — recovering "
-                    "last-known-good model %s (config read likely returned "
-                    "empty; see #35314)", skey or "", _recovered,
-                )
-                model = _recovered
-        else:
-            # Cache the good resolution for future recovery turns.
-            selection.pending_model = model
+        model = _finish_selected_model(selection, skey, model)
 
         return model, runtime_kwargs
 
