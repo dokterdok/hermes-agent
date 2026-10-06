@@ -32,6 +32,8 @@ from gateway.hosted_room_artifacts import (
 from gateway.hosted_room_driver import OUTPUT_OBLIGATIONS_TABLE as OBLIGATIONS
 from gateway.hosted_room_output_fence import message_event_id, upload_id
 from hermes_state_runtime import RuntimeStoreError, _epoch
+from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+from tui_gateway.hosted_room_peer_output import OutputPending
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +252,7 @@ class CanonicalHostedOutput:
             return False
         try:
             action()
-        except Exception as exc:
+        except (OSError, sqlite3.Error, ValueError, PeerRunsHTTPError, OutputPending) as exc:
             self._record_outcome(scope, error=exc)
             return False
         self._record_outcome(scope)
@@ -431,7 +433,7 @@ class CanonicalHostedOutput:
                 attachments = existing_message["payload"].get("attachments", [])
             else:
                 attachments = self._stage_output(identity, scope, manifest, recipients)
-        except Exception as exc:
+        except (OSError, sqlite3.Error, ValueError, PeerRunsHTTPError, OutputPending) as exc:
             self._abort_staged(scope.room_id, message_event_id(scope))
             self._record_outcome(scope, error=exc)
             return None
@@ -522,7 +524,7 @@ class CanonicalHostedOutput:
             return
         try:
             published = self._published_files(scope, manifest)
-        except Exception as exc:
+        except (OSError, sqlite3.Error, ValueError, PeerRunsHTTPError, OutputPending) as exc:
             self._record_intent(identity, scope, manifest, row["operation"] if row else "ack")
             self._record_outcome(scope, error=exc)
             return
@@ -692,7 +694,7 @@ class CanonicalHostedOutput:
         self._output_write(reopen)
         try:
             action()
-        except Exception as exc:
+        except (OSError, sqlite3.Error, ValueError, PeerRunsHTTPError, OutputPending) as exc:
             self._record_outcome(scope, error=exc)
             return False
         self._record_outcome(scope, completed=reason)
