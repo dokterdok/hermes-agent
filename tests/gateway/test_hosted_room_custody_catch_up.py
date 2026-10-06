@@ -20,7 +20,7 @@ from gateway import hosted_room_safety as safety
 from gateway import hosted_rooms as rooms
 from gateway.hosted_rooms_common import open_sqlite
 from tests.gateway.test_hosted_room_custody_lineage import (  # noqa: F401
-    DOMAIN, MEMBERS, ROOM, acting, configure, continuation, copy_to, enroll, message, move, net, page, verify,
+    DOMAIN, MEMBERS, ROOM, acting, configure, continuation, copy_to, enroll, message, move, net as net, page, verify,
     watermark)
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 
@@ -115,8 +115,7 @@ def test_every_host_page_carries_a_head_the_copy_keeps(custodians):
         status = custody.custody_status(second.db, ROOM)
     assert status["head"] == host_head and status["head"]["chain_hash"] == status["watermark"]["event_hash"]
     # A head signed by anyone but the host the copy follows, or not matching its chain, is never kept.
-    with acting(second), closing(open_sqlite(second.db)) as conn:
-        own = {"room_id": ROOM, "host": second.install_id, "epoch": 1, "seq": 9, "chain_hash": "0" * 64}
+    own = {"room_id": ROOM, "host": second.install_id, "epoch": 1, "seq": 9, "chain_hash": "0" * 64}
     with acting(second):
         forged = {**own, "signature": identity.sign(custody.HEAD_DOMAIN, own)}
     with acting(third):

@@ -563,6 +563,40 @@ def _validate_replayed_events(conn, room_id, events, last_seq) -> None:
             raise ReplicaError("stored replica history is incomplete")
 
 
+def _replica_history_start(conn, room_id, room_name, members_json, authority, latest_seq, *,
+                           follow_renames: bool, verifiable: bool, from_custodian: bool):
+    """Validate the existing copy or reserve a new history span under the accepting writer."""
+    row = _load_replica_locked(conn, room_id)
+    if row is None:
+        _prune_disbanded_replicas_locked(conn, now=None, max_replica_rooms=max(0, MAX_REPLICA_ROOMS - 1))
+        reservation = conn.execute(
+            "SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id=?", (room_id,)).fetchone()
+        if reservation is not None and reservation["owner_kind"] == "replica":
+            raise ReplicaHistoryExpiredError("replica history expired; room_id remains permanently retired")
+        if int(conn.execute("SELECT COUNT(*) FROM hosted_room_replicas").fetchone()[0]) >= MAX_REPLICA_ROOMS:
+            raise ReplicaCapacityError("replica room capacity exhausted")
+        if authority["epoch"] != 1 and not verifiable:
+            raise ReplicaLineageUnverifiedError(
+                "replica lineage is incomplete; the first authority epoch is required")
+        # A copy started after the room moved replays its lineage from the first epoch.
+        head, last_seq, disbanded_at = (authority["gateway_id"], 1), 0, None
+    else:
+        head = (str(row["authority_gateway_id"]), int(row["authority_epoch"]))
+        last_seq, disbanded_at = int(row["last_seq"]), row["disbanded_at"]
+        if row["quarantine_reason"] is not None:
+            raise ReplicaError("stored replica is quarantined: " + str(row["quarantine_reason"]))
+        if (row["name"] != room_name and not follow_renames) or row["members_json"] != members_json:
+            raise ReplicaError("replica metadata conflicts with stored state")
+        if (authority["epoch"] < head[1] or (authority["epoch"] == head[1] and authority["gateway_id"] != head[0])
+                or (authority["epoch"] > head[1] and not verifiable)):
+            raise ReplicaLineageUnverifiedError("replica authority changed without a verified takeover lineage")
+        if latest_seq < int(row["latest_seq"]):
+            if not from_custodian:
+                raise ReplicaError("page.latest_seq regresses stored replica coverage")
+            latest_seq = int(row["latest_seq"])  # what the host announced stays the coverage to reach
+    return row, head, last_seq, disbanded_at, latest_seq
+
+
 def ingest_page(
     db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None,
     _authorize: Callable[[sqlite3.Connection], None] | None = None, custody_report: Any = None,
@@ -609,34 +643,9 @@ def ingest_page(
             raise ReplicaError("room_id is already locally authoritative")
         if conn.execute("SELECT 1 FROM hosted_room_retired_ids WHERE room_id=?", (room_id,)).fetchone():
             raise ReplicaError("room_id is permanently retired on this gateway")
-        row = _load_replica_locked(conn, room_id)
-        if row is None:
-            _prune_disbanded_replicas_locked(conn, now=None, max_replica_rooms=max(0, MAX_REPLICA_ROOMS - 1))
-            reservation = conn.execute(
-                "SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id=?", (room_id,)).fetchone()
-            if reservation is not None and reservation["owner_kind"] == "replica":
-                raise ReplicaHistoryExpiredError("replica history expired; room_id remains permanently retired")
-            if int(conn.execute("SELECT COUNT(*) FROM hosted_room_replicas").fetchone()[0]) >= MAX_REPLICA_ROOMS:
-                raise ReplicaCapacityError("replica room capacity exhausted")
-            if authority["epoch"] != 1 and _verify_transition is None:
-                raise ReplicaLineageUnverifiedError(
-                    "replica lineage is incomplete; the first authority epoch is required")
-            # A copy started after the room moved replays its lineage from the first epoch.
-            head, last_seq, disbanded_at = (authority["gateway_id"], 1), 0, None
-        else:
-            head = (str(row["authority_gateway_id"]), int(row["authority_epoch"]))
-            last_seq, disbanded_at = int(row["last_seq"]), row["disbanded_at"]
-            if row["quarantine_reason"] is not None:
-                raise ReplicaError("stored replica is quarantined: " + str(row["quarantine_reason"]))
-            if (row["name"] != room_name and not follow_renames) or row["members_json"] != members_json:
-                raise ReplicaError("replica metadata conflicts with stored state")
-            if (authority["epoch"] < head[1] or (authority["epoch"] == head[1] and authority["gateway_id"] != head[0])
-                    or (authority["epoch"] > head[1] and _verify_transition is None)):
-                raise ReplicaLineageUnverifiedError("replica authority changed without a verified takeover lineage")
-            if latest_seq < int(row["latest_seq"]):
-                if not _from_custodian:
-                    raise ReplicaError("page.latest_seq regresses stored replica coverage")
-                latest_seq = int(row["latest_seq"])  # what the host announced stays the coverage to reach
+        row, head, last_seq, disbanded_at, latest_seq = _replica_history_start(
+            conn, room_id, room_name, members_json, authority, latest_seq, follow_renames=follow_renames,
+            verifiable=_verify_transition is not None, from_custodian=_from_custodian)
         _validate_replayed_events(conn, room_id, events, last_seq)
         new_events = [event for event in events if event["seq"] > last_seq]
         if new_events and new_events[0]["seq"] != last_seq + 1:

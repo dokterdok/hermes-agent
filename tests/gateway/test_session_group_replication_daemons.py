@@ -140,7 +140,7 @@ def test_a_participant_copy_keeps_history_and_evidence_across_a_home_restart_the
             await asyncio.to_thread(home_proc.wait, 10)
 
     async def retired_after_both_restarts(home_desc, target_desc):
-        async with websocket(home, home_desc) as home_ws, websocket(target, target_desc) as target_ws:
+        async with websocket(home, home_desc) as _home_ws, websocket(target, target_desc) as target_ws:
             retired = await _until(lambda: copy_of(target_ws), lambda c: c.get('safety_status') == 'retired')
             assert retired['disbanded_at'] is None and retired['copy_retired_at'] > 0
             assert retired['last_seq'] == seen['last_seq']  # no invented Disband event

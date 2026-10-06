@@ -20,8 +20,8 @@ from gateway.config import PlatformConfig
 from gateway.platforms import api_server, api_server_room_grants
 from gateway.session_controls import AuthorityConnection
 from tests.gateway.fixtures.passive_copy import (  # noqa: F401
-    API_KEY, HOME, HOME_SECRET, KEY, MEMBERS, TARGET, api, disband, enroll, invite, member, notice, prepare)
-from tests.gateway.test_session_group_replication import call, gateway  # noqa: F401
+    API_KEY, HOME, HOME_SECRET, KEY, MEMBERS, TARGET, api as api, disband, enroll, invite, member, notice, prepare)
+from tests.gateway.test_session_group_replication import call, gateway as gateway  # noqa: F401
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 
 BASE = "/v1/group-replicas/"
