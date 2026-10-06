@@ -63,6 +63,8 @@ beforeEach(() => {
 describe('opening a room', () => {
   it('follows the main-window tab open and close', async () => {
     const room = await loadRoom()
+    room.chat.appendGroupChatEntry('Core', { kind: 'member', name: 'alpha' }, '@user Which option should we use?')
+    expect(room.chat.$groupNeedsYou.get().Core).toBe(true)
     let onClose: () => void = () => undefined
 
     host.openWorkspace = (_id: string, options: { onClose: () => void }) => {
@@ -74,12 +76,14 @@ describe('opening a room', () => {
     room.view.openGroupChat('Core')
 
     expect(room.chat.$groupChatWorkspace.get()).toBe('Core')
+    expect(room.chat.$groupNeedsYou.get().Core).toBe(true)
     // #89788: the main tab owns the room, so the pane keeps its roster.
     expect(room.panes.shouldRenderGroupChatInPane('Core')).toBe(false)
 
     onClose()
 
     expect(room.chat.$groupChatWorkspace.get()).toBeNull()
+    expect(room.chat.$groupNeedsYou.get().Core).toBe(true)
     expect(room.panes.shouldRenderGroupChatInPane('Core')).toBe(true)
   })
 
