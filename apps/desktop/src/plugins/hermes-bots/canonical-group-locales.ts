@@ -132,6 +132,10 @@ export interface CanonicalGroupMessages {
   journalReload: string
   classicActivitySettled: string
   classicActivityStopped: string
+  retirementStopping: string
+  retirementCleanupPending: string
+  retirementCleanupUnreadable: string
+  retirementUnconfirmed: string
 }
 
 export const HOSTED_PROFILE_OWNERS_URL =
@@ -274,7 +278,11 @@ export const CANONICAL_GROUP_LOCALES = {
     journalLoadHint: 'Sending is paused to avoid sending a saved message twice. Your current draft will stay here.',
     journalReload: 'Try loading again',
     classicActivitySettled: 'Replies finished',
-    classicActivityStopped: 'Requested Stop; further replies are paused until you continue'
+    classicActivityStopped: 'Requested Stop; further replies are paused until you continue',
+    retirementStopping: "Ending the group chat. Waiting for active work to stop.",
+    retirementCleanupPending: "End is still finishing. Access on other computers is being removed. Hermes will keep trying when they reconnect; you can leave this view.",
+    retirementCleanupUnreadable: "Cleanup could not be confirmed. Its records have been kept. Reconnect the owning computer and check again.",
+    retirementUnconfirmed: "We couldn’t confirm whether this group chat ended. Sending is paused; check its status or retry End."
   },
   ja: {
     legacyRoom: 'このチャットを続けるか、同じBotで新しいグループを始められます。新しいグループはDesktopを閉じても作業を続けられます。これまでのメッセージはここに残ります。',
@@ -416,7 +424,11 @@ export const CANONICAL_GROUP_LOCALES = {
       '保存済みメッセージを重複して送信しないよう、送信を一時停止しています。現在の下書きはそのまま残ります。',
     journalReload: 'もう一度読み込む',
     classicActivitySettled: '返信が完了しました',
-    classicActivityStopped: '停止を要求しました。続行するまで、その後の返信は一時停止します'
+    classicActivityStopped: '停止を要求しました。続行するまで、その後の返信は一時停止します',
+    retirementStopping: "グループチャットを終了処理中です。実行中の作業の停止を待っています。",
+    retirementCleanupPending: "終了処理はまだ続いています。他のコンピューターのアクセスを解除しています。再接続時にHermesが再試行します。この画面を離れても構いません。",
+    retirementCleanupUnreadable: "後処理を確認できませんでした。記録は保持されています。管理元のコンピューターを再接続し、もう一度確認してください。",
+    retirementUnconfirmed: "グループチャットが終了したか確認できませんでした。送信は一時停止中です。状態を確認するか、終了を再試行してください。"
   },
   zh: {
     legacyRoom: '继续在这里聊天，或用相同的Bot开始一个新群聊，让它们在Desktop关闭后仍能继续工作。之前的消息会保留在这里。',
@@ -552,7 +564,11 @@ export const CANONICAL_GROUP_LOCALES = {
     journalLoadHint: '发送已暂停，以免重复发送已保存的消息。当前草稿会保留。',
     journalReload: '重新加载',
     classicActivitySettled: '回复已完成',
-    classicActivityStopped: '已请求停止；后续回复将暂停，直到你继续'
+    classicActivityStopped: '已请求停止；后续回复将暂停，直到你继续',
+    retirementStopping: "正在结束群聊，等待正在进行的工作停止。",
+    retirementCleanupPending: "结束操作尚未完成，正在移除其他电脑的访问权限。它们重新连接后Hermes会继续尝试；你可以离开此视图。",
+    retirementCleanupUnreadable: "无法确认清理状态，记录已保留。请重新连接负责的电脑并再次检查。",
+    retirementUnconfirmed: "无法确认群聊是否已结束。发送已暂停，请检查状态或重试结束操作。"
   },
   'zh-hant': {
     legacyRoom: '繼續在這裡聊天，或用相同的Bot開始一個新群聊，讓它們在Desktop關閉後仍能繼續工作。之前的訊息會保留在這裡。',
@@ -688,7 +704,11 @@ export const CANONICAL_GROUP_LOCALES = {
     journalLoadHint: '傳送已暫停，以免重複傳送已儲存的訊息。目前的草稿會保留。',
     journalReload: '重新載入',
     classicActivitySettled: '回覆已完成',
-    classicActivityStopped: '已要求停止；後續回覆將暫停，直到你繼續'
+    classicActivityStopped: '已要求停止；後續回覆將暫停，直到你繼續',
+    retirementStopping: "正在結束群聊，等待進行中的工作停止。",
+    retirementCleanupPending: "結束操作尚未完成，正在移除其他電腦的存取權限。它們重新連線後Hermes會繼續嘗試；你可以離開此檢視。",
+    retirementCleanupUnreadable: "無法確認清理狀態，記錄已保留。請重新連接負責的電腦並再次檢查。",
+    retirementUnconfirmed: "無法確認群聊是否已結束。傳送已暫停，請檢查狀態或重試結束操作。"
   },
   ar: {
     legacyRoom: 'تابع المحادثة هنا، أو ابدأ مجموعة جديدة مع البوتات نفسها. يمكن للمجموعة الجديدة مواصلة العمل حتى عند إغلاق Desktop. ستبقى رسائلك السابقة هنا.',
@@ -826,7 +846,11 @@ export const CANONICAL_GROUP_LOCALES = {
     journalLoadHint: 'توقف الإرسال مؤقتًا لمنع إرسال رسالة محفوظة مرتين. ستبقى مسودتك الحالية هنا.',
     journalReload: 'إعادة التحميل',
     classicActivitySettled: 'اكتملت الردود',
-    classicActivityStopped: 'طُلب الإيقاف؛ تتوقف الردود اللاحقة مؤقتًا حتى تتابع'
+    classicActivityStopped: 'طُلب الإيقاف؛ تتوقف الردود اللاحقة مؤقتًا حتى تتابع',
+    retirementStopping: "جارٍ إنهاء محادثة المجموعة. ننتظر توقف العمل الجاري.",
+    retirementCleanupPending: "الإنهاء لم يكتمل بعد. يجري إزالة صلاحيات الوصول على الأجهزة الأخرى. سيواصل Hermes المحاولة عند إعادة اتصالها؛ يمكنك مغادرة هذه الشاشة.",
+    retirementCleanupUnreadable: "تعذر تأكيد التنظيف. تم الاحتفاظ بسجلاته. أعد توصيل الجهاز المسؤول وتحقق مجددًا.",
+    retirementUnconfirmed: "تعذر تأكيد انتهاء محادثة المجموعة. الإرسال متوقف مؤقتًا؛ تحقق من حالتها أو أعد محاولة الإنهاء."
   },
   ru: {
     legacyRoom: 'Продолжайте общаться здесь или начните новую группу с теми же Ботами, которые смогут продолжать работу после закрытия Desktop. Ваши предыдущие сообщения останутся здесь.',
@@ -968,7 +992,11 @@ export const CANONICAL_GROUP_LOCALES = {
       'Отправка приостановлена, чтобы не отправить сохранённое сообщение дважды. Текущий черновик остаётся здесь.',
     journalReload: 'Загрузить ещё раз',
     classicActivitySettled: 'Ответы завершены',
-    classicActivityStopped: 'Запрошена остановка; дальнейшие ответы приостановлены до продолжения'
+    classicActivityStopped: 'Запрошена остановка; дальнейшие ответы приостановлены до продолжения',
+    retirementStopping: "Групповой чат завершается. Ожидаем остановки текущей работы.",
+    retirementCleanupPending: "Завершение ещё продолжается: доступ с других компьютеров удаляется. Hermes продолжит попытки после их подключения; вы можете закрыть этот экран.",
+    retirementCleanupUnreadable: "Очистку не удалось подтвердить. Её записи сохранены. Подключите управляющий компьютер и проверьте снова.",
+    retirementUnconfirmed: "Не удалось подтвердить завершение чата. Отправка приостановлена; проверьте состояние или повторите завершение."
   },
   fr: {
     legacyRoom: 'Continuez à discuter ici, ou démarrez un nouveau groupe avec les mêmes Bots qui pourront continuer à travailler quand Desktop sera fermé. Vos messages précédents resteront ici.',
@@ -1114,7 +1142,11 @@ export const CANONICAL_GROUP_LOCALES = {
       'L’envoi est suspendu pour éviter d’envoyer deux fois un message enregistré. Votre brouillon actuel reste ici.',
     journalReload: 'Réessayer le chargement',
     classicActivitySettled: 'Réponses terminées',
-    classicActivityStopped: 'Arrêt demandé ; les réponses suivantes sont suspendues jusqu’à votre reprise'
+    classicActivityStopped: 'Arrêt demandé ; les réponses suivantes sont suspendues jusqu’à votre reprise',
+    retirementStopping: "La discussion se termine. En attente de l’arrêt du travail en cours.",
+    retirementCleanupPending: "La fin est encore en cours : les accès des autres ordinateurs sont retirés. Hermes réessaiera à leur reconnexion ; vous pouvez quitter cette vue.",
+    retirementCleanupUnreadable: "Le nettoyage n’a pas pu être confirmé. Ses traces sont conservées. Reconnectez l’ordinateur responsable et vérifiez à nouveau.",
+    retirementUnconfirmed: "La fin de cette discussion n’a pas pu être confirmée. L’envoi est suspendu ; vérifiez son état ou réessayez de la terminer."
   },
   de: {
     legacyRoom: 'Chatte hier weiter oder starte mit denselben Bots eine neue Gruppe, die weiterarbeiten kann, wenn Desktop geschlossen ist. Deine bisherigen Nachrichten bleiben hier.',
@@ -1263,7 +1295,11 @@ export const CANONICAL_GROUP_LOCALES = {
       'Das Senden ist pausiert, damit gespeicherte Nachrichten nicht doppelt gesendet werden. Dein aktueller Entwurf bleibt erhalten.',
     journalReload: 'Erneut laden',
     classicActivitySettled: 'Antworten abgeschlossen',
-    classicActivityStopped: 'Stopp angefordert; weitere Antworten sind bis zum Fortsetzen pausiert'
+    classicActivityStopped: 'Stopp angefordert; weitere Antworten sind bis zum Fortsetzen pausiert',
+    retirementStopping: "Der Gruppenchat wird beendet. Laufende Arbeiten müssen noch stoppen.",
+    retirementCleanupPending: "Das Beenden läuft noch: Zugriffe anderer Computer werden entfernt. Hermes versucht es nach deren erneuter Verbindung weiter; du kannst diese Ansicht verlassen.",
+    retirementCleanupUnreadable: "Die Bereinigung konnte nicht bestätigt werden. Ihre Einträge bleiben erhalten. Verbinde den zuständigen Computer erneut und prüfe nochmals.",
+    retirementUnconfirmed: "Das Ende dieses Gruppenchats konnte nicht bestätigt werden. Senden ist pausiert; prüfe den Status oder versuche das Beenden erneut."
   },
   es: {
     legacyRoom: 'Sigue chateando aquí o inicia un nuevo grupo con los mismos Bots, que pueden seguir trabajando cuando Desktop esté cerrado. Tus mensajes anteriores permanecerán aquí.',
@@ -1405,6 +1441,10 @@ export const CANONICAL_GROUP_LOCALES = {
       'El envío está en pausa para evitar enviar un mensaje guardado dos veces. Tu borrador actual se conserva.',
     journalReload: 'Volver a cargar',
     classicActivitySettled: 'Respuestas terminadas',
-    classicActivityStopped: 'Se solicitó detener; las siguientes respuestas están en pausa hasta que continúes'
+    classicActivityStopped: 'Se solicitó detener; las siguientes respuestas están en pausa hasta que continúes',
+    retirementStopping: "El chat de grupo se está cerrando. Esperamos a que se detenga el trabajo en curso.",
+    retirementCleanupPending: "El cierre sigue en curso: se están retirando los accesos de otros ordenadores. Hermes volverá a intentarlo cuando se reconecten; puedes salir de esta vista.",
+    retirementCleanupUnreadable: "No pudimos confirmar la limpieza. Sus registros se conservan. Reconecta el ordenador responsable y vuelve a comprobar.",
+    retirementUnconfirmed: "No pudimos confirmar si este chat terminó. El envío está pausado; comprueba el estado o vuelve a intentar finalizarlo."
   }
 } satisfies Record<string, CanonicalGroupMessages>

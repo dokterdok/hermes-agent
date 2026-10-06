@@ -26,6 +26,7 @@ import type { ReactNode } from 'react'
 import { CanonicalMemberFace, canonicalMemberName } from './canonical-group-identity'
 import { CanonicalGroupFiles } from './canonical-group-files'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import type { RetirementStatus } from './canonical-group-retirement'
 import { canonicalGroupRequest, readGroupExecutionMode } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 import { groupFailureDetail } from './group-activity'
@@ -124,63 +125,46 @@ export function CanonicalGroupHeader({
 }
 
 /** Rename and disband for a gateway room, offered only when its gateway advertises them. */
-export function CanonicalGroupRoomActions({
-  binding,
-  name,
-  latestFileSeq = 0,
-  visible = true,
-  onChanged,
-  onDisbanded
-}: {
-  binding: CanonicalGroupBinding
-  name: string
-  latestFileSeq?: number
-  visible?: boolean
-  onChanged: () => void
-  onDisbanded?: () => void
+export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, visible = true, onChanged, onDisbanded, retirement, onRetirementRequested }: {
+  binding: CanonicalGroupBinding; name: string; latestFileSeq?: number; visible?: boolean; onChanged: () => void; onDisbanded?: () => void; retirement?: RetirementStatus | null; onRetirementRequested?: () => void
 }) {
   const labels = useCanonicalGroupLabels()
-  const alive = useRef(true)
-  // eslint-disable-next-line no-restricted-syntax -- component lifetime, not a mirror of reactive atom values
-  useEffect(() => {
-    alive.current = true
-
-    return () => {
-      alive.current = false
-    }
-  }, [])
   const [methods, setMethods] = useState<string[]>([])
   const [draft, setDraft] = useState<null | string>(null)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const pending = useRef(false)
+  const alive = useRef(true)
+  const retirementVerified = useRef(false)
+  const completed = useRef(false)
   const disbandIntent = useRef<string | null>(null)
   // One intended name keeps one event id across retries; a different name is a new intent.
   const renameIntent = useRef<null | { name: string; eventId: string }>(null)
 
+  // eslint-disable-next-line no-restricted-syntax -- component lifetime, not mirrored reactive atom values
+  useEffect(() => {alive.current = true;
+
+ return () => {alive.current = false}}, [])
+  // eslint-disable-next-line no-restricted-syntax -- one completion receipt per explicit End intent, not a reactive store mirror
+  useEffect(() => {
+    if (retirementVerified.current && retirement?.phase === 'complete' && !completed.current) {
+      completed.current = true
+      onDisbanded?.()
+    }
+  }, [retirement, onDisbanded])
+
   useEffect(() => {
     let current = true
     void readGroupExecutionMode(binding, gatewayActivationEpoch()).then(surface => {
-      if (current) {
-        setMethods(surface.methods ?? [])
-      }
+      if (current) {setMethods(surface.methods ?? [])}
     })
 
-    return () => {
-      current = false
-    }
+    return () => { current = false }
   }, [binding])
 
-  const run = async (operation: () => Promise<void>, rethrow = false) => {
-    if (pending.current) {
-      if (rethrow) {
-        throw new Error(labels.pendingActionUnconfirmed)
-      }
-
-      return
-    }
-
+  const run = async (operation: () => Promise<void>) => {
+    if (pending.current) {return}
     pending.current = true
     setBusy(true)
     setError('')
@@ -189,10 +173,6 @@ export function CanonicalGroupRoomActions({
       await operation()
     } catch (e) {
       setError(groupFailureDetail(e instanceof Error ? e.message : String(e)))
-
-      if (rethrow) {
-        throw new Error(e instanceof Error && e.message === labels.disbandUnconfirmed ? labels.disbandUnconfirmed : labels.pendingActionUnconfirmed, {cause: e})
-      }
     } finally {
       pending.current = false
       setBusy(false)
@@ -208,38 +188,29 @@ export function CanonicalGroupRoomActions({
       return
     }
 
-    if (renameIntent.current?.name !== next) {
-      renameIntent.current = { name: next, eventId: crypto.randomUUID() }
-    }
-
+    if (renameIntent.current?.name !== next) {renameIntent.current = { name: next, eventId: crypto.randomUUID() }}
     const intent = renameIntent.current
     void run(async () => {
-      await canonicalGroupRequest(binding, 'groups.rename', {
-        room_id: binding.roomId,
-        event_id: intent.eventId,
-        name: intent.name
-      })
+      await canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: intent.eventId, name: intent.name })
       renameIntent.current = null
       setDraft(null)
 
-      if (alive.current) {
-        onChanged()
-      }
+      if (alive.current) {onChanged()}
     })
   }
 
-  const disband = () => {
+  const disband = async () => {
+    if (pending.current) {throw new Error(labels.actionInFlight)}
+    pending.current = true
     disbandIntent.current ??= crypto.randomUUID()
+    setBusy(true)
+    setError('')
+    onRetirementRequested?.()
 
-    return run(async () => {
-      const result = await canonicalGroupRequest<{ tombstone?: { room_id: string; disbanded_at: number } } | undefined>(
-        binding,
-        'groups.disband',
-        {
-          room_id: binding.roomId,
-          cancel_id: disbandIntent.current
-        }
-      )
+    try {
+      const result = await canonicalGroupRequest<{ tombstone?: { room_id: string; disbanded_at: number } } | undefined>(binding, 'groups.disband', {
+        room_id: binding.roomId, cancel_id: disbandIntent.current
+      })
 
       const tombstone = result?.tombstone
 
@@ -248,115 +219,53 @@ export function CanonicalGroupRoomActions({
       }
 
       disbandIntent.current = null
+      retirementVerified.current = true
 
-      if (alive.current) {
-        onDisbanded?.()
+      if (alive.current) {onRetirementRequested?.()}
+    } catch (error) {
+      const refusal = error as {code?: unknown; data?: {reason?: unknown}} | null
+
+      if (refusal?.code === 4001 && refusal.data?.reason === 'room_retiring') {
+        retirementVerified.current = true
+
+        if (alive.current) {onRetirementRequested?.()}
+
+        return
       }
-    }, true)
+
+      if (alive.current) {setError(groupFailureDetail(error instanceof Error ? error.message : String(error)))}
+      throw new Error(labels.disbandUnconfirmed)
+    } finally {pending.current = false;
+
+ if (alive.current) {setBusy(false)}}
   }
 
-  return (
-    <>
-      {visible && methods.includes('groups.attachment.list') && <CanonicalGroupFiles binding={binding} latestFileSeq={latestFileSeq} roomName={name} />}
-      {(methods.includes('groups.rename') || methods.includes('groups.disband')) && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button aria-label={labels.groupActions} disabled={busy} size="icon-xs" variant="ghost">
-              <Codicon name="ellipsis" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {methods.includes('groups.rename') && (
-              <DropdownMenuItem
-                onSelect={() => {
-                  setError('')
-                  setDraft(name)
-                }}
-              >
-                <Codicon name="edit" />
-                {labels.rename}
-              </DropdownMenuItem>
-            )}
-            {methods.includes('groups.rename') && methods.includes('groups.disband') && <DropdownMenuSeparator />}
-            {methods.includes('groups.disband') && (
-              <DropdownMenuItem
-                onSelect={() => {
-                  setError('')
-                  setConfirming(true)
-                }}
-                variant="destructive"
-              >
-                <Codicon name="close" />
-                {labels.disband}
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
-      <Dialog
-        onOpenChange={open => {
-          if (!open && !busy) {
-            setDraft(null)
-          }
-        }}
-        open={draft !== null}
-      >
-        <DialogContent aria-describedby={undefined} className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>{labels.rename}</DialogTitle>
-          </DialogHeader>
-          <form
-            className="grid gap-4"
-            onSubmit={event => {
-              event.preventDefault()
-              rename()
-            }}
-          >
-            <Input
-              aria-label={labels.roomName}
-              autoFocus
-              disabled={busy}
-              maxLength={120}
-              onChange={event => setDraft(event.target.value)}
-              value={draft ?? ''}
-            />
-            {error && (
-              <div className="grid gap-1 text-xs text-destructive" role="alert">
-                <p>{labels.pendingActionUnconfirmed}</p>
-                <details className="text-(--ui-text-quaternary)">
-                  <summary className="cursor-pointer">{labels.setupDetails}</summary>
-                  <p className="mt-1 whitespace-pre-wrap break-words">{error}</p>
-                </details>
-              </div>
-            )}
-            <DialogFooter>
-              <Button disabled={busy} onClick={() => setDraft(null)} type="button" variant="ghost">
-                {labels.cancel}
-              </Button>
-              <Button disabled={busy || !draft?.trim()} loading={busy} type="submit" variant="secondary">
-                {labels.save}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-      <ConfirmDialog
-        cancelLabel={labels.cancel}
-        confirmLabel={labels.confirmDisband}
-        description={labels.disbandWarning}
-        destructive
-        onClose={() => setConfirming(false)}
-        onConfirm={disband}
-        open={confirming}
-        title={labels.disband}
-      >
-        {error && error !== labels.disbandUnconfirmed && (
-          <details className="text-xs text-(--ui-text-quaternary)">
-            <summary className="cursor-pointer">{labels.setupDetails}</summary>
-            <p className="mt-1 whitespace-pre-wrap break-words">{error}</p>
-          </details>
-        )}
-      </ConfirmDialog>
-    </>
-  )
+  return <>
+    {visible && methods.includes('groups.attachment.list') && <CanonicalGroupFiles binding={binding} latestFileSeq={latestFileSeq} roomName={name} />}
+    {(methods.includes('groups.rename') || methods.includes('groups.disband')) && <DropdownMenu>
+      <DropdownMenuTrigger asChild><Button aria-label={labels.groupActions} disabled={busy} size="icon-xs" variant="ghost"><Codicon name="ellipsis" /></Button></DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {methods.includes('groups.rename') && <DropdownMenuItem disabled={Boolean(retirement)} onSelect={() => { setError(''); setDraft(name) }}><Codicon name="edit" />{labels.rename}</DropdownMenuItem>}
+        {methods.includes('groups.rename') && methods.includes('groups.disband') && <DropdownMenuSeparator />}
+        {methods.includes('groups.disband') && retirement?.phase === 'complete' ? <DropdownMenuItem onSelect={() => onDisbanded?.()}><Codicon name="close" />{labels.back}</DropdownMenuItem> : <>        {methods.includes('groups.disband') && <DropdownMenuItem disabled={retirement?.phase !== 'unknown' && Boolean(retirement)} onSelect={() => { setError(''); setConfirming(true) }} variant="destructive"><Codicon name="close" />{labels.disband}</DropdownMenuItem>}</>}
+      </DropdownMenuContent>
+    </DropdownMenu>}
+    <Dialog onOpenChange={open => { if (!open && !busy) {setDraft(null)} }} open={draft !== null}>
+      <DialogContent aria-describedby={undefined} className="max-w-sm">
+        <DialogHeader><DialogTitle>{labels.rename}</DialogTitle></DialogHeader>
+        <form className="grid gap-4" onSubmit={event => { event.preventDefault(); rename() }}>
+          <Input aria-label={labels.roomName} autoFocus disabled={busy} maxLength={120} onChange={event => setDraft(event.target.value)} value={draft ?? ''} />
+          {error && <div className="grid gap-1 text-xs text-destructive" role="alert"><p>{labels.pendingActionUnconfirmed}</p>
+            <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{error}</p></details>
+          </div>}
+          <DialogFooter><Button disabled={busy} onClick={() => setDraft(null)} type="button" variant="ghost">{labels.cancel}</Button>
+            <Button disabled={busy || !draft?.trim()} loading={busy} type="submit" variant="secondary">{labels.save}</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+    <ConfirmDialog cancelLabel={labels.cancel} confirmLabel={labels.confirmDisband} description={labels.disbandWarning}
+      destructive onClose={() => setConfirming(false)} onConfirm={disband} open={confirming} title={labels.disband}>
+      {error && error !== labels.disbandUnconfirmed && <details className="text-xs text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{error}</p></details>}
+    </ConfirmDialog>
+  </>
 }
