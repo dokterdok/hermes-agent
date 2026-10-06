@@ -101,4 +101,3 @@ async def test_room_grant_cannot_create_session_or_permanent_approval_policy(
     assert permanent_body["error"]["code"] == "invalid_approval_choice"
     assert resolve_all.status == 400
     assert resolve_all_body["error"]["code"] == "invalid_approval_scope"
-
