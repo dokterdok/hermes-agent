@@ -27,6 +27,7 @@ import {
   groupSessionKey,
   hasThreadScopedGroupSession
 } from './group-membership'
+import { groupDirectiveSurface, groupMentionSurface } from './group-mention-surface'
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
 import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
@@ -47,46 +48,48 @@ import type { Attachment, GroupMember, GroupMessage } from './types'
 // turn in its OWN persistent per-group Hermes session and is fed only the
 // room messages that are NEW since it last saw the room.
 
-/** Deterministic @mention parse. Handles @name, @"two words" via display
- *  titles, and @everyone/@all. Names match case-insensitively against member
- *  profile names, display titles, and collapsed no-space forms. */
-export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
-  const source = String(text || '')
-  const mentioned = new Set<string>()
-  let everyone = false
+function memberMentionForms(member: GroupMember): Set<string> {
+  const title = String(member.title || '').trim()
+  // Normalize legacy "default" handles without aliasing device-qualified
+  // defaults to @hermes: that would retarget the primary tag by roster order.
+  const handle = String(botHandle(member.name, member) || '').trim()
+
+  const forms = new Set([
+    member.name.toLowerCase(),
+    member.name.toLowerCase().replace(/[\s_-]+/g, ''),
+    ...(handle ? [handle.toLowerCase(), handle.toLowerCase().replace(/[\s_-]+/g, '')] : []),
+    ...(title
+      ? [title.toLowerCase(), title.toLowerCase().replace(/[\s_-]+/g, ''), title.split(/\s+/)[0].toLowerCase()]
+      : [])
+  ])
+
+  // Renamed members answer to their friendly names too (profile
+  // display_name and Bot Mode title), in slugged and collapsed forms —
+  // the same tags the roster autocomplete inserts.
+  for (const friendly of botFriendlyNames(member)) {
+    for (const form of mentionNameForms(friendly)) {
+      forms.add(form)
+    }
+  }
+
+  // A same-named Connections twin gets `@<name>-<device>` from the registry,
+  // but the room's own-source member keeps its bare name and so loses every
+  // shared form to the twin (Map last-wins). `@<name>-local` is its
+  // always-available unambiguous address.
+  if (!member.remoteSource) {
+    forms.add(`${member.name.toLowerCase()}-local`)
+  }
+
+  return forms
+}
+
+function groupMentionHandles(members: GroupMember[]): Map<string, string> {
   const handles = new Map<string, string>()
 
   for (const member of members) {
+    const forms = memberMentionForms(member)
     const title = String(member.title || '').trim()
-    // Normalize legacy "default" handles without aliasing device-qualified
-    // defaults to @hermes: that would retarget the primary tag by roster order.
     const handle = String(botHandle(member.name, member) || '').trim()
-
-    const forms = new Set([
-      member.name.toLowerCase(),
-      member.name.toLowerCase().replace(/[\s_-]+/g, ''),
-      ...(handle ? [handle.toLowerCase(), handle.toLowerCase().replace(/[\s_-]+/g, '')] : []),
-      ...(title
-        ? [title.toLowerCase(), title.toLowerCase().replace(/[\s_-]+/g, ''), title.split(/\s+/)[0].toLowerCase()]
-        : [])
-    ])
-
-    // Renamed members answer to their friendly names too (profile
-    // display_name and Bot Mode title), in slugged and collapsed forms —
-    // the same tags the roster autocomplete inserts.
-    for (const friendly of botFriendlyNames(member)) {
-      for (const form of mentionNameForms(friendly)) {
-        forms.add(form)
-      }
-    }
-
-    // A same-named Connections twin gets `@<name>-<device>` from the registry,
-    // but the room's own-source member keeps its bare name and so loses every
-    // shared form to the twin (Map last-wins). `@<name>-local` is its
-    // always-available unambiguous address.
-    if (!member.remoteSource) {
-      forms.add(`${member.name.toLowerCase()}-local`)
-    }
 
     for (const form of forms) {
       if (form) {
@@ -118,8 +121,27 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     }
   }
 
-  for (const match of source.matchAll(/@([a-z0-9][a-z0-9._-]*)/gi)) {
-    const handle = match[1].toLowerCase()
+  return handles
+}
+
+/** Deterministic @mention parse. Handles profile/friendly/qualified names
+ *  and @everyone/@all. Names match case-insensitively against member
+ *  profile names, display titles, and collapsed no-space forms. */
+export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
+  const surface = groupMentionSurface(text)
+  const source = surface.text
+  const mentioned = new Set<string>()
+  let everyone = false
+  let explicit = false
+  let human = false
+  const handles = groupMentionHandles(members)
+
+  for (const match of source.matchAll(/(?<![\p{L}\p{N}_@])@(?:"([^"\n]+)"|([\p{L}\p{N}][\p{L}\p{N}._-]*))/giu)) {
+    explicit = true
+    const end = (match.index ?? 0) + match[0].length
+
+    if (surface.generatedAt.has(end) || source[end] === '&') {continue}
+    const handle = (match[1] ?? match[2]).toLowerCase()
 
     if (handle === 'everyone' || handle === 'all') {
       everyone = true
@@ -128,6 +150,8 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     }
 
     if (handle === 'user') {
+      human = true
+
       continue
     }
 
@@ -139,7 +163,7 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
   }
 
   return {
-    everyone,
+    everyone, explicit, human,
     mentioned
   }
 }
@@ -184,9 +208,11 @@ export function resolveGroupResponders(log: GroupMessage[], members: GroupMember
 
   const mentioned = new Set<string>()
   let everyone = false
+  let explicit = false
 
   for (const entry of sinceLastUser) {
     const parsed = parseGroupChatMentions(entry.text, members)
+    explicit ||= parsed.explicit
 
     if (parsed.everyone) {
       everyone = true
@@ -197,7 +223,7 @@ export function resolveGroupResponders(log: GroupMessage[], members: GroupMember
     }
   }
 
-  if (everyone || mentioned.size === 0) {
+  if (everyone || (!explicit && mentioned.size === 0)) {
     return members
   }
 
@@ -291,7 +317,7 @@ export function classifyGroupHoldDirective(
 ) {
   const value = String(text || '')
   const mentioned = [...(mentionedKeys || [])]
-  const stop = stopWordPlacement(value)
+  const stop = stopWordPlacement(groupDirectiveSurface(value))
 
   if (stop === 'adjacent') {
     // "@all stop" holds every member — symmetric with "@all resume".
@@ -896,6 +922,14 @@ export function sendToGroupChat(
       kind: 'error',
       message: botsText().group.noMembersToSend(group)
     })
+
+    return null
+  }
+
+  const address = parseGroupChatMentions(trimmed, members)
+
+  if (address.explicit && !address.everyone && !address.human && address.mentioned.size === 0) {
+    host.notify({kind: 'error', message: botsText().group.chooseBotFromGroup})
 
     return null
   }
