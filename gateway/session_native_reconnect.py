@@ -22,8 +22,10 @@ async def recover_adapter_native_inputs(runner, platform, adapter, *, profile=No
     if not current():
         return
     for authority in all_authorities(runner):
-        if authority is None or not current():
+        if not current():
             return
+        if authority is None:
+            continue
         try:
             with owner_scope(authority):
                 # Inspect already-owned ledgers only. This transport's native
@@ -49,7 +51,7 @@ async def recover_adapter_native_inputs(runner, platform, adapter, *, profile=No
                     refused = sum(verdict not in {'ready', 'active'} for verdict in outcomes.values())
                     if refused:
                         logger.debug('Native reconnect left %d candidate queues paused', refused)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- connector role checks raise platform/plugin-specific exceptions; contain them without undoing published transport or exposing payload text
             # Refusal or missing state must not undo a successful adapter install.
             # No payload-bearing exception text, retry loop or synthesized input.
             logger.debug('Native reconnect recovery deferred (%s)', type(exc).__name__)
