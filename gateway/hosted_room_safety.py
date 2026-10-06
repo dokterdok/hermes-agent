@@ -426,6 +426,13 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
            )
            ON CONFLICT(singleton) DO UPDATE SET event_bytes=excluded.event_bytes"""
     )
+    _install_safety_triggers(conn)
+    # Audits every stored copy, re-deriving its byte count, before compacting any.
+    _compact_over_budget_replicas_locked(conn)
+
+
+def _install_safety_triggers(conn: sqlite3.Connection) -> None:
+    """Replace stale lineage guards and install the current store guards in order."""
     from gateway import hosted_rooms as limits
 
     ordinary_event_budget = int(limits.MAX_GATEWAY_EVENT_BYTES)
@@ -648,8 +655,6 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
            END""",
     ):
         conn.execute(trigger)
-    # Audits every stored copy, re-deriving its byte count, before compacting any.
-    _compact_over_budget_replicas_locked(conn)
 
 
 def safety_schema_is_current(conn: sqlite3.Connection) -> bool:

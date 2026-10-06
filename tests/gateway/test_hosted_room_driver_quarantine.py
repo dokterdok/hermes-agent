@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from gateway import hosted_room_driver as driver, hosted_rooms as rooms
-from tests.gateway.test_hosted_room_driver import FakeClock, _admit, _identity, _lease, _payload, db
+from tests.gateway.test_hosted_room_driver import FakeClock, _admit, _identity, _lease, _payload, db as db
 
 
 def quarantine(path):
