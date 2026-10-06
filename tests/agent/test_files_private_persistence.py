@@ -69,7 +69,7 @@ def test_current_projection_resets_without_rewriting_prefix(tmp_path, monkeypatc
                     with pytest.raises((RuntimeError, asyncio.CancelledError)):
                         agent.run_conversation(live, conversation_history=history, persist_user_message=projection)
             else:
-                result = agent.run_conversation(live, conversation_history=history, persist_user_message=projection)
+                agent.run_conversation(live, conversation_history=history, persist_user_message=projection)
         assert agent._persist_user_message_override is None
         assert history == before
         assert db.get_messages('s')[:2] == rows_before

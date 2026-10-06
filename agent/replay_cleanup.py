@@ -243,3 +243,17 @@ def strip_stale_dangerous_confirmations(
         drop_stale_api_content(redacted)
         cleaned.append(redacted)
     return cleaned
+
+
+def has_replayable_sidecar(role, content, msg) -> bool:
+    """True for an assistant row whose reply lives only in the ``api_content`` sidecar.
+
+    A reasoning-only clean stop persists ``content=""`` and the promoted text in ``api_content``
+    (agent/turn_final_response.py). Gating replay on ``content`` alone dropped that row, so the
+    next gateway turn lost the assistant's answer and replayed user->user."""
+    return (
+        role == "assistant"
+        and not content
+        and isinstance(msg.get("api_content"), str)
+        and bool(msg.get("api_content"))
+    )

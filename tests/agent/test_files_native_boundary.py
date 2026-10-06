@@ -39,7 +39,7 @@ def test_native_dispatch_refuses_prepared_files_only(tmp_path, monkeypatch, reco
             assert result['failed'] is True and result['completed'] is False
             assert result['failure_reason'] == 'prepared_files_unsupported'
             assert result['failure_retryable'] is False
-            assert 'codex_app_server' in result['error']
+            assert 'attachments' in result['error'] and 'codex_app_server' not in result['error']
             assert PRIVATE not in json.dumps(result) and DATA not in json.dumps(result)
             assert PRIVATE not in json.dumps(db.get_messages('native-owner'))
             # A following ordinary turn on this same owner still dispatches.

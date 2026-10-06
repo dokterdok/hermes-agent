@@ -6,7 +6,7 @@ from types import MethodType
 import pytest
 
 from gateway.session_api_turn import api_execution
-from tests.gateway.test_files_live_provenance import live
+from tests.gateway.test_files_live_provenance import live as live
 
 
 @pytest.mark.parametrize('files', [True, False], ids=['files', 'ordinary-cached'])
