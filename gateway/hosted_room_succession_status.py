@@ -17,6 +17,9 @@ waits five minutes and sends only while every better-placed one still looks offl
 from __future__ import annotations
 
 import asyncio
+import logging
+import sqlite3
+from concurrent.futures import CancelledError
 import threading
 import time
 from contextlib import closing
@@ -26,6 +29,9 @@ from typing import Any, Mapping
 from gateway import hosted_room_succession as succession
 from gateway import hosted_rooms as rooms
 from gateway.hosted_room_succession import SuccessionError
+
+logger = logging.getLogger(__name__)
+_LOCAL_FAILURES = (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError)
 
 HEARTBEAT_INTERVAL_SECONDS = 60.0
 UNREACHABLE_AFTER_SECONDS = 300.0
@@ -174,7 +180,7 @@ def status(ctx, room_id: str) -> dict[str, Any]:
 
 def _status(ctx, room_id: str) -> dict[str, Any]:
     from gateway import hosted_room_succession_automatic as automatic
-    from gateway.hosted_room_succession_move import host_bots, is_owner, placed_bots, restarting_until, work_counts
+    from gateway.hosted_room_succession_move import is_owner, restarting_until
     now, me = time.time(), succession.local_install_id()
     with closing(rooms._read_connection(ctx.db_path)) as conn:
         holding = _holding(conn, room_id)
@@ -190,7 +196,8 @@ def _status(ctx, room_id: str) -> dict[str, Any]:
     if holding["kind"] in {"room", "copy"}:
         try:
             custody = succession.custody_status(ctx.db_path, room_id)
-        except Exception:
+        except _LOCAL_FAILURES as exc:
+            logger.debug("Group custody status unavailable (%s)", type(exc).__name__)
             custody = None
     move, conflict, heartbeat, returned = (records[k] for k in ("move", "conflict", "heartbeat", "return"))
     host = _host_view(holding, configuration, heartbeat, restarting, now)
@@ -230,6 +237,59 @@ def _status(ctx, room_id: str) -> dict[str, Any]:
         "automatic": automatic.automatic_view(configuration, rows, host_id=host["install_id"],
                                               pending=_pending(ctx, room_id, requested)),
         "paused": paused, "moved_in": None}
+    _movement_status(ctx, room_id, result, holding, configuration, records, rows, origin, owner)
+    if state == "host_unreachable":
+        if not owner:
+            result["unavailable_reason"] = "not_owner"
+        elif not targets:
+            result["unavailable_reason"] = "no_successor"
+        elif all(row["readiness"] in UNAVAILABLE for row in rows if row["install_id"] in targets):
+            result["unavailable_reason"] = "successor_behind_offline"
+        elif not automatic.majority_reachable(configuration, rows, host_id=host["install_id"]):
+            # In majority mode a reachable majority moves the group by itself; by hand only without one.
+            result["actions"].append({"action": "continue", "targets": targets})
+        else:
+            result["unavailable_reason"] = "takeover_waiting"
+            since = host.get("since")
+            if since is not None and now - float(since) >= UNREACHABLE_AFTER_SECONDS + TAKEOVER_WAIT_SECONDS:
+                result["actions"].append({"action": "continue", "targets": targets})
+    elif state in {"ok", "host_restarting"}:
+        result["unavailable_reason"] = "host_reachable"
+    if state == "paused" and owner:
+        # Without its lease layer, continuing here also turns automatic moves off for the group.
+        result["actions"].append({"action": "continue_anyway", "turns_off_automatic": True}
+                                 if (paused or {}).get("reason") == "no_lease_layer" else {"action": "continue_anyway"})
+    if holding["kind"] == "room" and owner and state == "ok":
+        result["actions"].extend(_host_actions(configuration, rows, targets))
+    return result
+
+
+def _host_actions(configuration, rows, targets) -> list[dict[str, Any]]:
+    """Controls available to the owner of a healthy authoritative room, in display order."""
+    actions: list[dict[str, Any]] = []
+    # Computers that hold a verified copy and answered lately: the old host too, once it is back
+    # as a copy, so the owner can always move the group back.
+    movable = [target for target in targets if next(
+        row for row in rows if row["install_id"] == target)["readiness"] in {"caught_up", "behind"}]
+    if movable:
+        actions.append({"action": "move", "targets": movable})
+    actions.append({"action": "automatic", "enabled": configuration.get("automatic") is not False})
+    # A switch per computer keeping a copy: on or off, with a hint where its operator didn't allow it.
+    designate = [row["install_id"] for row in rows]
+    if designate:
+        actions.append({"action": "designate", "targets": designate})
+    actions.append({"action": "add_backup"})
+    removable = [row["install_id"] for row in rows if row["kind"] == "backup"]
+    if removable:
+        actions.append({"action": "remove_backup", "targets": removable})
+    return actions
+
+
+def _movement_status(ctx, room_id, result, holding, configuration, records, rows, origin, owner) -> None:
+    """Fill move, conflict and inherited-work details without changing the chosen room state."""
+    from gateway.hosted_room_succession_move import host_bots, placed_bots, work_counts
+    state, me = result["state"], result["this_install"]["install_id"]
+    move, conflict, returned = (records[key] for key in ("move", "conflict", "return"))
     if state == "moving":
         if move.get("state") in {"moving", "handing_over"}:
             to = move.get("to") if move.get("state") == "handing_over" else me
@@ -282,44 +342,6 @@ def _status(ctx, room_id: str) -> dict[str, Any]:
     if move.get("state") == "failed" and move.get("last_attempt"):
         attempt = move["last_attempt"]
         result["last_attempt"] = {"to": attempt.get("to"), "error": attempt.get("error"), "at": attempt.get("at")}
-    if state == "host_unreachable":
-        if not owner:
-            result["unavailable_reason"] = "not_owner"
-        elif not targets:
-            result["unavailable_reason"] = "no_successor"
-        elif all(row["readiness"] in UNAVAILABLE for row in rows if row["install_id"] in targets):
-            result["unavailable_reason"] = "successor_behind_offline"
-        elif not automatic.majority_reachable(configuration, rows, host_id=host["install_id"]):
-            # In majority mode a reachable majority moves the group by itself; by hand only without one.
-            result["actions"].append({"action": "continue", "targets": targets})
-        else:
-            result["unavailable_reason"] = "takeover_waiting"
-            since = host.get("since")
-            if since is not None and now - float(since) >= UNREACHABLE_AFTER_SECONDS + TAKEOVER_WAIT_SECONDS:
-                result["actions"].append({"action": "continue", "targets": targets})
-    elif state in {"ok", "host_restarting"}:
-        result["unavailable_reason"] = "host_reachable"
-    if state == "paused" and owner:
-        # Without its lease layer, continuing here also turns automatic moves off for the group.
-        result["actions"].append({"action": "continue_anyway", "turns_off_automatic": True}
-                                 if (paused or {}).get("reason") == "no_lease_layer" else {"action": "continue_anyway"})
-    if holding["kind"] == "room" and owner and state == "ok":
-        # Computers that hold a verified copy and answered lately: the old host too, once it is back
-        # as a copy, so the owner can always move the group back.
-        movable = [target for target in targets if next(
-            row for row in rows if row["install_id"] == target)["readiness"] in {"caught_up", "behind"}]
-        if movable:
-            result["actions"].append({"action": "move", "targets": movable})
-        result["actions"].append({"action": "automatic", "enabled": configuration.get("automatic") is not False})
-        # A switch per computer keeping a copy: on or off, with a hint where its operator didn't allow it.
-        designate = [row["install_id"] for row in rows]
-        if designate:
-            result["actions"].append({"action": "designate", "targets": designate})
-        result["actions"].append({"action": "add_backup"})
-        removable = [row["install_id"] for row in rows if row["kind"] == "backup"]
-        if removable:
-            result["actions"].append({"action": "remove_backup", "targets": removable})
-    return result
 
 
 def _stalled_view(ctx, room_id: str, configuration: Mapping[str, Any], now: float) -> dict[str, Any] | None:
@@ -341,7 +363,8 @@ def _pending(ctx, room_id: str, requested: bool | None) -> bool | None:
         return None
     try:
         return requested if succession.automatic_pending(ctx.db_path, room_id, enabled=requested) else None
-    except Exception:
+    except _LOCAL_FAILURES as exc:
+        logger.debug("Group automatic choice status unavailable (%s)", type(exc).__name__)
         return None
 
 
@@ -379,9 +402,7 @@ def heartbeat(ctx, room_id: str, *, now: float | None = None, survey_peers: bool
         if host.get("endpoint"):
             answer = _query(ctx, room_id, host["install_id"], str(host["endpoint"]))
             ok = bool(answer.get("hosting")) or isinstance(answer.get("restarting_until"), (int, float))
-    except (RemoteRefusal, SuccessionError, OSError, ValueError):
-        ok = False
-    except Exception:
+    except (RemoteRefusal, SuccessionError, *_LOCAL_FAILURES):
         ok = False
     record["last_attempt"] = now
     if ok:
@@ -462,10 +483,11 @@ async def send_notice(runner, *, room_id: str, group: str, host: str | None, min
     for adapter, chat_id, metadata, number in refs or ():
         hint = runner._typed_command_prefix_for(adapter.platform) + f"group {number} continue"
         try:
-            await adapter.send(chat_id, notice_text(group=group, host=host, minutes=minutes, here=here, hint=hint),
-                               metadata=metadata)
-            sent = True
-        except Exception:
+            result = await adapter.send(
+                chat_id, notice_text(group=group, host=host, minutes=minutes, here=here, hint=hint), metadata=metadata)
+            sent = (getattr(result, "success", False) is True) or sent
+        except Exception as exc:  # health: allow BLE001 -- external adapter SDK failures stay isolated; log only their type and retain the exact notice for retry
+            logger.warning("Group pause notice delivery failed (%s)", type(exc).__name__)
             continue
     if refs:
         return sent
@@ -492,7 +514,8 @@ def notify(ctx, room_id: str, runner, loop, *, now: float | None = None) -> bool
         loop)
     try:
         sent = bool(future.result(timeout=30))
-    except Exception:
+    except (*_LOCAL_FAILURES, CancelledError) as exc:
+        logger.debug("Group pause notice remains pending (%s)", type(exc).__name__)
         return False
     if sent:
         record = succession.load_record(ctx.db_path, room_id, "heartbeat") or {}
@@ -551,7 +574,8 @@ class SuccessionUpkeep:
             if self._lease_context() is None:
                 return False
             install(self.automatic)
-        except Exception:
+        except _LOCAL_FAILURES as exc:
+            logger.debug("Group lease layer installation pending (%s)", type(exc).__name__)
             return False  # tried again next tick; meanwhile its automatic groups stay paused
         self._installed = True
         return True
@@ -561,7 +585,8 @@ class SuccessionUpkeep:
             return
         self._stop.clear()
         self._ensure_installed()
-        self._thread = threading.Thread(target=self._run, name="group-succession-upkeep", daemon=True)
+        from agent.memory_provider import spawn_context_thread
+        self._thread = spawn_context_thread(self._run, name="group-succession-upkeep", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> bool:
@@ -580,6 +605,11 @@ class SuccessionUpkeep:
         self._wake.set()
 
     def _run(self) -> None:
+        from tui_gateway.hosted_room_peer_http import independent_room_grant_requests
+        with independent_room_grant_requests():
+            self._run_loop()
+
+    def _run_loop(self) -> None:
         """The full upkeep every interval or when woken; automatic moves' fast checks in between."""
         from gateway.hosted_room_succession_automatic import TICK_SECONDS
         next_full = 0.0
@@ -591,8 +621,9 @@ class SuccessionUpkeep:
                     next_full = time.monotonic() + self._interval
                     self.run_once()
                 self.run_automatic()
-            except Exception:
-                pass  # upkeep never decides a room's authority by failing; the next cycle asks again
+            except _LOCAL_FAILURES as exc:
+                # No authority decision follows from a failed check; the next cycle asks again.
+                logger.warning("Group succession upkeep check failed (%s)", type(exc).__name__)
             self._wake.wait(TICK_SECONDS)
 
     def run_automatic(self) -> list[dict[str, Any]]:
@@ -631,5 +662,6 @@ class SuccessionUpkeep:
                     record = heartbeat(ctx, room_id, now=now, survey_peers=True)
                     if record.get("failing"):
                         notify(ctx, room_id, self._runner, self._loop, now=now)
-            except Exception:
+            except _LOCAL_FAILURES as exc:
+                logger.warning("Group copy upkeep remains pending (%s)", type(exc).__name__)
                 continue

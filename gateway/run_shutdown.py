@@ -27,7 +27,9 @@ from gateway.restart import (
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
-from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
+from gateway.shutdown_watchdog import _effective_watchdog_leash, arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
+from gateway.hosted_room_succession_shutdown import (
+    GROUP_HANDOVER_BUDGET_SECONDS as GROUP_HANDOVER_BUDGET_SECONDS, GROUP_RESTART_WINDOW_SECONDS as GROUP_RESTART_WINDOW_SECONDS, _announce_group_restarts, _hand_over_groups)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -144,63 +146,6 @@ def _send_error(result: Any) -> str:
 def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
     """Dedup key for one notice destination: thread/topic platforms share a chat but route apart."""
     return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
-
-
-def _effective_watchdog_leash(runner: object) -> float:
-    """Thread-watchdog leash for the stop in progress: effective drain + grace, clamped under
-    launchd's live ``ExitTimeOut`` minus the dump margin. Lives here (not in gateway.restart)
-    because restart.py cannot import shutdown_watchdog without a cycle."""
-    return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
-
-
-# How long a planned restart may keep the group's backups waiting before they treat the host as lost.
-GROUP_RESTART_WINDOW_SECONDS = 180.0
-
-
-# How long a stop or quit waits for this gateway's Group Chats to move to their standbys.
-GROUP_HANDOVER_BUDGET_SECONDS = 20.0
-
-
-def _hand_over_groups(runner) -> None:
-    """Stopping without a restart: hand each Group Chat this gateway hosts to its best reachable
-    standby first, so the group keeps going. Best effort; a handover that fails leaves the normal
-    host-loss paths in place."""
-    import concurrent.futures
-    from gateway.session_authorities import all_authorities
-    for authority in all_authorities(runner):
-        service = getattr(authority, "hosted_room_service", None)
-        factory = getattr(service, "succession_context", None)
-        context = factory() if callable(factory) else None
-        if context is None:
-            continue
-        import dataclasses
-        from gateway.hosted_room_succession_handover import handover_all
-        context = dataclasses.replace(context, operator=True)  # the gateway's own stop speaks for its operator
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="group-handover")
-        try:
-            moved = pool.submit(handover_all, context, reason="stop").result(timeout=GROUP_HANDOVER_BUDGET_SECONDS)
-            if moved.get("moved"):
-                logger.info("Moved %d group(s) to their standbys before stopping", len(moved["moved"]))
-        except Exception as exc:
-            logger.debug("Group handover before stop skipped: %s", exc)
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
-
-
-def _announce_group_restarts(runner) -> None:
-    """A planned restart is not loss: each Group Chat this gateway hosts tells its backups when it
-    will be back (``succession.state host_restarting``). Best effort; it never delays the restart."""
-    from gateway.session_authorities import all_authorities
-    until = time.time() + GROUP_RESTART_WINDOW_SECONDS
-    for authority in all_authorities(runner):
-        service = getattr(authority, "hosted_room_service", None)
-        announce = getattr(service, "announce_restart", None)
-        if announce is None:
-            continue
-        try:
-            announce(until)
-        except Exception as exc:
-            logger.debug("Group restart announcement skipped: %s", exc)
 
 
 class GatewayShutdownMixin:

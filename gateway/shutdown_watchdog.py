@@ -45,6 +45,13 @@ _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
 
+def _effective_watchdog_leash(runner: object) -> float:
+    """Resolve the stop watchdog budget through the shutdown facade's late-bound seams."""
+    from gateway import run_shutdown as facade
+    return facade.effective_stop_watchdog_delay(
+        runner, facade.resolve_shutdown_watchdog_delay(facade.effective_stop_drain_timeout(runner)))
+
+
 def _coerce_float(value: Any, default: float, floor: float = 0.0) -> float:
     """``max(float(value), floor)``, or ``default`` when not coercible."""
     try:
