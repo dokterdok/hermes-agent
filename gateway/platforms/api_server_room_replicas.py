@@ -56,7 +56,7 @@ def http_routes(adapter):
                 target_install_id=installation_id, target_profile=profile, fenced=fence_check(adapter),
                 _verify_transition=verify_transition_locked, **body)
         except RoomFenceError as exc:
-            return failure("This Group Chat's authority epoch is fenced on this gateway.", exc.code, exc.status)
+            return failure(str(exc), exc.code, exc.status)
         except HostedRoomGrantError as exc:
             return _room_grant_error_response(exc, _openai_error=api_server._openai_error)
         except replicas.ReplicaCapacityError:

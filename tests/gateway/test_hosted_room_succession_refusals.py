@@ -58,3 +58,31 @@ def test_a_signed_claim_stops_the_move_but_moves_the_epoch_only_a_bounded_step(g
         preview = move.preview(ctx, ROOM, s.install_id)
         move.continue_here(ctx, ROOM, s.install_id, preview_id=preview["preview_id"], confirm=True)
     assert head(s)["authority_epoch"] == 1 + move.MAX_EPOCH_STEP + 1
+
+
+@pytest.mark.parametrize('signed', [False, True])
+def test_conflict_refusal_is_authenticated_and_names_the_newer_authority(gateways, monkeypatch, signed):
+    candidate, witness = gateways['s'], gateways['e']
+    original = backup.answer_fence
+    def conflict(ctx, request):
+        if succession.local_install_id() != witness.install_id:
+            return original(ctx, request)
+        detail = {'room_id': ROOM, 'custodian_install_id': witness.install_id, 'fenced_epoch': 2,
+                  'promise': {'epoch': 2, 'candidate_install_id': candidate.install_id},
+                  'authority': {'epoch': 3, 'install_id': witness.install_id}}
+        if signed:
+            detail['signature'] = succession.sign(succession.ANSWER, detail)
+        raise succession.SuccessionError('learned another authority', reason='room_authority_conflict', detail=detail)
+    monkeypatch.setattr(backup, 'answer_fence', conflict)
+    with candidate.acting():
+        ctx = context(candidate, gateways, down=('h',))
+        preview = move.preview(ctx, ROOM, candidate.install_id)
+        if signed:
+            with pytest.raises(succession.SuccessionError) as refused:
+                move.continue_here(ctx, ROOM, candidate.install_id, preview_id=preview['preview_id'], confirm=True)
+            assert refused.value.reason == 'room_authority_promised'
+            assert refused.value.detail['other']['install_id'] == witness.install_id
+            assert refused.value.detail['epoch'] == 3
+        else:
+            move.continue_here(ctx, ROOM, candidate.install_id, preview_id=preview['preview_id'], confirm=True)
+            assert head(candidate)['authoritative']

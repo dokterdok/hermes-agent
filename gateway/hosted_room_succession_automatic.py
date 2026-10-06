@@ -990,10 +990,9 @@ def may_follow(db_path, room_id: str, to_epoch: int, successor: str) -> bool:
     path = automatic.fence_path() if automatic is not None else None
     if path is None:
         return True
-    try:
-        state = fence.room_fence_state(path, room_id)
-    except Exception:
-        return True  # nothing recorded here to hold it to
+    # An unreadable fence is not an absent fence. Propagate its typed storage failure so the
+    # accepting writer rolls back and the caller can retry instead of following an unproven branch.
+    state = fence.room_fence_state(path, room_id)
     if int(to_epoch) > int(state["fenced_epoch"]):
         return True
     committed = {(state.get("promise") or {}).get("candidate_install_id"),
