@@ -71,6 +71,47 @@ beforeEach(() => {
   runTimersInline()
 })
 
+describe('visible mention dispatch', () => {
+  it.each([
+    '@builder check this `@ops @all` example',
+    '@builder check this [link](https://example.invalid/@all)',
+    '@builder check this ![@ops](https://example.invalid/image.png)',
+    '@builder check this\n\n[unused]: https://example.invalid/@all',
+    '@builder check this\n\n```text\n@ops @all\n```',
+    '@builder check this <code>@ops @all</code> <span data-mention="@all">visible</span>',
+    '@builder check this \\@ops &commat;all',
+    '@builder check this https://example.invalid/@all ops@example.invalid'
+  ])('dispatches only the visible addressed member through the real round for %s', async text => {
+    const room = await loadRoom({turn: () => '(pass)'})
+    room.rounds.sendToGroupChat('Visible', MEMBERS, text)
+    await settle(room, 'Visible')
+    expect([...new Set(room.gateway.calls.map(call => call.profile))]).toEqual(['builder'])
+  })
+
+  it('keeps quoted friendly names and mixed Bot/human addresses while rejecting manufactured handle prefixes', async () => {
+    const room = await loadRoom({turn: () => '(pass)'})
+    expect([...room.rounds.parseGroupChatMentions('@"The Ops" check this @user', MEMBERS).mentioned]).toEqual(['ops'])
+    expect(room.rounds.parseGroupChatMentions('@user', MEMBERS)).toMatchObject({human: true, explicit: true, everyone: false})
+    const prefix = [...MEMBERS, {name: 're', title: ''}]
+    const parsed = room.rounds.parseGroupChatMentions('@builder check @re&#115;earch and <div>@re&#115;earch</div>', prefix)
+    expect([...parsed.mentioned]).toEqual(['builder'])
+    room.rounds.sendToGroupChat('Mixed', MEMBERS, '@builder please respond @user')
+    await settle(room, 'Mixed')
+    expect([...new Set(room.gateway.calls.map(call => call.profile))]).toEqual(['builder'])
+  })
+
+  it.each(['@missing-bot check this', '@"missing bot" check this', '@user please answer'])('does not broadcast an unresolved or human address through the actual round: %s', async text => {
+    const room = await loadRoom({turn: () => '(pass)'})
+    const sent = room.rounds.sendToGroupChat('Unresolved', MEMBERS, text)
+    await settle(room, 'Unresolved')
+    expect(room.gateway.calls).toEqual([])
+    expect(room.gateway.rpcFor('session.create')).toEqual([])
+
+    if (text.startsWith('@user')) {expect(sent).toBeTruthy(); expect(log(room, 'Unresolved').at(-1)?.text).toBe(text)}
+    else {expect(sent).toBeNull(); expect(log(room, 'Unresolved')).toEqual([])}
+  })
+})
+
 describe('turn admission', () => {
   it.each(['refused', 'unadmitted'])('a %s turn preserves the watermark and held messages', async failure => {
     const room = await loadRoom({ failEverySubmitWith: new Error('permission denied') })
