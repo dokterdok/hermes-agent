@@ -512,6 +512,13 @@ class RoomArtifactOutbox:
                 UNIQUE(scope_key, sha256, name)
             )"""
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(hosted_room_output_artifacts)")}
+        # Old stores may already have a cleanup trigger naming the absent column; add it first,
+        # before any index, trigger or cleanup pass needs the newer receipt fields.
+        for column, kind in (("cleanup_required_at", "REAL"), ("ack_message_event_id", "TEXT"),
+                             ("receipt_expires_at", "REAL"), ("blob_reclaimed_at", "REAL")):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE hosted_room_output_artifacts ADD COLUMN {column} {kind}")
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_hosted_room_output_scope
                ON hosted_room_output_artifacts(scope_key, created_at)"""
