@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -583,6 +584,16 @@ def evidence_statement(conn: sqlite3.Connection, room_id: str, *, from_epoch: in
             "silent_for_s": float(silent_for_s)}
 
 
+def _valid_silence(statement: Mapping[str, Any]) -> bool:
+    """Signed silence has finite numeric timestamps and a complete elapsed waiting period."""
+    values = (statement.get("silent_since"), statement.get("silent_for_s"))
+    try:
+        return (all(type(value) in (int, float) and math.isfinite(value) for value in values)
+                and values[1] >= CAREFUL_SILENCE_SECONDS)
+    except OverflowError:
+        return False
+
+
 def _verify_evidence_locked(conn, room_id, proof, *, from_epoch, to_epoch, successor, fork_seq, configuration):
     host, voters = host_entry(configuration), voters_of(configuration)
     statement = proof.get("statement") if isinstance(proof, Mapping) else None
@@ -591,8 +602,7 @@ def _verify_evidence_locked(conn, room_id, proof, *, from_epoch, to_epoch, succe
             or host is None or voters != [host["install_id"], successor] or not is_eligible(configuration, successor)
             or (configuration or {}).get("automatic") is False
             or (configuration or {}).get("careful_opt_in") is False
-            or not isinstance(statement.get("silent_for_s"), (int, float))
-            or statement["silent_for_s"] < CAREFUL_SILENCE_SECONDS
+            or not _valid_silence(statement)
             or (fork_seq is not None and statement.get("last_seq") != fork_seq)):
         raise ProofInvalid("the evidence does not match this two-voter group")
     if not verify_locked(conn, room_id, successor, EVIDENCE, dict(statement), proof.get("signature")):

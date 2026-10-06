@@ -39,7 +39,7 @@ REQUEST_TIMEOUT_SECONDS = 5.0
 # How far past every epoch this computer itself knows a rival's signed claim may move the next one.
 MAX_EPOCH_STEP = 64
 # Refusals whose detail names a holder or an epoch: trusted only when signed by the computer that refused.
-_CLAIMS = frozenset({"room_authority_promised", "room_authority_fenced", "room_authority_superseded",
+_CLAIMS = frozenset({"room_authority_promised", "room_authority_fenced", "room_authority_superseded", "room_authority_conflict",
                      "host_reachable", "room_lease_active", "configuration_stale"})
 CATCH_UP_PAGE = 200
 RESTART_GRACE_SECONDS = 120.0
@@ -521,10 +521,11 @@ def _refused_for_other(configuration: Mapping[str, Any], outcomes: Mapping[str, 
             continue
         if outcome.code == "host_reachable":
             raise SuccessionError("the group's host can be reached", reason="host_reachable")
-        if outcome.code in {"room_authority_promised", "room_authority_fenced", "room_authority_superseded"}:
+        if outcome.code in {"room_authority_promised", "room_authority_fenced", "room_authority_superseded", "room_authority_conflict"}:
             detail = outcome.detail
             promise, authority = detail.get("promise") or {}, detail.get("authority") or {}
-            other = (promise.get("candidate_install_id") or authority.get("install_id")
+            held = authority if int(authority.get("epoch") or 0) >= int(promise.get("epoch") or 0) else promise
+            other = (held.get("candidate_install_id") or held.get("install_id")
                      or (detail.get("live_host") or {}).get("install_id"))
             epoch = max(int(promise.get("epoch") or 0), int(authority.get("epoch") or 0),
                         int(detail.get("fenced_epoch") or 0))
