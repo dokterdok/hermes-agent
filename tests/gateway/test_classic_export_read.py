@@ -165,17 +165,20 @@ async def test_exact_selectors_do_not_fall_back(exported, change):
 @pytest.mark.parametrize('kind', ['foreign', 'missing_read', 'closed', 'cold', 'named'])
 async def test_existing_read_authority_is_required(exported, kind):
     connection, authority = exported.connection, exported.authority
-    if kind == 'foreign':
-        connection.actor = replace(connection.actor, subject='other')
-    elif kind == 'missing_read':
-        connection.actor = replace(connection.actor, capabilities=frozenset())
-    elif kind == 'closed':
-        await connection.close()
-    elif kind == 'cold':
-        authority.sessions.clear()
-    else:
+    def named_profile():
         authority.profile_id = str(exported.home / 'profiles' / 'named')
         connection.actor = replace(connection.actor, profile_id=authority.profile_id)
+
+    if kind == 'closed':
+        await connection.close()
+    else:
+        mutations = {
+            'foreign': lambda: setattr(connection, 'actor', replace(connection.actor, subject='other')),
+            'missing_read': lambda: setattr(connection, 'actor', replace(connection.actor, capabilities=frozenset())),
+            'cold': authority.sessions.clear,
+            'named': named_profile,
+        }
+        mutations[kind]()
     before = dump(exported)
     assert 'error' in await read(exported)
     assert dump(exported) == before
@@ -196,22 +199,20 @@ async def test_fresh_checks_after_byte_read_refuse_changes(exported, monkeypatch
     def changed(*args):
         calls.append(True)
         data = original(*args)
-        if change == 'retire':
-            exported.db._execute_write(lambda conn: conn.execute(
-                "UPDATE classic_output_exports SET state='retired' WHERE export_id=?", (exported.row['export_id'],)))
-        elif change == 'epoch':
-            from hermes_state_runtime import begin_runtime_epoch
-            begin_runtime_epoch(exported.db, instance_id='different-owner')
-        elif change == 'binding':
-            exported.db._execute_write(lambda conn: conn.execute(
-                "UPDATE classic_output_exports SET session_key='unrelated' WHERE export_id=?", (exported.row['export_id'],)))
-        elif change == 'delete_session':
-            exported.db._execute_write(lambda conn: conn.execute(
-                'DELETE FROM sessions WHERE id=?', (exported.ref.session_id,)))
-        elif change == 'close_transport':
-            exported.authority.events.pop(exported.connection.actor.transport_id)
-        else:
-            exported.connection.actor = replace(exported.connection.actor, capabilities=frozenset())
+        from hermes_state_runtime import begin_runtime_epoch
+        mutations = {
+            'retire': lambda: exported.db._execute_write(lambda conn: conn.execute(
+                "UPDATE classic_output_exports SET state='retired' WHERE export_id=?", (exported.row['export_id'],))),
+            'epoch': lambda: begin_runtime_epoch(exported.db, instance_id='different-owner'),
+            'binding': lambda: exported.db._execute_write(lambda conn: conn.execute(
+                "UPDATE classic_output_exports SET session_key='unrelated' WHERE export_id=?", (exported.row['export_id'],))),
+            'delete_session': lambda: exported.db._execute_write(lambda conn: conn.execute(
+                'DELETE FROM sessions WHERE id=?', (exported.ref.session_id,))),
+            'close_transport': lambda: exported.authority.events.pop(exported.connection.actor.transport_id),
+            'read_scope': lambda: setattr(exported.connection, 'actor',
+                replace(exported.connection.actor, capabilities=frozenset())),
+        }
+        mutations[change]()
         return data
     monkeypatch.setattr(reader, '_read_bytes', changed)
     assert 'error' in await read(exported)
@@ -223,20 +224,21 @@ async def test_fresh_checks_after_byte_read_refuse_changes(exported, monkeypatch
 async def test_unavailable_custody_is_not_repaired(exported, kind):
     row = exported.db._read_one('SELECT blob_name FROM hosted_room_output_artifacts')
     path = exported.home / 'hosted-room-artifact-outbox' / 'blobs' / row['blob_name']
-    if kind == 'missing_schema':
-        exported.db._execute_write(lambda conn: conn.execute('DROP TABLE classic_retired_groups'))
-    elif kind == 'retirement':
-        exported.db._execute_write(lambda conn: conn.execute(
-            'INSERT INTO classic_retired_groups VALUES (?,?)', (str(exported.home), 'old-room')))
-    elif kind == 'symlink':
+    def symlink():
         other = exported.home / 'outside.txt'
         other.write_bytes(exported.data)
         path.unlink()
         path.symlink_to(other)
-    elif kind == 'changed_bytes':
-        path.write_bytes(b'x' * len(exported.data))
-    else:
-        path.unlink()
+
+    mutations = {
+        'missing_schema': lambda: exported.db._execute_write(lambda conn: conn.execute('DROP TABLE classic_retired_groups')),
+        'retirement': lambda: exported.db._execute_write(lambda conn: conn.execute(
+            'INSERT INTO classic_retired_groups VALUES (?,?)', (str(exported.home), 'old-room'))),
+        'symlink': symlink,
+        'changed_bytes': lambda: path.write_bytes(b'x' * len(exported.data)),
+        'missing_bytes': path.unlink,
+    }
+    mutations[kind]()
     before = dump(exported)
     assert 'error' in await read(exported)
     assert dump(exported) == before
@@ -334,23 +336,24 @@ async def test_fresh_checks_after_async_handoff(exported, monkeypatch, change):
     original = reader.asyncio.to_thread
     async def completed(*args, **kwargs):
         loaded = await original(*args, **kwargs)
-        if change == 'permission':
-            exported.connection.actor = replace(exported.connection.actor, capabilities=frozenset())
-        elif change == 'install':
-            (exported.home / 'install_id').write_text('d' * 32)
-        elif change == 'blob':
-            loaded[1].write_bytes(b'x' * len(exported.data))
-        elif change == 'binding':
-            exported.authority.sessions.clear()
-        elif change == 'fence':
+        def fence():
             from gateway.hosted_room_artifacts_classic import ClassicExportScope
             scope = ClassicExportScope(exported.row['export_id'], 1)
             exported.db._execute_write(lambda conn: conn.execute(
                 'INSERT INTO hosted_room_output_generation_fences VALUES(?,?,?,?,?,?)',
                 (scope.lineage_key, scope.lineage_json, scope.lineage_json, 1, 1, 3.0)))
-        else:
-            exported.db._execute_write(lambda conn: conn.execute(
-                "UPDATE classic_output_exports SET state='retired'"))
+
+        mutations = {
+            'permission': lambda: setattr(exported.connection, 'actor',
+                replace(exported.connection.actor, capabilities=frozenset())),
+            'install': lambda: (exported.home / 'install_id').write_text('d' * 32),
+            'blob': lambda: loaded[1].write_bytes(b'x' * len(exported.data)),
+            'binding': exported.authority.sessions.clear,
+            'fence': fence,
+            'retire': lambda: exported.db._execute_write(lambda conn: conn.execute(
+                "UPDATE classic_output_exports SET state='retired'")),
+        }
+        mutations[change]()
         return loaded
     monkeypatch.setattr(reader.asyncio, 'to_thread', completed)
     assert 'error' in await read(exported)

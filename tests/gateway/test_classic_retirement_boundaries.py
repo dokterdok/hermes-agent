@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from tests.gateway.test_classic_current_export import (  # noqa: F401 -- shared pytest fixture
-    classic_runtime, rpc, _classic_request, _publish_classic_file,
+from tests.gateway.test_classic_current_export import (
+    classic_runtime as classic_runtime, rpc, _classic_request, _publish_classic_file,
 )
 
 
