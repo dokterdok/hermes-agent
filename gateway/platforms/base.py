@@ -3572,34 +3572,11 @@ class BasePlatformAdapter(ABC):
             server_retry_after = result.retry_after
             retry_after_spent = 0.0
             for attempt in range(1, max_retries + 1):
-                backoff = server_retry_after
-                if backoff is None:
-                    backoff = base_delay * (2 ** (attempt - 1))
-                elif backoff > _SEND_RETRY_INLINE_WAIT_CAP_SECS:
-                    # Never hold this coroutine open for a long server penalty: a 97-minute
-                    # FloodWait slept verbatim once froze inbound on every platform (#91969).
-                    # Return the typed failure; the delivery ledger redelivers after the cooldown.
-                    logger.error(
-                        "[%s] Server asked to retry after %.0fs (> %.0fs inline cap); returning "
-                        "typed failure for redelivery instead of sleeping: %s",
-                        self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
-                    )
+                from gateway.platforms.send_retry import retry_delay
+                planned = retry_delay(self, server_retry_after, retry_after_spent, attempt, base_delay, error_str)
+                if planned is None:
                     return result
-                if server_retry_after is not None:
-                    budget = self.retry_after_sleep_budget_secs
-                    if budget is not None:
-                        remaining = max(0.0, budget - retry_after_spent)
-                        if backoff > remaining:
-                            logger.warning(
-                                "[%s] Server retry after %.1fs exceeds remaining %.1fs of %.1fs "
-                                "delivery sleep budget; returning failure for redelivery: %s",
-                                self.name, backoff, remaining, budget, error_str,
-                            )
-                            return result
-                delay = backoff + random.uniform(0, 1)
-                if server_retry_after is not None and self.retry_after_sleep_budget_secs is not None:
-                    delay = min(delay, max(0.0, self.retry_after_sleep_budget_secs - retry_after_spent))
-                    retry_after_spent += delay
+                delay, retry_after_spent = planned
                 server_retry_after = None
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
                                attempt, max_retries, delay, error_str)

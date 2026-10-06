@@ -4,12 +4,15 @@ api.telegram.org while TCP retries known IPv4 literals) plus DoH-based IP discov
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import logging
 import socket
-from typing import Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import httpx
+
+from gateway.platforms.base import SendResult
 
 logger = logging.getLogger(__name__)
 
@@ -303,3 +306,59 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
     return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+
+
+class TelegramSendRetryMixin:
+    """Per-chat ordering and flood waits share a bounded caller-side retry policy.
+
+    Keys use Bot-API-normalized chat IDs for text and media. Lazy dictionaries also
+    support adapters constructed before their ordinary initialization completes.
+    """
+
+    retry_after_sleep_budget_secs: Optional[float] = 60.0
+
+    @contextlib.asynccontextmanager
+    async def _chat_send_lock(self, chat_id: Any):
+        """FIFO per-chat gate around outgoing API calls, reentrant within one asyncio task (media paths
+        nest: send_voice → send_document, and ``super().send_*`` fallbacks reach ``send()``; a plain
+        ``asyncio.Lock`` re-acquired by its holder would wedge that chat's sends for good)."""
+        from plugins.platforms.telegram.adapter import normalize_telegram_chat_id
+        key = str(normalize_telegram_chat_id(chat_id))
+        locks: Dict[str, asyncio.Lock] = self.__dict__.setdefault("_telegram_chat_send_locks", {})
+        owners: Dict[str, asyncio.Task] = self.__dict__.setdefault("_telegram_chat_send_lock_owners", {})
+        task = asyncio.current_task()
+        if owners.get(key) is task:
+            yield
+            return
+        lock = locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            owners[key] = task
+            try:
+                yield
+            finally:
+                owners.pop(key, None)
+                if not getattr(lock, "_waiters", None):  # nobody queued: drop the entry (bounded dict)
+                    locks.pop(key, None)
+
+    def _record_send_flood_cooldown(self, chat_id: Any, wait: float) -> SendResult:
+        """A send refused with ``retry_after=wait`` arms a per-chat window during which ``send()`` fails
+        closed locally (same ``flood_control:<s>`` result, so ledger recognition and redelivery timing are
+        unchanged) instead of firing more requests into a penalty Telegram lengthens while it is hammered."""
+        from plugins.platforms.telegram.adapter import _flood_cap_result, normalize_telegram_chat_id
+        until: Dict[str, float] = self.__dict__.setdefault("_telegram_send_cooldown_until", {})
+        until[str(normalize_telegram_chat_id(chat_id))] = asyncio.get_running_loop().time() + max(1.0, min(float(wait), 300.0))
+        return _flood_cap_result(wait)
+
+    def _send_flood_cooldown_remaining(self, chat_id: Any) -> Optional[float]:
+        """Seconds left in this chat's flood window, or ``None`` when sends may go out."""
+        until: Dict[str, float] = self.__dict__.setdefault("_telegram_send_cooldown_until", {})
+        from plugins.platforms.telegram.adapter import normalize_telegram_chat_id
+        key = str(normalize_telegram_chat_id(chat_id))
+        deadline = until.get(key)
+        if deadline is None:
+            return None
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining > 0:
+            return remaining
+        until.pop(key, None)
+        return None
