@@ -364,7 +364,10 @@ function commit(directory: string, changes: Change[]) {
   } catch (error) {
     // A failed restoration leaves the durable recovery record in place. Every
     // next consumer must recover or refuse; caches cannot bypass this boundary.
-    recoverSecretStorageTransition(directory)
+    try {recoverSecretStorageTransition(directory)} catch (recoveryError) {
+      console.warn('Credential conversion recovery is still pending', recoveryError instanceof Error ? recoveryError.name : 'unknown')
+    }
+
     throw error
   }
 }

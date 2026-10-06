@@ -17,12 +17,14 @@ const ROOM = 'room-setup/01234567-89ab-cdef-0123-456789abcdef.json'
 const TARGETS = ['connection.json', 'connections.json', 'native-oauth-tokens.json', ROOM, SECRET_STORAGE_POLICY_FILE]
 const plain = (value: string) => ({ encoding: 'plain', value })
 const encode = (value: string) => ({ encoding: 'safeStorage', value: Buffer.from('sealed:' + value).toString('base64') })
+
 const decode = (secret: any) => secret.encoding === 'safeStorage'
   ? Buffer.from(secret.value, 'base64').toString().replace(/^sealed:/, '') : secret.value
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'credential-transition-'))
   fs.mkdirSync(path.join(directory, 'room-setup'), { mode: 0o700 })
+
   const values = [
     { remote: { token: plain('remote') }, profiles: {
       alpha: { token: plain('alpha'), headers: { 'CF-Access-Client-Secret': plain('alpha-header') } },
@@ -35,10 +37,13 @@ function fixture() {
       installationId: 'installation', roomId: 'room' })),
     { on: false, migrated: true }
   ]
+
   TARGETS.forEach((name, index) => fs.writeFileSync(path.join(directory, name), JSON.stringify(values[index]), { mode: 0o600 }))
   const snapshot = () => TARGETS.map(name => fs.readFileSync(path.join(directory, name)))
+
   const options = { directory, policy: { on: false, migrated: true }, on: true,
     available: () => true, encrypt: encode, decrypt: decode }
+
   return { directory, snapshot, options }
 }
 
@@ -49,20 +54,25 @@ test.each([...TARGETS, 'encryption', 'unavailable', 'basic_text'])(
     fs.writeFileSync(unrelated, 'unrelated stage')
     const rename = fs.renameSync
     let failed = false, encryptions = 0
+
     const interceptor = vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
       if (!failed && String(target) === path.join(p.directory, fault)) {
         failed = true; throw Object.assign(new Error('injected write refusal'), { code: 'EIO' })
       }
+
       rename(source, target)
     })
+
     try {
       assert.throws(() => changeSecretStorageEncryption({ ...p.options,
         available: () => {
           if (fault === 'basic_text') {requireRoomSetupEncryption({ on: true, migrated: true }, () => 'basic_text')}
+
           return fault !== 'unavailable'
         },
         encrypt: value => {
           if (fault === 'encryption' && ++encryptions === 2) {throw new Error('keychain refused encryption')}
+
           return encode(value)
         }
       }))
@@ -78,9 +88,11 @@ test.each([...TARGETS, 'encryption', 'unavailable', 'basic_text'])(
       assert.equal(decode(converted[1].connections[1].token), 'two')
       assert.equal(decode(converted[2]['https://one.invalid']), 'one-oauth')
       assert.equal(JSON.parse(decode(converted[3])).route.profile, 'beta')
+
       if (process.getuid) {
         for (const name of TARGETS) {assert.equal(fs.statSync(path.join(p.directory, name)).mode & 0o777, 0o600)}
       }
+
       const encrypted = p.snapshot()
       assert.throws(() => changeSecretStorageEncryption({ ...p.options, policy: { on: true, migrated: true }, on: false,
         decrypt: () => '' }))
@@ -100,6 +112,7 @@ test.each([... [SECRET_STORAGE_RECOVERY_FILE, ...TARGETS].flatMap(boundary =>
     buildSync({ stdin: { contents: "export * from './secret-storage-transition'; export {writeSecretFileAtomic} from './hardening'",
       resolveDir: path.dirname(fileURLToPath(import.meta.url)), loader: 'ts' },
       outfile: bundle, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' })
+
     const child = `
       const fs = require('node:fs'), path = require('node:path');
       const [bundle, directory, boundary, phase] = process.argv.slice(1);
@@ -124,28 +137,35 @@ test.each([... [SECRET_STORAGE_RECOVERY_FILE, ...TARGETS].flatMap(boundary =>
           ? Buffer.from(secret.value,'base64').toString().replace(/^sealed:/,'') : secret.value
       });
     `
+
     try {
       const result = spawnSync(process.execPath, ['-e', child, bundle, p.directory, boundary, phase], { encoding: 'utf8' })
       assert.equal(result.status, 77, result.stderr)
       const journalFile = path.join(p.directory, SECRET_STORAGE_RECOVERY_FILE)
+
       if (boundary === 'native-orphan') {
         assert.equal(fs.existsSync(journalFile), false)
         assert.equal(recoverSecretStorageTransition(p.directory), true)
         assert.deepEqual(p.snapshot(), before)
         assert.deepEqual(changeSecretStorageEncryption(p.options), { on: true, migrated: true })
         assert.equal(fs.readdirSync(p.directory).some(name => name.endsWith('.tmp')), false)
+
         return
       }
+
       if (boundary === SECRET_STORAGE_RECOVERY_FILE && phase === 'before') {
         assert.equal(fs.existsSync(journalFile), false)
         assert.equal(recoverSecretStorageTransition(p.directory), true)
         assert.deepEqual(p.snapshot(), before)
         assert.equal(fs.readdirSync(p.directory).some(name => name.endsWith('.tmp')), false)
         assert.deepEqual(changeSecretStorageEncryption(p.options), { on: true, migrated: true })
+
         return
       }
+
       const journal = fs.readFileSync(journalFile)
       const interrupted = p.snapshot()
+
       if (process.getuid) {assert.equal(fs.statSync(journalFile).mode & 0o777, 0o600)}
       // Unknown paths never become write authority, even in a private manifest.
       const tampered = JSON.parse(journal.toString())
@@ -160,30 +180,37 @@ test.each([... [SECRET_STORAGE_RECOVERY_FILE, ...TARGETS].flatMap(boundary =>
       assert.deepEqual(p.snapshot(), interrupted)
       let prompts = 0
       assert.equal(await recoverSecretStorageAtStartup(() => recoverSecretStorageTransition(p.directory), async () => {
-        prompts++; return false
+        prompts++;
+
+ return false
       }), false)
       assert.equal(prompts, 1)
       assert.equal(fs.readFileSync(journalFile, 'utf8'), 'disposable-secret-not-json')
       fs.writeFileSync(journalFile, journal)
       const rename = fs.renameSync
+
       const refusal = vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
         if (String(target) === path.join(p.directory, 'connection.json')) {throw new Error('recovery unavailable')}
         rename(source, target)
       })
+
       try {
         assert.throws(() => recoverSecretStorageTransition(p.directory), /recovery unavailable/)
         assert.deepEqual(fs.readFileSync(journalFile), journal)
         let connections = 0
+
         const coordinator = roomSetupCoordinator({
           beforeOperation: () => {recoverSecretStorageTransition(p.directory)},
           store: roomSetupStore({ directory: path.join(p.directory, 'room-setup'),
             encrypt: text => JSON.stringify(plain(text)), decrypt: text => decode(JSON.parse(text)) }),
           connect: async () => {connections++; throw new Error('must not connect')}
         })
+
         await assert.rejects(coordinator.recover(), /recovery unavailable/)
         assert.equal(connections, 0)
         assert.equal(fs.existsSync(path.join(p.directory, ROOM)), true)
       } finally {refusal.mockRestore()}
+
       // Recovery has no encryption/decryption callbacks at all. Reopening only
       // restores verified raw bytes before the normal OFF reader can run.
       assert.equal(recoverSecretStorageTransition(p.directory), true)
@@ -195,3 +222,32 @@ test.each([... [SECRET_STORAGE_RECOVERY_FILE, ...TARGETS].flatMap(boundary =>
     } finally {fs.rmSync(p.directory, { recursive: true, force: true })}
   }
 )
+
+test('keeps the original conversion failure and durable recovery record when rollback also fails', () => {
+  const p = fixture(), before = p.snapshot()
+  const primary = new Error('conversion write failed with private credential context')
+  const secondary = new Error('rollback failed with a different private credential context')
+  const rename = fs.renameSync
+  let converting = true
+
+  const refusal = vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+    if (String(target) === path.join(p.directory, 'connections.json') && converting) {converting = false; throw primary}
+
+    if (!converting && String(target) === path.join(p.directory, 'connection.json')) {throw secondary}
+    rename(source, target)
+  })
+
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+  try {
+    assert.throws(() => changeSecretStorageEncryption(p.options), error => error === primary)
+    assert.equal(fs.existsSync(path.join(p.directory, SECRET_STORAGE_RECOVERY_FILE)), true)
+    assert.equal(warn.mock.calls.length, 1)
+    assert.equal(warn.mock.calls[0][0], 'Credential conversion recovery is still pending')
+    assert.equal(warn.mock.calls[0][1], secondary.name)
+    assert.equal(JSON.stringify(warn.mock.calls).includes('private credential context'), false)
+    refusal.mockRestore()
+    assert.equal(recoverSecretStorageTransition(p.directory), true)
+    assert.deepEqual(p.snapshot(), before)
+  } finally {refusal.mockRestore(); warn.mockRestore(); fs.rmSync(p.directory, {recursive: true, force: true})}
+})
