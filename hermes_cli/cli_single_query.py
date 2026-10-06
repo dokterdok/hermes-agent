@@ -152,13 +152,13 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -
     error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
     (EX_CONFIG): the dispatcher blocks the card at once.
     """
-    from cli import _TERMINAL_PROVIDER_REASONS, _TRANSIENT_PROVIDER_REASONS
+    import cli as cli_module
     from hermes_cli.turn_exit import turn_exit_code
     return turn_exit_code(
-        result, kanban_worker=bool(os.environ.get("HERMES_KANBAN_TASK")),
+        result, kanban_worker=os.environ.get("HERMES_KANBAN_TASK", "") != "",
         credentials_rate_limited=credentials_rate_limited,
-        transient_reasons=_TRANSIENT_PROVIDER_REASONS,
-        terminal_reasons=_TERMINAL_PROVIDER_REASONS,
+        transient_reasons=cli_module._TRANSIENT_PROVIDER_REASONS,
+        terminal_reasons=cli_module._TERMINAL_PROVIDER_REASONS,
     )
 
 
