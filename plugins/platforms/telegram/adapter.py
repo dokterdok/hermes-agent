@@ -480,9 +480,10 @@ class _PollingStallError(RuntimeError):
 
 
 from plugins.platforms.telegram.adapter_prompts import TelegramPromptsMixin
+from plugins.platforms.telegram.telegram_network import TelegramSendRetryMixin
 
 
-class TelegramAdapter(TelegramPromptsMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramPromptsMixin, TelegramSendRetryMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -514,7 +515,6 @@ class TelegramAdapter(TelegramPromptsMixin, BasePlatformAdapter):
     REQUIRES_EDIT_FINALIZE: bool = True
     FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True  # retrying a final edit burns the same flood budget
     RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True  # a failed final edit may leave a partial preview
-    retry_after_sleep_budget_secs: Optional[float] = 60.0  # consecutive caller-side flood waits share one budget
 
     # Adaptive text-batch ingress ("feels instant"): ≤320 codepoints settle in ~180ms, ≤1024 in ~240ms,
     # longer waits the configured cap; always clamped to ``_text_batch_delay_seconds``.
@@ -5482,54 +5482,6 @@ class TelegramAdapter(TelegramPromptsMixin, BasePlatformAdapter):
             return True
         self._telegram_typing_cooldown_until.pop(str(chat_id), None)
         return False
-
-    # --- per-chat send ordering + flood cooldown (#114396) ---------------------------------------------
-    # Both keyed by the Bot-API-normalized chat id: the text path passes the raw chat_id while the media
-    # funnel's send_kwargs carry the normalized value. ``__dict__.setdefault``: tests build adapters via
-    # ``object.__new__()`` (no __init__).
-
-    @contextlib.asynccontextmanager
-    async def _chat_send_lock(self, chat_id: Any):
-        """FIFO per-chat gate around outgoing API calls, reentrant within one asyncio task (media paths
-        nest: send_voice → send_document, and ``super().send_*`` fallbacks reach ``send()``; a plain
-        ``asyncio.Lock`` re-acquired by its holder would wedge that chat's sends for good)."""
-        key = str(normalize_telegram_chat_id(chat_id))
-        locks: Dict[str, asyncio.Lock] = self.__dict__.setdefault("_telegram_chat_send_locks", {})
-        owners: Dict[str, asyncio.Task] = self.__dict__.setdefault("_telegram_chat_send_lock_owners", {})
-        task = asyncio.current_task()
-        if owners.get(key) is task:
-            yield
-            return
-        lock = locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            owners[key] = task
-            try:
-                yield
-            finally:
-                owners.pop(key, None)
-                if not getattr(lock, "_waiters", None):  # nobody queued: drop the entry (bounded dict)
-                    locks.pop(key, None)
-
-    def _record_send_flood_cooldown(self, chat_id: Any, wait: float) -> SendResult:
-        """A send refused with ``retry_after=wait`` arms a per-chat window during which ``send()`` fails
-        closed locally (same ``flood_control:<s>`` result, so ledger recognition and redelivery timing are
-        unchanged) instead of firing more requests into a penalty Telegram lengthens while it is hammered."""
-        until: Dict[str, float] = self.__dict__.setdefault("_telegram_send_cooldown_until", {})
-        until[str(normalize_telegram_chat_id(chat_id))] = asyncio.get_running_loop().time() + max(1.0, min(float(wait), 300.0))
-        return _flood_cap_result(wait)
-
-    def _send_flood_cooldown_remaining(self, chat_id: Any) -> Optional[float]:
-        """Seconds left in this chat's flood window, or ``None`` when sends may go out."""
-        until: Dict[str, float] = self.__dict__.setdefault("_telegram_send_cooldown_until", {})
-        key = str(normalize_telegram_chat_id(chat_id))
-        deadline = until.get(key)
-        if deadline is None:
-            return None
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining > 0:
-            return remaining
-        until.pop(key, None)
-        return None
 
     # --- shared per-chat send+edit pacing budget (#116312) -----------------------------------------
     # One slot per chat that sendMessage AND editMessageText both draw from (Telegram counts them
