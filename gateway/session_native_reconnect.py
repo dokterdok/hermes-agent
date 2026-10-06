@@ -54,4 +54,5 @@ async def recover_adapter_native_inputs(runner, platform, adapter, *, profile=No
         except Exception as exc:  # health: allow BLE001 -- connector role checks raise platform/plugin-specific exceptions; contain them without undoing published transport or exposing payload text
             # Refusal or missing state must not undo a successful adapter install.
             # No payload-bearing exception text, retry loop or synthesized input.
-            logger.debug('Native reconnect recovery deferred (%s)', type(exc).__name__)
+            logger.warning('Native input recovery deferred for profile %s (%s); queued input is unchanged',
+                           authority.profile_id, type(exc).__name__)
