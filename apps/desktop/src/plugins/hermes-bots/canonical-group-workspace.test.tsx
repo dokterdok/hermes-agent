@@ -55,7 +55,9 @@ it.each(['entire journal', 'read', 'owner', 'compareSend'])('does not Send or wr
 
   if (missing === 'entire journal') {delete desktop.preparedSubmissions}
   else {delete native[missing]}
+
   const browserRead = vi.spyOn(Storage.prototype, 'getItem'), browserWrite = vi.spyOn(Storage.prototype, 'setItem')
+
   try {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep this unsent' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -73,29 +75,36 @@ it.each(['mounted', 'remount', 'transfer', 'legacy'].flatMap(mode =>
   ['permission_denied', 'stale_generation'].map(reason => ({ mode, reason }))))('$mode keeps the unknown Send identity after a later $reason refusal', async ({ mode, reason }) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-monotonic-ui-'))
   const journal = preparedJournal(directory, 'http://localhost:5174')
+
   const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
     owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
     compareSend: async (key: string, expected: string | null, entry: string | null) =>
       journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
   } } as unknown as typeof window.hermesDesktop }
+
   const binding = { connectionId: 'remote', profile: 'team', roomId: `monotonic-${mode}-${reason}` }
   const attempted: string[] = [], markers: unknown[] = []
   const accepted = new Map<string, unknown>()
   request.mockImplementation(async (_route, method, params) => {
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+
     if (method === 'groups.log') {return { events: [] }}
     attempted.push(params.event_id)
     markers.push((Object.values(journal.read())[0] as { attempted?: boolean })?.attempted)
+
     // Controlled peer acceptance, then transport loss; no gateway/model process.
     if (mode !== 'legacy' && attempted.length === 1) {
       accepted.set(params.event_id, params.payload)
       throw new Error('acceptance reply lost')
     }
+
     throw Object.assign(new Error(reason), { code: 4001, data: { reason } })
   })
+
   try {
     bind('original-window')
     let originalId: string
+
     if (mode === 'legacy') {
       originalId = 'legacy-unknown-id'
       const entry = { binding, params: { room_id: binding.roomId, event_id: originalId, payload: { text: 'Original accepted intent', attachments: [], thread_id: originalId } } }
@@ -108,16 +117,19 @@ it.each(['mounted', 'remount', 'transfer', 'legacy'].flatMap(mode =>
       fireEvent.click(screen.getByRole('button', { name: 'Send' }))
       await screen.findByText('acceptance reply lost')
       originalId = attempted[0]
+
       if (mode !== 'mounted') {first.unmount()}
     }
 
     if (mode !== 'mounted') {
       if (mode === 'transfer') {bind('new-window')}
       render(<CanonicalGroupWorkspace binding={binding} />)
+
       if (mode === 'transfer' || mode === 'legacy') {
         fireEvent.click(await screen.findByRole('button', { name: 'Restore draft' }))
       }
     }
+
     const retry = await screen.findByRole('button', { name: 'Retry' })
     await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false))
     const before = attempted.length
@@ -187,18 +199,24 @@ it('retains legacy acknowledgement compatibility when accepted is absent', async
 it('a second already-mounted window sends its own text while the first acknowledgement is unknown', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-window-ui-'))
   const journal = preparedJournal(directory, 'http://localhost:5174')
+
   const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
     owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
     compareSend: async (key: string, expected: string | null, entry: string | null) =>
       journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
   } } as unknown as typeof window.hermesDesktop }
+
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'two-window' }
   request.mockImplementation(async (_route, method, params) => {
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+
     if (method === 'groups.log') {return { events: [] }}
+
     if (params.payload.text === 'Window A') {throw new Error('lost ACK')}
+
     return { accepted: true, client_event_id: params.event_id }
   })
+
   try {
     bind('window-a')
     const a = render(<CanonicalGroupWorkspace binding={binding} />)
@@ -225,15 +243,18 @@ it('a second already-mounted window sends its own text while the first acknowled
 it('offers a cold-window restore without sending, preserves a newer draft, then retries the chosen original identity', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-recovery-ui-'))
   const journal = preparedJournal(directory, 'http://localhost:5174')
+
   const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
     owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
     compareSend: async (key: string, expected: string | null, entry: string | null) =>
       journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
   } } as unknown as typeof window.hermesDesktop }
+
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'chosen-recovery' }
   request.mockImplementation(async (_route, method, params) => method === 'groups.state'
     ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
       : { accepted: true, client_event_id: params.event_id })
+
   try {
     bind('closed-window')
     const original = await prepareCanonicalGroupSend(binding, { text: 'Frozen original', attachments: [] })
@@ -260,19 +281,25 @@ it('keeps Restore unclaimed during upload and while the new attachment occupies 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-upload-recovery-'))
   const journal = preparedJournal(directory, 'http://localhost:5174')
   const compare = vi.spyOn(journal, 'compareAndSet')
+
   const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
     owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
     compareSend: async (key: string, expected: string | null, entry: string | null) =>
       journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
   } } as unknown as typeof window.hermesDesktop }
+
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'upload-recovery' }
   let releaseUpload!: (value: unknown) => void
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+
     if (method === 'groups.log') {return { events: [] }}
+
     if (method === 'groups.attachment.upload') {return new Promise(resolve => { releaseUpload = resolve })}
+
     return {}
   })
+
   try {
     bind('original-window')
     const original = await prepareCanonicalGroupSend(binding, { text: 'Frozen original', attachments: [] })
@@ -305,8 +332,10 @@ it('a queued editor update cannot be cleared by a prior message acknowledgement'
   let acknowledge!: () => void
   request.mockImplementation(async (_route, method, params) => {
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+
     if (method === 'groups.log') {return { events: [] }}
     await new Promise<void>(resolve => {acknowledge = resolve})
+
     return { accepted: true, client_event_id: params.event_id }
   })
   render(<CanonicalGroupWorkspace binding={binding} />)
@@ -324,15 +353,18 @@ it('a queued editor update cannot be cleared by a prior message acknowledgement'
 it('a mounted former window cannot Retry after another window explicitly claims its intent', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-transferred-ui-'))
   const journal = preparedJournal(directory, 'http://localhost:5174')
+
   const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
     owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
     compareSend: async (key: string, expected: string | null, entry: string | null) =>
       journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
   } } as unknown as typeof window.hermesDesktop }
+
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'transferred' }
   request.mockImplementation(async (_route, method) => method === 'groups.state'
     ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
       : Promise.reject(new Error('lost ACK')))
+
   try {
     bind('window-a')
     const original = await prepareCanonicalGroupSend(binding, { text: 'Original intent', attachments: [] })
@@ -402,6 +434,7 @@ it('blocks Send until journal restore and durable preparation complete', async (
       await new Promise<void>(resolve => { releaseWrite = resolve })
 
       if ((Object.hasOwn(journal, key) ? JSON.stringify(journal[key]) : null) !== expected) {return false}
+
       if (value === null) {delete journal[key]} else {journal[key] = JSON.parse(value)}
 
       return true
@@ -783,7 +816,9 @@ it.each([
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
 
-    if (method === 'groups.state') {return { room: { name: 'Leaving' }, driver_status: {} }}
+    if (method === 'groups.state') {const receipt = (disbandResult as {tombstone?: {room_id?: string; disbanded_at?: number}})?.tombstone;
+
+ return {room: {room_id: 'leaving', name: 'Leaving', disbanded_at: receipt?.room_id === 'leaving' ? receipt.disbanded_at : undefined}, driver_status: {peer_cleanup: []}}}
 
     if (method === 'groups.log') {return { events: [] }}
 
@@ -815,14 +850,17 @@ it.each([
 it('shows shared confirmation progress and prevents duplicate End requests while its receipt is pending', async () => {
   let release!: (value: unknown) => void
   const held = new Promise(resolve => { release = resolve })
+  let retired = false
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
 
-    if (method === 'groups.state') {return { room: { name: 'Autumn launch' }, driver_status: {} }}
+    if (method === 'groups.state') {return {room: {room_id: 'ending', name: 'Autumn launch', disbanded_at: retired ? 123 : undefined}, driver_status: {peer_cleanup: []}}}
 
     if (method === 'groups.log') {return { events: [] }}
 
-    if (method === 'groups.disband') {return held}
+    if (method === 'groups.disband') {const result = await held; retired = true;
+
+ return result}
 
     return {}
   })
@@ -880,6 +918,7 @@ it('keeps its frozen send for missing or malformed acknowledgement identity', as
   )
   render(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false))
+
   for (const value of [{ accepted: true }, { accepted: true, client_event_id: 1 }, { client_event_id: 'wrong' }]) {
     receipt = value
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
@@ -891,6 +930,7 @@ it('keeps its frozen send for missing or malformed acknowledgement identity', as
       expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false)
     )
   }
+
   receipt = { accepted: true, client_event_id: entry.params.event_id }
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
@@ -966,6 +1006,7 @@ it('does not offer Stop for file cleanup alone but keeps it for unknown executio
       }
     ]
   }
+
   request.mockImplementation(async (_route, method) =>
     method === 'groups.state'
       ? { room: { name: 'Room' }, driver_status }
@@ -995,4 +1036,105 @@ it('does not offer Stop for file cleanup alone but keeps it for unknown executio
   }
   render(<CanonicalGroupWorkspace binding={binding} />)
   expect(await screen.findByRole('button', { name: 'Stop' })).toBeTruthy()
+})
+
+it.each(['pending', 'unreadable'])('keeps End visibly unfinished for %s cleanup until authoritative state confirms completion', async mode => {
+  const binding = {connectionId: `cleanup-${mode}`, profile: 'review', roomId: `cleanup-${mode}`}
+  let retired = false
+  let cleanupState: unknown = mode === 'pending' ? [{room_id: binding.roomId, member_id: 'offline-peer', mode: 'exact', status: 'pending', attempts: 2}] : [{status: 'unreadable'}]
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
+    if (method === 'groups.state') {return {room: {room_id: binding.roomId, name: 'Cleanup', disbanded_at: retired ? 123 : undefined}, driver_status: {retiring: retired, peer_cleanup: cleanupState}}}
+
+    if (method === 'groups.log') {return {events: [{seq: 1, kind: 'message', payload: {text: 'Keep this transcript'}}]}}
+
+    if (method === 'groups.disband') {retired = true;
+
+ return {tombstone: {room_id: binding.roomId, disbanded_at: 123}}}
+
+    return {}
+  })
+  const key = registerCanonicalGroup(binding, {room_id: binding.roomId, name: 'Cleanup', members: []})
+  const onBack = vi.fn()
+  render(<GroupChatWorkspace group={key} members={[]} onBack={onBack} />)
+  await screen.findByText('Keep this transcript')
+  await chooseGroupAction(labels.disband)
+  fireEvent.click(screen.getByRole('button', {name: labels.confirmDisband}))
+  const copy = mode === 'pending' ? labels.retirementCleanupPending : labels.retirementCleanupUnreadable
+  await screen.findByText(copy)
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(onBack).not.toHaveBeenCalled()
+  expect($canonicalGroupBindings.get()[key]).toEqual(binding)
+  expect((screen.getByRole('button', {name: 'Send'}) as HTMLButtonElement).disabled).toBe(true)
+  expect(screen.getByText('Keep this transcript')).toBeTruthy()
+  const logs = request.mock.calls.filter(call => call[1] === 'groups.log').length
+  cleanupState = []
+  fireEvent.click(within(screen.getByText(copy).parentElement!).getByRole('button', {name: 'Refresh'}))
+  await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
+  expect(request.mock.calls.filter(call => call[1] === 'groups.log')).toHaveLength(logs)
+  expect(request.mock.calls.filter(call => call[1] === 'groups.disband')).toHaveLength(1)
+  expect(request.mock.calls.filter(call => call[1] === 'groups.state').every(call => call[0].connectionId === binding.connectionId && call[2].profile === binding.profile && call[2].include_disbanded === true)).toBe(true)
+})
+
+it('reconciles typed room_retiring through read-only state without claiming End completed or resending End', async () => {
+  const binding = {connectionId: 'active-end-owner', profile: 'review', roomId: 'active-end'}
+  let retiring = false, retired = false
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
+    if (method === 'groups.state') {return {room: {room_id: binding.roomId, name: 'Active', disbanded_at: retired ? 123 : undefined}, driver_status: {retiring, peer_cleanup: []}}}
+
+    if (method === 'groups.log') {return {events: []}}
+
+    if (method === 'groups.disband') {retiring = true; throw Object.assign(new Error('still stopping'), {code: 4001, data: {reason: 'room_retiring'}})}
+
+    return {}
+  })
+  const key = registerCanonicalGroup(binding, {room_id: binding.roomId, name: 'Active', members: []})
+  const onBack = vi.fn()
+  render(<GroupChatWorkspace group={key} members={[]} onBack={onBack} />)
+  await chooseGroupAction(labels.disband)
+  fireEvent.click(screen.getByRole('button', {name: labels.confirmDisband}))
+  await screen.findByText(labels.retirementStopping)
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(onBack).not.toHaveBeenCalled()
+  expect(screen.queryByText(labels.disbandUnconfirmed)).toBeNull()
+  retired = true
+  fireEvent.click(within(screen.getByText(labels.retirementStopping).parentElement!).getByRole('button', {name: 'Refresh'}))
+  await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
+  expect(request.mock.calls.filter(call => call[1] === 'groups.disband')).toHaveLength(1)
+})
+
+it('shows cleanup completion after reopening without late navigation and offers an explicit Back action', async () => {
+  const binding = {connectionId: 'reopened-owner', profile: 'review', roomId: 'reopened'}
+  let retired = false, pending = true
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
+    if (method === 'groups.state') {return {room: {room_id: binding.roomId, name: 'Reopened', disbanded_at: retired ? 123 : undefined}, driver_status: {retiring: retired, peer_cleanup: pending ? [{room_id: binding.roomId, member_id: 'offline', mode: 'scope', status: 'pending'}] : []}}}
+
+    if (method === 'groups.log') {return {events: []}}
+
+    if (method === 'groups.disband') {retired = true;
+
+ return {tombstone: {room_id: binding.roomId, disbanded_at: 123}}}
+
+    return {}
+  })
+  const key = registerCanonicalGroup(binding, {room_id: binding.roomId, name: 'Reopened', members: []})
+  const onBack = vi.fn()
+  const view = render(<GroupChatWorkspace group={key} members={[]} onBack={onBack} />)
+  await chooseGroupAction(labels.disband)
+  fireEvent.click(screen.getByRole('button', {name: labels.confirmDisband}))
+  await screen.findByText(labels.retirementCleanupPending)
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  view.rerender(<GroupChatWorkspace group={key} members={[]} onBack={onBack} visible={false} />)
+  pending = false
+  view.rerender(<GroupChatWorkspace group={key} members={[]} onBack={onBack} visible />)
+  await screen.findByText(labels.activityEnded)
+  expect(onBack).not.toHaveBeenCalled()
+  await chooseGroupAction('Back')
+  expect(onBack).toHaveBeenCalledOnce()
+  expect(request.mock.calls.filter(call => call[1] === 'groups.disband')).toHaveLength(1)
 })

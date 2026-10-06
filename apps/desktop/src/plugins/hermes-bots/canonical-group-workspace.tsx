@@ -11,6 +11,8 @@ import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-gro
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalGroupPendingActions } from './canonical-group-pending-actions'
 import { moveCanonicalGroup, updateCanonicalGroupName } from './canonical-group-registry'
+import { CanonicalGroupRetirementNotice, canonicalRetirementStatus } from './canonical-group-retirement'
+import type { RetirementStatus } from './canonical-group-retirement'
 import { acceptedCanonicalGroupSend, attemptCanonicalGroupSend, claimCanonicalGroupSend, listCanonicalGroupSends, prepareCanonicalGroupSend, readCanonicalGroupSend, rehomeCanonicalGroupSends, retireCanonicalGroupSend, sendOutcome } from './canonical-group-send'
 import type { AcceptedCanonicalGroupSend, PreparedCanonicalGroupSend, RecoverableCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest, isPendingFileAction } from './canonical-groups'
@@ -19,6 +21,8 @@ import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalPendingAction
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface DriverStatus {
+  retiring?: boolean
+  peer_cleanup?: unknown
   running?: boolean
   working?: boolean
   blocked?: boolean
@@ -27,7 +31,7 @@ interface DriverStatus {
   /** Work that waits for the computer that has its Bot or file (`state: "waiting_for_host"`). */
   tasks?: { task_id?: unknown; member_id?: unknown; state?: unknown; resource?: unknown; host_name?: unknown }[]
 }
-interface RoomState { room: { name: string; authority_epoch?: number; members?: CanonicalRoomMember[] }; driver_status?: DriverStatus }
+interface RoomState { room: { room_id?: string; disbanded_at?: number; name: string; authority_epoch?: number; members?: CanonicalRoomMember[] }; driver_status?: DriverStatus }
 type Labels = ReturnType<typeof useCanonicalGroupLabels>
 
 function onlyPendingFiles(status: DriverStatus): boolean {
@@ -58,8 +62,29 @@ function roomStatus(status: DriverStatus, labels: Labels) {
   return parts.join(' · ')
 }
 
+/** Pure presentation from this room's authoritative driver, never a foreground session. */
+function roomPresentation(state: RoomState | null, labels: Labels) {
+  const driver = state?.driver_status
+  const pendingActions = driver?.pending_actions ?? []
+
+  return {
+    name: state?.room.name || labels.loadingGroup, members: state?.room.members ?? [], pendingActions,
+    attention: driver ? needsAttention(driver) : false,
+    status: driver ? roomStatus(driver, labels) : undefined,
+    working: Boolean(driver?.working || pendingActions.some(isPendingFileAction))
+  }
+}
+
+function roomHasWork(driver: DriverStatus | undefined, occupied: boolean): boolean {
+  if (occupied || driver?.working) {return true}
+
+  if (['queued', 'running', 'stopping'].some(status => (driver?.counts?.[status] ?? 0) > 0)) {return true}
+
+  return driver?.pending_actions?.some(action => action.kind !== 'output_retry') ?? false
+}
+
 /** Room controls rendered by the owner of the binding (rename, disband). */
-export type CanonicalRoomActions = (room: { name: string; refresh: () => void }) => ReactNode
+export type CanonicalRoomActions = (room: { name: string; refresh: () => void; retirement: RetirementStatus | null; onRetirementRequested: () => void }) => ReactNode
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack, actions }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void; actions?: CanonicalRoomActions
@@ -93,6 +118,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
   const [readError, setReadError] = useState('')
+  const [retirementRequested, setRetirementRequested] = useState(false)
+  const retirementIntent = useRef(false)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [uploading, setUploading] = useState(false)
@@ -114,7 +141,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   const revision = useRef(0)
   // The log is append-only within one authority epoch: read only what is new.
   const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
-  const continuity = useRoomContinuity({ binding, visible, readError, events, roomName: state?.room.name ?? '', onMoved, restored, composer: { setDraft, setAttachments, setHint: setSendHint } })
+  const continuity = useRoomContinuity({ binding, visible, readError, events, roomName: state?.room.name ?? '', onMoved: route => {if (!retirementIntent.current) {onMoved(route)}}, restored, composer: { setDraft, setAttachments, setHint: setSendHint } })
 
   const show = (entry: PreparedCanonicalGroupSend) => {setPending(entry); setDraft(String(entry.params.payload.text ?? '')); setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])}
 
@@ -140,7 +167,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
 
   const refresh = async () => {
     const version = ++revision.current
-    const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
+    const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId, include_disbanded: true })
+
+    // Background cleanup needs only state; preserve the transcript after its tombstone.
+    if (canonicalRetirementStatus(binding.roomId, snapshot)?.retired) {
+      if (alive.current && version === revision.current) {setState(snapshot); setReadError('')}
+
+      return
+    }
+
     const epoch = snapshot.room?.authority_epoch
     const fresh = epoch !== seen.current.epoch
     const log: RoomEvent[] = []
@@ -217,7 +252,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   }
 
   const send = (message = { text: draft, attachments }) => {
-    if (!restored || busyRef.current || uploadingRef.current || !(state?.driver_status || continuity.paused) || (!pending && !message.text.trim() && !message.attachments.length)) {return}
+    if (retirementIntent.current || canonicalRetirementStatus(binding.roomId, state) || !visible || !restored || busyRef.current || uploadingRef.current || !(state?.driver_status || continuity.paused) || (!pending && !message.text.trim() && !message.attachments.length)) {return}
     setSendHint('')
     const editing = inputRevision.current
     const held = continuity.paused
@@ -225,6 +260,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
       const exact = pending ?? await prepareCanonicalGroupSend(binding, message, { held })
 
       if (!alive.current) {return}
+
       if (inputRevision.current === editing) {show(exact)}
 
       // Paused: the message stays durably in the journal and goes out once the group resumes, here or on its new host.
@@ -234,6 +270,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
 
       if (!alive.current) {return}
       let accepted: AcceptedCanonicalGroupSend
+
       try {
         accepted = acceptedCanonicalGroupSend(await canonicalGroupRequest<unknown>(binding, 'groups.send', exact.params), exact, labels.unconfirmedSend)
       } catch (error) {
@@ -256,9 +293,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
 
       if (alive.current) {
         setPending(current => current?.params.event_id === exact.params.event_id ? null : current)
+
         if (inputRevision.current === editing) {setDraft(''); setAttachments([])}
+
         try {
           const recoverable = await listCanonicalGroupSends(binding)
+
           if (alive.current) {setRecoveries(recoverable)}
         } catch (error) {console.warn('Accepted group Send recovery journal could not be read', error)}
       }
@@ -266,14 +306,16 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   }
 
   const restore = (recovery: RecoverableCanonicalGroupSend) => {
-    if (pending || draft.trim() || attachments.length || uploadingRef.current) {return}
+    if (retirementIntent.current || pending || draft.trim() || attachments.length || uploadingRef.current) {return}
     const editing = inputRevision.current
     void mutate(async () => {
       const exact = await claimCanonicalGroupSend(binding, recovery)
 
       if (!alive.current) {return}
+
       if (inputRevision.current === editing) {show(exact)}
       const recoverable = await listCanonicalGroupSends(binding)
+
       if (alive.current) {setRecoveries(recoverable)}
     })
   }
@@ -293,6 +335,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
     try {
       const result = await canonicalGroupRequest<{ cancelled?: number }>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: stopIntent.current })
       const cancelled = result?.cancelled
+
       if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
       stopIntent.current = null
 
@@ -303,6 +346,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
       if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
     } finally {
       stopPending.current = false
+
       if (alive.current) {setStopping(false)}
     }
   }
@@ -314,23 +358,19 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
     else if (restored && !pending && !draft.trim() && !attachments.length && !busyRef.current) {continuity.reclaim()}
   })
 
-  const members = state?.room.members ?? []
-  const name = state?.room.name || labels.loadingGroup
-  const pendingActions = state?.driver_status?.pending_actions ?? []
-  const ready = continuity.composable(state?.driver_status)
+  const presentation = roomPresentation(state, labels)
+  const {members, name, pendingActions} = presentation
+  const retirement = canonicalRetirementStatus(binding.roomId, state, retirementRequested)
+  const ready = !retirement && continuity.composable(state?.driver_status)
   const inputDisabled = !restored || busy || !!pending || !ready
-  const occupied = [!visible, busy, uploading, !!pending, !!draft.trim(), !!attachments.length]
-
-  // `running` reports gateway-worker health, including while this chat is idle.
-  const canStop = continuity.stoppable(Boolean(pending || busy || stopping || state?.driver_status && (state.driver_status.working ||
-    ['queued', 'running', 'stopping'].some(status => (state.driver_status?.counts?.[status] ?? 0) > 0) ||
-    pendingActions.some(action => action.kind !== 'output_retry'))))
+  const occupied = [Boolean(retirement), !visible, busy, uploading, !!pending, !!draft.trim(), !!attachments.length]
+  const canStop = !retirement?.retired && continuity.stoppable(roomHasWork(state?.driver_status, Boolean(pending || busy || stopping)))
 
   return <section className="flex h-full min-h-0 flex-col" data-slot="canonical-group-chat">
-    <CanonicalGroupHeader attention={state?.driver_status && needsAttention(state.driver_status)} info={<CanonicalGroupBackups controller={continuity.controller} group={name} />}
-      members={members} name={name} onBack={onBack} status={state?.driver_status && roomStatus(state.driver_status, labels)} unavailable={continuity.unavailable}
-      visible={visible} working={state?.driver_status?.working || pendingActions.some(isPendingFileAction)}>
-      {visible && state && actions?.({ name: state.room.name, refresh: () => void refresh().catch(e => setReadError(String(e))) })}
+    <CanonicalGroupHeader attention={presentation.attention} info={<CanonicalGroupBackups controller={continuity.controller} group={name} />}
+      members={members} name={name} onBack={onBack} status={presentation.status} unavailable={continuity.unavailable}
+      visible={visible} working={presentation.working}>
+      {visible && state && actions?.({ name: state.room.name, retirement, onRetirementRequested: () => {retirementIntent.current = true; setRetirementRequested(true); void refresh().catch(e => setReadError(String(e)))}, refresh: () => void refresh().catch(e => setReadError(String(e))) })}
     </CanonicalGroupHeader>
     <RoomContinuityBanners binding={binding} continuity={continuity} events={events} group={name} members={members} visible={visible} />
     <div aria-label={labels.conversationHistory} className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-2"
@@ -345,29 +385,21 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
       </div>
     </div>
     <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pb-4">
+      <CanonicalGroupRetirementNotice onRefresh={() => void refresh().catch(e => setReadError(String(e)))} status={retirement} />
       <div className="max-h-[min(40vh,24rem)] overflow-y-auto">
-        {visible && <CanonicalGroupPendingActions actions={pendingActions} busy={busy} members={members} onAction={act}
+        {visible && <CanonicalGroupPendingActions actions={pendingActions} busy={busy || Boolean(retirement)} members={members} onAction={act}
           onDiscard={action => act(action)} onRefresh={refresh} unknownTitle={continuity.unknownTitle} waiting={continuity.waiting(state?.driver_status?.tasks)} />}
       </div>
       <RoomHints error={error} explained={continuity.explained} labels={labels} notice={notice} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
         onRestore={restore} pausedHint={continuity.pausedHint} pending={pending} readError={readError} recoveries={recoveries}
         restoreBlocked={occupied} sendHint={sendHint} state={state} />
-      <RoomComposerSlot continuity={continuity}><form className={`${composerInputSurface} rounded-2xl border border-(--ui-stroke-tertiary) p-2`} data-slot="composer-root"
-        onSubmit={event => { event.preventDefault(); send() }}>
-        <CanonicalGroupComposerInput disabled={inputDisabled} members={members} name={name} onChange={value => {inputRevision.current++; setDraft(value)}} onSubmit={send} value={draft} />
-        <div className="mt-1 flex items-end gap-2">
-          <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={inputDisabled} onChange={value => {inputRevision.current++; setAttachments(value)}}
-            onUploadingChange={uploading => { uploadingRef.current = uploading;
+      <RoomComposerSlot continuity={continuity}><RoomComposer attachments={attachments} binding={binding} busy={busy} canStop={canStop} draft={draft}
+        inputDisabled={inputDisabled} members={members} name={name} onAttachments={value => {inputRevision.current++; setAttachments(value)}}
+        onDraft={value => {inputRevision.current++; setDraft(value)}} onSend={() => send()} onStop={() => void stop()}
+        onUploading={value => {uploadingRef.current = value;
 
- if (alive.current) {setUploading(uploading)} }} />
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {canStop && <Button disabled={stopping} loading={stopping} onClick={() => void stop()} size="xs" type="button" variant="ghost"><Codicon name="debug-stop" />{labels.stop}</Button>}
-            <Tip label={pending ? labels.retry : labels.send}><Button aria-label={pending ? labels.retry : labels.send} className={PRIMARY_ICON_BTN}
-              disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !ready} loading={busy}
-              size="icon-xs" type="submit" variant="ghost"><Codicon name={pending ? 'refresh' : 'arrow-up'} /></Button></Tip>
-          </div>
-        </div>
-      </form></RoomComposerSlot>
+ if (alive.current) {setUploading(value)}}}
+        pending={Boolean(pending)} ready={ready} restored={restored} stopping={stopping} uploading={uploading} /></RoomComposerSlot>
     </div>
   </section>
 }
@@ -400,4 +432,30 @@ function RoomHints({ notice, pausedHint, readError, error, explained, state, pen
         <Button disabled={restoreBlocked.some(Boolean)} onClick={() => onRestore(recovery)} size="inline" variant="text">{labels.restorePendingSend}</Button>
       </div>)}
   </div>
+}
+
+/** The native chat's composer controls; controller decisions stay in the room view. */
+function RoomComposer({binding, members, name, draft, attachments, busy, canStop, inputDisabled, pending, ready, restored, stopping, uploading,
+  onDraft, onAttachments, onUploading, onSend, onStop}: {
+  binding: CanonicalGroupBinding; members: CanonicalRoomMember[]; name: string; draft: string; attachments: Attachment[]
+  busy: boolean; canStop: boolean; inputDisabled: boolean; pending: boolean; ready: boolean; restored: boolean; stopping: boolean; uploading: boolean
+  onDraft: (value: string) => void; onAttachments: (value: Attachment[]) => void; onUploading: (value: boolean) => void
+  onSend: () => void; onStop: () => void
+}) {
+  const labels = useCanonicalGroupLabels()
+
+  return <form className={`${composerInputSurface} rounded-2xl border border-(--ui-stroke-tertiary) p-2`} data-slot="composer-root"
+        onSubmit={event => { event.preventDefault(); onSend() }}>
+        <CanonicalGroupComposerInput disabled={inputDisabled} members={members} name={name} onChange={onDraft} onSubmit={onSend} value={draft} />
+        <div className="mt-1 flex items-end gap-2">
+          <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={inputDisabled} onChange={onAttachments}
+            onUploadingChange={onUploading} />
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {canStop && <Button disabled={stopping} loading={stopping} onClick={onStop} size="xs" type="button" variant="ghost"><Codicon name="debug-stop" />{labels.stop}</Button>}
+            <Tip label={pending ? labels.retry : labels.send}><Button aria-label={pending ? labels.retry : labels.send} className={PRIMARY_ICON_BTN}
+              disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !ready} loading={busy}
+              size="icon-xs" type="submit" variant="ghost"><Codicon name={pending ? 'refresh' : 'arrow-up'} /></Button></Tip>
+          </div>
+        </div>
+      </form>
 }

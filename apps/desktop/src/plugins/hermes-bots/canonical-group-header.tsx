@@ -6,6 +6,7 @@ import type { ReactNode } from 'react'
 
 import { CanonicalMemberFace, canonicalMemberName } from './canonical-group-identity'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import type { RetirementStatus } from './canonical-group-retirement'
 import { canonicalGroupRequest, readGroupExecutionMode } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 
@@ -21,7 +22,7 @@ export function CanonicalGroupHeader({ name, members, status, working, attention
   const labels = useCanonicalGroupLabels()
 
   return <header className="flex shrink-0 items-center gap-3 px-4 py-3">
-    {onBack && <Tip label={labels.back}><Button aria-label={labels.back} onClick={onBack} size="icon-xs" variant="ghost"><Codicon name="arrow-left" /></Button></Tip>}
+    {onBack && <Tip label={labels.back}><Button aria-label={labels.back} disabled={!visible} onClick={onBack} size="icon-xs" variant="ghost"><Codicon name="arrow-left" /></Button></Tip>}
     <div aria-label={labels.members} className="hidden shrink-0 items-center -space-x-1.5 sm:flex">
       {/* Opaque discs: the tint layered over the surface, plus a surface ring, so stacked faces never darken where they overlap. */}
       {members.slice(0, 3).map(member => <div className="rounded-full p-0.5 ring-2 ring-(--ui-bg-chrome) [background:linear-gradient(var(--ui-bg-primary),var(--ui-bg-primary)),var(--ui-bg-chrome)]"
@@ -56,8 +57,8 @@ export function CanonicalGroupHeader({ name, members, status, working, attention
 }
 
 /** Rename and disband for a gateway room, offered only when its gateway advertises them. */
-export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbanded }: {
-  binding: CanonicalGroupBinding; name: string; onChanged: () => void; onDisbanded?: () => void
+export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbanded, retirement, onRetirementRequested }: {
+  binding: CanonicalGroupBinding; name: string; onChanged: () => void; onDisbanded?: () => void; retirement?: RetirementStatus | null; onRetirementRequested?: () => void
 }) {
   const labels = useCanonicalGroupLabels()
   const [methods, setMethods] = useState<string[]>([])
@@ -66,9 +67,24 @@ export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbande
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const pending = useRef(false)
+  const alive = useRef(true)
+  const retirementVerified = useRef(false)
+  const completed = useRef(false)
   const disbandIntent = useRef<string | null>(null)
   // One intended name keeps one event id across retries; a different name is a new intent.
   const renameIntent = useRef<null | { name: string; eventId: string }>(null)
+
+  // eslint-disable-next-line no-restricted-syntax -- component lifetime, not mirrored reactive atom values
+  useEffect(() => {alive.current = true;
+
+ return () => {alive.current = false}}, [])
+  // eslint-disable-next-line no-restricted-syntax -- one completion receipt per explicit End intent, not a reactive store mirror
+  useEffect(() => {
+    if (retirementVerified.current && retirement?.phase === 'complete' && !completed.current) {
+      completed.current = true
+      onDisbanded?.()
+    }
+  }, [retirement, onDisbanded])
 
   useEffect(() => {
     let current = true
@@ -110,7 +126,8 @@ export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbande
       await canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: intent.eventId, name: intent.name })
       renameIntent.current = null
       setDraft(null)
-      onChanged()
+
+      if (alive.current) {onChanged()}
     })
   }
 
@@ -120,6 +137,7 @@ export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbande
     disbandIntent.current ??= crypto.randomUUID()
     setBusy(true)
     setError('')
+    onRetirementRequested?.()
 
     try {
       const result = await canonicalGroupRequest<{ tombstone?: { room_id: string; disbanded_at: number } } | undefined>(binding, 'groups.disband', {
@@ -133,20 +151,34 @@ export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbande
       }
 
       disbandIntent.current = null
-      onDisbanded?.()
+      retirementVerified.current = true
+
+      if (alive.current) {onRetirementRequested?.()}
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error))
+      const refusal = error as {code?: unknown; data?: {reason?: unknown}} | null
+
+      if (refusal?.code === 4001 && refusal.data?.reason === 'room_retiring') {
+        retirementVerified.current = true
+
+        if (alive.current) {onRetirementRequested?.()}
+
+        return
+      }
+
+      if (alive.current) {setError(error instanceof Error ? error.message : String(error))}
       throw new Error(labels.disbandUnconfirmed)
-    } finally {pending.current = false; setBusy(false)}
+    } finally {pending.current = false;
+
+ if (alive.current) {setBusy(false)}}
   }
 
   return <>
     {(methods.includes('groups.rename') || methods.includes('groups.disband')) && <DropdownMenu>
       <DropdownMenuTrigger asChild><Button aria-label={labels.groupActions} disabled={busy} size="icon-xs" variant="ghost"><Codicon name="ellipsis" /></Button></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {methods.includes('groups.rename') && <DropdownMenuItem onSelect={() => { setError(''); setDraft(name) }}><Codicon name="edit" />{labels.rename}</DropdownMenuItem>}
+        {methods.includes('groups.rename') && <DropdownMenuItem disabled={Boolean(retirement)} onSelect={() => { setError(''); setDraft(name) }}><Codicon name="edit" />{labels.rename}</DropdownMenuItem>}
         {methods.includes('groups.rename') && methods.includes('groups.disband') && <DropdownMenuSeparator />}
-        {methods.includes('groups.disband') && <DropdownMenuItem onSelect={() => { setError(''); setConfirming(true) }} variant="destructive"><Codicon name="close" />{labels.disband}</DropdownMenuItem>}
+        {methods.includes('groups.disband') && retirement?.phase === 'complete' ? <DropdownMenuItem onSelect={() => onDisbanded?.()}><Codicon name="close" />{labels.back}</DropdownMenuItem> : <>        {methods.includes('groups.disband') && <DropdownMenuItem disabled={retirement?.phase !== 'unknown' && Boolean(retirement)} onSelect={() => { setError(''); setConfirming(true) }} variant="destructive"><Codicon name="close" />{labels.disband}</DropdownMenuItem>}</>}
       </DropdownMenuContent>
     </DropdownMenu>}
     <Dialog onOpenChange={open => { if (!open && !busy) {setDraft(null)} }} open={draft !== null}>
