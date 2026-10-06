@@ -69,18 +69,21 @@ it('renders member replies through the shell message renderer, resolving media o
     },
     {id: 'm3', thread: 'a', from: {kind: 'member' as const, name: 'former', source: 'renamed-mini'}, text: 'MEDIA:/tmp/missing-remote.png', at: 4},
     {id: 'm4', thread: 'a', from: {kind: 'member' as const, name: 'builder', source: 'Studio', gateway: 'foreign-install'}, text: 'MEDIA:/tmp/conflicting-origin.png', at: 5},
-    {id: 'm5', thread: 'a', from: {kind: 'member' as const, name: 'builder', source: 'Old local label', gateway: 'local-install'}, text: 'MEDIA:/tmp/proven-local.png', at: 6}
+    {id: 'm5', thread: 'a', from: {kind: 'member' as const, name: 'builder', source: 'Old local label', gateway: 'local-install'}, text: 'MEDIA:/tmp/proven-local.png', at: 6},
+    {id: 'm6', thread: 'a', from: {kind: 'member' as const, name: 'legacy', source: 'Studio', gateway: 'foreign-install'}, text: 'MEDIA:/tmp/no-local-identity.png', at: 7},
+    {id: 'm7', thread: 'a', from: {kind: 'member' as const, name: 'legacy', source: 'Studio'}, text: 'MEDIA:/tmp/source-label-only.png', at: 8}
   ]
 
   const members = [
     { name: 'builder', connectionId: 'local', connectionLabel: 'Studio', installId: 'local-install' },
+    { name: 'legacy', connectionId: 'local', connectionLabel: 'Studio' },
     { connectionId: 'mini', connectionLabel: 'mini', name: 'builder', remoteSource: true, sourceScoped: true }
   ] as never
 
   $groupChats.set({ Room: { log, watermarks: {}, sessions: {} } })
   const { getAllByTestId } = render(<GroupChatWorkspace group="Room" members={members} />)
   // The room paints once the async group-driver gate resolves to the legacy workspace.
-  await waitFor(() => expect(getAllByTestId('message-text-content')).toHaveLength(6))
+  await waitFor(() => expect(getAllByTestId('message-text-content')).toHaveLength(8))
   const bodies = getAllByTestId('message-text-content').map(el => [el.textContent, el.dataset.media, el.dataset.previewOnly])
 
   expect(bodies).toEqual([
@@ -89,7 +92,9 @@ it('renders member replies through the shell message renderer, resolving media o
     ['MEDIA:/tmp/remote.png', 'false', 'true'],
     ['MEDIA:/tmp/missing-remote.png', 'false', 'true'],
     ['MEDIA:/tmp/conflicting-origin.png', 'false', 'true'],
-    ['MEDIA:/tmp/proven-local.png', 'true', 'false']
+    ['MEDIA:/tmp/proven-local.png', 'true', 'false'],
+    ['MEDIA:/tmp/no-local-identity.png', 'false', 'true'],
+    ['MEDIA:/tmp/source-label-only.png', 'false', 'true']
   ])
 })
 
