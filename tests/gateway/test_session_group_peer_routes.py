@@ -18,6 +18,7 @@ from gateway.hosted_room_peer import (
     HostedRoomGrantError, decode_room_grant, gateway_room_grant_secret, issue_room_grant)
 from gateway.platforms import api_server_room_grants
 from gateway.session_group_peer_routes import CanonicalPeerClient, before_sending, set_route_status
+from hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_session_group_peers import call, gateway as gateway, invite, linked_room  # noqa: F401
 from gateway.session_group_peers import room_link
 from tui_gateway.hosted_room_driver import HostedRoomBinding
@@ -286,6 +287,34 @@ async def test_accepted_work_is_read_and_stopped_with_its_routes_current_grant(g
 
 
 @pytest.mark.asyncio
+async def test_retiring_room_recovers_only_retained_receipts_for_exact_stop(gateway, monkeypatch, inert_runs):
+    server, url, room, catalog, grant = await joined(gateway, monkeypatch)
+    try:
+        tracked, route, dispatch = attempt(gateway, room)
+        accepted = await asyncio.to_thread(tracked.dispatch, dispatch=dispatch, grant=route.grant)
+        gateway.service.begin_disband('linked')
+        sent, request = [], tracked._client._request
+        def recording(path, **kwargs):
+            sent.append(path)
+            return request(path, **kwargs)
+        monkeypatch.setattr(tracked._client, '_request', recording)
+        recovered = await asyncio.to_thread(tracked.recover_dispatch, dispatch=dispatch, grant=route.grant)
+        assert recovered['run_id'] == accepted['run_id'] and recovered['replayed']
+        assert sent == []
+        with pytest.raises(RuntimeStoreError, match='room_retiring') as caught:
+            await asyncio.to_thread(tracked.recover_dispatch,
+                dispatch={**dispatch, 'task_id': 'dtask:missing'}, grant=route.grant)
+        assert caught.value.ambiguous is True and not caught.value.not_admitted
+        assert sent == []
+        stopped = await asyncio.to_thread(tracked.stop_receipt,
+            task_id=dispatch['task_id'], execution_generation=1, grant=route.grant)
+        assert stopped is not None and sent == [f"/v1/runs/{accepted['run_id']}/stop"]
+        assert len(await runs(gateway)) == 1
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['trace', 'url', 'membership', 'epoch', 'removed', 'reauthorization'])
 async def test_an_observer_refuses_a_route_that_changed_under_it(gateway, monkeypatch, inert_runs, change):
     server, url, room, catalog, first = await joined(gateway, monkeypatch)
@@ -471,6 +500,8 @@ class _Refreshing:
         return {'status': 'accepted'}
 
     def recover_dispatch(self, **kwargs):
+        if kwargs.get('admit_if_missing') is False:
+            return None
         self.calls.append('recover_dispatch')
         return {'status': 'accepted'}
 
