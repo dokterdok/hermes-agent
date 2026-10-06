@@ -313,6 +313,14 @@ def test_always_on_is_reported_unless_the_operator_says_otherwise(monkeypatch):
     assert custody.local_always_on(refresh=True) is False  # unknown is never assumed always on
 
 
+def test_a_platform_without_battery_api_is_not_assumed_always_on(monkeypatch):
+    import psutil
+    from gateway import run
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {})
+    monkeypatch.delattr(psutil, 'sensors_battery', raising=False)
+    assert custody.local_always_on(refresh=True) is False
+
+
 def test_lease_hooks_ride_on_idle_heartbeats_to_voters(pair, monkeypatch, hooks):
     monkeypatch.setattr(custody, "local_always_on", lambda refresh=False: True)
     custody.set_local_consent(pair.target, room_id=ROOM, allowed=True)

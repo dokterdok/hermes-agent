@@ -78,7 +78,7 @@ _REQUEUE_RUNNING_SQL = _task_update(
 _CANCEL_QUEUED_SQL = _task_update(_CANCEL_SET, "status IN ('queued', 'deferred') AND cancel_generation=?")
 _BEGIN_STOP_SQL = _task_update(
     "status='stopping', cancel_generation=?, cancel_id=?, updated_at=?",
-    "status IN ('running', 'indeterminate') AND cancel_generation=?")
+    "status IN ('running', 'indeterminate', 'deferred') AND cancel_generation=?")
 _COMPLETE_STOP_SQL = _task_update(
     "status='cancelled', terminal_at=?, updated_at=?", "status='stopping' AND cancel_id=? AND cancel_generation=?")
 
@@ -96,6 +96,9 @@ _GENERATION_TRANSITIONS = {
     "defer": (
         "indeterminate", "status='deferred', result_json=?, terminal_at=?, updated_at=?", _INDETERMINATE_STALE,
         "indeterminate task changed during deferral"),
+    "reopen_deferred": (
+        "deferred", "status='indeterminate', result_json=NULL, terminal_at=NULL, indeterminate_at=?, updated_at=?",
+        "deferred task generation changed", "deferred task changed during reopen"),
     "requeue_deferred": (
         "deferred",
         f"{_REQUEUE_SET}, result_json=NULL, started_at=NULL, terminal_at=NULL, indeterminate_at=NULL, updated_at=?",
@@ -783,6 +786,17 @@ def requeue_deferred_task(
         now=now, set_params=(now,), authorize=authorize)
 
 
+def reopen_deferred_task(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    """Observe a deferred peer's original generation without minting another attempt."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    now = _timestamp(clock)
+    return _generation_transition(
+        db_path, identity, lease, "reopen_deferred", expected_execution_generation, expected_cancel_generation,
+        now=now, set_params=(now, now))
+
+
 _NONADMISSION_PROOF_FIELDS = frozenset({
     "disposition", "identity", "execution_generation", "cancel_generation", "authority_epoch",
     "run_gateway_id", "run_process_generation", "run_lease_generation", "retry_binding"})
@@ -861,14 +875,14 @@ def cancel_task(
     db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
     authorize: Callable[[sqlite3.Connection], None] | None = None
 ) -> dict[str, Any]:
-    """Cancel a queued task before any external work was admitted."""
+    """Cancel queued work or a deferred attempt with durable proof it was never admitted."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
     _cancel_generation(expected_cancel_generation)
     now = _timestamp(clock)
     def guard(row: sqlite3.Row) -> None:
         if row["status"] in TERMINAL_STATUSES:
             raise InvalidTaskTransitionError(f"cannot cancel task in state '{row['status']}'")
-        if row["status"] not in {"queued", "deferred"}:
+        if row["status"] != "queued" and not is_proven_nonadmission(_task_from_row(row)):
             raise InvalidTaskTransitionError("running work requires acknowledged two-phase cancellation")
         _require_cancel_generation(row, expected_cancel_generation)
     return _transition(

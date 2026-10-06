@@ -8,7 +8,7 @@ import pytest
 from gateway import hosted_room_links as links
 from gateway import session_group_peer_cleanup as cleanup
 from gateway.session_hosted_service import CanonicalHostedRoomService
-from tests.gateway.test_session_group_peers import gateway  # noqa: F401
+from tests.gateway.test_session_group_peers import gateway as gateway  # noqa: F401
 from tests.gateway.test_session_group_peer_routes import joined, capabilities, reregister
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 
@@ -93,6 +93,29 @@ def test_corrupt_cleanup_is_visible_and_never_deleted(gateway):
         'INSERT INTO hosted_room_peer_cleanup(key,value) VALUES (?,?)', (cleanup._PREFIX + 'broken', 'not json')))
     cleanup.drain(gateway.service)
     assert cleanup.status(gateway.service.db_path) == [{'status': 'unreadable'}]
+
+
+@pytest.mark.asyncio
+async def test_malformed_cleanup_schedule_is_held_without_blocking_due_revocations(gateway, monkeypatch):
+    import json
+    server, url, room, catalog, grant = await joined(gateway, monkeypatch)
+    try:
+        link = links.load_room_link(gateway.service.db_path, room_id='linked', member_id='reviewer')
+        malformed = [('next_at', value) for value in ('0', None, float('nan'), True)] + [
+            ('attempts', -1), ('attempts', True)]
+        def seed(conn):
+            for index, (field, value) in enumerate(malformed):
+                row = {'link': link.as_record(), 'mode': 'exact', 'attempts': 0, 'next_at': 0, field: value}
+                conn.execute('INSERT INTO hosted_room_peer_cleanup(key,value) VALUES (?,?)',
+                             (cleanup._PREFIX + f'malformed-{index}', json.dumps(row)))
+        gateway.db._execute_write(seed)
+        due = cleanup.retain(gateway.service.db_path, link)
+        await asyncio.to_thread(cleanup.drain, gateway.service)
+        assert due not in {key for key, _ in cleanup.obligations(gateway.service.db_path)}
+        assert cleanup.status(gateway.service.db_path) == [{'status': 'unreadable'}] * len(malformed)
+        assert await asyncio.to_thread(capabilities, url, grant) == (403, 'room_reauthorization_required')
+    finally:
+        await server.close()
 
 
 @pytest.mark.asyncio

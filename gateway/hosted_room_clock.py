@@ -37,9 +37,8 @@ def _windows_clocks():
         return None
 
     def reader(query):
-        value = ctypes.c_ulonglong()
-
         def read() -> float:
+            value = ctypes.c_ulonglong()
             query(ctypes.byref(value))
             return value.value / 10_000_000
         return read

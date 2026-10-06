@@ -19,6 +19,15 @@ from hermes_state_runtime import RuntimeStoreError
 MAX_REQUEST_BYTES = 8 * 1024
 
 
+def admission_storage_error(adapter, request, _openai_error):
+    """A participant accepts new group work only when its owner's permanent Stop can be recorded."""
+    from gateway.platforms.api_server_room_grants import _json_error
+    if adapter._room_grant_token(request) and adapter._run_idempotency_store.durable is not True:
+        return _json_error(_openai_error, "Durable storage is required before this Bot can accept group work.",
+                            code="group_stop_storage_unavailable", status=503)
+    return None
+
+
 def _error(message, code, status):
     from gateway.platforms.api_server import _openai_error
 

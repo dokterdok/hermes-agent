@@ -76,6 +76,19 @@ _BRANCH_TRANSITION_SCHEMA_COLUMNS = frozenset({
 })
 
 PROOF_KINDS = frozenset({"attested", "certified", "evidence", "handover"})
+_VERIFIED_TRANSITION_BODY = """
+    room_id TEXT NOT NULL,
+    from_epoch INTEGER NOT NULL CHECK (from_epoch >= 1),
+    to_epoch INTEGER NOT NULL CHECK (to_epoch > from_epoch),
+    successor_gateway_id TEXT NOT NULL,
+    proof_kind TEXT NOT NULL CHECK (proof_kind IN ('attested', 'certified', 'evidence', 'handover')),
+    proof_digest TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (room_id, to_epoch),
+    FOREIGN KEY (room_id, to_epoch)
+        REFERENCES hosted_room_verified_transition_uses (room_id, to_epoch)
+        DEFERRABLE INITIALLY DEFERRED
+"""
 # A handover proof is ``{statement, signature}``: the old authority's statement, signed with its room
 # identity key, that it hands this room to ``successor`` after its event ``last_seq``.
 HANDOVER_STATEMENT_FIELDS = frozenset({"room_id", "from_epoch", "to_epoch", "successor", "last_seq", "last_hash"})
@@ -277,6 +290,27 @@ def _quarantine_unsafe_authorities_locked(conn: sqlite3.Connection) -> None:
         )
 
 
+def _transition_schema_is_current(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='hosted_room_verified_transitions'"
+    ).fetchone()
+    return row is not None and all(f"'{kind}'" in row[0] for kind in PROOF_KINDS)
+
+
+def _initialize_transition_marks(conn: sqlite3.Connection) -> None:
+    conn.execute(f"CREATE TABLE IF NOT EXISTS hosted_room_verified_transitions ({_VERIFIED_TRANSITION_BODY})")
+    if _transition_schema_is_current(conn):
+        return
+    # Earlier stores allowed fewer proof kinds. Rebuild their CHECK in the caller's schema
+    # transaction, retaining every mark and its deferred FK to the unchanged use table.
+    for name in ("trg_hosted_events_quarantine_unsafe_lineage", "trg_hosted_replica_events_verified_lineage"):
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+    conn.execute(f"CREATE TABLE hosted_room_verified_transitions_upgrade ({_VERIFIED_TRANSITION_BODY})")
+    conn.execute("INSERT INTO hosted_room_verified_transitions_upgrade SELECT * FROM hosted_room_verified_transitions")
+    conn.execute("DROP TABLE hosted_room_verified_transitions")
+    conn.execute("ALTER TABLE hosted_room_verified_transitions_upgrade RENAME TO hosted_room_verified_transitions")
+
+
 def initialize_safety_schema(conn: sqlite3.Connection) -> None:
     from gateway.hosted_room_replicas import _initialize_replica_schema
 
@@ -297,21 +331,7 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (room_id, to_epoch)
         )"""
     )
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS hosted_room_verified_transitions (
-            room_id TEXT NOT NULL,
-            from_epoch INTEGER NOT NULL CHECK (from_epoch >= 1),
-            to_epoch INTEGER NOT NULL CHECK (to_epoch > from_epoch),
-            successor_gateway_id TEXT NOT NULL,
-            proof_kind TEXT NOT NULL CHECK (proof_kind IN ('attested', 'certified', 'evidence', 'handover')),
-            proof_digest TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            PRIMARY KEY (room_id, to_epoch),
-            FOREIGN KEY (room_id, to_epoch)
-                REFERENCES hosted_room_verified_transition_uses (room_id, to_epoch)
-                DEFERRABLE INITIALLY DEFERRED
-        )"""
-    )
+    _initialize_transition_marks(conn)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS hosted_room_branch_transitions (
             room_id TEXT NOT NULL,
@@ -406,6 +426,13 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
            )
            ON CONFLICT(singleton) DO UPDATE SET event_bytes=excluded.event_bytes"""
     )
+    _install_safety_triggers(conn)
+    # Audits every stored copy, re-deriving its byte count, before compacting any.
+    _compact_over_budget_replicas_locked(conn)
+
+
+def _install_safety_triggers(conn: sqlite3.Connection) -> None:
+    """Replace stale lineage guards and install the current store guards in order."""
     from gateway import hosted_rooms as limits
 
     ordinary_event_budget = int(limits.MAX_GATEWAY_EVENT_BYTES)
@@ -628,8 +655,6 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
            END""",
     ):
         conn.execute(trigger)
-    # Audits every stored copy, re-deriving its byte count, before compacting any.
-    _compact_over_budget_replicas_locked(conn)
 
 
 def safety_schema_is_current(conn: sqlite3.Connection) -> bool:
@@ -646,7 +671,8 @@ def safety_schema_is_current(conn: sqlite3.Connection) -> bool:
     }
     triggers = {str(row[0]): str(row[1]) for row in conn.execute(
         "SELECT name, sql FROM sqlite_master WHERE type='trigger'")}
-    return all(columns.issubset(table_columns(conn, table)) for table, columns in tables.items()) and (
+    return _transition_schema_is_current(conn) and all(
+        columns.issubset(table_columns(conn, table)) for table, columns in tables.items()) and (
         _ROOM_SAFETY_TRIGGERS.issubset(triggers)) and all(
         marker in triggers[name] for name, marker in _REVISED_TRIGGERS.items())
 

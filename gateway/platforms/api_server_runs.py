@@ -671,16 +671,65 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             _api_server._api_request_profile.reset(token)
 
 
+def _run_session_key(self, request, _openai_error):
+    """A room grant cannot select an unrelated conversation through the session header."""
+    key, error = self._parse_session_key_header(request)
+    if error is not None:
+        return key, error
+    if key and self._room_grant_token(request):
+        return key, _json_error(_openai_error, "Room grants cannot select an unrelated conversation.",
+                                code="invalid_room_dispatch", status=403)
+    return key, None
+
+
+def _run_request_identity(self, request, body, gateway_session_key, _openai_error):
+    """Validate the exact key and bind its fingerprint to the normalized request and conversation."""
+    key = request.headers.get("Idempotency-Key", "").strip()
+    if len(key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in key):
+        return key, "", "", _json_error(
+            _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
+            code="invalid_idempotency_key", status=400)
+    scope = fingerprint = ""
+    if key:
+        scope = self._run_idempotency_scope(request)
+        fingerprint = hashlib.sha256(json.dumps(
+            {"body": body, "gateway_session_key": gateway_session_key or ""},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode()).hexdigest()
+    return key, scope, fingerprint, None
+
+
+def _reserve_run_request(self, request, *, run_id, status, key, scope, fingerprint,
+                         gateway_session_key, _openai_error):
+    """Reserve under the participant fence/freeze writer before allocating an executing owner."""
+    if not key:
+        return None
+    try:
+        outcome, record = self._run_idempotency_store.reserve(
+            scope, key, fingerprint, run_id, status,
+            owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
+            retention_until=_room_retention_until(request), identity=_room_identity(request))
+    except (GroupRunFreezeError, RoomFenceError) as exc:
+        _forget_run(
+            self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+            self._run_statuses, self._run_owners)
+        return _json_error(_openai_error, str(exc), code=exc.code, status=exc.status)
+    if outcome != "created":
+        _forget_run(
+            self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+            self._run_statuses, self._run_owners)
+        return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+    self._run_idempotency_ids.add(run_id)
+    return None
+
+
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
     # Long-term memory scope header (see chat_completions for details).
-    gateway_session_key, key_err = self._parse_session_key_header(request)
+    gateway_session_key, key_err = _run_session_key(self, request, _openai_error)
     if key_err is not None:
         return key_err
-    if gateway_session_key and self._room_grant_token(request):
-        return _json_error(_openai_error, "Room grants cannot select an unrelated conversation.",
-                           code="invalid_room_dispatch", status=403)
     try:
         body = await request.json()
     except Exception:
@@ -692,21 +741,14 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
-    if self._room_grant_token(request) and self._run_idempotency_store.durable is not True:
-        return _json_error(_openai_error, "Durable storage is required before this Bot can accept group work.",
-                           code="group_stop_storage_unavailable", status=503)
-    idempotency_key = request.headers.get("Idempotency-Key", "").strip()
-    if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
-        return _json_error(
-            _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
-            code="invalid_idempotency_key", status=400)
-    idempotency_scope = idempotency_fingerprint = ""
-    if idempotency_key:
-        idempotency_scope = self._run_idempotency_scope(request)
-        idempotency_fingerprint = hashlib.sha256(json.dumps(
-            {"body": body, "gateway_session_key": gateway_session_key or ""},
-            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        ).encode()).hexdigest()
+    from gateway.platforms.api_server_group_owner_stop import admission_storage_error
+    storage_error = admission_storage_error(self, request, _openai_error)
+    if storage_error is not None:
+        return storage_error
+    idempotency_key, idempotency_scope, idempotency_fingerprint, identity_error = _run_request_identity(
+        self, request, body, gateway_session_key, _openai_error)
+    if identity_error is not None:
+        return identity_error
     raw_input = body.get("input")
     if not raw_input:
         return _json_error(_openai_error, "Missing 'input' field", status=400)
@@ -777,23 +819,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
         run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
-    if idempotency_key:
-        try:
-            outcome, record = self._run_idempotency_store.reserve(
-                idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
-                owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-                retention_until=_room_retention_until(request), identity=_room_identity(request))
-        except (GroupRunFreezeError, RoomFenceError) as exc:
-            _forget_run(
-                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners)
-            return _json_error(_openai_error, str(exc), code=exc.code, status=exc.status)
-        if outcome != "created":
-            _forget_run(
-                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners)
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
-        self._run_idempotency_ids.add(run_id)
+    reservation_error = _reserve_run_request(
+        self, request, run_id=run_id, status=initial_status, key=idempotency_key, scope=idempotency_scope,
+        fingerprint=idempotency_fingerprint, gateway_session_key=gateway_session_key, _openai_error=_openai_error)
+    if reservation_error is not None:
+        return reservation_error
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,

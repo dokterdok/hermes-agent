@@ -8,8 +8,8 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.platforms.api_server_run_scope import room_run_scope_key
-from tests.gateway.test_api_group_owner_stop import (  # noqa: F401 - adapter is a fixture
-    OWNER, PARTICIPANTS, STOP, adapter, app_for, command, dispatch, identity, invite, participation, submit,
+from tests.gateway.test_api_group_owner_stop import (
+    OWNER, PARTICIPANTS, STOP, adapter as adapter, app_for, command, dispatch, identity, invite, participation, submit,
 )
 from tests.gateway.test_api_server_runs import _make_slow_agent
 

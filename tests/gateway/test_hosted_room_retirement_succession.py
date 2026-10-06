@@ -18,7 +18,7 @@ from gateway import hosted_rooms as rooms
 from gateway.hosted_rooms_common import open_sqlite
 from tests.gateway.fixtures.passive_copy import member
 from tests.gateway.test_hosted_room_custody_lineage import (  # noqa: F401
-    ROOM, acting, configure, copy_to, enroll, message, move, net, verify)
+    ROOM, acting, configure, copy_to, enroll, message, move, net as net, verify)
 
 SECRET = b"first-home-retirement-secret-of-32-bytes"
 

@@ -61,6 +61,10 @@ def _authority(room: Mapping[str, Any]) -> tuple[str, int]:
     return str(room["authority_gateway_id"]), int(room["authority_epoch"])
 
 
+class RoomStopPendingError(RuntimeError):
+    """A durable Stop intent is still waiting for the exact producer to finish."""
+
+
 class HostedRoomService:
     """Own the hosted Discussion policy and its transport-free worker."""
 
@@ -287,7 +291,8 @@ class HostedRoomService:
         if (
             recover is None or not isinstance(identity, driver.TaskIdentity)
             or not isinstance(payload, Mapping) or execution_generation < 1
-            or task.get("status") not in {"indeterminate", "stopping"}):
+            or task.get("status") not in {"indeterminate", "stopping", "deferred"}
+            or driver.is_proven_nonadmission(task)):
             return
         prompt = payload.get("prompt")
         source_event_seq = int(payload.get("source_event_seq") or 0)
@@ -530,7 +535,7 @@ class HostedRoomService:
                 if result["status"] == "stopping":
                     pending += 1
         if require_acknowledged and pending:
-            raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
+            raise RoomStopPendingError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
         return len(tasks)
 

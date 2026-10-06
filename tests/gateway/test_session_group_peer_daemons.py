@@ -409,6 +409,50 @@ def test_disband_offline_target_cleanup_survives_both_gateway_restarts(tmp_path)
             model.server_close()
 
 
+def test_disband_of_an_active_peer_finishes_from_its_retained_receipt(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY', 'DISBAND_ACTIVE')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    home, home_env = _gateway(tmp_path, 'home', home_model, root)
+    target, target_env = _gateway(tmp_path, 'target', target_model, root, api_port=port)
+    async def exercise(hd, td):
+        async with websocket(home, hd) as hw, websocket(target, td) as tw:
+            _, invitation = await _join_pair(hw, tw)
+            await _send(hw, 'active-disband', '@reviewer DISBAND_ACTIVE')
+            assert await asyncio.to_thread(target_model.gates['DISBAND_ACTIVE'][0].wait, 30)
+            async with asyncio.timeout(10):
+                while True:
+                    with sqlite3.connect(home / 'state.db') as db:
+                        if db.execute('SELECT COUNT(*) FROM hosted_room_remote_runs').fetchone()[0]:
+                            break
+                    await asyncio.sleep(.05)
+            response = await rpc(hw, 'groups.disband', room_id='linked')
+            assert ('tombstone' in response.get('result', {})
+                    or response.get('error', {}).get('message') == 'room_retiring'), response
+            target_model.gates['DISBAND_ACTIVE'][1].set()
+            async with asyncio.timeout(30):
+                while True:
+                    state = (await rpc(hw, 'groups.state', room_id='linked', include_disbanded=True))['result']
+                    if state['room'].get('disbanded_at') and not state['driver_status']['peer_cleanup']:
+                        break
+                    await asyncio.sleep(.1)
+            assert not state['driver_status']['working']
+            code, body = await asyncio.to_thread(_grant_status, f'http://127.0.0.1:{port}', invitation['grant'])
+            assert (code, body['error']['code']) == (403, 'room_reauthorization_required')
+            assert len(target_model.requests) == 1
+    try:
+        with daemon(root, target, target_env, barrier=False) as (_, td):
+            with daemon(root, home, home_env, barrier=False) as (_, hd):
+                asyncio.run(exercise(hd, td))
+    finally:
+        target_model.gates['DISBAND_ACTIVE'][1].set()
+        for model in (home_model, target_model):
+            model.shutdown()
+            model.server_close()
+
+
 def test_proven_nonadmission_discard_and_retry_allow_healthy_member_progress(tmp_path):
     root = Path(__file__).resolve().parents[2]
     home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY')
