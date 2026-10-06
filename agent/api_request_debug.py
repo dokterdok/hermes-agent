@@ -24,7 +24,7 @@ def _api_error_debug_info(error: Exception) -> Dict[str, Any]:
         try:
             info["response_status"] = getattr(response_obj, "status_code", None)
             info["response_text"] = response_obj.text
-        except Exception as e:  # health: allow BLE001 -- optional diagnostics read external SDK properties; retain the request failure
+        except Exception as e:
             logger.debug("Could not extract error response details: %s", e)
     return info
 
@@ -52,7 +52,7 @@ def dump_api_request_debug(
         try:
             live = getattr(agent, "_anthropic_client", None) if anthropic else agent.client
             api_key = getattr(live, "api_key", None) or getattr(live, "auth_token", None)
-        except Exception as e:  # health: allow BLE001 -- optional diagnostics read external SDK properties; retain the request failure
+        except Exception as e:
             logger.debug("Could not extract API key for debug dump: %s", e)
         endpoint = {"codex_responses": "/responses", "anthropic_messages": "/messages"}.get(
             agent.api_mode, "/chat/completions"
@@ -85,7 +85,7 @@ def dump_api_request_debug(
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
             print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
         return dump_file
-    except Exception as dump_error:  # health: allow BLE001 -- diagnostics must not replace the original provider failure
+    except Exception as dump_error:
         if agent.verbose_logging:
             logger.warning("Failed to dump API request debug payload: %s", dump_error)
         return None
