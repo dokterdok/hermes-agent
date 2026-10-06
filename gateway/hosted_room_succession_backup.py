@@ -12,6 +12,8 @@ which also serves as the heartbeat backups use to notice an offline host.
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 import time
 from contextlib import closing
 from dataclasses import dataclass
@@ -21,6 +23,8 @@ from typing import Any, Callable, Mapping
 from gateway import hosted_rooms as rooms
 from gateway import hosted_room_succession as succession
 from gateway.hosted_room_succession import ProofInvalid, SuccessionError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -458,8 +462,8 @@ def _keep_copy_route(custody_db: Path, room_id: str, install_id: str, endpoint: 
             custody.save_custody_route(custody_db, room_id=room_id, install_id=install_id, target_url=endpoint,
                                        target_profile=item["target_profile"], grant=item["grant"],
                                        catalog=item["catalog"])
-        except Exception:
-            pass  # the next report brings it again
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            logger.warning("group %s: copy route remains unavailable (%s)", room_id, type(exc).__name__)
         return
 
 

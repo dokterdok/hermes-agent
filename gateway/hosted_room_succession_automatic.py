@@ -37,6 +37,7 @@ import logging
 import math
 import random
 import socket
+import sqlite3
 import threading
 import time
 from contextlib import closing
@@ -237,8 +238,11 @@ class Automatic:
 
     def fence_path(self):
         """This computer's fence store (its Runs store), when it has a durable one."""
+        from gateway.hosted_room_fence import RoomFenceError
         ctx = self.context()
-        store = getattr(ctx, "runs_store", None) if ctx is not None else None
+        if ctx is None:
+            raise RoomFenceError()
+        store = getattr(ctx, "runs_store", None)
         return getattr(store, "path", None)
 
     def hosts(self, room_id: str) -> bool:
@@ -306,16 +310,13 @@ class Automatic:
             return self._online[1]
         try:
             result = bool(self._online_check())
-        except Exception:
+        except (OSError, ValueError):
             result = False
         self._online = (now, result)
         return result
 
     def context(self):
-        try:
-            return self._context_factory()
-        except Exception:
-            return None
+        return self._context_factory()
 
     # the hooks #104601 calls
     def request(self, room_id: str) -> dict[str, Any] | None:
@@ -572,10 +573,10 @@ class Automatic:
         host = succession.host_entry(info["configuration"]) or {}
         if not host.get("endpoint"):
             return
-        from gateway.hosted_room_succession_move import _query
+        from gateway.hosted_room_succession_move import RemoteRefusal, _query
         try:
             _query(ctx, room_id, host["install_id"], str(host["endpoint"]))
-        except Exception:
+        except (RemoteRefusal, OSError, ValueError):
             return
         self.heard_from_host(room_id)
 
@@ -933,10 +934,7 @@ def _resolved(path) -> str:
 
 
 def _all() -> list[Automatic]:
-    try:
-        return list(_instances.get(succession.local_install_id(), ()))
-    except Exception:
-        return []
+    return list(_instances.get(succession.local_install_id(), ()))
 
 
 def instance_for(db_path) -> Automatic | None:
@@ -1010,12 +1008,15 @@ def fenced_here(db_path, room_id: str, epoch: int) -> bool:
         return False
     try:
         return int(fence.room_fence_state(path, room_id)["fenced_epoch"]) >= int(epoch)
-    except Exception:
+    except (fence.RoomFenceError, ValueError):
         return True  # an unreadable fence store can't vouch for this epoch
 
 
 def install(automatic: Automatic) -> None:
     """Register a hosted service's lease layer with #104601's lease hooks."""
+    # Retain the registered store coordinate if its live context later becomes unavailable.
+    if automatic.db_path() is None:
+        raise SuccessionError("the hosted service context is unavailable")
     with _registry_lock:
         listed = _instances.setdefault(succession.local_install_id(), [])
         if automatic not in listed:
@@ -1124,8 +1125,9 @@ def _serving(room_id):
                 room = conn.execute("SELECT authority_gateway_id, authority_epoch FROM hosted_rooms WHERE room_id=? "
                                     "AND disbanded_at IS NULL", (room_id,)).fetchone()
                 asks_first = mode_of(succession.configuration_locked(conn, room_id)) == "ask"
-        except Exception:
-            return None
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            logger.warning("group %s: manual continuation cannot be read (%s)", room_id, type(exc).__name__)
+            return False
         if asks_first or room is None:
             with _registry_lock:
                 _without_leases.pop(room_id, None)  # "ask first" needs no lease: #104601 lets it serve
@@ -1202,16 +1204,16 @@ def _known_endpoints() -> list[tuple[str, int]]:
         parts = urlsplit(str(base)) if base else None
         if parts is not None and parts.hostname:
             found.append((parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)))
-    except Exception:
-        pass
+    except Exception as exc:  # health: allow BLE001 -- provider plugins raise SDK-specific failures; log only the type and keep checking configured messaging endpoints
+        logger.warning("Group online check provider unavailable (%s)", type(exc).__name__)
     try:
         from hermes_cli.config import load_config
         platforms = (load_config() or {}).get("platforms") or {}
         for name, host in _PLATFORM_HOSTS.items():
             if isinstance(platforms.get(name), Mapping) and platforms[name].get("enabled", True):
                 found.append((host, 443))
-    except Exception:
-        pass
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        logger.warning("Group online check settings unavailable (%s)", type(exc).__name__)
     _endpoints = (time.monotonic(), found)
     return found
 

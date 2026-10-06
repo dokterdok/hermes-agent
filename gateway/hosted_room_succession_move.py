@@ -22,6 +22,8 @@ running host steps aside. The owner's choice is signed by the computer it was ma
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 import time
 import urllib.error
 import urllib.request
@@ -34,6 +36,8 @@ from typing import Any, Callable, Mapping
 from gateway import hosted_room_succession as succession
 from gateway import hosted_rooms as rooms
 from gateway.hosted_room_succession import ProofInvalid, SuccessionError
+
+logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_SECONDS = 5.0
 # How far past every epoch this computer itself knows a rival's signed claim may move the next one.
@@ -141,6 +145,8 @@ def _query(ctx: MoveContext, room_id: str, install_id: str, endpoint: str, *, fr
                 "nonce": succession.nonce(), **({"from_epoch": from_epoch} if from_epoch is not None else {})}
     request = {**unsigned, "signature": succession.sign(succession.QUERY, unsigned)}
     answer = (ctx.post or http_post)(endpoint, "/v1/room-members/succession/query", request, ctx.timeout)
+    if not isinstance(answer, dict):
+        raise ProofInvalid("an answer must be a signed object")
     signed = {k: v for k, v in answer.items() if k != "signature"}
     with _read(ctx) as conn:
         if (answer.get("responder_install_id") != install_id or answer.get("request_digest") != succession.digest(request)
@@ -164,7 +170,7 @@ def survey(ctx: MoveContext, room_id: str, configuration: Mapping[str, Any], *,
             return install_id, {"answer": _query(ctx, room_id, install_id, str(endpoint), from_epoch=from_epoch)}
         except RemoteRefusal as exc:
             return install_id, {"error": exc.code}
-        except Exception:
+        except (OSError, ValueError):
             return install_id, {"error": "unreachable"}
 
     if not custodians:
@@ -494,7 +500,7 @@ def _ask_fences(ctx: MoveContext, room_id: str, configuration: Mapping[str, Any]
         except RemoteRefusal as exc:
             heard(install_id)
             return install_id, _verified_refusal(ctx, room_id, install_id, exc)
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             return install_id, RemoteRefusal("unreachable", None)
 
     with ThreadPoolExecutor(max_workers=min(ctx.workers, max(1, len(custodians)))) as pool:
@@ -611,7 +617,7 @@ def _adopt(ctx: MoveContext, room_id: str, record: dict[str, Any]) -> dict[str, 
             break
         try:
             catch_up(ctx, room_id, item["install_id"], item["head"])
-        except Exception:
+        except (OSError, ValueError):
             continue  # the next best copy; what it can't vouch for is never adopted
         source = item["install_id"]
         break
@@ -826,7 +832,7 @@ def register_routes(ctx: MoveContext, room_id: str, grants: Mapping[str, Any],
                                                target_profile=item["target_profile"], grant=item["grant"],
                                                catalog=item["catalog"])
                     results[f"{custody.CUSTODY_MEMBER_ID}:{install_id}"] = "registered"
-                except Exception as exc:
+                except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
                     results[f"{custody.CUSTODY_MEMBER_ID}:{install_id}"] = getattr(exc, "reason", type(exc).__name__)
                 continue
             try:
@@ -835,7 +841,7 @@ def register_routes(ctx: MoveContext, room_id: str, grants: Mapping[str, Any],
                                        "target_profile": item["target_profile"], "grant": item["grant"],
                                        "catalog": item["catalog"]})
                 results[item["member_id"]] = "registered"
-            except Exception as exc:  # a member without a route stays unavailable, visibly
+            except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:  # a member without a route stays unavailable, visibly
                 results[item["member_id"]] = getattr(exc, "reason", type(exc).__name__)
     return results
 
@@ -921,7 +927,7 @@ def announce(ctx: MoveContext, room_id: str) -> dict[str, Any]:
                 if theirs is not None:
                     record_conflict(ctx.db_path, room_id, mine=mine, theirs=theirs)
             continue
-        except Exception as exc:
+        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
             announced[install_id] = "unreachable:" + type(exc).__name__
             continue
         if opened.get("rebased"):
@@ -1349,7 +1355,7 @@ def deliver_decision(ctx: MoveContext, room_id: str) -> None:
     try:
         reply = (ctx.post or http_post)(str(endpoint), "/v1/room-members/succession/decision", dict(decision),
                                         ctx.timeout)
-    except Exception:
+    except (RemoteRefusal, OSError, ValueError):
         return
     if not (isinstance(reply, Mapping) and reply.get("applied") is True):
         return  # not applied there yet (it may not know of the conflict): sent again on the next pass
@@ -1423,5 +1429,6 @@ def maintain(ctx: MoveContext, room_ids) -> None:
             keep_continue(ctx, room_id)
             continue_by_rule(ctx, room_id)
             deliver_decision(ctx, room_id)
-        except Exception:
+        except (RemoteRefusal, OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+            logger.warning("group %s: succession move remains pending (%s)", room_id, type(exc).__name__)
             continue

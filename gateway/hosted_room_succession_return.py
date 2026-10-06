@@ -18,6 +18,7 @@ Nothing from a branch is merged, replayed or re-executed.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from contextlib import closing
@@ -27,6 +28,8 @@ from typing import Any, Mapping
 from gateway import hosted_room_succession as succession
 from gateway import hosted_rooms as rooms
 from gateway.hosted_rooms_common import table_exists, utf8_len
+
+logger = logging.getLogger(__name__)
 
 BRANCHES = "hosted_room_divergent_branches"
 BRANCH_EVENTS = "hosted_room_divergent_events"
@@ -281,10 +284,7 @@ def branch_log(db_path: Path | str, room_id: str, branch_id: str, *, after_seq: 
 def _local_runs(db_path: Path, room_id: str) -> list[dict[str, Any]]:
     """What this host's driver knew about its own turns: reported, never replayed."""
     from gateway import hosted_room_driver as driver
-    try:
-        tasks = driver.list_tasks(db_path, room_id=room_id)
-    except Exception:
-        return []
+    tasks = driver.list_tasks(db_path, room_id=room_id)
     return [{"task_id": task["identity"].task_id, "status": task["status"],
              "execution_generation": task["execution_generation"],
              "member_id": task["payload"].get("target_member_id") or task["payload"].get("target_profile")}
@@ -391,8 +391,9 @@ def step_down(ctx, room_id: str, transition: Mapping[str, Any], fork_event: Mapp
             stop = getattr(service, "stop_work", None)
             if stop is not None:
                 stop(room_id, cancel_id="authority-moved")
-        except Exception:
-            pass  # the branch is set aside either way; nothing from it is replayed
+        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+            # The branch is set aside either way; nothing from it is replayed.
+            logger.warning("group %s: old host work could not be stopped (%s)", room_id, type(exc).__name__)
     demoted = demote_to_custody(ctx.db_path, room_id=room_id, transition=transition, fork_event=fork_event,
                                 decision=decision, local_runs=_local_runs(ctx.db_path, room_id))
     if demoted is None:
@@ -447,7 +448,7 @@ def follow_up(ctx, room_id: str) -> dict[str, Any] | None:
         try:
             move.catch_up(ctx, room_id, source, signed_by=None if source == record["successor"]
                           else record["successor"])
-        except Exception:
+        except (OSError, ValueError):
             continue  # the next source, or the next upkeep cycle, continues from the copy's own watermark
         if source == record["successor"]:
             record["caught_up"] = True
@@ -472,7 +473,8 @@ def _report(ctx, room_id: str, record: Mapping[str, Any]) -> bool:
     if getattr(ctx, "mint_grants", None) is not None:
         try:  # the copy-only grant (and any member's) the kept host pushes to this copy with
             grants = ctx.mint_grants(room_id, record["successor"], int(record["to_epoch"]))
-        except Exception:
+        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+            logger.warning("group %s: continuation grants unavailable (%s)", room_id, type(exc).__name__)
             grants = []
     unsigned = {"room_id": room_id, "reporter_install_id": succession.local_install_id(), "issued_at": time.time(),
                 "nonce": succession.nonce(), "from_epoch": branch["own_epoch"], "fork_seq": branch["fork_seq"],
@@ -482,7 +484,7 @@ def _report(ctx, room_id: str, record: Mapping[str, Any]) -> bool:
         (ctx.post or move.http_post)(str(kept["endpoint"]), "/v1/room-members/succession/report",
                                      {**unsigned, "signature": succession.sign(succession.REPORT, unsigned)},
                                      ctx.timeout)
-    except Exception:
+    except (move.RemoteRefusal, OSError, ValueError):
         return False  # the branch stays here, readable; the next upkeep cycle reports again
     return True
 
@@ -565,7 +567,7 @@ def _tell_other_host(ctx, room_id: str, record: Mapping[str, Any], *, fork: int)
         (ctx.post or move.http_post)(str(endpoint), "/v1/room-members/succession/report",
                                      {**unsigned, "signature": succession.sign(succession.REPORT, unsigned)},
                                      ctx.timeout)
-    except Exception:
+    except (move.RemoteRefusal, OSError, ValueError):
         return False
     return True
 

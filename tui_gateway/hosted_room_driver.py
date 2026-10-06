@@ -560,7 +560,8 @@ class HostedRoomRuntime:
         or starts a turn: serving can end within a cycle (a lease ran out, a handover was signed)."""
         try:
             return any(other.room_id == binding.room_id for other in tuple(self._rooms_provider()))
-        except Exception:
+        except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+            self._record_error(f"room service check failed: {type(exc).__name__}")
             return False
 
     def _process_room(self, binding: HostedRoomBinding) -> None:

@@ -36,3 +36,27 @@ def test_copy_never_follows_a_fenced_epoch_when_its_fence_store_fails(tmp_path, 
         assert world.head('p') == before
     finally:
         world.close()
+
+
+@pytest.mark.parametrize('fault', ['missing', 'failed'])
+def test_missing_runtime_context_cannot_hide_a_durable_fence(tmp_path, monkeypatch, fault):
+    world = World(tmp_path, monkeypatch, ('h', 'c', 'd', 'p'), voters=('h', 'c', 'd'), others=('p',))
+    try:
+        world.advance(10)
+        world.network.stopped.update({'h', 'p'})
+        world.t += 65
+        owner_continues(world, 'c')
+        participant = world.gateways['p']
+        with participant.acting():
+            fence.fence_room(participant.runs.path, room_id=ROOM, fence_epoch=2)
+        before = world.head('p')
+        def unavailable():
+            if fault == 'failed':
+                raise RuntimeError('runtime context temporarily unavailable')
+            return None
+        monkeypatch.setattr(world.automatics['p'], '_context_factory', unavailable)
+        with pytest.raises(fence.RoomFenceError if fault == 'missing' else RuntimeError):
+            copy_to(world.gateways['c'], participant)
+        assert world.head('p') == before
+    finally:
+        world.close()

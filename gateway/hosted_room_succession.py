@@ -295,7 +295,7 @@ def vouched_receipts_locked(conn: sqlite3.Connection, room_id: str, receipts: li
         for head in (receipt.get("heads") if isinstance(receipt.get("heads"), list) else ())[-MAX_RECEIPT_HEADS:]:
             try:
                 statement = custody.verify_head_locked(conn, room_id, head)
-            except Exception:
+            except custody.CustodyError:
                 continue
             if (statement["room_id"], statement["host"], statement["epoch"]) != (room_id, host, epoch):
                 continue
@@ -977,10 +977,7 @@ def waiting_tasks(db_path: Path | str, room_id: str) -> list[dict[str, Any]]:
     """``driver_status.tasks[]``: the room's turns waiting for a computer that holds what they need."""
     from gateway import hosted_room_driver as driver
     found = []
-    try:
-        tasks = driver.list_tasks(db_path, room_id=room_id, status="deferred")
-    except Exception:
-        return []
+    tasks = driver.list_tasks(db_path, room_id=room_id, status="deferred")
     for task in tasks:
         result = task.get("result") if isinstance(task.get("result"), dict) else {}
         if result.get("reason") != "waiting_for_host":
