@@ -490,8 +490,10 @@ class PeerRunsHTTPClient:
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
         return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
 
-    def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
-        """Recover one exact admission by receipt or idempotent POST replay."""
+    def recover_dispatch(
+        self, *, dispatch: Mapping[str, Any], grant: str, admit_if_missing: bool = True,
+    ) -> Mapping[str, Any] | None:
+        """Recover an exact receipt; admission replay requires the caller's separate permission."""
         checked = self._checked_dispatch(dispatch, grant)
         existing = self._receipt(checked.task_id, checked.execution_generation)
         if existing is not None:
@@ -500,6 +502,8 @@ class PeerRunsHTTPClient:
             return self._accepted(
                 checked, run_id=str(existing["run_id"]), session_id=str(existing["session_id"]),
                 replayed=True)
+        if not admit_if_missing:
+            return None
         key, now = (checked.task_id, checked.execution_generation), self.clock()
         backoff = self._recovery_backoff.get(key)
         if backoff is not None and now < float(backoff["next_attempt_at"]):
