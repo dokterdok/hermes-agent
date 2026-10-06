@@ -2759,6 +2759,7 @@ class GatewayTurnMixin:
         Lets a Docker container handle Matrix E2EE while the agent runs on the host with full
         access to local files, memory, skills, and a unified session store."""
         from gateway.run import _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS
+        from gateway.proxy_sse import ProxySSEBuffer, proxy_sse_data
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
         except ImportError:
@@ -2829,22 +2830,12 @@ class GatewayTurnMixin:
             Malformed frames (bad JSON, ``choices: [null]``, non-dict deltas) are skipped —
             one bad chunk must not abort the whole stream."""
             nonlocal full_response
-            line = line.strip()
-            if not line.startswith("data: "):
-                return False
-            data = line[6:]
-            if data.strip() == "[DONE]":
-                return True
-            try:
-                choices = json.loads(data).get("choices") or []
-                content = choices[0].get("delta", {}).get("content", "") if choices else ""
-            except (json.JSONDecodeError, TypeError, AttributeError, IndexError):
-                return False
+            done, content = proxy_sse_data(line)
             if content:
                 full_response += content
                 if _stream_consumer:
                     _stream_consumer.on_delta(content)
-            return False
+            return done
 
         try:
             # sock_connect bounds the TCP connect phase so an unreachable proxy host
@@ -2857,25 +2848,23 @@ class GatewayTurnMixin:
                         logger.warning("Proxy error (%d) from %s: %s", resp.status, proxy_url, error_text[:500])
                         return self._proxy_error_result(t("gateway.proxy.http_error", status=resp.status, error=error_text[:300]))
 
-                    buffer = ""
+                    buffer = ProxySSEBuffer()
                     async for chunk in resp.content.iter_any():
                         if not _run_still_current():
                             return _stale_result("stream")
-                        buffer += chunk.decode("utf-8", errors="replace")
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
+                        for line in buffer.feed(chunk):
                             if _consume_sse_line(line):
                                 saw_done = True
                                 break
                         # Exit before the iterator requests another network chunk.
                         if saw_done:
                             break
-                        if len(buffer) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
+                        if len(buffer.text) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
                             raise ValueError("Proxy SSE stream exceeded max buffer size without a line boundary")
                     # The final SSE frame may not be newline-terminated: flush the residual
                     # buffer after EOF instead of silently dropping its content.
-                    if not saw_done and buffer:
-                        saw_done = _consume_sse_line(buffer)
+                    if not saw_done and (residual := buffer.finish()):
+                        saw_done = _consume_sse_line(residual)
                     if not saw_done:
                         # Clean EOF without [DONE] — the upstream dropped the response
                         # mid-stream. Keep any partial text but say so instead of
