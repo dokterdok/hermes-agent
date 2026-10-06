@@ -633,6 +633,8 @@ def protection_locked(conn: sqlite3.Connection, room_id: str, host: str) -> dict
 
 def admission_mode_locked(conn: sqlite3.Connection, room_id: str) -> str:
     """The host's execution guard, including any policy change its voters have not stored yet."""
+    if _call_hook("manual_continuation_provider", conn, room_id) is True:
+        return "ask"  # an explicit owner override for this exact room and current authority epoch
     return protection_locked(conn, room_id, rooms.local_authority_gateway_id())["admission_mode"]
 
 
@@ -1490,8 +1492,11 @@ lease_remaining_provider: Callable[[str], float | None] | None = None
 #: is handing the group over, or continued on two computers). A paused host appends nothing here.
 #: Without an answer (None, or no provider), a host in majority or careful mode is paused too.
 serving_provider: Callable[[str], bool | None] | None = None
+#: ``(conn, room_id) -> bool``: the owner's explicit Continue anyway applies to this current epoch.
+#: This bypasses copy protection only; serving still checks pause, fencing and authority separately.
+manual_continuation_provider: Callable[[sqlite3.Connection, str], bool] | None = None
 _LEASE_HOOKS = ("lease_request_provider", "lease_grant_hook", "lease_ack_hook", "lease_remaining_provider",
-                "serving_provider")
+                "serving_provider", "manual_continuation_provider")
 MAX_LEASE_REQUEST_BYTES = 16 * 1024
 MAX_LEASE_GRANT_BYTES = 1024 * 1024
 
