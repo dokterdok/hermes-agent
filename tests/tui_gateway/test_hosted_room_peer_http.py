@@ -1089,9 +1089,13 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
         api_key="",
     )
 
+    retired = []
     def request(path, **_kwargs):
         if path == "/v1/room-members/grants/refresh":
             return {"grant": "replacement.room.grant"}
+        if path == "/v1/room-members/grants/revoke-exact":
+            retired.append(_kwargs['room_grant'])
+            return {'revoked': True}
         assert path == "/v1/room-members/capabilities"
         return {"catalog": refreshed}
 
@@ -1106,6 +1110,7 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
     assert caught.value.error_code == error_code
     assert caught.value.needs_reauthorization is True
     assert caught.value.not_admitted is True
+    assert retired == ['replacement.room.grant']
 
 
 def test_grant_refresh_preserves_unchanged_catalog_and_policy():
