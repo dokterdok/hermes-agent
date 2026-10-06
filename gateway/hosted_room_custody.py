@@ -617,8 +617,23 @@ def protection_locked(conn: sqlite3.Connection, room_id: str, host: str) -> dict
     configuration = ({"configuration_seq": latest["seq"], **{key: latest[key] for key in _CONFIGURATION_FIELDS}}
                      if latest else {"configuration_seq": 0, "custodians": [], "owner_name": None, "automatic": True,
                                      "voters": []})
+    admission_mode = mode_of(configuration)
+    if len(sets) > 1:
+        # A disabling policy or smaller voter set is not effective at peers that have not stored it.
+        # Until both sets acknowledge, retain leases from both majorities, even when the new policy
+        # says Ask or careful. Otherwise an old majority could elect while this host serves unleased.
+        changed_index = next(index for index, item in enumerate(configurations) if item["seq"] == change["seq"])
+        previous = configurations[max(0, changed_index - 1)]
+        if previous["automatic"] and len(previous["voters"]) >= 2:
+            admission_mode = "majority"
     return {"configuration": configuration, "voter_sets": sets,
+            "admission_mode": admission_mode,
             "protected_seq": min(_majority_seq(held, voters) for voters in sets)}
+
+
+def admission_mode_locked(conn: sqlite3.Connection, room_id: str) -> str:
+    """The host's execution guard, including any policy change its voters have not stored yet."""
+    return protection_locked(conn, room_id, rooms.local_authority_gateway_id())["admission_mode"]
 
 
 def voter_sets_locked(conn: sqlite3.Connection, room_id: str, host: str) -> list[list[str]]:
@@ -901,7 +916,7 @@ def maintain_configuration(
         if not configurations and len(entries) == 1:
             return None
         current = configurations[-1] if configurations else None
-        if not serving(room_id, mode=mode_of(current) if current else "ask"):
+        if not serving(room_id, mode=admission_mode_locked(conn, room_id)):
             return None  # a paused host appends nothing: one append now would split the room's history
         # Only a host that runs the lease layer offers automatic moves; the owner's switch decides there.
         automatic = automatic_locked(conn, room_id) and lease_layer_installed()
@@ -1581,12 +1596,11 @@ def lease_remaining(room_id: str) -> float | None:
 
 
 def room_mode(db_path: DbPath, room_id: str) -> str:
-    """The hosted room's mode now: ``majority``, ``careful`` or ``ask``."""
+    """The hosted room's execution guard, retaining protection during an unacknowledged policy change."""
     with closing(open_sqlite(db_path, timeout=1)) as conn:
         if not table_exists(conn, "hosted_room_events"):
             return "ask"
-        configuration = configuration_locked(conn, room_id)
-    return mode_of(configuration)
+        return admission_mode_locked(conn, room_id)
 
 
 def _waiting_task_locked(conn: sqlite3.Connection, room_id: str, protected: int) -> dict[str, Any] | None:
@@ -1610,7 +1624,7 @@ def dispatch_ready(db_path: DbPath, room_id: str, task_id: str, execution_genera
     (``serving``); in majority mode, once a majority of voters holds its ``task.admitted``; in every
     other mode at once."""
     with closing(open_sqlite(db_path, timeout=1)) as conn:
-        mode = mode_of(configuration_locked(conn, room_id))
+        mode = admission_mode_locked(conn, room_id)
         if not serving(room_id, mode=mode):
             return False
         if mode != "majority":
@@ -1638,7 +1652,7 @@ def announce_queued_task_locked(conn: sqlite3.Connection, task: Mapping[str, Any
     """
     if task["status"] != "queued" or not has_custody_locked(conn, str(task["room_id"])):
         return None
-    if not serving(str(task["room_id"]), mode=mode_of(configuration_locked(conn, str(task["room_id"])))):
+    if not serving(str(task["room_id"]), mode=admission_mode_locked(conn, str(task["room_id"]))):
         raise HostPausedError("the host is paused and appends nothing to this Group Chat")
     room_id, generation = str(task["room_id"]), int(task["execution_generation"]) + 1
     payload = json.loads(task["payload_json"])

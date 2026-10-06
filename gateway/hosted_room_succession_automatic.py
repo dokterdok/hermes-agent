@@ -323,15 +323,12 @@ class Automatic:
         ctx = self.context()
         if ctx is None:
             return None
-        with closing(rooms._read_connection(ctx.db_path)) as conn:
-            room = conn.execute("SELECT authority_gateway_id, authority_epoch FROM hosted_rooms WHERE room_id=? "
-                                "AND disbanded_at IS NULL", (room_id,)).fetchone()
-            configuration = succession.configuration_locked(conn, room_id) if room is not None else None
-        if room is None or room[0] != succession.local_install_id() or mode_of(configuration) == "ask":
+        info = room_view(ctx, room_id)
+        if info is None or not info["hosts"] or info["mode"] == "ask":
             return None
         if succession.paused_reason(ctx.db_path, room_id) in {"room_authority_conflict", "room_authority_promised"}:
             return None  # stepping aside: let the lease run out so the kept host can gather its promises
-        return self.lease.request(room_id, int(room[1]))
+        return self.lease.request(room_id, info["epoch"])
 
     def grant(self, room_id: str, epoch: int, authority: str, request: Any) -> dict[str, Any] | None:
         """``lease_grant_hook``: on a voter, after it stored a push from the host it follows."""
@@ -656,7 +653,8 @@ def room_view(ctx, room_id: str) -> dict[str, Any] | None:
         protection = custody.protection_locked(conn, room_id, me) if room[0] == me else None
     configuration = protection["configuration"] if protection else {"voters": []}
     return {"hosts": room[0] == me, "epoch": int(room[1]), "me": me, "configuration": configuration,
-            "mode": mode_of(configuration), "voters": list(configuration.get("voters") or ()),
+            "mode": protection["admission_mode"] if protection else mode_of(configuration),
+            "voters": list(configuration.get("voters") or ()),
             "voter_sets": protection["voter_sets"] if protection else []}
 
 
@@ -965,7 +963,7 @@ def host_paused_reason(db_path, room_id: str) -> str | None:
                             "AND disbanded_at IS NULL", (room_id,)).fetchone()
         if room is None or room[0] != succession.local_install_id():
             return None
-        mode = mode_of(succession.configuration_locked(conn, room_id))
+        mode = _custody().admission_mode_locked(conn, room_id)
     if mode not in AUTOMATIC_MODES or anyway_epoch(db_path, room_id) == int(room[1]):
         return None
     return "no_lease_layer"
