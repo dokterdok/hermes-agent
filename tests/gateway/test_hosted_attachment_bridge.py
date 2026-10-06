@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.gateway.test_session_hosted_rpc import owner as owner
+
 
 def test_authorized_upload_send_download_and_task_consumption(tmp_path):
     from gateway.hosted_room_input_preparation import resolve_inputs
@@ -69,6 +71,3 @@ def test_rpc_accepts_only_bound_manifest_after_producer_authorization(owned_owne
     assert len(rows) == 1
     path = Path(rows[0]['payload']['text'].split('file: ')[1].split('\n')[0])
     assert path.read_bytes() == b'exact bytes'
-
-
-from tests.gateway.test_session_hosted_rpc import owner  # noqa: F401,E402

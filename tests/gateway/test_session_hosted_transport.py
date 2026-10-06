@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.gateway.test_session_hosted_rpc import owner  # noqa: F401
+from tests.gateway.test_session_hosted_rpc import owner as owner
 
 
 def _server(home):
