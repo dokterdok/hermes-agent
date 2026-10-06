@@ -187,3 +187,39 @@ def test_worker_failure_reaches_its_owner_and_releases_the_retry_slot(monkeypatc
     expected = {'metadata': source.manifest['items'][0], 'data_base64': 'eA=='}
     source.client.output_request = lambda **kwargs: expected
     assert source._call('read', artifact_id=expected['metadata']['artifact_id']) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['read', 'ack', 'discard'])
+async def test_revocation_after_snapshot_preserves_bytes_and_refuses_disposition(tmp_path, monkeypatch, operation):
+    from gateway.hosted_room_peer import room_grant_token_digest
+    from gateway.hosted_room_artifacts import RoomArtifactOutbox
+    async with admitted(tmp_path, monkeypatch) as p:
+        binding = await output_binding(p.authority, p.ref, p.row)
+        outbox = binding._outbox()
+        artifact = outbox.put_bytes(scope=p.scope, data=b'retained after revocation', source_name='report.txt')
+        manifest = terminal_artifact_manifest([artifact])
+        settle_session_input(p.authority.db, epoch=p.authority.epoch, admission_id=p.row['admission_id'],
+            generation=p.row['generation'], outcome='completed', result={'result': {
+                'artifacts': manifest, 'artifact_scope': p.scope.as_mapping()}})
+        body = {'artifact_scope': p.scope.as_mapping(), 'manifest_digest': manifest['manifest_digest']}
+        if operation == 'read':
+            body['artifact_id'] = artifact['artifact_id']
+        elif operation == 'ack':
+            body.update(artifact_ids=[artifact['artifact_id']], message_event_id='dmessage:output')
+        request = grant_request(p, operation, body)
+        grant = request['verified_room_grant']
+        claims = decode_room_grant(p.adapter._room_grant_secret(), grant, permission='status')
+        method = {'read': 'read', 'ack': 'acknowledge', 'discard': 'discard_durably'}[operation]
+        original = getattr(RoomArtifactOutbox, method)
+        def revoke_then_operate(store, *args, **kwargs):
+            hosted_rooms.revoke_room_grant_token(p.authority.db.db_path, claims=claims,
+                token_sha256=room_grant_token_digest(grant), expires_at=claims['status_expires_at'])
+            return original(store, *args, **kwargs)
+        with monkeypatch.context() as raced:
+            raced.setattr(RoomArtifactOutbox, method, revoke_then_operate)
+            response = await handle(p.adapter, request)
+        assert response.status == 409 and 'data_base64' not in response.text
+        assert outbox.read(p.scope, artifact['artifact_id'])[1] == b'retained after revocation'
+        with p.authority.db._read_ctx() as conn:
+            assert conn.execute("SELECT 1 FROM state_meta WHERE key LIKE 'gateway.peer-output-disposition.v1.%'").fetchone() is None
