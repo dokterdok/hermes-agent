@@ -136,6 +136,11 @@ export interface CanonicalGroupMessages {
   retirementCleanupPending: string
   retirementCleanupUnreadable: string
   retirementUnconfirmed: string
+  twoHostRiskTitle: string
+  twoHostRiskBody: string
+  twoHostRiskConfirm: string
+  twoHostLegacy: string
+  twoHostDisable: string
 }
 
 export const HOSTED_PROFILE_OWNERS_URL =
@@ -283,6 +288,12 @@ export const CANONICAL_GROUP_LOCALES = {
     retirementCleanupPending: "End is still finishing. Access on other computers is being removed. Hermes will keep trying when they reconnect; you can leave this view.",
     retirementCleanupUnreadable: "Cleanup could not be confirmed. Its records have been kept. Reconnect the owning computer and check again.",
     retirementUnconfirmed: "We couldn’t confirm whether this group chat ended. Sending is paused; check its status or retry End."
+  ,
+    twoHostRiskTitle: "Allow automatic moves with two computers?",
+    twoHostRiskBody: "If the connection breaks, both computers may run this group’s work at the same time and perform duplicate actions. Keep asking where to continue unless you accept this risk.",
+    twoHostRiskConfirm: "Allow two-computer automatic moves",
+    twoHostLegacy: "Update the owning computer before enabling automatic moves with two computers. Its older setting does not record your risk consent.",
+    twoHostDisable: "Turn off automatic moves"
   },
   ja: {
     legacyRoom: 'このチャットを続けるか、同じBotで新しいグループを始められます。新しいグループはDesktopを閉じても作業を続けられます。これまでのメッセージはここに残ります。',
@@ -429,6 +440,12 @@ export const CANONICAL_GROUP_LOCALES = {
     retirementCleanupPending: "終了処理はまだ続いています。他のコンピューターのアクセスを解除しています。再接続時にHermesが再試行します。この画面を離れても構いません。",
     retirementCleanupUnreadable: "後処理を確認できませんでした。記録は保持されています。管理元のコンピューターを再接続し、もう一度確認してください。",
     retirementUnconfirmed: "グループチャットが終了したか確認できませんでした。送信は一時停止中です。状態を確認するか、終了を再試行してください。"
+  ,
+    twoHostRiskTitle: "2台のコンピューターで自動移動を許可しますか？",
+    twoHostRiskBody: "接続が切れると、両方のコンピューターが同時にこのグループの作業を実行し、操作が重複する可能性があります。このリスクを受け入れない場合は、継続先を毎回選ぶ設定のままにしてください。",
+    twoHostRiskConfirm: "2台での自動移動を許可",
+    twoHostLegacy: "2台での自動移動を有効にする前に、管理元のコンピューターを更新してください。古い設定にはリスクへの同意が記録されていません。",
+    twoHostDisable: "自動移動を無効にする"
   },
   zh: {
     legacyRoom: '继续在这里聊天，或用相同的Bot开始一个新群聊，让它们在Desktop关闭后仍能继续工作。之前的消息会保留在这里。',
@@ -569,6 +586,12 @@ export const CANONICAL_GROUP_LOCALES = {
     retirementCleanupPending: "结束操作尚未完成，正在移除其他电脑的访问权限。它们重新连接后Hermes会继续尝试；你可以离开此视图。",
     retirementCleanupUnreadable: "无法确认清理状态，记录已保留。请重新连接负责的电脑并再次检查。",
     retirementUnconfirmed: "无法确认群聊是否已结束。发送已暂停，请检查状态或重试结束操作。"
+  ,
+    twoHostRiskTitle: "允许两台电脑自动迁移吗？",
+    twoHostRiskBody: "如果连接中断，两台电脑可能同时执行此群聊的工作并重复操作。除非你接受此风险，否则请继续每次询问在哪里继续。",
+    twoHostRiskConfirm: "允许两台电脑自动迁移",
+    twoHostLegacy: "启用两台电脑的自动迁移前，请更新负责的电脑。旧设置没有记录你对风险的同意。",
+    twoHostDisable: "关闭自动迁移"
   },
   'zh-hant': {
     legacyRoom: '繼續在這裡聊天，或用相同的Bot開始一個新群聊，讓它們在Desktop關閉後仍能繼續工作。之前的訊息會保留在這裡。',
@@ -709,6 +732,12 @@ export const CANONICAL_GROUP_LOCALES = {
     retirementCleanupPending: "結束操作尚未完成，正在移除其他電腦的存取權限。它們重新連線後Hermes會繼續嘗試；你可以離開此檢視。",
     retirementCleanupUnreadable: "無法確認清理狀態，記錄已保留。請重新連接負責的電腦並再次檢查。",
     retirementUnconfirmed: "無法確認群聊是否已結束。傳送已暫停，請檢查狀態或重試結束操作。"
+  ,
+    twoHostRiskTitle: "允許兩台電腦自動移轉嗎？",
+    twoHostRiskBody: "如果連線中斷，兩台電腦可能同時執行此群聊的工作並重複操作。除非你接受此風險，否則請繼續每次詢問在哪裡繼續。",
+    twoHostRiskConfirm: "允許兩台電腦自動移轉",
+    twoHostLegacy: "啟用兩台電腦的自動移轉前，請更新負責的電腦。舊設定沒有記錄你對風險的同意。",
+    twoHostDisable: "關閉自動移轉"
   },
   ar: {
     legacyRoom: 'تابع المحادثة هنا، أو ابدأ مجموعة جديدة مع البوتات نفسها. يمكن للمجموعة الجديدة مواصلة العمل حتى عند إغلاق Desktop. ستبقى رسائلك السابقة هنا.',
@@ -851,6 +880,12 @@ export const CANONICAL_GROUP_LOCALES = {
     retirementCleanupPending: "الإنهاء لم يكتمل بعد. يجري إزالة صلاحيات الوصول على الأجهزة الأخرى. سيواصل Hermes المحاولة عند إعادة اتصالها؛ يمكنك مغادرة هذه الشاشة.",
     retirementCleanupUnreadable: "تعذر تأكيد التنظيف. تم الاحتفاظ بسجلاته. أعد توصيل الجهاز المسؤول وتحقق مجددًا.",
     retirementUnconfirmed: "تعذر تأكيد انتهاء محادثة المجموعة. الإرسال متوقف مؤقتًا؛ تحقق من حالتها أو أعد محاولة الإنهاء."
+  ,
+    twoHostRiskTitle: "السماح بالانتقال التلقائي مع جهازين؟",
+    twoHostRiskBody: "إذا انقطع الاتصال، فقد يعمل الجهازان على مهام هذه المجموعة في الوقت نفسه وينفذان إجراءات مكررة. أبقِ اختيار مكان المتابعة يدويًا ما لم تقبل هذا الخطر.",
+    twoHostRiskConfirm: "السماح بالانتقال التلقائي مع جهازين",
+    twoHostLegacy: "حدّث الجهاز المسؤول قبل تفعيل الانتقال التلقائي مع جهازين. الإعداد القديم لا يسجل موافقتك على الخطر.",
+    twoHostDisable: "إيقاف الانتقال التلقائي"
   },
   ru: {
     legacyRoom: 'Продолжайте общаться здесь или начните новую группу с теми же Ботами, которые смогут продолжать работу после закрытия Desktop. Ваши предыдущие сообщения останутся здесь.',
@@ -997,6 +1032,12 @@ export const CANONICAL_GROUP_LOCALES = {
     retirementCleanupPending: "Завершение ещё продолжается: доступ с других компьютеров удаляется. Hermes продолжит попытки после их подключения; вы можете закрыть этот экран.",
     retirementCleanupUnreadable: "Очистку не удалось подтвердить. Её записи сохранены. Подключите управляющий компьютер и проверьте снова.",
     retirementUnconfirmed: "Не удалось подтвердить завершение чата. Отправка приостановлена; проверьте состояние или повторите завершение."
+  ,
+    twoHostRiskTitle: "Разрешить автоматический перенос между двумя компьютерами?",
+    twoHostRiskBody: "При разрыве связи оба компьютера могут одновременно выполнять работу группы и повторять действия. Продолжайте выбирать место вручную, если не принимаете этот риск.",
+    twoHostRiskConfirm: "Разрешить автоматический перенос с двумя компьютерами",
+    twoHostLegacy: "Обновите управляющий компьютер перед включением автоматического переноса с двумя компьютерами. Старое настройка не хранит согласие на риск.",
+    twoHostDisable: "Выключить автоматический перенос"
   },
   fr: {
     legacyRoom: 'Continuez à discuter ici, ou démarrez un nouveau groupe avec les mêmes Bots qui pourront continuer à travailler quand Desktop sera fermé. Vos messages précédents resteront ici.',
@@ -1147,6 +1188,12 @@ export const CANONICAL_GROUP_LOCALES = {
     retirementCleanupPending: "La fin est encore en cours : les accès des autres ordinateurs sont retirés. Hermes réessaiera à leur reconnexion ; vous pouvez quitter cette vue.",
     retirementCleanupUnreadable: "Le nettoyage n’a pas pu être confirmé. Ses traces sont conservées. Reconnectez l’ordinateur responsable et vérifiez à nouveau.",
     retirementUnconfirmed: "La fin de cette discussion n’a pas pu être confirmée. L’envoi est suspendu ; vérifiez son état ou réessayez de la terminer."
+  ,
+    twoHostRiskTitle: "Autoriser le déplacement automatique avec deux ordinateurs ?",
+    twoHostRiskBody: "En cas de coupure de connexion, les deux ordinateurs peuvent travailler simultanément pour cette discussion et répéter des actions. Continuez à choisir où poursuivre, sauf si vous acceptez ce risque.",
+    twoHostRiskConfirm: "Autoriser le déplacement automatique avec deux ordinateurs",
+    twoHostLegacy: "Mettez à jour l’ordinateur responsable avant d’activer le déplacement automatique avec deux ordinateurs. L’ancien réglage ne conserve pas votre accord sur ce risque.",
+    twoHostDisable: "Désactiver le déplacement automatique"
   },
   de: {
     legacyRoom: 'Chatte hier weiter oder starte mit denselben Bots eine neue Gruppe, die weiterarbeiten kann, wenn Desktop geschlossen ist. Deine bisherigen Nachrichten bleiben hier.',
@@ -1300,6 +1347,12 @@ export const CANONICAL_GROUP_LOCALES = {
     retirementCleanupPending: "Das Beenden läuft noch: Zugriffe anderer Computer werden entfernt. Hermes versucht es nach deren erneuter Verbindung weiter; du kannst diese Ansicht verlassen.",
     retirementCleanupUnreadable: "Die Bereinigung konnte nicht bestätigt werden. Ihre Einträge bleiben erhalten. Verbinde den zuständigen Computer erneut und prüfe nochmals.",
     retirementUnconfirmed: "Das Ende dieses Gruppenchats konnte nicht bestätigt werden. Senden ist pausiert; prüfe den Status oder versuche das Beenden erneut."
+  ,
+    twoHostRiskTitle: "Automatische Wechsel mit zwei Computern erlauben?",
+    twoHostRiskBody: "Wenn die Verbindung abbricht, können beide Computer gleichzeitig an dieser Gruppe arbeiten und Aktionen doppelt ausführen. Wähle weiterhin selbst, wo es weitergeht, wenn du dieses Risiko nicht akzeptierst.",
+    twoHostRiskConfirm: "Automatische Wechsel mit zwei Computern erlauben",
+    twoHostLegacy: "Aktualisiere den zuständigen Computer, bevor du automatische Wechsel mit zwei Computern aktivierst. Die ältere Einstellung speichert deine Risikozustimmung nicht.",
+    twoHostDisable: "Automatische Wechsel ausschalten"
   },
   es: {
     legacyRoom: 'Sigue chateando aquí o inicia un nuevo grupo con los mismos Bots, que pueden seguir trabajando cuando Desktop esté cerrado. Tus mensajes anteriores permanecerán aquí.',
@@ -1446,5 +1499,11 @@ export const CANONICAL_GROUP_LOCALES = {
     retirementCleanupPending: "El cierre sigue en curso: se están retirando los accesos de otros ordenadores. Hermes volverá a intentarlo cuando se reconecten; puedes salir de esta vista.",
     retirementCleanupUnreadable: "No pudimos confirmar la limpieza. Sus registros se conservan. Reconecta el ordenador responsable y vuelve a comprobar.",
     retirementUnconfirmed: "No pudimos confirmar si este chat terminó. El envío está pausado; comprueba el estado o vuelve a intentar finalizarlo."
+  ,
+    twoHostRiskTitle: "¿Permitir movimientos automáticos con dos ordenadores?",
+    twoHostRiskBody: "Si se interrumpe la conexión, ambos ordenadores pueden trabajar para este grupo al mismo tiempo y repetir acciones. Sigue eligiendo dónde continuar salvo que aceptes este riesgo.",
+    twoHostRiskConfirm: "Permitir movimientos automáticos con dos ordenadores",
+    twoHostLegacy: "Actualiza el ordenador responsable antes de activar movimientos automáticos con dos ordenadores. La configuración antigua no registra tu consentimiento al riesgo.",
+    twoHostDisable: "Desactivar movimientos automáticos"
   }
 } satisfies Record<string, CanonicalGroupMessages>

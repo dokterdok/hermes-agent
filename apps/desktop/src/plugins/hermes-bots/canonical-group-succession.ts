@@ -52,6 +52,9 @@ export interface SuccessionAutomatic {
   /** The owner's setting as the computers have stored it, and as requested while they haven't yet. */
   enabled: boolean | null
   pending: boolean | null
+  voters: number
+  /** Null means the owning computer predates explicit two-host risk consent. */
+  careful_opt_in: boolean | null
 }
 export interface SuccessionWork { completed: number; elsewhere: number; unknown: number; waiting_for_host: number }
 /** A Bot that can't take part after a move; `on` is the computer it runs on, and whether that computer answers now. */
@@ -191,6 +194,7 @@ export function parseSuccessionStatus(value: unknown): SuccessionStatus | null {
       reason: typeof automatic?.reason === 'string' ? automatic.reason : null,
       offline: Array.isArray(automatic?.offline) ? automatic.offline.flatMap(entry => typeof entry === 'string' ? [{ install_id: '', name: displayLabel(entry) }]
         : computer(entry) ?? []) : [],
+      voters: count(automatic?.voters), careful_opt_in: flag(automatic?.careful_opt_in),
       needed: count(automatic?.needed), enabled: flag(automatic?.enabled), pending: flag(automatic?.pending) } : null,
     paused: state === 'paused' ? { reason: typeof paused?.reason === 'string' ? paused.reason : 'lost_majority',
       waiting_for: Array.isArray(paused?.waiting_for) ? paused.waiting_for.flatMap(entry => computer(entry) ?? []) : [] } : null,
@@ -297,10 +301,11 @@ export async function allowSuccessor(ownRoute: CanonicalGroupRoute, roomId: stri
 }
 
 /** The owner's setting, on the host: whether the group may move by itself. */
-export async function setAutomatic(hostRoute: CanonicalGroupRoute, roomId: string, enabled: boolean) {
-  const result = record(await canonicalGroupRequest<unknown>(hostRoute, 'groups.custody.automatic', { room_id: roomId, enabled }))
+export async function setAutomatic(hostRoute: CanonicalGroupRoute, roomId: string, enabled: boolean, acceptTwoHostRisk = false) {
+  const params = {room_id: roomId, enabled, ...(enabled && acceptTwoHostRisk ? {accept_two_host_risk: true} : {})}
+  const result = record(await canonicalGroupRequest<unknown>(hostRoute, 'groups.custody.automatic', params))
 
-  if (result?.automatic !== enabled) {throw new Error('The setting was not recorded')}
+  if (result?.room_id !== roomId || result.automatic !== enabled) {throw new Error('The setting was not recorded')}
 }
 
 /** The highest seq a majority of the group's computers holds, from its host (`groups.custody.status`). */
