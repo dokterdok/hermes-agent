@@ -141,7 +141,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   const revision = useRef(0)
   // The log is append-only within one authority epoch: read only what is new.
   const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
-  const continuity = useRoomContinuity({ binding, visible, readError, events, roomName: state?.room.name ?? '', onMoved: route => {if (!retirementIntent.current) {onMoved(route)}}, restored, composer: { setDraft, setAttachments, setHint: setSendHint } })
+  const moveUnlessEnding = useCallback((route: CanonicalGroupRoute) => {
+    if (!retirementIntent.current) {onMoved(route)}
+  }, [onMoved])
+  const continuity = useRoomContinuity({ binding, visible, readError, events, roomName: state?.room.name ?? '', onMoved: moveUnlessEnding, restored, composer: { setDraft, setAttachments, setHint: setSendHint } })
 
   const show = (entry: PreparedCanonicalGroupSend) => {setPending(entry); setDraft(String(entry.params.payload.text ?? '')); setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])}
 
