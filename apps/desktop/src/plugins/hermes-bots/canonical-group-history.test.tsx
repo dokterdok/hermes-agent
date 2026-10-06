@@ -478,3 +478,29 @@ it('explains actual failed, deferred and stopped replies while keeping technical
   expect(history.getByText('approval_pending').closest('details')?.open).toBe(false)
   expect(request.mock.calls.every(call => ['groups.state', 'groups.log'].includes(call[1]))).toBe(true)
 })
+
+it('opens an explicit public HTTP link from actual group history while foreign paths and media stay inert', async () => {
+  const {$previewTabs} = await import('@/store/preview')
+  $previewTabs.set([])
+  const api = vi.fn()
+  const fetchLinkTitle = vi.fn()
+  window.hermesDesktop = {...window.hermesDesktop, api, fetchLinkTitle} as never
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return {room: {name: 'Public links', members: [{member_id: 'mira', profile: 'default', display_name: 'Mira Bot'}]}}}
+
+    if (method === 'groups.log') {return {events: [{seq: 1, room_id: binding.roomId, event_id: 'public-link', kind: 'message.member', actor: {kind: 'member', id: 'mira'},
+      payload: {text: '[Release notes](https://example.com/releases/v1) and [local notes](/home/peer/private.md)\n\n![Foreign picture](https://example.com/automatic.png)'}}]}}
+
+    return {}
+  })
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  const link = await screen.findByRole('link', {name: 'Release notes'})
+  expect(screen.getByText('local notes').closest('a')).toBeNull()
+  expect(api).not.toHaveBeenCalled()
+  expect(fetchLinkTitle).not.toHaveBeenCalled()
+  expect(view.container.querySelector('img, video, audio')).toBeNull()
+  fireEvent.click(link)
+  await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/releases/v1'))
+  expect(api).not.toHaveBeenCalled()
+  $previewTabs.set([])
+})
