@@ -1130,7 +1130,8 @@ def _continue_fresh(ctx: MoveContext, room_id: str, current: Mapping[str, Any], 
     known = [head["authority_epoch"], *rivals, int(own["fenced_epoch"] or 0),
              int((own.get("authority") or {}).get("epoch") or 0), int((own.get("promise") or {}).get("epoch") or 0)]
     epoch = max(known) + 1
-    outcomes = _ask_fences(ctx, room_id, configuration, epoch, current["watermark"])
+    outcomes = _ask_fences(ctx, room_id, configuration, epoch, current["watermark"],
+                            vote=stalled is not None and mode_of(configuration) == "majority")
     _refused_for_other(configuration, outcomes)
     if me not in outcomes or isinstance(outcomes[me], RemoteRefusal):
         raise SuccessionError("this computer could not fence its own epoch", reason="target_not_ready")
@@ -1158,8 +1159,8 @@ def _continue_fresh(ctx: MoveContext, room_id: str, current: Mapping[str, Any], 
 
 # A host paused for a later step promised to another computer continues past it itself (by rule) once
 # that computer has left the step untaken this long while answering and not hosting: twice the careful
-# window, the longest any takeover waits. Only when every computer that could have taken a later step
-# answers that none did, and promises the fresh one; otherwise the owner decides (continue anyway).
+# window, the longest any takeover waits. Its holder must answer that it did not take the step. Recovery
+# also needs a fresh majority in majority mode; other modes require every possible successor instead.
 STALLED_PROMISE_SECONDS = 2 * succession.CAREFUL_SILENCE_SECONDS
 
 
@@ -1195,11 +1196,8 @@ def _later_step(answer: Mapping[str, Any], epoch: int, stalled: Mapping[str, Any
 
 
 def _could_continue(configuration: Mapping[str, Any], stalled: Mapping[str, Any], me: str) -> frozenset[str]:
-    """Every computer that could have continued the group past this host: each eligible successor, and
-    the one the stalled step was promised to."""
-    return frozenset({install_id for install_id in succession.custodians_by_id(configuration)
-                      if install_id != me and succession.is_eligible(configuration, install_id)}
-                     | {stalled["install_id"]})
+    """Computers whose answers and fresh promises are required by the recorded recovery policy."""
+    return succession.recovery_witnesses(configuration, stalled, me)
 
 
 def _unconfirmed(required: frozenset[str], answers: list[Mapping[str, Any]], epoch: int,
@@ -1215,10 +1213,10 @@ def _unconfirmed(required: frozenset[str], answers: list[Mapping[str, Any]], epo
 def recover_stalled_promise(ctx: MoveContext, room_id: str, answers: list[Mapping[str, Any]]) -> int | None:
     """This host paused because a later step of its group was promised to another computer, which never
     took it. After ``STALLED_PROMISE_SECONDS`` the host continues at a fresh step itself, but only when
-    every computer that could have continued the group (each eligible successor, and the one the step was
-    promised to) answers that nothing happened, and each promises the fresh step, so no step anyone took
-    or might still take runs beside it. Otherwise it stays paused for the owner to decide, and its record
-    names the computers it could not hear that from. Returns the fresh epoch, or None."""
+    the promise's holder answers that nothing happened and promises the fresh step. Majority mode also
+    requires a fresh majority, which fences any prior majority authority after its leases expire;
+    other modes require every eligible successor's answer and promise. Any answer showing a later
+    step blocks recovery. Otherwise it stays paused and records missing witnesses. Returns an epoch or None."""
     stalled, me = stalled_promise(ctx.db_path, room_id), succession.local_install_id()
     if stalled is None or stalled["install_id"] == me or getattr(ctx, "runs_store", None) is None:
         return None
