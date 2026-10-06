@@ -367,7 +367,7 @@ def recover_or_record_model(adapter, model, runtime_kwargs, gateway_session_key,
             model = _recovered
     elif model != adapter._model_name:
         from gateway.session_selected_route import publication_lock
-        with publication_lock(self):
+        with publication_lock(adapter):
             if _resolved_key:
                 models[_resolved_key] = model
             models["*"] = model
