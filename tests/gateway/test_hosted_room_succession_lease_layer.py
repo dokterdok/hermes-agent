@@ -4,6 +4,7 @@ its owner can still continue it, and the upkeep keeps trying to install the laye
 import pytest
 
 from gateway import hosted_room_custody as custody
+from gateway import hosted_room_driver as driver
 from gateway import hosted_room_succession as succession
 from gateway import hosted_room_succession_automatic as automatic
 from tests.gateway.fixtures.succession import ROOM
@@ -43,6 +44,14 @@ def test_a_host_without_its_lease_layer_pauses_says_why_and_can_be_continued_any
         assert custody.room_mode(host.db, ROOM) == "ask"
         assert custody.serving(ROOM, mode="ask")  # its turns start again
     assert world.send("h", "user:anyway") and world.head("h")["authority_epoch"] == 1
+    # Sending is not enough: the queued Bot action must pass the same explicit override before
+    # the disabled policy is copied, otherwise Continue anyway leaves the conversation stuck.
+    with host.acting():
+        task = driver.TaskIdentity(ROOM, "anyway-task", "main", "anyway-turn")
+        driver.admit_task(host.db, task, payload={
+            "target_profile": "default", "target_member_id": "writer", "prompt": "Continue",
+            "source_event_seq": world.head("h")["latest_seq"]}, clock=lambda: world.wall0 + world.t)
+        assert custody.dispatch_ready(host.db, ROOM, task.task_id, 0)
     assert world.status("h")["automatic"]["state"] == "off"
     # Every standby learns it with the next push, so none moves the group by itself beside a host that
     # holds no lease, even once the host goes quiet.
@@ -51,6 +60,18 @@ def test_a_host_without_its_lease_layer_pauses_says_why_and_can_be_continued_any
     world.network.stopped.add("h")
     world.advance(SILENCE + 60, observe=False)
     assert not world.head("s")["authoritative"] and not world.head("t")["authoritative"]
+
+
+def test_a_stale_manual_override_does_not_disable_current_epoch_protection(world):
+    world.advance(10)
+    host = world.gateways["h"]
+    with host.acting():
+        succession.save_record(host.db, ROOM, "automatic", {"anyway_epoch": 0})
+        automatic.uninstall(world.automatics["h"])
+    world.upkeeps["h"]._installed = True
+    with host.acting():
+        assert custody.room_mode(host.db, ROOM) == "majority"
+        assert not custody.serving(ROOM, mode=custody.room_mode(host.db, ROOM))
 
 
 def test_the_upkeep_keeps_trying_to_install_the_lease_layer(tmp_path):

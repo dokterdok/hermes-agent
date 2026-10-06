@@ -1032,7 +1032,7 @@ def uninstall(automatic: Automatic) -> None:
         if not _instances and not _without_leases:
             _custody().register_lease_hooks(
                 lease_request_provider=None, lease_grant_hook=None, lease_ack_hook=None,
-                lease_remaining_provider=None, serving_provider=None)
+                lease_remaining_provider=None, serving_provider=None, manual_continuation_provider=None)
 
 
 # Rooms whose owner continued them anyway on a host whose lease layer isn't running: room id -> store.
@@ -1070,7 +1070,19 @@ def _ask_first(ctx, room_id: str, configuration: Mapping[str, Any]) -> None:
 def _register_hooks() -> None:
     _custody().register_lease_hooks(
         lease_request_provider=_request, lease_grant_hook=_grant, lease_ack_hook=_ack,
-        lease_remaining_provider=_remaining, serving_provider=_serving)
+        lease_remaining_provider=_remaining, serving_provider=_serving,
+        manual_continuation_provider=_manual_continuation)
+
+
+def _manual_continuation(conn, room_id):
+    """The same durable exact-epoch owner choice that permits this host to serve without its lease."""
+    row = conn.execute("SELECT authority_gateway_id, authority_epoch FROM hosted_rooms WHERE room_id=? "
+                        "AND disbanded_at IS NULL", (room_id,)).fetchone()
+    if row is None or row[0] != succession.local_install_id():
+        return False
+    record = succession.load_record_locked(conn, room_id, "automatic") or {}
+    epoch = record.get("anyway_epoch")
+    return type(epoch) is int and epoch == int(row[1])
 
 
 def _hosting(room_id) -> Automatic | None:
