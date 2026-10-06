@@ -438,10 +438,13 @@ class PeerRunsHTTPClient:
     def _raise_http_error(
         exc: urllib.error.HTTPError, *, method: str, path: str, deadline: float) -> NoReturn:
         """Raise the classified PeerRunsHTTPError for an HTTP error response."""
-        # A 4xx on admission proves the peer never admitted the run.
+        # A conflict may name work already accepted under this logical key;
+        # temporary refusals likewise do not establish durable non-admission.
+        admission = method == "POST" and path == "/v1/runs"
+        not_admitted = admission and exc.code in {400, 401, 403, 404, 422}
         flags = {
-            "ambiguous": method == "POST" and exc.code >= 500, "status_code": exc.code,
-            "not_admitted": method == "POST" and path == "/v1/runs" and 400 <= exc.code < 500}
+            "ambiguous": method == "POST" and (exc.code >= 500 or (admission and not not_admitted)),
+            "status_code": exc.code, "not_admitted": not_admitted}
         try:
             detail = _read_body(
                 exc, max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES, deadline=deadline, kind=" error",
@@ -573,11 +576,11 @@ class PeerRunsHTTPClient:
             try:
                 result = post()
             except PeerRunsHTTPError as exc:
-                if not (checked.document_inputs and exc.error_code == "room_document_input_required"
-                        and exc.status_code == 409 and exc.not_admitted and not exc.ambiguous):
+                if not (checked.document_inputs and self.proof_install_id is not None
+                        and exc.error_code == "room_document_input_required" and exc.status_code == 409):
                     raise
-                # Only an exact no-admission receipt permits new ingress checks/source reads.
-                # Capability changes never prevent observation of previously accepted input.
+                # The response proof binds this preparation request to our frozen dispatch.
+                # Fulfill its same key; the outer replay guard still preserves any prior uncertainty.
                 capability = self._request("/v1/room-members/capabilities", room_grant=grant,
                                            headers={"Hermes-Room-Features": "document-input-v1"})
                 live = GatewayRoomCatalog.from_mapping(capability.get("catalog"))
