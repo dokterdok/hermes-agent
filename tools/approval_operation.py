@@ -35,6 +35,17 @@ MAX_REMEMBER_COMMAND_CHARS = 512
 MAX_REMEMBER_CONTEXT_CHARS = 384
 
 
+def remembered_operation_metadata(command: str, pattern_keys: Sequence[str], *, allowed: bool) -> dict[str, str]:
+    """Describe an exact operation only when the approval may offer a remembered choice."""
+    from agent.redact import redact_sensitive_text
+
+    key = approval_operation_key(command, pattern_keys) if allowed else None
+    if not key:
+        return {}
+    return {'remember_key': key,
+            'remember_context': redact_sensitive_text(approval_operation_description(), force=True)}
+
+
 def valid_operation_key(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
