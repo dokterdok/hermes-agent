@@ -211,38 +211,47 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
             # integrity quarantine that would forbid authorized retirement.
             pass
         elif not stats["bad_scalars"]:
-            identities = conn.execute("SELECT COUNT(DISTINCT event_id) FROM hosted_room_replica_events WHERE room_id=?",
-                                      (room_id,)).fetchone()[0]
-            if identities != stats["count"]:
-                reasons.append("duplicate_event_id")
-            try:
-                _validate_identifier(row["authority_gateway_id"], label="authority_gateway_id", max_chars=MAX_ACTOR_ID_CHARS)
-                for index, event in enumerate(conn.execute(
-                    """SELECT seq,event_id,authority_epoch,kind,actor_json,payload_json,created_at
-                       FROM hosted_room_replica_events WHERE room_id=? ORDER BY seq""", (room_id,)), 1):
-                    if int(event["seq"]) != index:
-                        reasons.append("non_contiguous_history")
-                    if event["kind"] == "room.disbanded":
-                        if index != stats["count"]:
-                            reasons.append("events_after_disband")
-                        if last_seq != latest_seq:
-                            reasons.append("incomplete_terminal_history")
-                    if event["authority_epoch"] != int(row["authority_epoch"]):
-                        reasons.append("mixed_authority_lineage")
-                    kind = _validate_event_kind(event["kind"])
-                    _validate_identifier(event["event_id"], label="event_id", max_chars=MAX_EVENT_ID_CHARS)
-                    actor, _ = _validate_actor(json.loads(event["actor_json"]), kind=kind)
-                    if actor["kind"] == "gateway" and actor["id"] != str(row["authority_gateway_id"]):
-                        reasons.append("gateway_actor_authority_mismatch")
-                    if not isinstance(json.loads(event["payload_json"]), dict):
-                        raise ReplicaError("event payload is not an object")
-                    if not math.isfinite(float(event["created_at"])):
-                        raise ReplicaError("event timestamp is not finite")
-            except (HostedRoomError, TypeError, ValueError, json.JSONDecodeError, RecursionError):
-                reasons.append("invalid_event_shape")
+            reasons.extend(_replica_event_issues(conn, row, int(stats["count"])))
         if reasons:
             conn.execute("UPDATE hosted_room_replicas SET quarantined_at=?, quarantine_reason=? WHERE room_id=?",
                          (clock(None), reasons[0], room_id))
+
+
+def _replica_event_issues(conn: sqlite3.Connection, row: sqlite3.Row, count: int) -> list[str]:
+    """Validate each bounded event after metadata and byte-size preflight."""
+    room_id = str(row["room_id"])
+    last_seq, latest_seq = int(row["last_seq"]), int(row["latest_seq"])
+    reasons: list[str] = []
+    identities = conn.execute("SELECT COUNT(DISTINCT event_id) FROM hosted_room_replica_events WHERE room_id=?",
+                              (room_id,)).fetchone()[0]
+    if identities != count:
+        reasons.append("duplicate_event_id")
+    try:
+        _validate_identifier(row["authority_gateway_id"], label="authority_gateway_id", max_chars=MAX_ACTOR_ID_CHARS)
+        for index, event in enumerate(conn.execute(
+            """SELECT seq,event_id,authority_epoch,kind,actor_json,payload_json,created_at
+               FROM hosted_room_replica_events WHERE room_id=? ORDER BY seq""", (room_id,)), 1):
+            if int(event["seq"]) != index:
+                reasons.append("non_contiguous_history")
+            if event["kind"] == "room.disbanded":
+                if index != count:
+                    reasons.append("events_after_disband")
+                if last_seq != latest_seq:
+                    reasons.append("incomplete_terminal_history")
+            if event["authority_epoch"] != int(row["authority_epoch"]):
+                reasons.append("mixed_authority_lineage")
+            kind = _validate_event_kind(event["kind"])
+            _validate_identifier(event["event_id"], label="event_id", max_chars=MAX_EVENT_ID_CHARS)
+            actor, _ = _validate_actor(json.loads(event["actor_json"]), kind=kind)
+            if actor["kind"] == "gateway" and actor["id"] != str(row["authority_gateway_id"]):
+                reasons.append("gateway_actor_authority_mismatch")
+            if not isinstance(json.loads(event["payload_json"]), dict):
+                raise ReplicaError("event payload is not an object")
+            if not math.isfinite(float(event["created_at"])):
+                raise ReplicaError("event timestamp is not finite")
+    except (HostedRoomError, TypeError, ValueError, json.JSONDecodeError, RecursionError):
+        reasons.append("invalid_event_shape")
+    return reasons
 
 
 def _replica_read_envelope_locked(conn: sqlite3.Connection, room_id: str) -> bool:
@@ -502,6 +511,21 @@ def _event_row(room_id: str, event: dict[str, Any]) -> tuple[Any, ...]:
             event["payload_json"], event["created_at"])
 
 
+def _validate_replayed_events(conn, room_id, events, row, stored_epoch, last_seq) -> None:
+    """Overlaps must match the stored event identity and bytes before any page is appended."""
+    for event in events:
+        if row is not None and event["authority_epoch"] != stored_epoch:
+            raise ReplicaError("event authority conflicts with stored replica lineage")
+        stored = conn.execute(
+            """SELECT seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at
+                 FROM hosted_room_replica_events WHERE room_id=? AND (seq=? OR event_id=?)""",
+            (room_id, event["seq"], event["event_id"])).fetchall()
+        if any(tuple(existing) != _event_row(room_id, event)[1:] for existing in stored):
+            raise ReplicaError("replayed event conflicts with stored history")
+        if event["seq"] <= last_seq and not stored:
+            raise ReplicaError("stored replica history is incomplete")
+
+
 def ingest_page(
     db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None
 ) -> dict[str, Any]:
@@ -547,17 +571,7 @@ def ingest_page(
                 raise ReplicaLineageUnverifiedError("replica authority changed without a verified takeover lineage")
             if latest_seq < int(row["latest_seq"]):
                 raise ReplicaError("page.latest_seq regresses stored replica coverage")
-        for event in events:
-            if row is not None and event["authority_epoch"] != stored_epoch:
-                raise ReplicaError("event authority conflicts with stored replica lineage")
-            stored = conn.execute(
-                """SELECT seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at
-                     FROM hosted_room_replica_events WHERE room_id=? AND (seq=? OR event_id=?)""",
-                (room_id, event["seq"], event["event_id"])).fetchall()
-            if any(tuple(existing) != _event_row(room_id, event)[1:] for existing in stored):
-                raise ReplicaError("replayed event conflicts with stored history")
-            if event["seq"] <= last_seq and not stored:
-                raise ReplicaError("stored replica history is incomplete")
+        _validate_replayed_events(conn, room_id, events, row, stored_epoch, last_seq)
         new_events = [event for event in events if event["seq"] > last_seq]
         if new_events and new_events[0]["seq"] != last_seq + 1:
             raise ReplicaGapError("page skips sequences the replica has not stored")
