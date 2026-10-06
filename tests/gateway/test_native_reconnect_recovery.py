@@ -191,22 +191,23 @@ async def test_reconnect_refusals_leave_original_admissions_untouched(state, ref
     runner = state.runner
     replacement = Adapter('primary')
     runner.adapters[Platform.TELEGRAM] = replacement
-    if refusal == 'sender':
-        runner.allowed.clear()
-    elif refusal == 'credential':
-        replacement.config.token = 'different'
-    elif refusal == 'route':
-        runner.session_store._entries.clear()
-    elif refusal == 'unknown':
+    def mark_unknown():
         db = state.authorities['default'].db
         db._execute_write(lambda conn: conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (receipt.admission_id,)))
-        # A different queued row behind an unresolved fixture row must not wake it.
+        # A queued follower cannot wake an unresolved predecessor.
         from hermes_state_runtime import admit_session_input, get_session_admission
         row = get_session_admission(db, admission_id=receipt.admission_id)
         admit_session_input(db, epoch=state.authorities['default'].epoch, principal_id='fixture',
                             session_id=receipt.ref.session_id, request_id='following', payload=row['payload'])
-    else:
-        runner.adapters[Platform.TELEGRAM] = Adapter('primary')
+
+    actions = {
+        'sender': runner.allowed.clear,
+        'credential': lambda: setattr(replacement.config, 'token', 'different'),
+        'route': runner.session_store._entries.clear,
+        'unknown': mark_unknown,
+        'unpublished': lambda: runner.adapters.update({Platform.TELEGRAM: Adapter('primary')}),
+    }
+    actions[refusal]()
     before = ledger(state)
     from gateway.session_native_reconnect import recover_adapter_native_inputs
     await recover_adapter_native_inputs(runner, Platform.TELEGRAM, replacement)

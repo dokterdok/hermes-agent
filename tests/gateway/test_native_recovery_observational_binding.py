@@ -14,7 +14,9 @@ from gateway.session_authority import LiveSession
 from gateway.session_contract import Principal, SessionRef
 from gateway.session_envelope import snapshot_native
 from gateway.session_ingress_context import native_callback
-from tests.gateway.test_native_reconnect_recovery import state  # noqa: F401
+from tests.gateway import test_native_reconnect_recovery as reconnect_fixture
+
+state = reconnect_fixture.state
 
 
 def stored_native(state, status):
