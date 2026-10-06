@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from functools import partial
 from html.parser import HTMLParser
+from itertools import accumulate
 from typing import Any, Literal
 
 from agent.prompt_builder import CONTROL_FRAME_OPENERS
@@ -444,8 +445,7 @@ def _visible_markdown_text(value: str) -> str:
     # Preserve deliberate literal mentions when the parser removes Markdown escapes.
     value = "".join("\ufffc" if char == "@" and index and value[index - 1] == "\\" else char
                     for index, char in enumerate(value))
-    # HTML text projection decoded entities once already; never decode a nested entity twice.
-    parser = MarkdownIt("commonmark", {"html": False}).disable("entity")
+    parser = MarkdownIt("commonmark", {"html": False})
     parts = []
     for block in parser.parse(value):
         if block.type == "inline":
@@ -545,10 +545,29 @@ class _VisibleHTMLParser(HTMLParser):
         "ul",
     })
 
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
+    def __init__(self, source: str) -> None:
+        # CommonMark must see entity spelling before parsing syntax. Decoding here
+        # would turn an encoded backtick or bracket into a new code/link boundary.
+        super().__init__(convert_charrefs=False)
+        self.source = source
+        self.line_offsets = [0, *accumulate(len(line) + 1 for line in source.split("\n"))]
         self.parts: list[str] = []
         self.hidden: list[str] = []
+
+    def _entity(self, name: str, prefix_length: int) -> None:
+        if not self.hidden:
+            line, column = self.getpos()
+            start = self.line_offsets[line - 1] + column
+            end = start + prefix_length + len(name)
+            if self.source[end:end + 1] == ";":
+                end += 1
+            self.parts.append(self.source[start:end])
+
+    def handle_entityref(self, name: str) -> None:
+        self._entity(name, 1)
+
+    def handle_charref(self, name: str) -> None:
+        self._entity(name, 2)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
@@ -584,7 +603,7 @@ class _VisibleHTMLParser(HTMLParser):
 
 
 def _visible_html_text(value: str) -> str:
-    parser = _VisibleHTMLParser()
+    parser = _VisibleHTMLParser(value)
     parser.feed(value)
     parser.close()
     return "".join(parser.parts)

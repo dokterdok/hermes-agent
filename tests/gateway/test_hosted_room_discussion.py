@@ -396,6 +396,10 @@ def test_rendered_code_and_link_metadata_cannot_address_another_bot(quoted):
     ('**@build**', ['build']),
     ('[guide][@review] @build', ['build', 'review']),  # undefined reference remains visible
     ('@<code>literal</code>everyone', []),
+    ('@build &#96;@review&#96;', ['build', 'review']),
+    ('@build &#91;text&#93;&#40;@review&#41;', ['build', 'review']),
+    ('@build &commat;review', ['build', 'review']),
+    ('@build &commat review', ['build']),  # CommonMark requires the semicolon
 ])
 def test_markdown_structure_preserves_visible_labels_and_literal_mentions(text, handles):
     members = tuple(discussion.DiscussionMember(f'member-{name}', name, name) for name in ('build', 'review'))
