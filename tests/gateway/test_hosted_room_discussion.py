@@ -375,6 +375,33 @@ def test_code_email_escaped_and_unicode_adjacent_tokens_are_not_mentions():
     assert discussion.resolve_mentions((text,), members, default_all=False) == ()
 
 
+@pytest.mark.parametrize('quoted', [
+    '<code>@review</code>', '<pre>@review</pre>',
+    '    @review', '> ```text\n> @review\n> ```',
+    '[guide][doc]\n\n[doc]: https://example.test "@review"',
+    '[guide][@review]\n\n[@review]: https://example.test',
+    '![diagram @review](https://example.test/diagram.png)',
+])
+def test_rendered_code_and_link_metadata_cannot_address_another_bot(quoted):
+    members = tuple(discussion.DiscussionMember(f'member-{name}', name, name) for name in ('build', 'review'))
+    assert discussion.resolve_mentions((f'@build please check this example:\n\n{quoted}',), members) == (members[0],)
+
+
+@pytest.mark.parametrize(('text', 'handles'), [
+    ('\\@review @build', ['build']),
+    ('&amp;commat;review @build', ['build']),
+    ('&#64;build', ['build']),
+    ('[&#64;build][ref]\n\n[ref]: https://example.test "@review"', ['build']),
+    ('[@build](https://example.test "@review")', ['build']),
+    ('**@build**', ['build']),
+    ('[guide][@review] @build', ['build', 'review']),  # undefined reference remains visible
+    ('@<code>literal</code>everyone', []),
+])
+def test_markdown_structure_preserves_visible_labels_and_literal_mentions(text, handles):
+    members = tuple(discussion.DiscussionMember(f'member-{name}', name, name) for name in ('build', 'review'))
+    assert [m.handle for m in discussion.resolve_mentions((text,), members, default_all=False)] == handles
+
+
 @pytest.mark.parametrize(
     "text",
     [

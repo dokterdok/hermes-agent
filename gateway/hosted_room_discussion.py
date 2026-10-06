@@ -424,10 +424,35 @@ def _escaped_positions(value: str) -> tuple[bool, ...]:
     return tuple(result)
 
 
-def _masked_markdown_destinations(value: str) -> str:
-    """Hide inline link destinations while retaining their visible labels."""
+def _link_destination_end(value: str, start: int, escaped: tuple[bool, ...]) -> int | None:
+    depth, angle, quote, title_position = 1, False, "", False
+    for cursor in range(start, len(value)):
+        if escaped[cursor]:
+            continue
+        char = value[cursor]
+        if angle:
+            if char == ">":
+                angle = False
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char == "<":
+            angle = True
+        elif char in {'"', "'"} and title_position:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return cursor
+        if not angle and not quote:
+            title_position = depth == 1 and char in " \t\r\n"
+    return None
 
-    chars = list(value)
+
+def _mask_incomplete_markdown_links(value: str) -> str:
+    """Keep the existing conservative bound for unfinished destinations and titles."""
     escaped = _escaped_positions(value)
     brackets: list[int] = []
     index = 0
@@ -437,55 +462,37 @@ def _masked_markdown_destinations(value: str) -> str:
             continue
         if value[index] == "[":
             brackets.append(index)
-            index += 1
-            continue
-        if value[index] != "]" or not brackets:
-            index += 1
-            continue
-        brackets.pop()
-        if index + 1 >= len(value) or value[index + 1] != "(" or escaped[index + 1]:
-            index += 1
-            continue
-        depth = 1
-        cursor = index + 2
-        angle = False
-        quote = ""
-        title_position = False
-        while cursor < len(value):
-            if escaped[cursor]:
-                cursor += 1
-                continue
-            char = value[cursor]
-            if angle:
-                if char == ">":
-                    angle = False
-            elif quote:
-                if char == quote:
-                    quote = ""
-            elif char == "<":
-                angle = True
-            elif char in {'"', "'"} and title_position:
-                quote = char
-            elif char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth == 0:
-                    for masked in range(index + 1, cursor + 1):
-                        if chars[masked] not in "\r\n":
-                            chars[masked] = " "
-                    index = cursor
-                    break
-            if not angle and not quote:
-                title_position = depth == 1 and char in " \t\r\n"
-            cursor += 1
-        if depth:
-            for masked in range(index + 1, len(value)):
-                if chars[masked] not in "\r\n":
-                    chars[masked] = " "
-            break
+        elif value[index] == "]" and brackets:
+            brackets.pop()
+            if index + 1 < len(value) and value[index + 1] == "(" and not escaped[index + 1]:
+                end = _link_destination_end(value, index + 2, escaped)
+                if end is None:
+                    return value[:index + 1] + "".join(c if c in "\r\n" else " " for c in value[index + 1:])
+                index = end
         index += 1
-    return "".join(chars)
+    return value
+
+
+def _visible_markdown_text(value: str) -> str:
+    """Use the same CommonMark structure as the chat renderer, without loading media."""
+    from markdown_it import MarkdownIt
+
+    value = _mask_incomplete_markdown_links(_visible_html_text(_masked_markdown_code(value)))
+    # Preserve deliberate literal mentions when the parser removes Markdown escapes.
+    value = "".join("\ufffc" if char == "@" and index and value[index - 1] == "\\" else char
+                    for index, char in enumerate(value))
+    # HTML text projection decoded entities once already; never decode a nested entity twice.
+    parser = MarkdownIt("commonmark", {"html": False}).disable("entity")
+    parts = []
+    for block in parser.parse(value):
+        if block.type == "inline":
+            for token in block.children or ():
+                if token.type == "text":
+                    parts.append(token.content)
+                elif token.type in {"code_inline", "image", "softbreak", "hardbreak"}:
+                    parts.append(" ")
+            parts.append("\n")
+    return _masked_bare_uris("".join(parts))
 
 
 def _masked_bare_uris(value: str) -> str:
@@ -526,7 +533,7 @@ def _masked_bare_uris(value: str) -> str:
 class _VisibleHTMLParser(HTMLParser):
     """Collect only rendered text from Markdown's embedded HTML."""
 
-    _HIDDEN = frozenset({"script", "style", "template"})
+    _HIDDEN = frozenset({"script", "style", "template", "code", "pre"})
     _BREAKS = frozenset({
         "address",
         "article",
@@ -583,6 +590,8 @@ class _VisibleHTMLParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
         if tag in self._HIDDEN:
+            if not self.hidden and tag in {"code", "pre"}:
+                self.parts.append(" ")
             self.hidden.append(tag)
         elif not self.hidden and tag in self._BREAKS:
             self.parts.append(" ")
@@ -590,6 +599,8 @@ class _VisibleHTMLParser(HTMLParser):
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
         if tag in self._HIDDEN:
+            if not self.hidden and tag in {"code", "pre"}:
+                self.parts.append(" ")
             self.hidden.append(tag)
             if tag in {"script", "style"}:
                 self.set_cdata_mode(tag)
@@ -642,13 +653,7 @@ def _mention_resolution(
     everyone = False
     unresolved = False
     for text in texts:
-        visible = _masked_bare_uris(
-            _masked_markdown_destinations(
-                _visible_html_text(
-                    _masked_markdown_code(str(text or ""))
-                )
-            )
-        )
+        visible = _visible_markdown_text(str(text or ""))
         for match in _MENTION_RE.finditer(visible):
             if not _has_mention_boundary(visible, match.start()):
                 continue
