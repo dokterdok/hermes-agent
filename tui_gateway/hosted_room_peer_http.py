@@ -578,11 +578,11 @@ class PeerRunsHTTPClient:
             try:
                 result = post()
             except PeerRunsHTTPError as exc:
-                if not (checked.document_inputs and exc.error_code == "room_document_input_required"
-                        and exc.status_code == 409 and exc.not_admitted and not exc.ambiguous):
+                if not (checked.document_inputs and self.proof_install_id is not None
+                        and exc.error_code == "room_document_input_required" and exc.status_code == 409):
                     raise
-                # Only an exact no-admission receipt permits new ingress checks/source reads.
-                # Capability changes never prevent observation of previously accepted input.
+                # The response proof binds this preparation request to our frozen dispatch.
+                # Fulfill its same key; the outer replay guard still preserves any prior uncertainty.
                 capability = self._request("/v1/room-members/capabilities", room_grant=grant,
                                            headers={"Hermes-Room-Features": "document-input-v1"})
                 live = GatewayRoomCatalog.from_mapping(capability.get("catalog"))
