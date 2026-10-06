@@ -321,5 +321,6 @@ async def confirm_typed(runner, authority, chat, room_id: str, kind: str) -> str
     record = await asyncio.to_thread(pending)
     if record is None:
         return None
-    result = await act(runner, record['platform'], record['chat_id'], chat.user_id, data_for('cont!', record['token']))
+    result = await act(runner, record['platform'], record['chat_id'], chat.user_id,
+                       data_for('cont!', record['token']), scope_id=chat.scope_id)
     return OWNER_ONLY if result is None else result['text']
