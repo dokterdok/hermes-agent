@@ -66,7 +66,7 @@ _FIELDS = {
     'groups.custody.add': {'room_id', 'target_url', 'catalog', 'grant', 'successor'},
     'groups.custody.remove': {'room_id', 'install_id'},
     'groups.custody.allow': {'room_id', 'successor'},
-    'groups.custody.automatic': {'room_id', 'enabled'},
+    'groups.custody.automatic': {'room_id', 'enabled', 'accept_two_host_risk'},
     'profiles.list': {'include_sessions'},
 }
 
