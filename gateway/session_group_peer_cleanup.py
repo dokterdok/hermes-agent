@@ -7,6 +7,7 @@ The state database has the same private custody boundary as hosted_room_links.
 import hashlib
 import json
 import math
+import sqlite3
 import time
 
 from gateway import hosted_room_links as links, hosted_rooms
@@ -106,7 +107,7 @@ def _awaiting_issuance_recovery(service, value):
     link = value['link']
     try:
         current = links.load_room_link(service.db_path, room_id=link['room_id'], member_id=link['member_id'])
-    except Exception:
+    except (OSError, sqlite3.Error, KeyError, TypeError, ValueError):
         return True  # unreadable current custody holds this issuance, without blocking other cleanup
     return (current is not None and current.grant == link['grant'] and current.status == 'ready'
             and not room_grant_needs_dispatch_refresh(link['grant'], leeway_seconds=0))
@@ -144,7 +145,7 @@ def drain(service, *, force=False, room_id=None):
                     except PeerRunsHTTPError as exc:
                         if not _grant_revoke_is_terminal(exc):
                             raise
-            except Exception:
+            except (OSError, RuntimeError, sqlite3.Error, ValueError):
                 value['attempts'] += 1
                 value['next_at'] = now + min(120, 2 ** min(value['attempts'], 7))
                 with hosted_rooms._transaction(service.db_path) as conn:

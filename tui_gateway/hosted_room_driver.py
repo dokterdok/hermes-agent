@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 import uuid
@@ -488,7 +489,7 @@ class HostedRoomRuntime:
         if self.maintain_service is not None:
             try:
                 self.maintain_service()
-            except Exception as exc:
+            except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
                 self._record_error(f"peer lifecycle maintenance pending: {exc}")
         with self._status_lock:
             supervisor = self._thread
@@ -585,7 +586,7 @@ class HostedRoomRuntime:
                 self.maintain_leased_room(binding, lease)
             except (state.StaleLeaseError, state.RoomUnavailableError):
                 raise  # the room's own fences decide, as for any leased work
-            except Exception as exc:  # upkeep never decides the fate of a turn
+            except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
                 self._record_error(f"room {binding.room_id} upkeep failed: {exc}")
         return lease
 

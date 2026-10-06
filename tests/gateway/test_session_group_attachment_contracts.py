@@ -5,7 +5,7 @@ import json
 import pytest
 
 from gateway.session_hosted_attachments import append_user_event
-from tests.gateway.test_session_group_peers import call, gateway  # noqa: F401
+from tests.gateway.test_session_group_peers import call, gateway as gateway  # noqa: F401
 from tui_gateway.contracts.groups_bot_relay import (
     GroupsAttachmentUploadParams, GroupsAttachmentResult,
     GroupsAttachmentDownloadParams, GroupsAttachmentDownloadResult)

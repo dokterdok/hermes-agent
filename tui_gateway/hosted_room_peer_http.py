@@ -9,6 +9,7 @@ import logging
 import math
 import re
 import socket
+import sqlite3
 import threading
 import time
 import urllib.error
@@ -766,7 +767,7 @@ class PeerRunsHTTPClient:
             # A replacement nobody will use is retired, not left live until it expires.
             try:
                 self.revoke_grant_exact(grant=replacement)
-            except Exception:
+            except (OSError, RuntimeError, sqlite3.Error, ValueError):
                 logger.warning("Could not retire an unused refreshed room grant")
             raise
         return {**refreshed, "catalog": probe.get("catalog")}

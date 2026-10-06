@@ -19,10 +19,11 @@ a small per-cycle budget, so a member keeps working until the horizon its gatewa
 chose at invitation (``status_ttl_seconds``), without being invited again.
 """
 from contextlib import contextmanager
-from copy import copy
+from copy import Error as CopyError, copy
 from dataclasses import replace
 import hashlib
 import logging
+import sqlite3
 
 from gateway import hosted_room_links as links
 from gateway import session_group_peer_cleanup as cleanup
@@ -106,7 +107,7 @@ def publish_route(service, *, room_id, member_id, route, client, target_url, cat
         if replaced is not None and renewal:
             try:
                 _retire(client, replaced)
-            except Exception:
+            except (OSError, RuntimeError, sqlite3.Error, ValueError):
                 logger.warning('A renewed peer grant replaced one that could not be retired: room=%s member=%s',
                                room_id, member_id)
     service.runtime.wakeup()
@@ -144,7 +145,7 @@ def before_sending(method):
             failure.dispatch_not_attempted = dispatch
             if not dispatch:
                 failure.ambiguous = True
-        except Exception:
+        except (AttributeError, CopyError, TypeError, ValueError):
             failure = PeerRunsHTTPError(
                 'peer admission preflight failed', not_admitted=False,
                 ambiguous=not dispatch or bool(getattr(exc, 'ambiguous', False)),
@@ -326,8 +327,8 @@ class CanonicalPeerClient:
         except Exception:
             try:
                 _retire(self._client, replacement)
-            except Exception:
-                pass  # the durable obligation retries after restart as well
+            except (OSError, RuntimeError, sqlite3.Error, ValueError):
+                logger.warning('Unused peer grant retirement remains pending: room=%s member=%s', *self._key)
             raise
         self._grant = replacement
         return replacement
@@ -407,7 +408,7 @@ def _renew_room(service, binding, lease, now):
             CanonicalPeerClient(service, binding, key, route, client, renewal_lease=lease).probe(grant=route.grant)
         except (driver.StaleLeaseError, driver.RoomUnavailableError):
             raise
-        except Exception:
+        except (OSError, RuntimeError, sqlite3.Error, ValueError):
             service._peer_renewals[key] = (fingerprint, now + delay, min(_MAX_RETRY_SECONDS, delay * 2))
             logger.warning('Peer grant renewal pending: room=%s member=%s', *key)
     due = [service._peer_renewals.get((link.room_id, link.member_id), ('', now + _SCAN_SECONDS, 0.0))[1]
