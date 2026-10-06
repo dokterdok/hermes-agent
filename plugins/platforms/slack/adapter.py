@@ -5674,7 +5674,7 @@ class SlackAdapter(BasePlatformAdapter):
         so the buttons keep working after a restart."""
         try:
             response = await self._post_interactive_blocks(
-                chat_id, text, self._group_action_blocks(text, buttons), metadata, team_scoped=False)
+                chat_id, text, self._group_action_blocks(text, buttons), metadata)
             return SendResult(success=True, message_id=str((response or {}).get("ts") or ""))
         except Exception as e:
             logger.warning("[Slack] send_group_actions failed: %s", e)
@@ -5683,13 +5683,14 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_group_action(self, ack, body, action) -> None:
         """A click under a Group Chat notice: the gateway rechecks who may choose; the message is
         updated in place into what comes next."""
-        started = await self._begin_interaction(ack, body, action, "group", team_scoped=False)
+        started = await self._begin_interaction(ack, body, action, "group")
         if started is None:
             return
         team_id, _action_id, value, _message, msg_ts, channel_id, _user_name, user_id = started
         act = getattr(self.gateway_runner, "_group_chat_action", None)
         try:
-            result = await act(self.platform.value, channel_id, user_id, value) if act is not None else None
+            result = await act(self.platform.value, channel_id, user_id, value,
+                               scope_id=team_id or None) if act is not None else None
             if result is not None:
                 await self._get_client(channel_id, team_id=team_id).chat_update(
                     channel=channel_id, ts=msg_ts, text=result["text"],

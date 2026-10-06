@@ -1441,7 +1441,7 @@ def terminal_tool(
                     workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
                     mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd, env=env,
                 )
-            except Exception:
+            except (OSError, RuntimeError, TypeError, ValueError):
                 approval_config = None
         with approval_operation(cwd=approval_cwd, backend=env_type, config=approval_config or {},
                                 enabled=approval_config is not None) as operation:
