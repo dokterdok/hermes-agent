@@ -18,7 +18,7 @@ from gateway.hosted_room_peer import (
     HostedRoomGrantError, decode_room_grant, gateway_room_grant_secret, issue_room_grant)
 from gateway.platforms import api_server_room_grants
 from gateway.session_group_peer_routes import CanonicalPeerClient, before_sending, set_route_status
-from tests.gateway.test_session_group_peers import call, gateway, invite, linked_room  # noqa: F401
+from tests.gateway.test_session_group_peers import call, gateway as gateway, invite, linked_room  # noqa: F401
 from gateway.session_group_peers import room_link
 from tui_gateway.hosted_room_driver import HostedRoomBinding
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
@@ -294,23 +294,22 @@ async def test_an_observer_refuses_a_route_that_changed_under_it(gateway, monkey
         accepted = await asyncio.to_thread(tracked.dispatch, dispatch=dispatch, grant=route.grant)
         await reregister(gateway, room, url, catalog)
         service = gateway.service
-        if change == 'trace':
-            service.peer_routes[KEY] = replace(service.peer_routes[KEY], trace_id='trace-other')
-        elif change == 'url':
-            service.peer_clients[KEY] = PeerRunsHTTPClient(base_url='http://127.0.0.1:9', api_key='')
-        elif change == 'membership':
+        def change_members():
             members = service._room('linked')['members']
             members[1]['handle'] = 'renamed'
             with sqlite3.connect(gateway.db.db_path) as db:
                 db.execute('UPDATE hosted_rooms SET members_json=? WHERE room_id=?', (json.dumps(members), 'linked'))
-        elif change == 'epoch':
-            hosted_rooms.claim_authority(gateway.db.db_path, room_id='linked',
-                                         expected_gateway_id=room['authority_gateway_id'], expected_epoch=1,
-                                         new_gateway_id=room['authority_gateway_id'], event_id='reclaim')
-        elif change == 'removed':
-            service.peer_routes.pop(KEY)
-        else:
-            service._peer_route_status[KEY] = 'needs_reauthorization'
+        actions = {
+            'trace': lambda: service.peer_routes.update({KEY: replace(service.peer_routes[KEY], trace_id='trace-other')}),
+            'url': lambda: service.peer_clients.update({KEY: PeerRunsHTTPClient(base_url='http://127.0.0.1:9', api_key='')}),
+            'membership': change_members,
+            'epoch': lambda: hosted_rooms.claim_authority(gateway.db.db_path, room_id='linked',
+                expected_gateway_id=room['authority_gateway_id'], expected_epoch=1,
+                new_gateway_id=room['authority_gateway_id'], event_id='reclaim'),
+            'removed': lambda: service.peer_routes.pop(KEY),
+            'reauthorization': lambda: service._peer_route_status.update({KEY: 'needs_reauthorization'}),
+        }
+        actions[change]()
         sent = []
         monkeypatch.setattr(tracked._client, '_request', lambda path, **kwargs: sent.append(path))
         with pytest.raises(RuntimeError, match='observer'):

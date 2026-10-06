@@ -1839,7 +1839,3 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
         }
     ]
     assert service.status("room-1")["pending_actions"] == []
-
-
-
-

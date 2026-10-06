@@ -184,4 +184,3 @@ def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path)
     assert service.status("room-1")["pending_actions"][0]["request_id"] == (
         "approval-B"
     )
-

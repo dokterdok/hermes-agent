@@ -37,5 +37,3 @@ def test_cancel_never_interrupts_a_newer_task_in_the_same_session(db: Path, same
     assert rpc.states[session_id]["active"] is True
     assert rpc.states[session_id]["task_id"] == next_task_id
     assert runtime.stop(timeout=5.0)
-
-

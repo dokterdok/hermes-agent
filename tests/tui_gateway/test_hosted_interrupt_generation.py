@@ -29,5 +29,3 @@ def test_hosted_interrupt_requires_generation_but_plain_stop_still_works(monkeyp
             assert session["running"] and not session.get("_turn_cancel_requested")
     finally:
         server._sessions.pop("sid", None)
-
-

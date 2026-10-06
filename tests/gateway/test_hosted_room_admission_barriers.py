@@ -17,7 +17,7 @@ from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state_runtime import (
     RuntimeStoreError, admit_session_input, cancel_session_input, get_session_admission, list_session_admissions,
 )
-from tests.gateway.test_session_hosted_rpc import owner  # noqa: F401
+from tests.gateway.test_session_hosted_rpc import owner as owner  # noqa: F401
 
 
 def local_case(owner, monkeypatch, *, previous_stop=False):

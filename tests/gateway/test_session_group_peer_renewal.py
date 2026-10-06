@@ -201,27 +201,29 @@ def test_idle_rooms_renew_on_a_bounded_cadence_and_back_off_while_offline(renewa
 def test_renewal_never_crosses_an_authority_or_grant_fence(renewal, change):
     r = renewal
     r.clock[0] += 3300
-    if change == 'expired':
+    def expire():
         r.clock[0] = r.claims['expires_at'] + 1
-    elif change == 'revoked':
-        hosted_rooms.revoke_room_grant_scope(hosted_rooms.default_db_path(), claims=r.claims,
-                                             expires_at=r.claims['status_expires_at'])
-    elif change == 'policy':
-        (r.home / 'config.yaml').write_text('agent:\n  max_turns: 7\n', encoding='utf-8')
-    elif change == 'disband':
-        def disband():
-            r.service.revoke_room_routes('room')
-            hosted_rooms.disband_room(r.service.db_path, room_id='room',
-                                      expected_gateway_id=r.route.home_install_id, expected_epoch=1)
-        r.member.on_refresh = disband
-    elif change == 'epoch':
-        def change_epoch():
-            with sqlite3.connect(r.service.db_path) as db:
-                db.execute("UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id='room'")
-        r.member.on_refresh = change_epoch
+    def disband():
+        r.service.revoke_room_routes('room')
+        hosted_rooms.disband_room(r.service.db_path, room_id='room',
+                                  expected_gateway_id=r.route.home_install_id, expected_epoch=1)
+    def change_epoch():
+        with sqlite3.connect(r.service.db_path) as db:
+            db.execute("UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id='room'")
+    actions = {
+        'expired': expire,
+        'revoked': lambda: hosted_rooms.revoke_room_grant_scope(hosted_rooms.default_db_path(), claims=r.claims,
+                                                               expires_at=r.claims['status_expires_at']),
+        'policy': lambda: (r.home / 'config.yaml').write_text('agent:\n  max_turns: 7\n', encoding='utf-8'),
+        'disband': disband,
+        'epoch': change_epoch,
+        'lease_lost': lambda: driver.release_lease(
+            r.service.db_path, r.service.runtime._leases['room'], clock=lambda: r.clock[0]),
+    }
+    if change in {'disband', 'epoch', 'lease_lost'}:
+        r.member.on_refresh = actions[change]
     else:
-        r.member.on_refresh = lambda: driver.release_lease(
-            r.service.db_path, r.service.runtime._leases['room'], clock=lambda: r.clock[0])
+        actions[change]()
     cycle(r)
     if change == 'disband':
         assert not [l for l in links.load_room_links(r.service.db_path) if l.room_id == 'room']

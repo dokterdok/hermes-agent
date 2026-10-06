@@ -6,6 +6,7 @@ room's pinned peer member (``groups.peer.register``). Dispatch, Stop, recovery a
 Disband then run on the canonical hosted service like any other member.
 """
 import hashlib
+import sqlite3
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
@@ -35,11 +36,11 @@ def room_link(authority):
         return {'enabled': False, 'reason': 'durable_run_storage_required'}
     try:
         gateway_room_grant_secret()
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return {'enabled': False, 'reason': 'gateway_roomlink_secret_unavailable'}
     try:
         _, catalog = _local_room_catalog(adapter, 'default', hosted_rooms.local_authority_gateway_id())
-    except Exception:
+    except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
         # For example YOLO approvals: a remote turn must never run without approval prompts.
         return {'enabled': False, 'reason': 'execution_policy_unsupported'}
     if not catalog['endpoint'].get('available'):

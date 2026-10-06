@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import nullcontext
 from pathlib import Path
+import sqlite3
 import threading
 import time
 
@@ -284,7 +285,7 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                             self.revoke_room_routes(room_id)
                             hosted_rooms.disband_room(self.db_path, room_id=room_id,
                                                       expected_gateway_id=gateway_id, expected_epoch=epoch)
-                    except Exception:
+                    except (OSError, RuntimeError, sqlite3.Error, ValueError):
                         # The durable fence remains; a later cycle resumes exact Stop.
                         continue
         finally:
