@@ -1,3 +1,4 @@
+import * as sdk from '@hermes/plugin-sdk'
 /**
  * The group-chat room surface: the merged room view, its settings dialog, the
  * MAIN-window tab it opens into, and the two room-lifecycle mutations that
@@ -9,8 +10,6 @@
  * cycle, so it is one module. The tab registry and the composer drafts they
  * touch stay below, in `group-panes.ts`.
  */
-
-import * as sdk from '@hermes/plugin-sdk'
 import {
   atom,
   Button,
@@ -109,6 +108,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
+import { isGroupChatSelf } from './group-round-prompt'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
@@ -680,6 +680,11 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   </div>
 }
 
+/** A qualified historical author without its matching seat cannot resolve foreground artifacts. */
+function groupHistoryIsForeign(entry: GroupMessage, member: GroupMember | null): boolean {
+  return Boolean(member?.remoteSource || ((entry.from.source || entry.from.gateway) && !member))
+}
+
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
@@ -1231,10 +1236,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     const member = isUser
       ? null
       : members.find(
-          b =>
-            b.name === entry.from.name &&
-            (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
+          candidate => isGroupChatSelf(entry.from, candidate)
         ) || null
+
+    const foreignHistory = groupHistoryIsForeign(entry, member)
 
     const display = isUser
       ? b.group.you
@@ -1328,7 +1333,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             data-slot="group-chat-message-content"
           >
             {MessageTextContent ? (
-              <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />
+              <MessageTextContent decorateText={mentionText} media={!foreignHistory} previewOnly={foreignHistory} text={entry.text} />
             ) : Streamdown ? (
               <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
             ) : (
