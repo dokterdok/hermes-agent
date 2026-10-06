@@ -65,7 +65,7 @@ export const _FIELDS: Record<string, readonly string[]> = {
   'groups.custody.allow': ['room_id', 'successor'],
   'groups.custody.remove': ['room_id', 'install_id'],
   'groups.custody.status': ['room_id'],
-  'groups.custody.automatic': ['room_id', 'enabled'],
+  'groups.custody.automatic': ['room_id', 'enabled', 'accept_two_host_risk'],
   'groups.succession.move': ['room_id', 'target_install_id'],
   'groups.succession.continue_anyway': ['room_id'],
   'groups.succession.learn': ['room_id', 'events'],

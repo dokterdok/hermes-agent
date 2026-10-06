@@ -321,9 +321,9 @@ function successionActions({ binding, status, reading, hostRoute, computerFor, r
       refresh()
     },
 
-    async setAutomatic(enabled: boolean) {
-      if (!hostRoute) {return}
-      await setAutomatic(hostRoute, roomId, enabled)
+    async setAutomatic(enabled: boolean, acceptTwoHostRisk = false) {
+      if (!hostRoute) {throw new Error('The hosting computer cannot be reached')}
+      await setAutomatic(hostRoute, roomId, enabled, acceptTwoHostRisk)
       refresh()
     },
 

@@ -56,7 +56,7 @@ function host(methods: Record<string, Handler>, events: unknown[] = []) {
 
 it('says how ready the group is to move by itself, with the owner’s switch and computer sublabels', async () => {
   let current = status({
-    automatic: { state: 'ready', mode: 'careful', standby: { install_id: VPS, name: 'Home VPS' }, voters: 2 },
+    automatic: { state: 'ready', mode: 'careful', standby: { install_id: VPS, name: 'Home VPS' }, voters: 2, enabled: true, careful_opt_in: true },
     backups: [backup(VPS, 'Home VPS', { always_on: true, voter: true }), backup(LAPTOP, 'Laptop', { always_on: false })],
     actions: [{ action: 'automatic', enabled: true }, { action: 'designate', targets: [VPS, LAPTOP] }]
   })
@@ -350,4 +350,74 @@ it('offers a message the old host held alone to the new host after a move, with 
     .toEqual([['vps', entry.params.event_id, 'Before the move']])
   await waitFor(() => expect(journal()).toEqual({}))
   expect(calls('groups.send')).toHaveLength(1)
+})
+
+it('keeps two-computer automatic preference off until explicit risk consent and sends the flag only after confirmation', async () => {
+  const labels = (await import('./canonical-group-locales')).CANONICAL_GROUP_LOCALES.en
+  let current = status({automatic: {state: 'off', mode: 'ask', voters: 2, enabled: true, careful_opt_in: false, reason: 'careful_confirmation_required'}, actions: [{action: 'automatic', enabled: true}]})
+  host({'groups.succession.status': () => current, 'groups.custody.automatic': (_method, params) => {
+    current = status({automatic: {state: 'ready', mode: 'careful', voters: 2, enabled: true, careful_opt_in: true}, actions: [{action: 'automatic', enabled: true}]})
+
+    return {room_id: params.room_id, automatic: params.enabled, configuration_seq: 5}
+  }})
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Hosted on Mac mini'}))
+  const control = await screen.findByRole('switch', {name: 'Move automatically if a computer goes offline'})
+  expect(control.getAttribute('aria-checked')).toBe('false')
+  fireEvent.click(control)
+  await screen.findByText(labels.twoHostRiskBody)
+  expect(calls('groups.custody.automatic')).toEqual([])
+  fireEvent.click(screen.getByRole('button', {name: 'Cancel'}))
+  expect(calls('groups.custody.automatic')).toEqual([])
+  fireEvent.click(control)
+  fireEvent.click(await screen.findByRole('button', {name: labels.twoHostRiskConfirm}))
+  await waitFor(() => expect(calls('groups.custody.automatic')).toHaveLength(1))
+  expect(calls('groups.custody.automatic')[0][2]).toEqual({room_id: binding.roomId, enabled: true, accept_two_host_risk: true, profile: binding.profile})
+})
+
+it('keeps ordinary majority enablement free of a two-computer risk flag', async () => {
+  host({'groups.succession.status': () => status({automatic: {state: 'off', mode: 'majority', voters: 3, enabled: false, careful_opt_in: false}, actions: [{action: 'automatic', enabled: false}]}),
+    'groups.custody.automatic': (_method, params) => ({room_id: params.room_id, automatic: params.enabled, configuration_seq: 5})})
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Hosted on Mac mini'}))
+  fireEvent.click(await screen.findByRole('switch', {name: 'Move automatically if a computer goes offline'}))
+  await waitFor(() => expect(calls('groups.custody.automatic')).toHaveLength(1))
+  expect(calls('groups.custody.automatic')[0][2]).toEqual({room_id: binding.roomId, enabled: true, profile: binding.profile})
+})
+
+it('handles a topology-change confirmation refusal with a warning instead of an automatic consent retry', async () => {
+  const labels = (await import('./canonical-group-locales')).CANONICAL_GROUP_LOCALES.en
+  let current = status({automatic: {state: 'off', mode: 'majority', voters: 3, enabled: false, careful_opt_in: false}, actions: [{action: 'automatic', enabled: false}]})
+  host({'groups.succession.status': () => current, 'groups.custody.automatic': (_method, params) => {
+    if (params.accept_two_host_risk !== true) {
+      current = status({automatic: {state: 'off', mode: 'ask', voters: 2, enabled: true, careful_opt_in: false}, actions: [{action: 'automatic', enabled: true}]})
+      throw Object.assign(new Error('risk choice required'), {code: 4001, data: {reason: 'careful_confirmation_required'}})
+    }
+
+    return {room_id: params.room_id, automatic: true, configuration_seq: 6}
+  }})
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Hosted on Mac mini'}))
+  fireEvent.click(await screen.findByRole('switch', {name: 'Move automatically if a computer goes offline'}))
+  await screen.findByText(labels.twoHostRiskBody)
+  expect(calls('groups.custody.automatic')).toHaveLength(1)
+  expect(calls('groups.custody.automatic')[0][2]).not.toHaveProperty('accept_two_host_risk')
+  fireEvent.click(screen.getByRole('button', {name: labels.twoHostRiskConfirm}))
+  await waitFor(() => expect(calls('groups.custody.automatic')).toHaveLength(2))
+  expect(calls('groups.custody.automatic')[1][2]).toMatchObject({enabled: true, accept_two_host_risk: true})
+})
+
+it('does not turn an older ambiguous two-computer setting into consent and offers a safe off action', async () => {
+  const labels = (await import('./canonical-group-locales')).CANONICAL_GROUP_LOCALES.en
+  host({'groups.succession.status': () => status({automatic: {state: 'ready', mode: 'careful', voters: 2, enabled: true}, actions: [{action: 'automatic', enabled: true}]}),
+    'groups.custody.automatic': (_method, params) => ({room_id: params.room_id, automatic: params.enabled, configuration_seq: 5})})
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Hosted on Mac mini'}))
+  const control = await screen.findByRole('switch', {name: 'Move automatically if a computer goes offline'}) as HTMLButtonElement
+  expect(control.getAttribute('aria-checked')).toBe('false')
+  expect(control.disabled).toBe(true)
+  await screen.findByText(labels.twoHostLegacy)
+  fireEvent.click(screen.getByRole('button', {name: labels.twoHostDisable}))
+  await waitFor(() => expect(calls('groups.custody.automatic')).toHaveLength(1))
+  expect(calls('groups.custody.automatic')[0][2]).toEqual({room_id: binding.roomId, enabled: false, profile: binding.profile})
 })

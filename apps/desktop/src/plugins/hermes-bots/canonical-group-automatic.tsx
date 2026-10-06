@@ -1,6 +1,7 @@
-import { Button, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Switch, useI18n } from '@hermes/plugin-sdk'
+import { Button, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, useI18n } from '@hermes/plugin-sdk'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { AutomaticMoveSetting, twoHostAutomatic } from './canonical-group-automatic-setting'
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { confirmComputer, desktopComputers, learnSuccession, offeredTargets, offers, readSuccessionStatus, successionAdvertised }
@@ -31,6 +32,8 @@ function readinessLine(words: Words, controller: SuccessionController, status: S
   const automatic = status.automatic
   const standby = computerName(controller, automatic?.standby)
   const offline = (automatic?.offline ?? []).map((computer, index) => computerName(controller, computer) ?? words.computerNumber(index + 1))
+
+  if (automatic && twoHostAutomatic(automatic) && automatic.careful_opt_in !== true) {return automatic.careful_opt_in === null && automatic.enabled !== false ? null : words.automaticOff}
 
   switch (automatic?.state) {
     case 'ready': return automatic.mode === 'ask' ? words.automaticOff
@@ -105,15 +108,11 @@ export function AutomaticSection({ controller, group, onAddBackup }: { controlle
   const { locale } = useI18n()
   const [moving, setMoving] = useState(false)
   const [target, setTarget] = useState<SuccessionComputer | null>(null)
-  const [failed, setFailed] = useState(false)
   const status = controller.status
 
   if (!status?.automatic) {return null}
   const host = computerName(controller, status.host)
   const setting = status.actions.find(entry => entry.action === 'automatic')
-  // A change waits for the other computers to store it: the switch shows what was asked, and says it's waiting.
-  const committed = status.automatic.enabled ?? setting?.enabled !== false
-  const requested = status.automatic.pending ?? committed
   const moves = offeredTargets(status, 'move')
   const needs = status.automatic.state === 'unavailable' && offers(status, 'add_backup') && onAddBackup
   const computer = (id: string) => status.backups.find(backup => backup.install_id === id) ?? { install_id: id, name: null }
@@ -122,15 +121,7 @@ export function AutomaticSection({ controller, group, onAddBackup }: { controlle
     <p className="font-medium text-(--ui-text-primary)">{words.offlineHeading}</p>
     <p>{readinessLine(words, controller, status, host, locale)}</p>
     {status.automatic.state === 'ready' && status.automatic.mode === 'careful' && <p className="text-(--ui-text-tertiary)">{words.carefulHelp}</p>}
-    {setting && <label className="flex items-center gap-2 pt-1">
-      <Switch aria-label={words.automaticSwitch} checked={requested} onCheckedChange={enabled => {
-        setFailed(false)
-        void controller.setAutomatic(enabled).catch(() => setFailed(true))
-      }} size="xs" />
-      {words.automaticSwitch}
-    </label>}
-    {setting && <p className="text-(--ui-text-tertiary)">{requested === committed ? words.automaticHelp : requested ? words.turningOn : words.turningOff}</p>}
-    {failed && <p className="text-destructive" role="alert">{words.changeFailed}</p>}
+    <AutomaticMoveSetting automatic={status.automatic} controller={controller} enabledFallback={setting?.enabled !== false} offered={Boolean(setting)} />
     {needs && <div><Button onClick={onAddBackup} size="sm" variant="secondary">{words.addBackup}</Button></div>}
     {!!moves.length && <div><Button onClick={() => setMoving(true)} size="sm" variant="secondary">{words.moveToAnother}</Button></div>}
     <Dialog onOpenChange={open => {if (!open) {setMoving(false)}}} open={moving && !target}>
