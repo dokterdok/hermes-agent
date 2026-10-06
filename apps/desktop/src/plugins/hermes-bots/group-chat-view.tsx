@@ -733,7 +733,12 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
 
 /** A qualified historical author without its matching seat cannot resolve foreground artifacts. */
 function groupHistoryIsForeign(entry: GroupMessage, member: GroupMember | null): boolean {
-  return Boolean(member?.remoteSource || ((entry.from.source || entry.from.gateway) && !member))
+  if (member?.remoteSource) {return true}
+
+  if (entry.from.gateway) {return !member?.installId || member.installId !== entry.from.gateway}
+
+  // Connection labels are presentation, not evidence for artifact authority.
+  return Boolean(entry.from.source)
 }
 
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
