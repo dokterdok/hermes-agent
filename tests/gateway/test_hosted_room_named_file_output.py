@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from tests.gateway.test_hosted_mux_runtime import mux  # noqa: F401 - real owners and private socket
+from tests.gateway.test_hosted_mux_runtime import mux as mux
 
 
 def _wait(predicate, *, timeout=15, message="condition"):
