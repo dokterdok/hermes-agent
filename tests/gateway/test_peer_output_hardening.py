@@ -170,3 +170,20 @@ def test_observation_only_legacy_text_cannot_submit_a_run(monkeypatch):
     with pytest.raises(PeerRunsHTTPError) as refused:
         client.recover_dispatch(dispatch=_dispatch(), grant='signed.room.grant', observation_only=True)
     assert refused.value.ambiguous and not refused.value.not_admitted
+
+
+def test_worker_failure_reaches_its_owner_and_releases_the_retry_slot(monkeypatch):
+    import agent.memory_provider
+    source, _ = source_fixture()
+    failure = RuntimeError('private peer failure')
+    def request(**kwargs):
+        raise failure
+    source.client.output_request = request
+    monkeypatch.setattr(agent.memory_provider, 'spawn_context_thread',
+                        lambda target, **kwargs: SimpleNamespace(start=target))
+    with pytest.raises(RuntimeError) as caught:
+        source._call('read', artifact_id=source.manifest['items'][0]['artifact_id'])
+    assert caught.value is failure and not source.service._peer_output_io
+    expected = {'metadata': source.manifest['items'][0], 'data_base64': 'eA=='}
+    source.client.output_request = lambda **kwargs: expected
+    assert source._call('read', artifact_id=expected['metadata']['artifact_id']) == expected

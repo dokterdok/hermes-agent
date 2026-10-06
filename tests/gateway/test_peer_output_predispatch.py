@@ -7,7 +7,7 @@ import pytest
 
 from gateway import hosted_room_driver as tasks, hosted_rooms
 from gateway.session_group_peers import room_link
-from tests.gateway.test_session_group_peers import gateway, call, linked_room  # noqa: F401
+from tests.gateway.test_session_group_peers import gateway as gateway, call, linked_room
 
 
 def unjoined(gateway, monkeypatch):

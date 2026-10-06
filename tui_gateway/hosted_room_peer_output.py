@@ -178,7 +178,7 @@ class PeerOutputSource:
                             or type(result[keys[1]]) is not int or not 0 <= result[keys[1]] <= 8):
                         raise ValueError('peer output disposition response is invalid')
                 future.set_result(result)
-            except Exception as error:
+            except Exception as error:  # health: allow BLE001 -- transfer the exact failure to Future.result(), which re-raises it without logging private peer payloads
                 future.set_exception(error)
             finally:
                 if self.generation == getattr(self.service, '_peer_output_generation', 0):
