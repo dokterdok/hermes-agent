@@ -6,6 +6,7 @@ The state database has the same private custody boundary as hosted_room_links.
 """
 import hashlib
 import json
+import math
 import time
 
 from gateway import hosted_room_links as links, hosted_rooms
@@ -72,14 +73,16 @@ def obligations(db_path):
         try:
             value = json.loads(row['value'])
             links.StoredRoomLink.from_record(value['link'])
-            if value['mode'] not in {'exact', 'scope', 'issuance'} or type(value['attempts']) is not int:
+            if (value['mode'] not in {'exact', 'scope', 'issuance'}
+                    or type(value['attempts']) is not int or value['attempts'] < 0
+                    or type(value['next_at']) not in (int, float)
+                    or not math.isfinite(value['next_at']) or value['next_at'] < 0):
                 raise ValueError('invalid cleanup record')
-            float(value['next_at'])
             if value['mode'] == 'issuance' and (not isinstance(value.get('issuance_id'), str)
                     or len(value['issuance_id']) != 64
                     or any(c not in '0123456789abcdef' for c in value['issuance_id'])):
                 raise ValueError('invalid issuance cleanup identity')
-        except Exception:
+        except (KeyError, TypeError, ValueError, OverflowError, RecursionError):
             value = {'corrupt': True}
         result.append((row['key'], value))
     return result
