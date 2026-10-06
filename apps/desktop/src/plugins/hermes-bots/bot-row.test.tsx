@@ -20,13 +20,7 @@ import { atom } from '@hermes/plugin-sdk'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  BotRow,
-  groupAttentionRoomVisible,
-  groupMainVisibilityAtom,
-  GroupRow,
-  showGroupAttentionMarker
-} from './bot-row'
+import { BotRow, groupMainVisibilityAtom, GroupRow } from './bot-row'
 import { $groupChats } from './group-chat'
 import { translateBotsIn } from './i18n-test-helper'
 import type { RosterRow } from './types'
@@ -184,16 +178,6 @@ describe('the menu opens the same forever-chat a row click does', () => {
 })
 
 describe('Group Chat attention', () => {
-  it('shows unresolved attention only while the room is elsewhere', () => {
-    expect(showGroupAttentionMarker(true, false)).toBe(true)
-    expect(showGroupAttentionMarker(true, true)).toBe(false)
-    expect(showGroupAttentionMarker(false, false)).toBe(false)
-
-    expect(groupAttentionRoomVisible(true, false, false)).toBe(true)
-    expect(groupAttentionRoomVisible(false, true, true)).toBe(true)
-    expect(groupAttentionRoomVisible(false, true, false)).toBe(false)
-  })
-
   it('follows the actual main-pane visibility without clearing attention, including Unicode room names', () => {
     const visible = atom(false)
     paneVisibility.mockReturnValue(visible)
@@ -225,6 +209,10 @@ describe('Group Chat attention', () => {
     rerender(<GroupRow {...props} needsYou={false} />)
     expect(marker()).toBeNull()
     expect(attentionRow()).toBeNull()
+    rerender(<GroupRow {...props} active needsYou />)
+    expect(marker()).toBeNull() // selected in-pane fallback is already visible
+    rerender(<GroupRow {...props} active={false} needsYou />)
+    expect(marker()).not.toBeNull()
   })
 
   it('fails closed when a shell cannot report main-pane visibility', () => {

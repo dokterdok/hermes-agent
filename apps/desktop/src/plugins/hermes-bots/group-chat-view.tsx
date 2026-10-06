@@ -1702,10 +1702,6 @@ export function openGroupChat(group: string): void {
   // The in-flight host navigation may complete underneath this workspace,
   // but it may not later close or visually steal the room the user chose.
   bumpBotOpenGeneration()
-  $groupNeedsYou.set({
-    ...$groupNeedsYou.get(),
-    [group]: false
-  })
   const ownerKey = groupWorkspaceOwnerKey(group)
   setBotsWorkspaceOwner(ownerKey, null, 'New group conversations start in the group composer.')
   // #93813: what reached the members' room sessions while nobody drove them

@@ -540,6 +540,20 @@ export function groupMainVisibilityAtom(
   }
 }
 
+interface GroupAttentionMarkerProps {
+  hint: string
+  label: string
+  visible: boolean
+}
+
+function GroupAttentionMarker({ hint, label, visible }: GroupAttentionMarkerProps) {
+  return visible ? (
+    <Tip label={hint}>
+      <span aria-label={label} className="size-1.5 shrink-0 self-center rounded-full bg-(--ui-accent)" />
+    </Tip>
+  ) : null
+}
+
 export function GroupRow({
   active,
   group,
@@ -590,7 +604,12 @@ export function GroupRow({
 
   const row = (
     <RowButton
-      aria-label={[group, b.group.memberCount(members.length), availabilityLabel, showAttention ? b.roster.needsInput : null]
+      aria-label={[
+        group,
+        b.group.memberCount(members.length),
+        availabilityLabel,
+        showAttention ? b.roster.needsInput : null
+      ]
         .filter(Boolean)
         .join(', ')}
       className={cn(
@@ -650,14 +669,7 @@ export function GroupRow({
               <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="pinned" />
             </Tip>
           ) : null}
-          {showAttention ? (
-            <Tip label={b.group.needsYourInput}>
-              <span
-                aria-label={b.roster.needsInput}
-                className="size-1.5 shrink-0 self-center rounded-full bg-(--ui-accent)"
-              />
-            </Tip>
-          ) : null}
+          <GroupAttentionMarker hint={b.group.needsYourInput} label={b.roster.needsInput} visible={showAttention} />
           {lastAt ? (
             <span className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)">
               {rowAge(lastAt, t.sidebar.row)}
