@@ -272,17 +272,25 @@ def fence_and_promise(db_path: Path | str, *, room_id: str, fence_epoch: int, pr
         row = conn.execute(_SELECT, (room_id,)).fetchone()
         state = _state(row)
         promise = state["promise"]
+        if promise_epoch <= state["fenced_epoch"]:
+            raise RoomAuthorityFenced()
+        authority = state["authority"]
+        if (authority is not None and authority["epoch"] == promise_epoch
+                and authority["install_id"] != candidate_install_id):
+            raise RoomAuthorityConflict()
         if promise is not None and promise["epoch"] == promise_epoch:
             if promise["candidate_install_id"] != candidate_install_id:
                 raise RoomAuthorityPromised()
-            return {**state, "idempotent": True}
-        if promise_epoch <= state["fenced_epoch"]:
-            raise RoomAuthorityFenced()
         if promise is not None and promise_epoch < promise["epoch"]:
             raise RoomAuthorityPromised()
         lease = lease_locked(conn, room_id, now=timestamp)
-        if lease is not None and lease["epoch"] <= fence_epoch:
+        if lease is not None and (lease["epoch"] != promise_epoch
+                                  or lease["authority_install_id"] != candidate_install_id):
             raise RoomLeaseActive()
+        # Idempotence does not erase a fence, a learned authority or a later lease recorded since
+        # the first request. Those guards and this reply share the same SQLite writer.
+        if promise is not None and promise["epoch"] == promise_epoch:
+            return {**state, "idempotent": True}
         if row is None:
             if conn.execute(f"SELECT COUNT(*) FROM {FENCES}").fetchone()[0] >= MAX_FENCED_ROOMS:
                 raise RoomFenceCapacity()
