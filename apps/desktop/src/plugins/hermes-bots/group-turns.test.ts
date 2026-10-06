@@ -67,6 +67,29 @@ beforeEach(() => {
 })
 
 describe('session resolution', () => {
+  it.each([
+    undefined,
+    {},
+    { session_id: '' },
+    { session_id: ' ' },
+    { session_id: true },
+    { session_id: 'runtime', session_key: true },
+    { session_id: 'runtime', stored_session_id: 1 }
+  ])('does not create or adopt a conversation from a malformed owner lookup %j', async reply => {
+    const room = await loadRoom()
+    const prior = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+    const calls: string[] = []
+    host.request = async (method: string, params: Record<string, unknown>) => {
+      calls.push(method)
+      return method === 'session.resume' ? reply : prior(method, params)
+    }
+    await expect(room.turns.ensureGroupChatSession('Malformed', LOCAL_MEMBER, 'thread')).rejects.toThrow(
+      /not starting a new/
+    )
+    expect(calls).not.toContain('session.create')
+    expect(room.chat.$groupChats.get().Malformed?.sessions).toBeUndefined()
+  })
+
   it('resolves a missing canonical title explicitly before creating a new classic thread session', async () => {
     const room = await loadRoom()
     const member: GroupMember = { name: 'research', title: '' }
