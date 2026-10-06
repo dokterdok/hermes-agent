@@ -3,7 +3,7 @@ careful mode for two voters, and continuing a paused host anyway.
 
 The group's voters are its host and its always-on successors in the owner's order (#104601's
 ``custody.configured``); their number sets the mode (``mode_of``): ``majority`` with three or more,
-``careful`` with exactly two, and ``ask`` with fewer or when the owner switched automatic moves off.
+``careful`` with exactly two and explicit risk consent, and ``ask`` otherwise.
 ``ask`` never moves by itself: the owner continues by hand (``hosted_room_succession_move``).
 
 **Majority.** The host asks for a lease with each push to a voter, about every five seconds, and a
@@ -627,9 +627,11 @@ def automatic_view(configuration: Mapping[str, Any], rows: list[Mapping[str, Any
         "mode": mode, "state": "ready",
         "standby": {"install_id": ranked[0], "name": succession.label(configuration, ranked[0])} if ranked else None,
         "voters": [{"install_id": voter, "name": succession.label(configuration, voter)} for voter in voters],
-        "enabled": enabled, "pending": pending}
+        "enabled": enabled, "pending": pending, "careful_opt_in": configuration.get("careful_opt_in") is True}
     if configuration.get("automatic") is False:
         view["state"] = "off"
+    elif len(voters) == 2 and not view["careful_opt_in"]:
+        view.update(state="off", reason="careful_confirmation_required")
     elif len(voters) < 2 or not ranked:
         view.update(state="unavailable", reason="needs_computers", needed=max(1, 2 - len(voters)))
     elif (mode == "majority" and not majority_reachable(configuration, rows, host_id=host_id)) or (

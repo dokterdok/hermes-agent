@@ -109,8 +109,12 @@ def custody_automatic(service, actor, params):
     a majority of the voters; ``configuration_seq`` is the latest configuration now, and ``pending``
     stays true until the switch is in force (``hosted_room_custody.automatic_pending``).
     """
+    from contextlib import closing
     from gateway import hosted_room_custody as custody
-    if set(params) != {'room_id', 'enabled'} or type(params['enabled']) is not bool:
+    from gateway.hosted_rooms_common import open_sqlite
+    if (set(params) - {'room_id', 'enabled', 'accept_two_host_risk'} or not {'room_id', 'enabled'} <= set(params)
+            or type(params['enabled']) is not bool or type(params.get('accept_two_host_risk', False)) is not bool
+            or (params.get('accept_two_host_risk') and not params['enabled'])):
         raise RuntimeStoreError('invalid_params')
     room_id = params['room_id']
     if 'session:operator' not in actor.capabilities:
@@ -119,9 +123,13 @@ def custody_automatic(service, actor, params):
         if row is None or row[0] != actor.subject:
             raise RuntimeStoreError('not_owner')
     service._owned_authority(room_id)
-    custody.set_automatic(service.db_path, room_id=room_id, enabled=params['enabled'])
+    custody.set_automatic(service.db_path, room_id=room_id, enabled=params['enabled'],
+                          accept_two_host_risk=params.get('accept_two_host_risk', False))
     configuration_seq = _republish(service, room_id)
-    return {'room_id': room_id, 'automatic': params['enabled'], 'configuration_seq': configuration_seq,
+    with closing(open_sqlite(service.db_path)) as conn:
+        careful_opt_in = custody.careful_opt_in_locked(conn, room_id)
+    return {'room_id': room_id, 'automatic': params['enabled'], 'careful_opt_in': careful_opt_in,
+            'configuration_seq': configuration_seq,
             'pending': custody.automatic_pending(service.db_path, room_id, enabled=params['enabled'])}
 
 

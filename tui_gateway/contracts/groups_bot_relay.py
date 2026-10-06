@@ -702,6 +702,8 @@ class CustodyConfiguration(Result):
     owner_name: str | None = None
     #: The owner lets the group move by itself (``groups.custody.automatic``).
     automatic: bool = True
+    #: Explicit acceptance of two-computer automatic continuation; absent in historical configurations.
+    careful_opt_in: bool | None = None
     #: The voters in the owner's order, the host first.
     voters: list[str] = []
 
@@ -804,12 +806,15 @@ class GroupsCustodyAllowResult(Result):
 
 class GroupsCustodyAutomaticParams(RoomParams):
     enabled: bool
+    #: Required to enable two-computer automatic continuation without retained explicit risk consent.
+    accept_two_host_risk: bool = False
 
 
 class GroupsCustodyAutomaticResult(Result):
     room_id: str
     #: The value requested.
     automatic: bool
+    careful_opt_in: bool
     #: The latest configuration; the switch rides in the next one once earlier changes settle.
     configuration_seq: int
     #: True until the switch is in force: in a configuration stored on a majority of the voters.
@@ -961,6 +966,8 @@ class SuccessionAutomatic(Result):
     voters: list[SuccessionComputer]
     #: The owner's switch as the group's configuration holds it.
     enabled: bool
+    #: Presence advertises the explicit two-computer risk-consent contract.
+    careful_opt_in: bool | None = None
     #: The value the owner asked for while that change still settles with the voters; else None.
     pending: bool | None = None
     reason: str | None = None

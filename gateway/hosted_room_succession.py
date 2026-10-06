@@ -590,6 +590,7 @@ def _verify_evidence_locked(conn, room_id, proof, *, from_epoch, to_epoch, succe
     if (not isinstance(statement, Mapping) or any(statement.get(key) != value for key, value in expected.items())
             or host is None or voters != [host["install_id"], successor] or not is_eligible(configuration, successor)
             or (configuration or {}).get("automatic") is False
+            or (configuration or {}).get("careful_opt_in") is False
             or not isinstance(statement.get("silent_for_s"), (int, float))
             or statement["silent_for_s"] < CAREFUL_SILENCE_SECONDS
             or (fork_seq is not None and statement.get("last_seq") != fork_seq)):

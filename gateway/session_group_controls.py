@@ -77,7 +77,7 @@ _FIELDS = {
     'groups.custody.add': {'room_id', 'target_url', 'catalog', 'grant', 'successor'},
     'groups.custody.remove': {'room_id', 'install_id'},
     'groups.custody.allow': {'room_id', 'successor'},
-    'groups.custody.automatic': {'room_id', 'enabled'},
+    'groups.custody.automatic': {'room_id', 'enabled', 'accept_two_host_risk'},
     'groups.succession.status': {'room_id'},
     'groups.succession.prepare': {'room_id', 'target_install_id'},
     'groups.succession.promote': {'room_id', 'target_install_id', 'preview_id', 'confirm'},

@@ -97,6 +97,12 @@ class HostPausedError(CustodyError):
     reason = "room_host_paused"
 
 
+class CarefulConfirmationRequired(CustodyError):
+    """Two-computer automatic continuation needs the owner's separate acceptance of its risk."""
+
+    reason = "careful_confirmation_required"
+
+
 def initialize_locked(conn: sqlite3.Connection) -> None:
     identity.initialize_locked(conn)
     # The home's custody enrollments. ``allowed``: the installation's operator allowed it to continue
@@ -111,6 +117,7 @@ def initialize_locked(conn: sqlite3.Connection) -> None:
     # The room owner's choice on the host: may the group move by itself (default yes).
     conn.execute(f"""CREATE TABLE IF NOT EXISTS {SETTINGS_TABLE} (
         room_id TEXT PRIMARY KEY, automatic INTEGER NOT NULL, updated_at REAL NOT NULL)""")
+    _add_columns(conn, SETTINGS_TABLE, {"careful_opt_in": "INTEGER NOT NULL DEFAULT 0"})
     # The copy-only route on the host to an installation no member route reaches: a custodian-only
     # installation (no Bot), or a custodian whose Bots the host can't reach, such as the previous host.
     conn.execute(f"""CREATE TABLE IF NOT EXISTS {ROUTES_TABLE} (
@@ -494,12 +501,16 @@ def _custodian(value: Any) -> dict[str, Any]:
 
 
 def parse_configuration(payload: Any) -> dict[str, Any]:
-    """A ``custody.configured`` payload: ``{custodians, owner_name, automatic, voters}``.
+    """A ``custody.configured`` payload, with an optional explicit ``careful_opt_in`` policy.
 
     Custodians are sorted and distinct, with exactly one current host. ``voters`` lists the
     custodians marked ``voter`` in the owner's order, the host first, at most ``MAX_VOTERS``.
+    Historical four-field payloads stay byte-compatible: parsing never invents consent or changes
+    the fields covered by their signed chain. The flag is carried when two-computer risk is relevant;
+    an ordinary majority configuration remains readable by older peers.
     """
-    if not isinstance(payload, Mapping) or set(payload) != _CONFIGURATION_FIELDS:
+    if not isinstance(payload, Mapping) or set(payload) not in (
+            _CONFIGURATION_FIELDS, _CONFIGURATION_FIELDS | {"careful_opt_in"}):
         raise CustodyError("custody configuration fields are invalid")
     custodians, owner_name, voters = payload["custodians"], payload["owner_name"], payload["voters"]
     if not isinstance(custodians, list) or not 1 <= len(custodians) <= MAX_CUSTODIANS:
@@ -508,6 +519,8 @@ def parse_configuration(payload: Any) -> dict[str, Any]:
         raise CustodyError("owner name is not a clean display label")
     if type(payload["automatic"]) is not bool:
         raise CustodyError("custody configuration automatic flag is invalid")
+    if "careful_opt_in" in payload and type(payload["careful_opt_in"]) is not bool:
+        raise CustodyError("custody configuration careful consent is invalid")
     parsed = [_custodian(custodian) for custodian in custodians]
     ids = [custodian["install_id"] for custodian in parsed]
     hosts = [custodian["install_id"] for custodian in parsed if custodian["role"] == "authority"]
@@ -517,15 +530,24 @@ def parse_configuration(payload: Any) -> dict[str, Any]:
     if (not isinstance(voters, list) or not 1 <= len(voters) <= MAX_VOTERS or len(set(voters)) != len(voters)
             or voters[0] != hosts[0] or set(voters) != marked):
         raise CustodyError("custody configuration voters are invalid")
-    return {"custodians": parsed, "owner_name": owner_name, "automatic": payload["automatic"], "voters": list(voters)}
+    return {"custodians": parsed, "owner_name": owner_name, "automatic": payload["automatic"], "voters": list(voters),
+            **({"careful_opt_in": payload["careful_opt_in"]} if "careful_opt_in" in payload else {})}
 
 
 def mode_of(configuration: Mapping[str, Any]) -> str:
-    """``majority`` (three or more voters), ``careful`` (exactly two) or ``ask``, unless switched off."""
+    """Majority with three or more voters; two require explicit risk consent, otherwise Ask."""
     voters = len(configuration.get("voters") or ())
     if not configuration.get("automatic", True) or voters < 2:
         return "ask"
-    return "majority" if voters >= 3 else "careful"
+    return "majority" if voters >= 3 else "careful" if configuration.get("careful_opt_in") is True else "ask"
+
+
+def _configuration_policy(automatic: bool, careful_opt_in: bool | None, voters: list[str]) -> dict[str, Any]:
+    """Keep the legacy majority/off wire shape unless an explicit two-computer policy is relevant."""
+    policy: dict[str, Any] = {"automatic": automatic}
+    if careful_opt_in is not None and (careful_opt_in or (automatic and len(voters) == 2)):
+        policy["careful_opt_in"] = careful_opt_in
+    return policy
 
 
 def configurations_locked(conn: sqlite3.Connection, room_id: str) -> list[dict[str, Any]]:
@@ -548,12 +570,15 @@ def configuration_locked(conn: sqlite3.Connection, room_id: str) -> dict[str, An
     if not configurations:
         return {"configuration_seq": 0, "custodians": [], "owner_name": None, "automatic": True, "voters": []}
     latest = configurations[-1]
-    return {"configuration_seq": latest["seq"], **{key: latest[key] for key in _CONFIGURATION_FIELDS}}
+    return {"configuration_seq": latest["seq"], **{key: value for key, value in latest.items() if key != "seq"}}
 
 
-def _voting(configuration: Mapping[str, Any]) -> tuple[frozenset[str], bool]:
-    """What protection depends on: the voter set and the automatic switch (the order does not matter)."""
-    return frozenset(configuration["voters"]), bool(configuration["automatic"])
+def _voting(configuration: Mapping[str, Any]) -> tuple[frozenset[str], bool, bool | None]:
+    """The voter set, ordinary preference and explicit risk policy (legacy absence stays distinct)."""
+    consent = configuration.get("careful_opt_in")
+    if len(configuration["voters"]) != 2 or not configuration["automatic"]:
+        consent = consent is True
+    return frozenset(configuration["voters"]), bool(configuration["automatic"]), consent
 
 
 def voter_change_locked(
@@ -576,7 +601,7 @@ def voter_change_locked(
     for index, configuration in enumerate(configurations):
         if moved is not None and configuration["seq"] < moved:
             continue
-        before = _voting(configurations[index - 1]) if index else (frozenset(configuration["voters"][:1]), True)
+        before = _voting(configurations[index - 1]) if index else (frozenset(configuration["voters"][:1]), True, False)
         if before != _voting(configuration):
             change = {"seq": configuration["seq"], "voters": list(configuration["voters"]),
                       "previous_voters": sorted(before[0])}
@@ -614,17 +639,22 @@ def protection_locked(conn: sqlite3.Connection, room_id: str, host: str) -> dict
     if change is not None and not all(
             _majority_seq(held, voters) >= change["seq"] for voters in (change["previous_voters"], change["voters"])):
         sets.append(change["previous_voters"])
-    configuration = ({"configuration_seq": latest["seq"], **{key: latest[key] for key in _CONFIGURATION_FIELDS}}
+    configuration = ({"configuration_seq": latest["seq"], **{key: value for key, value in latest.items() if key != "seq"}}
                      if latest else {"configuration_seq": 0, "custodians": [], "owner_name": None, "automatic": True,
                                      "voters": []})
     admission_mode = mode_of(configuration)
+    if len(current) == 2 and configuration["automatic"] and "careful_opt_in" not in configuration:
+        # An old peer may still act on legacy automatic:true. Until an explicit policy is replicated,
+        # the upgraded host requires both voters' leases, never serving beside an old careful move.
+        admission_mode = "majority"
     if len(sets) > 1:
         # A disabling policy or smaller voter set is not effective at peers that have not stored it.
         # Until both sets acknowledge, retain leases from both majorities, even when the new policy
         # says Ask or careful. Otherwise an old majority could elect while this host serves unleased.
         changed_index = next(index for index, item in enumerate(configurations) if item["seq"] == change["seq"])
-        previous = configurations[max(0, changed_index - 1)]
-        if previous["automatic"] and len(previous["voters"]) >= 2:
+        previous = configurations[changed_index - 1] if changed_index else None
+        if previous is not None and (mode_of(previous) != "ask" or (
+                previous["automatic"] and len(previous["voters"]) == 2 and "careful_opt_in" not in previous)):
             admission_mode = "majority"
     return {"configuration": configuration, "voter_sets": sets,
             "admission_mode": admission_mode,
@@ -784,6 +814,14 @@ def automatic_locked(conn: sqlite3.Connection, room_id: str) -> bool:
     return row is None or bool(row[0])
 
 
+def careful_opt_in_locked(conn: sqlite3.Connection, room_id: str) -> bool:
+    """Only a durable explicit acceptance counts; legacy automatic rows and adoption are not consent."""
+    if not table_exists(conn, SETTINGS_TABLE) or "careful_opt_in" not in table_columns(conn, SETTINGS_TABLE):
+        return False
+    row = conn.execute(f"SELECT careful_opt_in FROM {SETTINGS_TABLE} WHERE room_id=?", (room_id,)).fetchone()
+    return row is not None and row[0] == 1
+
+
 def automatic_pending(db_path: DbPath, room_id: str, *, enabled: bool) -> bool:
     """Whether the owner's automatic switch is not yet in force on the host.
 
@@ -794,24 +832,40 @@ def automatic_pending(db_path: DbPath, room_id: str, *, enabled: bool) -> bool:
     with closing(open_sqlite(db_path, timeout=1)) as conn:
         protection = protection_locked(conn, room_id, rooms.local_authority_gateway_id())
         change = voter_change_locked(conn, room_id)
+        careful_opt_in = careful_opt_in_locked(conn, room_id)
     configuration = protection["configuration"]
     if not configuration["configuration_seq"]:
         return False
     flipping = (change is not None and set(change["voters"]) == set(change["previous_voters"])
                 and len(protection["voter_sets"]) > 1)
-    return configuration["automatic"] != (enabled and lease_layer_installed()) or flipping
+    legacy_two = (len(configuration["voters"]) == 2 and configuration["automatic"]
+                  and "careful_opt_in" not in configuration)
+    return (configuration["automatic"] != (enabled and lease_layer_installed()) or flipping or legacy_two
+            or (configuration.get("careful_opt_in") is True) != careful_opt_in)
 
 
-def set_automatic(db_path: DbPath, *, room_id: str, enabled: bool, now: float | None = None) -> None:
-    """The room owner switches automatic moves on or off; the next configuration carries it."""
-    if type(enabled) is not bool:
-        raise CustodyError("enabled must be a boolean")
+def set_automatic(db_path: DbPath, *, room_id: str, enabled: bool, accept_two_host_risk: bool = False,
+                  now: float | None = None) -> None:
+    """Set the ordinary preference; two-voter automatic moves require separate explicit risk consent.
+
+    Turning automatic moves off withdraws that consent. A prior majority-mode preference never
+    grants it, and a later adoption preserves only consent explicitly recorded in the signed policy.
+    """
+    if type(enabled) is not bool or type(accept_two_host_risk) is not bool or (accept_two_host_risk and not enabled):
+        raise CustodyError("automatic choices must be booleans and risk acceptance requires enabling")
     now = time.time() if now is None else float(now)
     with rooms._transaction(db_path, immediate=True) as conn:
         initialize_locked(conn)
-        conn.execute(f"""INSERT INTO {SETTINGS_TABLE} (room_id, automatic, updated_at) VALUES (?,?,?)
-            ON CONFLICT(room_id) DO UPDATE SET automatic=excluded.automatic, updated_at=excluded.updated_at""",
-                     (room_id, int(enabled), now))
+        configuration = configuration_locked(conn, room_id)
+        accepted = careful_opt_in_locked(conn, room_id)
+        if enabled and len(configuration["voters"]) == 2 and not (accepted or accept_two_host_risk):
+            raise CarefulConfirmationRequired("both computers may work and duplicate actions during a connection break")
+        if accept_two_host_risk and len(configuration["voters"]) != 2:
+            raise CustodyError("two-computer risk acceptance requires exactly two voters")
+        accepted = enabled and (accepted or accept_two_host_risk)
+        conn.execute(f"""INSERT INTO {SETTINGS_TABLE} (room_id, automatic, updated_at, careful_opt_in) VALUES (?,?,?,?)
+            ON CONFLICT(room_id) DO UPDATE SET automatic=excluded.automatic, updated_at=excluded.updated_at,
+            careful_opt_in=excluded.careful_opt_in""", (room_id, int(enabled), now, int(accepted)))
 
 
 def mark_unsupported(db_path: DbPath, *, room_id: str, install_id: str, now: float | None = None) -> None:
@@ -922,12 +976,14 @@ def maintain_configuration(
             return None  # a paused host appends nothing: one append now would split the room's history
         # Only a host that runs the lease layer offers automatic moves; the owner's switch decides there.
         automatic = automatic_locked(conn, room_id) and lease_layer_installed()
+        careful_opt_in = careful_opt_in_locked(conn, room_id)
         current_voters = current["voters"] if current else [local_gateway_id]
         current_automatic = current["automatic"] if current else automatic
         settled = len(voter_sets_locked(conn, room_id, local_gateway_id)) == 1
         voters = _next_voters(current_voters, desired) if settled else list(current_voters)
         if set(voters) != set(current_voters) or not settled:
             automatic = current_automatic  # one change at a time
+            careful_opt_in = current.get("careful_opt_in", False if settled else None) if current else careful_opt_in
         previous = {custodian["install_id"]: custodian for custodian in current["custodians"]} if current else {}
         for install_id in voters:
             entry = entries.get(install_id)
@@ -936,8 +992,9 @@ def maintain_configuration(
             entries[install_id] = {**entry, "voter": True}
         payload = parse_configuration({
             "custodians": [entries[install_id] for install_id in sorted(entries)],
-            "owner_name": display_label(owner_name), "automatic": automatic, "voters": voters})
-        if current is not None and {key: current[key] for key in payload} == payload:
+            "owner_name": display_label(owner_name), "voters": voters,
+            **_configuration_policy(automatic, careful_opt_in, voters)})
+        if current is not None and {key: value for key, value in current.items() if key != "seq"} == payload:
             return None
         seq = _append_system_event_locked(
             conn, room_id, event_id=f"system:custody-configured:{len(configurations) + 1}", kind=CONFIGURED,
@@ -979,8 +1036,8 @@ def reconfigure_after_transition_locked(
     voters = [successor] + [voter for voter in latest["voters"]
                             if voter != successor and (voter != previous_host or previous["voter"])]
     payload = parse_configuration({"custodians": [custodians[key] for key in sorted(custodians)],
-                                   "owner_name": latest["owner_name"], "automatic": latest["automatic"],
-                                   "voters": voters})
+                                   "owner_name": latest["owner_name"], "voters": voters,
+                                   **_configuration_policy(latest["automatic"], latest.get("careful_opt_in", False), voters)})
     seq = _append_system_event_locked(
         conn, room_id, event_id=f"system:custody-configured:{len(configurations) + 1}", kind=CONFIGURED,
         actor_id="custody-control", payload=payload, now=now)
@@ -1005,9 +1062,10 @@ def reconfigure_after_transition_locked(
                       custodian["operator_name"], int(custodian["successor"]), int(custodian["successor"]), now, now,
                       int(custodian["always_on"]), designated_at))
     conn.execute(f"DELETE FROM {CUSTODIANS_TABLE} WHERE room_id=? AND install_id=?", (room_id, successor))
-    conn.execute(f"""INSERT INTO {SETTINGS_TABLE} (room_id, automatic, updated_at) VALUES (?,?,?)
-        ON CONFLICT(room_id) DO UPDATE SET automatic=excluded.automatic, updated_at=excluded.updated_at""",
-                 (room_id, int(latest["automatic"]), now))
+    conn.execute(f"""INSERT INTO {SETTINGS_TABLE} (room_id, automatic, updated_at, careful_opt_in) VALUES (?,?,?,?)
+        ON CONFLICT(room_id) DO UPDATE SET automatic=excluded.automatic, updated_at=excluded.updated_at,
+        careful_opt_in=excluded.careful_opt_in""",
+                 (room_id, int(latest["automatic"]), now, int(latest.get("careful_opt_in") is True)))
     return {"configuration_seq": seq, **payload}
 
 
@@ -1226,7 +1284,7 @@ def custody_status(db_path: DbPath, room_id: str) -> dict[str, Any]:
     return {"room_id": room_id, "role": "authority" if table == "hosted_room_events" else "custodian",
             "custodians": custodians, "at_risk_after_seq": at_risk_after, "protected_seq": protected,
             "automatic": configuration["automatic"], "voters": voters, "voter_sets": voter_sets,
-            "mode": mode_of({"automatic": configuration["automatic"], "voters": voters}),
+            "mode": mode_of({**configuration, "voters": voters}),
             "waiting_for_copies": waiting, "configuration_seq": configuration["configuration_seq"],
             "configuration": configuration, "watermark": own, "head": vouched}
 

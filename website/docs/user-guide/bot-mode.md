@@ -293,12 +293,18 @@ or `group_chat.always_on: true` in their config) also vote on moving it by itsel
   computer within about a minute. A host that can't reach most of them pauses to stay safe until it
   can, so the group never runs in two places by itself; only an owner who chooses **Continue
   anyway**, or continues by hand while most voters can't be reached, can override that.
-- **Two voters:** the group moves after about 3 minutes of silence in both directions. If the two
-  computers were only cut off from each other, it may run on both until they reconnect; it then keeps
-  running on the computer it moved to, and you choose which messages to keep.
+- **Two voters:** the group asks you before continuing on the other computer. You can explicitly
+  enable careful automatic continuation for this group after accepting its warning: a connection
+  break may leave both computers working and duplicate actions. It then moves after about 3 minutes
+  of silence in both directions; when they reconnect, you choose which messages to keep.
 - **Fewer, or when the owner turns off "Move automatically if a computer goes offline":** the group
   pauses and nothing new runs until its owner continues it. Recent messages that only the host held
   are lost if it never comes back; Hermes Desktop shows how many.
+
+Adding or removing computers never silently accepts the two-computer risk. A group that drops from
+three voters to two asks first unless you previously accepted that risk for this group. An older
+two-computer automatic setting needs renewed explicit acceptance after upgrading; an ordinary
+three-computer automatic preference and an explicit choice to switch automatic moves off are preserved.
 
 `hermes groups status` shows which applies. When a group pauses, its owner continues it on another
 computer:
