@@ -1696,8 +1696,9 @@ class SessionDB(
                 try:
                     if conn.in_transaction:
                         conn.rollback()
-                except Exception:
-                    pass  # Preserve the primary failure, including its origin.
+                except sqlite3.Error as rollback_error:
+                    # Preserve the dependent caller's failure and its provenance.
+                    logger.warning("Live owner transaction rollback failed: %s", rollback_error)
                 if owner_operation and self._is_structural_corruption_error(exc):
                     self._halt_db_corrupt(exc)
                 raise
