@@ -116,7 +116,7 @@ import { planPluginOpenSession } from './plugin-open-session-plan'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
-export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+export { composerInputSurface, composerPanelCard, MessageTextContent, PRIMARY_ICON_BTN } from './chat-presentation'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -1642,6 +1642,10 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+
+// -- ui: the design language --------------------------------------------------
+
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1652,9 +1656,6 @@ export const host = {
  *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
  *  Advanced section is the reference consumer. */
 export { CapabilitiesView } from '@/app/capabilities'
-
-// -- ui: the design language --------------------------------------------------
-
 /** THE Connectors tab core Capabilities renders — managed apps, the user's
  *  own MCP servers, plugin servers and the catalog, with per-server enable,
  *  sign-in and live probes. Renders anywhere under the app router (a plugin
@@ -1739,13 +1740,13 @@ export {
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
+
 /** Appearance settings' plugin seam: register a render contribution at
  *  `APPEARANCE_AREAS.extra` to add controls at the end of the Appearance page.
  *  `ColorSwatches` is the app's own swatch grid (profile rail / project dialog
  *  look) — use it for colour picking instead of driving app widgets through
  *  React internals; pair it with `host.sessions.setColor` for session colours. */
 export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
-
 /** THE settings rows: `ListRow` is label + description with the control beside
  *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
  *  never an Off/On pill pair. Use them for preference rows in plugin panes and
@@ -1770,10 +1771,6 @@ export {
 } from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
-/** Canonical raw message renderer: applies Desktop message transforms (including
- * `MEDIA:` delivery directives) and the same rich Markdown/media components as
- * core chat. Prefer this over raw Streamdown for transcript-style messages. */
-export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'

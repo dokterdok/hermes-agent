@@ -148,11 +148,11 @@ describe('durable group holds', () => {
     const view = render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
     // The workspace paints behind the group-source classification gate, so the
     // activity row appears once that async check settles.
-    expect((await screen.findByRole('button', { name: /^Activity/ })).textContent).toContain('research hit an error')
+    expect((await screen.findByRole('button', { name: /^Activity/ })).textContent).toContain('research couldn’t finish this reply.')
 
     activity.recordGroupActivity('Core', { kind: 'replied', member: 'research' })
     view.rerender(<GroupChatWorkspace group="Core" members={MEMBERS} />)
-    expect((await screen.findByRole('button', { name: /^Activity/ })).textContent).toContain('builder hit an error')
+    expect((await screen.findByRole('button', { name: /^Activity/ })).textContent).toContain('builder couldn’t finish this reply.')
   })
 
   it('projects hydrated holds into the real group workspace', async () => {

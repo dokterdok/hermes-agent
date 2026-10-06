@@ -62,7 +62,8 @@ import {
   currentGroupActivity,
   GROUP_ACTIVITY_GLYPHS,
   groupActivityLabel,
-  groupActivityTone
+  groupActivityTone,
+  groupFailureDetail
 } from './group-activity'
 import type { GroupActivityEntry } from './group-activity'
 import { filesToGroupAttachments, pickGroupAttachments } from './group-attachments'
@@ -579,9 +580,24 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const binding = bindings[props.group]
 
   if (binding) {
-    return <CanonicalGroupWorkspace actions={room => <CanonicalGroupRoomActions binding={binding} name={room.name}
-      onChanged={room.refresh} onDisbanded={() => { forgetCanonicalGroup(binding); props.onBack?.() }} />}
-    binding={binding} onBack={props.onBack} visible={props.visible} />
+    return (
+      <CanonicalGroupWorkspace
+        actions={room => (
+          <CanonicalGroupRoomActions
+            binding={binding}
+            name={room.name}
+            onChanged={room.refresh}
+            onDisbanded={() => {
+              forgetCanonicalGroup(binding)
+              props.onBack?.()
+            }}
+          />
+        )}
+        binding={binding}
+        onBack={props.onBack}
+        visible={props.visible}
+      />
+    )
   }
 
   return <GroupExecutionGate {...props} />
@@ -607,59 +623,112 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     setError('')
 
     if (gateway !== 'open') {
-      setCapability({ source, mode: knownGroupExecutionMode({ connectionId: connectionId ?? '', profile }) === 'legacy' ? 'legacy' : 'unavailable' })
+      setCapability({
+        source,
+        mode:
+          knownGroupExecutionMode({ connectionId: connectionId ?? '', profile }) === 'legacy' ? 'legacy' : 'unavailable'
+      })
 
       return
     }
 
-    void readGroupExecutionMode({ connectionId: connectionId ?? '', profile }, activationEpoch, refresh > 0)
-      .then(result => {
+    void readGroupExecutionMode({ connectionId: connectionId ?? '', profile }, activationEpoch, refresh > 0).then(
+      result => {
         if (!cancelled) {
           setCapability({ source, mode: result.mode })
 
-          if (result.error && result.mode === 'unavailable') {setError(String(result.error))}
+          if (result.error && result.mode === 'unavailable') {
+            setError(String(result.error))
+          }
         }
-      })
+      }
+    )
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [connectionId, profile, gateway, source, activationEpoch, refresh])
 
-  if (mode === 'legacy' || (mode === 'canonical' && !canonicalGroupEligibility({ connectionId: connectionId ?? '', profile }, props.members).eligible)) {
+  if (
+    mode === 'legacy' ||
+    (mode === 'canonical' &&
+      !canonicalGroupEligibility({ connectionId: connectionId ?? '', profile }, props.members).eligible)
+  ) {
     return <LegacyGroupChatWorkspace {...props} />
   }
 
-  return <div className="flex h-full min-h-0 flex-col">
-    {(mode === 'canonical' || existingClassicRoom) && <div className="min-h-0 flex-1"><LegacyGroupChatWorkspace {...props} /></div>}
-    <div className="grid gap-3 p-3">
-    {mode !== 'canonical' && !existingClassicRoom && <h2>{props.group}</h2>}
-    <p>{mode === 'canonical' ? b.canonical.legacyRoom : mode === 'unavailable' ? b.canonical.driverUnavailable : b.canonical.checkingDriver}</p>
-    {error && <p role="alert">{error}</p>}
-    {mode === 'unavailable' && <Button className="justify-self-start" onClick={() => setRefresh(value => value + 1)} size="sm" variant="secondary">{b.roster.retryNow}</Button>}
-    <Button className="justify-self-start" disabled={mode !== 'canonical' || busy} onClick={() => {
-      const route = { connectionId: connectionId ?? '', profile }
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {(mode === 'canonical' || existingClassicRoom) && (
+        <div className="min-h-0 flex-1">
+          <LegacyGroupChatWorkspace {...props} />
+        </div>
+      )}
+      <div className="grid gap-3 p-3">
+        {mode !== 'canonical' && !existingClassicRoom && <h2>{props.group}</h2>}
+        <p>
+          {mode === 'canonical'
+            ? b.canonical.legacyRoom
+            : mode === 'unavailable'
+              ? b.canonical.driverUnavailable
+              : b.canonical.checkingDriver}
+        </p>
+        {error && (
+          <div className="grid gap-1 text-sm" role="alert">
+            <p>{b.canonical.pendingActionUnconfirmed}</p>
+            <details>
+              <summary>{b.canonical.setupDetails}</summary>
+              <p className="whitespace-pre-wrap break-words">{groupFailureDetail(error)}</p>
+            </details>
+          </div>
+        )}
+        {mode === 'unavailable' && (
+          <Button
+            className="justify-self-start"
+            onClick={() => setRefresh(value => value + 1)}
+            size="sm"
+            variant="secondary"
+          >
+            {b.roster.retryNow}
+          </Button>
+        )}
+        <Button
+          className="justify-self-start"
+          disabled={mode !== 'canonical' || busy}
+          onClick={() => {
+            const route = { connectionId: connectionId ?? '', profile }
 
-      const sourceCurrent = groupCreationSource(route, activationEpoch)
+            const sourceCurrent = groupCreationSource(route, activationEpoch)
 
-      if (mode !== 'canonical' || !sourceCurrent()) {
-        setError(b.canonical.driverUnavailable)
+            if (mode !== 'canonical' || !sourceCurrent()) {
+              setError(b.canonical.driverUnavailable)
 
-        return
-      }
+              return
+            }
 
-      setBusy(true)
-      setError('')
-      void createCanonicalGroup(route, props.group, props.members)
-        .then(({ room }) => {
-          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
-        })
-        .catch(e => {
-          if (sourceCurrent()) {
-            setError(canonicalGroupCreateErrorMessage(e, b.canonical))
-          }
-        }).finally(() => setBusy(false))
-    }} size="sm" variant="secondary">{b.canonical.startGatewayGroup}</Button>
+            setBusy(true)
+            setError('')
+            void createCanonicalGroup(route, props.group, props.members)
+              .then(({ room }) => {
+                if (sourceCurrent()) {
+                  openGroupChat(registerCanonicalGroup(route, room))
+                }
+              })
+              .catch(e => {
+                if (sourceCurrent()) {
+                  setError(canonicalGroupCreateErrorMessage(e, b.canonical))
+                }
+              })
+              .finally(() => setBusy(false))
+          }}
+          size="sm"
+          variant="secondary"
+        >
+          {b.canonical.startGatewayGroup}
+        </Button>
+      </div>
     </div>
-  </div>
+  )
 }
 
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
@@ -982,7 +1051,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           {summaryActivity ? (
             <span
               className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}
-            >{`${groupActivityLabel(summaryActivity, group)} · ${relativeTime(summaryActivity.at)}`}</span>
+            >{`${groupActivityLabel(summaryActivity, group, b.canonical)} · ${relativeTime(summaryActivity.at)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (
@@ -1009,7 +1078,13 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
                   name={GROUP_ACTIVITY_GLYPHS[event.kind] || 'circle-outline'}
                 />
                 <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(event.kind))}>
-                  {groupActivityLabel(event, group)}
+                  {groupActivityLabel(event, group, b.canonical)}
+                  {event.kind === 'failed' && event.reason && (
+                    <details className="mt-1 whitespace-normal">
+                      <summary>{b.canonical.setupDetails}</summary>
+                      <p className="whitespace-pre-wrap break-words">{groupFailureDetail(event.reason)}</p>
+                    </details>
+                  )}
                 </span>
                 <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
                 {room.running && event.kind === 'working' ? (
