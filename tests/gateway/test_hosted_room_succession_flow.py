@@ -195,7 +195,7 @@ def test_a_successor_that_never_hosted_inherits_a_turn_the_host_left_unfinished(
 
 def test_the_returning_host_steps_down_keeps_its_own_messages_apart_and_reports(gateways):
     from gateway import hosted_room_succession_return as returning
-    h, s, p = gateways["h"], gateways["s"], gateways["p"]
+    h, s = gateways["h"], gateways["s"]
     continue_on(s, gateways)
     # Unaware, the old host kept going while it was cut off.
     with h.acting():

@@ -538,7 +538,6 @@ class RunIdempotencyStore:
         prefix, _, generation = key.rpartition(":")
         if not prefix.startswith("room:") or not generation.isdigit():
             return None
-        task_id = prefix[len("room:"):]
         rows = self._conn.execute(f"""SELECT r.idempotency_key, r.run_id, r.status_json, r.owner_pid, r.owner_started,
                 r.updated_at, {_STATUS_SQL} FROM run_idempotency AS r JOIN {_SCOPES} AS s ON s.scope=r.scope
             WHERE json_valid(s.identity_json) AND json_extract(s.identity_json,'$.room_id')=?

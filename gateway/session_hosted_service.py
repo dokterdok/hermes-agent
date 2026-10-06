@@ -79,10 +79,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def lease_context(self):
         """What holding this service's own groups' leases needs: its room store, and its fence store
         when it has one. A host without the API server or a durable Runs store still holds its leases."""
-        try:
-            context = self.succession_context()
-        except Exception:
-            context = None  # its API server isn't up yet: the room store alone still holds its leases
+        context = self.succession_context()
         if context is not None:
             return context
         from gateway.hosted_room_succession_move import MoveContext
@@ -395,6 +392,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def stop_work(self, room_id, *, cancel_id):
         """Cancel this room's work without writing to its log, as a host stepping down must: unlike
         ``stop_room`` it appends no ``room.stop_requested``. Returns how many tasks it cancelled."""
+        from gateway import hosted_room_driver as driver
         from tui_gateway.hosted_room_service import _STOPPABLE_STATUSES
         cancelled = 0
         with self._policy_lock:
@@ -402,7 +400,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 try:
                     self.runtime.cancel(task['identity'], cancel_id=cancel_id)
                     cancelled += 1
-                except Exception:
+                except (driver.InvalidTaskTransitionError, driver.StaleTaskError):
                     continue  # settled meanwhile, or already stopping
         self.runtime.wakeup()
         return cancelled

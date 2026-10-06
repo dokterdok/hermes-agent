@@ -13,7 +13,7 @@ from gateway import hosted_rooms as rooms
 from gateway.platforms import api_server_room_succession
 from gateway.session_controls import AuthorityConnection
 from tests.gateway.fixtures.passive_copy import HOME, MEMBERS, append
-from tests.gateway.test_session_group_replication import IDENTITY, call, gateway  # noqa: F401
+from tests.gateway.test_session_group_replication import IDENTITY, call, gateway as gateway
 from tui_gateway.contracts import groups_bot_relay as contract
 
 PEER_SECRET = b"p" * 32

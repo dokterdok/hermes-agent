@@ -14,12 +14,15 @@ same (``groups.succession.handover_all``). In every case:
    lease), writes the marked transition (``reason: handover``) and finishes like any continuation.
 4. The host steps down to a copy that follows the standby; nothing is set aside.
 
-If the host vanishes before step 2, nothing moved, and the lease or the manual path applies. If it
-is refused later, the host resumes. A handover is never completed without the signed statement.
+If the host vanishes before step 2, nothing moved, and the lease or the manual path applies. Once
+the statement may have left, the host stays paused until it follows the standby or completes the
+same handover. A failed reply or an earlier query cannot recall a delayed signed statement.
 """
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 import time
 from contextlib import closing
 from typing import Any, Mapping
@@ -27,6 +30,8 @@ from typing import Any, Mapping
 from gateway import hosted_room_succession as succession
 from gateway import hosted_rooms as rooms
 from gateway.hosted_room_succession import ProofInvalid, SuccessionError
+
+logger = logging.getLogger(__name__)
 
 HANDOVER = b"hermes.group.succession.handover.v1"
 RELEASE = b"hermes.group.succession.handover-release.v1"
@@ -186,11 +191,8 @@ def _recorded_owner(ctx, room_id: str) -> str | None:
 def unsettled_turns(db_path, room_id: str) -> list[str]:
     """This host's turns that started and have no outcome yet."""
     from gateway import hosted_room_driver as driver
-    try:
-        return sorted(str(task["identity"].task_id) for status in _RUNNING
-                      for task in driver.list_tasks(db_path, room_id=room_id, status=status))
-    except Exception:
-        return []
+    return sorted(str(task["identity"].task_id) for status in _RUNNING
+                  for task in driver.list_tasks(db_path, room_id=room_id, status=status))
 
 
 def drain(ctx, room_id: str, seconds: float) -> list[str]:
@@ -203,8 +205,8 @@ def drain(ctx, room_id: str, seconds: float) -> list[str]:
         if service is not None:
             try:
                 service.publish_settled(room_id)
-            except Exception:
-                pass  # the next look publishes it
+            except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+                logger.debug("group %s: settled work publication pending (%s)", room_id, type(exc).__name__)
         running = unsettled_turns(ctx.db_path, room_id)
         if not running or time.monotonic() >= deadline:
             return running
@@ -226,16 +228,13 @@ def _target(ctx, room_id: str, target_install_id: str) -> tuple[dict[str, Any], 
 
 
 def hand_over(ctx, room_id: str, target_install_id: str, *, drain_seconds: float = DRAIN_SECONDS) -> dict[str, Any]:
-    """The host hands the group to ``target_install_id`` and steps down; on any refusal it resumes.
+    """The host hands the group to ``target_install_id`` and steps down; uncertain outcomes stay paused.
 
     It pauses first, then lets its running turns settle for at most ``drain_seconds``, so their
     outcomes are part of the history it signs over. Turns still running then are counted at risk on
     the new host, which inherits them as unknown: never run again by themselves."""
     current, target = _target(ctx, room_id, target_install_id)
-    record = {**(succession.load_record(ctx.db_path, room_id, "move") or {}), "state": "handing_over",
-              "step": "fencing", "reason": "handover", "started_at": time.time(), "to": target_install_id,
-              "from_epoch": current["head"]["authority_epoch"], "signed": False}
-    _pause(ctx, room_id, record)
+    record = _begin_handover(ctx, room_id, target_install_id, current["head"]["authority_epoch"], step="fencing")
     return _complete(ctx, room_id, target_install_id, target, record, drain_seconds)
 
 
@@ -247,13 +246,27 @@ def request_move(ctx, room_id: str, target_install_id: str) -> None:
     if not unsettled_turns(ctx.db_path, room_id):
         hand_over(ctx, room_id, target_install_id, drain_seconds=0)
         return
-    _pause(ctx, room_id, {**(succession.load_record(ctx.db_path, room_id, "move") or {}), "state": "handing_over",
-                          "step": "waiting_for_turns", "reason": "handover", "started_at": time.time(),
-                          "to": target_install_id, "from_epoch": current["head"]["authority_epoch"],
-                          "signed": False, "drain_until": time.time() + MOVE_DRAIN_SECONDS, "now": False})
+    _begin_handover(ctx, room_id, target_install_id, current["head"]["authority_epoch"],
+                    step="waiting_for_turns", drain_until=time.time() + MOVE_DRAIN_SECONDS, now=False)
     if ctx.service is not None:
         ctx.service.wakeup()
 
+
+
+def _begin_handover(ctx, room_id: str, target: str, epoch: int, **phase) -> dict[str, Any]:
+    """Claim the host's next handover in one writer; concurrent controls cannot sign it twice."""
+    with rooms._transaction(ctx.db_path, immediate=True) as conn:
+        previous = succession.load_record_locked(conn, room_id, "move") or {}
+        if previous.get("state") == "handing_over":
+            raise SuccessionError("the previous signed handover is still pending", reason="room_authority_promised")
+        holder = conn.execute("SELECT authority_gateway_id, authority_epoch FROM hosted_rooms "
+                              "WHERE room_id=? AND disbanded_at IS NULL", (room_id,)).fetchone()
+        if holder is None or tuple(holder) != (succession.local_install_id(), epoch):
+            raise SuccessionError("this computer no longer hosts this epoch", reason="room_not_found")
+        record = {**previous, "state": "handing_over", "reason": "handover", "started_at": time.time(),
+                  "to": target, "from_epoch": epoch, "signed": False, **phase}
+        succession.save_record_locked(conn, room_id, "move", record)
+    return record
 
 def move_now(ctx, room_id: str) -> None:
     """The owner moves a group waiting for its turns at once: turns still running become unknown there."""
@@ -305,16 +318,14 @@ def _complete(ctx, room_id: str, target_install_id: str, target: Mapping[str, An
         _pause(ctx, room_id, {**record, "signed": True, "unsettled": running})
         demoted, stepped = _send(ctx, room_id, target_install_id, str(target["endpoint"]), proof,
                                  release=release, at_risk=len(running))
-    except Exception as exc:
-        if isinstance(exc, _NotContinued) or not (succession.load_record(ctx.db_path, room_id, "move") or {}).get(
-                "signed"):
-            _resume(ctx, room_id, exc.cause if isinstance(exc, _NotContinued) else exc)
+    except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+        if not (succession.load_record(ctx.db_path, room_id, "move") or {}).get("signed"):
+            _resume(ctx, room_id, exc)
         else:  # the standby may have continued: upkeep learns the outcome (``recover``) before resuming
             _attempt_failed(ctx, room_id, exc)
-        cause = exc.cause if isinstance(exc, _NotContinued) else exc
-        if isinstance(cause, SuccessionError):
-            raise cause from None
-        raise SuccessionError("the standby did not continue the group", reason="target_not_ready") from cause
+        if isinstance(exc, SuccessionError):
+            raise
+        raise SuccessionError("the handover outcome is not confirmed", reason="target_not_ready") from exc
     finally:
         _active.discard((str(ctx.db_path), room_id))
     record = succession.load_record(ctx.db_path, room_id, "move") or {}
@@ -328,20 +339,11 @@ def _complete(ctx, room_id: str, target_install_id: str, target: Mapping[str, An
 _active: set[tuple[str, str]] = set()
 
 
-class _NotContinued(Exception):
-    """The standby certainly did not continue: it refused, or the statement never reached it."""
-
-    def __init__(self, cause: Exception):
-        super().__init__(str(cause))
-        self.cause = cause
-
-
 def _send(ctx, room_id: str, target_install_id: str, endpoint: str, proof: Mapping[str, Any], *,
           release: Mapping[str, Any] | None = None, at_risk: int = 0):
     """Post the signed statement (and its release token) to the standby and step down to its verified
     transition. ``at_risk`` counts this host's turns still running: their outcomes won't reach the new
     host."""
-    import socket
     from gateway import hosted_room_succession_move as move
     from gateway import hosted_room_succession_return as returning
     unsigned = {"room_id": room_id, "host_install_id": succession.local_install_id(), "proof": dict(proof),
@@ -352,13 +354,7 @@ def _send(ctx, room_id: str, target_install_id: str, endpoint: str, proof: Mappi
                                              {**unsigned, "signature": succession.sign(HANDOVER, unsigned)},
                                              HANDOVER_TIMEOUT_SECONDS)
     except move.RemoteRefusal as exc:
-        raise _NotContinued(SuccessionError(str(exc), reason=exc.code, detail=exc.detail)) from exc
-    except (TimeoutError, socket.timeout):
-        raise  # it may have arrived and the standby may have continued: learn the outcome first
-    except OSError as exc:
-        if "timed out" in str(exc):
-            raise
-        raise _NotContinued(exc) from exc  # it never reached the standby
+        raise SuccessionError(str(exc), reason=exc.code, detail=exc.detail) from exc
     transition = reply.get("transition") if isinstance(reply, Mapping) else None
     if not isinstance(transition, Mapping):
         raise SuccessionError("the standby did not continue the group", reason="target_not_ready")
@@ -390,9 +386,8 @@ def recover(ctx, room_id: str) -> bool:
     """A handover this process no longer runs (it restarted mid-way): resume when nothing can have
     moved, else wait to learn the outcome. True when the host serves again.
 
-    Before the signature nothing left this computer. After it, the host resumes only once the
-    standby answers that it holds no step beyond the host's epoch; ``check`` steps it down instead
-    when the standby did continue.
+    Before the signature nothing left this computer. Afterwards a query can discover a completed
+    move, but cannot recall a delayed request: finish the same handover, never resume the old epoch.
     """
     from gateway import hosted_room_succession_move as move
     from gateway.hosted_room_succession_return import check
@@ -416,26 +411,20 @@ def recover(ctx, room_id: str) -> bool:
         return False
     try:
         answer = move._query(ctx, room_id, record["to"], str(target["endpoint"]))
-    except Exception:
+    except (move.RemoteRefusal, OSError, ValueError):
         return False
-    fence_state = answer.get("fence") if isinstance(answer.get("fence"), Mapping) else {}
-    promise = fence_state.get("promise") if isinstance(fence_state.get("promise"), Mapping) else None
-    beyond = int(record.get("from_epoch") or 0)
     if answer.get("transition"):
-        return False  # the standby continued: ``check`` steps this host down once it can verify that
-    if int(fence_state.get("fenced_epoch") or 0) >= beyond or (
-            promise is not None and int(promise.get("epoch") or 0) > beyond):
-        # The standby began and stopped: hand the same history over again, so it completes.
-        try:
-            with closing(rooms._read_connection(ctx.db_path)) as conn:
-                proof, release = signed_over(ctx, conn, room_id, successor=record["to"],
-                                             to_epoch=int(record.get("to_epoch") or beyond + 1))
-            _send(ctx, room_id, record["to"], str(target["endpoint"]), proof, release=release)
-        except Exception as exc:
-            _attempt_failed(ctx, room_id, exc)
-        return False
-    _resume(ctx, room_id, SuccessionError("the handover was interrupted", reason="target_not_ready"))
-    return True
+        return False  # ``check`` steps this host down once it can verify the transition
+    # Even a signed answer with no promise may precede an earlier delayed request. Complete the
+    # same successor/epoch; never turn absence at one instant into permission to resume here.
+    try:
+        with closing(rooms._read_connection(ctx.db_path)) as conn:
+            proof, release = signed_over(ctx, conn, room_id, successor=record["to"],
+                                         to_epoch=int(record.get("to_epoch") or int(record["from_epoch"]) + 1))
+        _send(ctx, room_id, record["to"], str(target["endpoint"]), proof, release=release)
+    except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+        _attempt_failed(ctx, room_id, exc)
+    return False
 
 
 def _stepped_down_to(ctx, room_id: str, successor: Any) -> bool:
@@ -494,7 +483,8 @@ def handover_all(ctx, *, reason: str, drain_seconds: float | None = None) -> dic
             moved.append(room_id)
         except SuccessionError as exc:
             skipped.append({"room_id": room_id, "reason": exc.reason})
-        except Exception:
+        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+            logger.warning("group %s: handover remains pending (%s)", room_id, type(exc).__name__)
             skipped.append({"room_id": room_id, "reason": "target_not_ready"})
     return {"moved": moved, "skipped": skipped, "reason": reason}
 

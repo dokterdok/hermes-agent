@@ -54,26 +54,15 @@ def test_the_host_hands_its_exact_history_to_the_standby_and_becomes_a_copy(gate
     assert texts[-1] == "user:last"
 
 
-def test_a_handover_never_completes_without_the_signed_statement_and_the_host_resumes(gateways):
+def test_a_handover_never_completes_without_the_signed_statement_and_recovers(gateways):
     h, s, p = gateways["h"], gateways["s"], gateways["p"]
-    # The statement never reached the standby: nothing moved, the host resumes at once.
+    # An unreachable standby gives no receipt; the signed request could have been delayed.
     with h.acting(), pytest.raises(succession.SuccessionError):
         handover.hand_over(context(h, gateways, down=("s",)), ROOM, s.install_id)
     with h.acting():
-        assert head(h)["authoritative"] and succession.paused_reason(h.db, ROOM) is None
-    assert status_of(h, gateways)["last_attempt"]["to"]["install_id"] == s.install_id
+        assert head(h)["authoritative"] and succession.paused_reason(h.db, ROOM) == "room_authority_promised"
+    assert status_of(h, gateways)["moving"]["to"]["install_id"] == s.install_id
 
-    # No answer in time: the standby may have continued, so the host waits to learn the outcome.
-    def slow(gateway, name, body):
-        if name == "handover":
-            raise TimeoutError("timed out")
-    with h.acting(), pytest.raises(succession.SuccessionError):
-        handover.hand_over(context(h, gateways, before=slow), ROOM, s.install_id)
-    with h.acting():
-        assert succession.paused_reason(h.db, ROOM) == "room_authority_promised"
-        # The standby answers that it holds nothing beyond the host's epoch: the host resumes.
-        assert handover.recover(context(h, gateways), ROOM) is True
-        assert succession.paused_reason(h.db, ROOM) is None
     # A statement the host never signed, or for another history, moves nothing.
     with h.acting(), closing(rooms._read_connection(h.db)) as conn:
         statement = handover.statement_for(conn, ROOM, successor=s.install_id, to_epoch=2)
@@ -86,6 +75,19 @@ def test_a_handover_never_completes_without_the_signed_statement_and_the_host_re
             handover.accept(context(s, gateways), ROOM, proof)
         assert head(s)["authoritative"] is False
 
+
+    # No answer in time: the standby may have continued, so the host waits to learn the outcome.
+    def slow(gateway, name, body):
+        if name == "handover":
+            raise TimeoutError("timed out")
+    with h.acting(), pytest.raises(succession.SuccessionError):
+        handover.hand_over(context(h, gateways, before=slow), ROOM, s.install_id)
+    with h.acting():
+        assert succession.paused_reason(h.db, ROOM) == "room_authority_promised"
+        # A signed absence answer cannot recall a delayed request. Recovery finishes the handover.
+        assert handover.recover(context(h, gateways), ROOM) is False
+        assert handover.recover(context(h, gateways), ROOM) is False
+        assert not head(h)["authoritative"]
 
 def test_a_returning_host_learns_the_move_from_any_device_and_steps_down_quietly(gateways):
     h, s = gateways["h"], gateways["s"]
@@ -127,19 +129,11 @@ def test_a_signed_handover_waits_to_learn_whether_the_standby_continued(gateways
         # The standby can't be asked: the host stays paused rather than risk two hosts.
         assert handover.recover(context(h, gateways, down=("s",)), ROOM) is False
         assert not head(h)["serving"]
-        # It answers that it holds nothing beyond the host's epoch: nothing moved, the host resumes.
-        assert handover.recover(context(h, gateways), ROOM) is True
-        assert head(h)["serving"]
-    # Had the standby continued, the host learns it and steps down instead of resuming.
-    with h.acting(), closing(rooms._read_connection(h.db)) as conn:
-        proof = handover.sign(handover.statement_for(conn, ROOM, successor=s.install_id, to_epoch=2))
-    copy_to(h, s)
-    with s.acting():
-        handover.accept(context(s, gateways, down=("h",)), ROOM, proof)
-    with h.acting():
-        succession.save_record(h.db, ROOM, "move", {**signed, "from_epoch": 1})
+        # Once reachable, the empty answer is only an observation: finish the intended move.
+        assert handover.recover(context(h, gateways), ROOM) is False
         assert handover.recover(context(h, gateways), ROOM) is False
     assert head(h)["authoritative"] is False and head(h)["authority_gateway_id"] == s.install_id
+    assert head(s)["authoritative"] and head(s)["authority_epoch"] == 2
 
 
 class Turns:

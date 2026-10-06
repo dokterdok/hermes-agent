@@ -576,10 +576,11 @@ returns `{moved, skipped, reason}`) all hand over the same way:
 4. The host steps down to a copy. Nothing is set aside. It stays a successor, so the owner can move
    the group back.
 
-On any refusal the host resumes and keeps the reason in `last_attempt`. A handover is never
-completed without the signed statement. A restart in the middle resumes the host when it hadn't
-signed yet, or when the standby answers that it holds nothing beyond the host's epoch; otherwise the
-host waits to learn the outcome.
+Before signing, a failed handover can resume the original host. Once the signed request may have
+left, a refused or lost reply keeps the host paused: a delayed request can still move the group,
+even after a query says the standby has not received it yet. Upkeep follows a verified completed
+move or completes the same successor and epoch. A new Move cannot replace that pending handover.
+A restart preserves this distinction; work is never resumed merely because the reply was lost.
 
 ## Ending a split from any device
 
