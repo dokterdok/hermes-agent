@@ -78,6 +78,35 @@ def _select_local_policy_runtime(runner, policy):
     return policy.model, _runtime_agent_kwargs(runtime)
 
 
+def _prepared_override_runtime(override, model, skey):
+    """Reuse the selected override’s resolved credentials without mixing providers."""
+    from gateway.run import _credential_pool_for_provider
+
+    override_model = override.get("model", model)
+    override_runtime = {
+        k: override.get(k) for k in (
+            "provider", "requested_provider", "api_key", "base_url", "api_mode",
+            "max_tokens", "credential_pool", "request_overrides", "capabilities",
+        )
+    }
+    override_runtime["capabilities"] = dict(override_runtime["capabilities"] or {})
+    if override_runtime.get("api_key"):
+        if override_runtime.get("credential_pool") is None:
+            override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
+        logger.debug(
+            "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
+            skey or "", model, override_model, override_runtime.get("provider"),
+        )
+        return override_model, override_runtime
+    # No api_key on the override (credentials failed to re-resolve at rehydrate): resolve them
+    # for the override's own provider below, never layer it over the default provider's runtime.
+    logger.debug(
+        "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
+        skey or "", model, override_model,
+    )
+    return None
+
+
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(self, **kwargs) -> tuple[str, dict]:
         selected = self._prepare_session_agent_runtime(**kwargs)
@@ -116,7 +145,7 @@ class GatewayTurnPrepareMixin:
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
-            _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
+            _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
         from gateway.session_policy import policy_for_source
@@ -132,28 +161,9 @@ class GatewayTurnPrepareMixin:
         if override is None and selection.persisted:
             override = selection.pending_override = self._resolve_persisted_model_override(selection.persisted)
         if override:
-            override_model = override.get("model", model)
-            override_runtime = {
-                k: override.get(k) for k in (
-                    "provider", "requested_provider", "api_key", "base_url", "api_mode",
-                    "max_tokens", "credential_pool", "request_overrides", "capabilities",
-                )
-            }
-            override_runtime["capabilities"] = dict(override_runtime["capabilities"] or {})
-            if override_runtime.get("api_key"):
-                if override_runtime.get("credential_pool") is None:
-                    override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
-                logger.debug(
-                    "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
-                    skey or "", model, override_model, override_runtime.get("provider"),
-                )
-                return override_model, override_runtime
-            # No api_key on the override (credentials failed to re-resolve at rehydrate): resolve them
-            # for the override's own provider below, never layer it over the default provider's runtime.
-            logger.debug(
-                "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
-                skey or "", model, override_model,
-            )
+            prepared = _prepared_override_runtime(override, model, skey)
+            if prepared is not None:
+                return prepared
         elif logger.isEnabledFor(logging.DEBUG):
             # The override_keys scan walks every session; only pay for it when DEBUG is on.
             logger.debug(
