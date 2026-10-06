@@ -135,7 +135,7 @@ def gateway(tmp_path):
                              OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=base, PYTHONUNBUFFERED='1',
                              TELEGRAM_ALLOWED_USERS='alice,bob,carol', TELEGRAM_BOT_TOKEN='fixture-token')
     try:
-        with daemon(root, two, env | {'HERMES_HOME': str(two)}, barrier=False), \
+        with daemon(root, two, env | {'HERMES_HOME': str(two), 'TELEGRAM_BOT_TOKEN': ''}, barrier=False), \
                 daemon(root, home, env, barrier=True, fixture='group_chat_messaging_daemon.py') as (_, desc):
             yield _Journey(root, Home(home), env, model, desc)
     finally:
