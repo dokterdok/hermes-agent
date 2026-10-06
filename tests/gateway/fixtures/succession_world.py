@@ -58,7 +58,7 @@ class Network:
 
 
 class World:
-    def __init__(self, tmp_path, monkeypatch, names, *, voters, others=(), automatic_on=True, peers=()):
+    def __init__(self, tmp_path, monkeypatch, names, *, voters, others=(), automatic_on=True, peers=(), careful_on=False):
         self.t = 1000.0
         self.wall0 = 1_790_000_000.0
         self.slept: dict[str, float] = {}
@@ -87,6 +87,11 @@ class World:
                 automatic.install(upkeep.automatic)
             self.upkeeps[name], self.automatics[name] = upkeep, upkeep.automatic
         self._home(voters[0], automatic_on=automatic_on)
+        if careful_on:
+            host = self.gateways[voters[0]]
+            with host.acting():
+                custody.set_automatic(host.db, room_id=ROOM, enabled=True, accept_two_host_risk=True)
+            self.settle(voters[0])
 
     # --- plumbing ------------------------------------------------------------------------------------
     def acting_name(self) -> str | None:

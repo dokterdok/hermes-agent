@@ -12,7 +12,7 @@ SILENCE = succession.CAREFUL_SILENCE_SECONDS
 
 @pytest.fixture
 def world(tmp_path, monkeypatch):
-    value = World(tmp_path, monkeypatch, ("h", "s", "p"), voters=("h", "s"), others=("p",))
+    value = World(tmp_path, monkeypatch, ("h", "s", "p"), voters=("h", "s"), others=("p",), careful_on=True)
     yield value
     value.close()
 
@@ -242,7 +242,7 @@ def test_going_back_while_the_old_host_is_down_continues_there_once_it_returns(w
 
 @pytest.fixture
 def pair(tmp_path, monkeypatch):
-    value = World(tmp_path, monkeypatch, ("h", "s"), voters=("h", "s"))
+    value = World(tmp_path, monkeypatch, ("h", "s"), voters=("h", "s"), careful_on=True)
     value.network = OneWay(value.network.names)
     yield value
     value.close()

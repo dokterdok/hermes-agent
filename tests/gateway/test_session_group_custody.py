@@ -12,7 +12,7 @@ from gateway.session_controls import AuthorityConnection
 from types import SimpleNamespace
 
 from tests.gateway.fixtures.passive_copy import HOME, MEMBERS, append, catalog, member
-from tests.gateway.test_session_group_replication import IDENTITY, call, gateway, permissions  # noqa: F401
+from tests.gateway.test_session_group_replication import IDENTITY, call, gateway as gateway, permissions
 from tui_gateway.contracts import groups_bot_relay as contract
 
 CUSTODY = dict(room_id='room', home_install_id=HOME, authority_gateway_id=HOME, authority_epoch=1)
@@ -152,7 +152,8 @@ async def test_the_owner_or_the_operator_switches_automatic_moves(gateway):
     owner = AuthorityConnection(gateway.authority, object(), {'user_id': 'owner'})
     switched = await call(owner, 'groups.custody.automatic', room_id='hosted', enabled=False)
     # Nothing to wait for: no other computer keeps the group yet.
-    assert switched == {'room_id': 'hosted', 'automatic': False, 'configuration_seq': 0, 'pending': False}
+    assert switched == {'room_id': 'hosted', 'automatic': False, 'careful_opt_in': False,
+                        'configuration_seq': 0, 'pending': False}
     contract.GroupsCustodyAutomaticResult.model_validate(switched)
     with closing(sqlite3.connect(gateway.authority.db.db_path)) as conn:
         assert custody.automatic_locked(conn, 'hosted') is False  # rides in the next configuration
@@ -160,8 +161,31 @@ async def test_the_owner_or_the_operator_switches_automatic_moves(gateway):
     assert await call(stranger, 'groups.custody.automatic', room_id='hosted', enabled=True) == 'not_owner'
     operator = AuthorityConnection(gateway.authority, object(), {'user_id': 'stranger'}, operator=True)
     assert (await call(operator, 'groups.custody.automatic', room_id='hosted', enabled=True))['automatic'] is True
-    for params in ({'enabled': 'no'}, {'enabled': True, 'extra': 1}, {}):
+    for params in ({'enabled': 'no'}, {'enabled': True, 'extra': 1}, {},
+                   {'enabled': True, 'accept_two_host_risk': 'yes'},
+                   {'enabled': False, 'accept_two_host_risk': True}):
         assert await call(owner, 'groups.custody.automatic', room_id='hosted', **params) == 'invalid_params'
+
+
+@pytest.mark.asyncio
+async def test_two_computer_risk_acceptance_is_explicit_on_the_canonical_control(gateway):
+    from gateway import hosted_room_identity as identity
+    await call(gateway.owner, 'groups.create', room_id='hosted', name='Hosted', members=MEMBERS)
+    db = gateway.authority.db.db_path
+    custody.enroll_custodian(db, room_id='hosted', install_id='install:backup',
+        public_key=identity.local_public_key(secret=b'b' * 32), endpoint='https://backup.example',
+        name='Backup', role='custodian_only', active=True, allowed=True, designated=True, always_on=True)
+    custody.maintain_configuration(db, room_id='hosted', local_gateway_id=rooms.local_authority_gateway_id(),
+        public_key=identity.local_public_key(), endpoint='http://127.0.0.1:9', always_on=True)
+    refused = await call(gateway.owner, 'groups.custody.automatic', room_id='hosted', enabled=True)
+    assert refused == 'careful_confirmation_required'
+    accepted = await call(gateway.owner, 'groups.custody.automatic', room_id='hosted', enabled=True,
+                          accept_two_host_risk=True)
+    assert accepted['automatic'] is True and accepted['careful_opt_in'] is True
+    assert accepted['pending'] is True  # the remote copy has not acknowledged either policy yet
+    contract.GroupsCustodyAutomaticResult.model_validate(accepted)
+    with closing(sqlite3.connect(db)) as conn:
+        assert custody.careful_opt_in_locked(conn, 'hosted')
 
 
 @pytest.mark.asyncio

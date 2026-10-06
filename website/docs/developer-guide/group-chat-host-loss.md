@@ -32,8 +32,9 @@ its groups ask first.
   messages from before it joined; Hermes Desktop warns the owner when adding one.
 - When the host goes away, the group continues on another computer the owner allowed:
   **automatically by majority** with three or more always-on computers, **automatically after 3
-  minutes of silence** with exactly two (careful mode, which can run the group on both if the two are
-  only cut off from each other), and **on one tap** otherwise.
+  minutes of silence** with exactly two only after the owner explicitly accepts careful mode's risk,
+  and **on one tap** otherwise. Two computers default to Ask: a connection break can leave both
+  working and duplicate actions in careful mode.
 - The move fences the old epoch at every computer it reaches, catches up from the most complete
   copy, and reconciles the accepted work that copy records; uncertain work never reruns by itself. In
   majority mode the successor knows every dispatched task; in the other modes, work the old host
@@ -48,7 +49,7 @@ its groups ask first.
    |                                             standby collects promises from a majority (CERTIFIED)
    |                                             --> continues within about a minute; never two hosts by itself
    |
-   +-- exactly 2 voters ("careful" mode) ------> 180 s of silence in both directions, and the standby is online
+   +-- 2 voters with explicit risk consent ---> 180 s of silence in both directions, and the standby is online
    |                                             standby signs EVIDENCE --> continues; the owner is warned
    |
    +-- owner chose "Ask me first", or no ------> owner taps "Continue on <best computer>" (ATTESTED)
@@ -92,7 +93,7 @@ owner and allowed by their own operator. Laptops can continue a group when asked
 | **Old epochs are fenced at the participants**, with one promise per epoch. | An old host's late work is refused wherever it lands. | Trusting the old host to stop. | #105079 |
 | **Successors are owner-controlled.** A computer can host only if its operator allowed it *and* the owner designated it. | A group never moves somewhere nobody chose. | Algorithmic picks among all members. | #104601 |
 | **Majority mode (3+ voters):** the host keeps running only while a majority grants its lease, and a voter never backs a takeover while its grant is live. | Any two majorities share a voter, so an automatic move never leaves two hosts starting work. Nothing hosted is needed. | An external lock service; a hosted referee by default. | voters: #104601; leases: #105079; moves: #105197 |
-| **Careful mode (exactly 2 voters)** is our proposed default and the one place this layer goes past the bar: it moves without a lease or quorum, so it does **not** prevent split brain. The owner can switch a group to "Ask me first"; making "ask" the default for two voters is a one-line change in `mode_of`. | With two computers a dead host and a cut link look identical. We judged that a group stalled until its owner sees the notice and taps is more likely, and usually more harmful, than a split. A split happens when both stay online but lose each other for 3 minutes or more (for example an expired overlay-network key); it lasts until a device that reaches both passes on the move, or the link returns, and the owner chooses which history to keep. | Always asking (stalls overnight); moving on a timeout alone, without the both-ways silence, the standby's online check and a signed record of them. | mode and switch: #104601; the move: #105197 |
+| **Two voters default to Ask. Careful mode is an explicit per-group opt-in.** It moves without a quorum lease, so a connection break can leave both computers working and duplicate actions. | An owner who needs unattended continuation can accept this risk after seeing the warning. A majority-mode preference alone never accepts it, including after a three-to-two downgrade. | Silent risk acceptance from topology or a legacy automatic flag; an external witness service. | policy: #104601; the move: #105197 |
 | **Voters change one at a time**, each change stored on a majority of the old and the new voters before the next. A move keeps the voters: the previous host stays a voter (when always on) and a successor. | No configuration change can leave two majorities that disagree, a majority group stays one after a move, and the owner can move it back. | Changing the voter set freely; dropping the old host at a move. | #104601 |
 | **Copies pass history between themselves only as far as the host signed it.** Every page and heartbeat carries a head the host signs; catch-up stores nothing a head doesn't vouch for. | A member computer can't add messages, keys or voters to another computer's copy. | Trusting a custodian's own signature or watermark. | #104601 |
 | **Durability in majority mode:** a task is dispatched only after a majority stores its admission, and a send reports `protected: true` once a majority stores it. In the other modes the tail is shown at risk and sends report no `protected`. | Nothing reported as protected (`protected: true`) is lost on an automatic move, and the successor knows every dispatched task. | Asynchronous copies with silent loss. | #104601 |
@@ -180,7 +181,7 @@ read is not always on. The report rides on the capabilities probe and on every a
 | `groups.custody.designate` | host | the room's owner (`session:control`) | `{room_id, install_id, successor, configuration_seq}` |
 | `groups.custody.add` / `.remove` | host | the room's owner (`session:control`) | `{room_id, install_id, configuration_seq}` |
 | `groups.custody.allow` | the custodian | its operator (`session:operator`) | `{room_id, install_id, allowed, confirmed}` |
-| `groups.custody.automatic {room_id, enabled}` | host | the room's recorded owner or the operator; else `not_owner` | `{room_id, automatic, configuration_seq, pending}`: `pending` stays true until the switch is in a configuration stored on a majority of the voters |
+| `groups.custody.automatic {room_id, enabled, accept_two_host_risk?}` | host | the room's recorded owner or the operator; else `not_owner` | `{room_id, automatic, careful_opt_in, configuration_seq, pending}`: two voters require retained explicit consent or `accept_two_host_risk: true`, otherwise `careful_confirmation_required`; `pending` stays true until the choice is replicated |
 
 The owner's actions (`designate`, `add`, `remove`, `automatic`) are refused (`permission_denied`)
 to a messaging chat other people read (transport `messaging:shared:`), which carries the owner's
@@ -201,7 +202,9 @@ never adopted (`hosted_room_identity.verify_locked`).
 ## The configuration: `custody.configured`
 
 The host records the room's custodians in the room's own log, so every copy carries them. The
-event (system actor `custody-control`, id `system:custody-configured:<n>`) has exactly this payload:
+event (system actor `custody-control`, id `system:custody-configured:<n>`) has these core fields and an
+optional `careful_opt_in` flag. This two-voter example asks first despite retaining the ordinary
+automatic preference:
 
 ```json
 {
@@ -210,6 +213,7 @@ event (system actor `custody-control`, id `system:custody-configured:<n>`) has e
                   "always_on": true, "voter": true, "name": "Mac mini", "operator_name": "Dana"}],
   "owner_name": "Dana",
   "automatic": true,
+  "careful_opt_in": false,
   "voters": ["install:host", "install:…"]
 }
 ```
@@ -218,13 +222,21 @@ event (system actor `custody-control`, id `system:custody-configured:<n>`) has e
   own successor. Names are display labels only, never identities.
 - `voters` is the host first, then its always-on successors in the owner's order, at most seven.
   `voter` marks exactly those.
-- `mode_of(configuration)` is `majority` with three or more voters, `careful` with exactly two, and
-  `ask` with one or when `automatic` is off. `automatic` is the owner's switch where the lease layer's
-  code is installed, and off elsewhere: a host offers only moves something can carry out.
+- `mode_of(configuration)` is `majority` with three or more voters, `careful` with exactly two and
+  explicit `careful_opt_in: true`, and `ask` otherwise. `automatic` retains the ordinary preference
+  where the lease layer is installed, and is off elsewhere. Disabling it withdraws careful consent.
+- Historical four-field records and signed proofs remain readable without rewriting their bytes.
+  A legacy two-voter `automatic: true` is not explicit risk consent: the owner must opt in again.
+  Ordinary majority configurations keep the old wire shape; explicit careful consent is retained
+  across adoption and later voter changes. A peer too old to read a new two-voter policy cannot
+  acknowledge it. The upgrading host keeps strict quorum leases until the old and new voters store
+  the policy, and pauses if those leases expire; it cannot simply switch to unleased Ask operation.
 - **One change at a time.** A configuration changes at most one voter, or the automatic switch,
   and the next change waits until a majority of both the voters before and after it stores it.
   `voter_sets` in the status names the sets whose majorities count now: two while a change is not
   settled. Names, endpoints and non-voting custodians change at once.
+  Admission, dispatch protection and lease requests retain the previous protection until settlement;
+  the owner's separate Continue anyway overrides that only for the exact current authority epoch.
 - After a verified move, the new host appends its first configuration with
   `reconfigure_after_transition_locked`: it becomes the authority and the first voter; the previous
   host stays a custodian that may continue the group again, and a voter right after the new host when
@@ -408,12 +420,12 @@ new host keeps that report beside its own reconciliation. The old host executes 
 branch.
 
 A host can also be paused by a promise nobody keeps: the computer its next step was promised to gave
-up halfway. After twice the careful window (6 minutes), the host continues past that step by itself,
-but only when every computer that could have continued the group (each eligible successor, and the
-computer the step was promised to) answers that it hosts nothing, holds no later transition, follows no
-later host and promised no later step to anyone else. It then fences every computer it reaches at a
-fresh epoch, and each of those computers must promise it (in majority mode a majority of the voters
-too), so no step anyone took, or might still take, runs beside it. It writes a transition attested with
+up halfway. After twice the careful window (6 minutes), majority mode requires the promise's holder
+to answer that it took no later step, plus fresh signed promises from a majority at a later epoch.
+The fresh majority intersects any prior majority and cannot promise while a conflicting lease is
+live. Ask and careful modes still require every eligible successor and the holder to answer and
+promise. Any authenticated answer showing a later transition, authority or conflicting promise
+blocks recovery. It writes a transition attested with
 `RECOVER_TEXT` and `stalled: {install_id, epoch}` (`reason: automatic`), and every computer checks
 those receipts before it follows. If any of them can't be heard from, the host stays paused
 (`paused.reason: step_not_taken`, `waiting_for` naming them) until they answer, and the owner may
@@ -487,6 +499,7 @@ succession upkeep starts.
 
 With exactly two voters the standby takes over only when all of these hold:
 
+- the owner explicitly accepted the risk for this group (`careful_opt_in: true`);
 - it has heard nothing from the host in either direction for 180 seconds: neither the host's
   pushes nor its own probes, every 10 seconds, nor a fence request or answer. A copy that starts
   following a host (after a move, stepping down or going back) counts its silence from then;
@@ -593,10 +606,12 @@ seconds:
 - the rest describes the host, this computer, the backups (with readiness, `voter` and
   `always_on`), the tail at risk, any move (`moving.reason`: `manual`, `automatic` or `handover`),
   conflict (`hosts`, `start`, `end`) or set-aside branch, inherited work and the owner's actions;
-- `automatic`: `{mode, state, standby, voters, enabled, pending, reason?, offline?, needed?}`.
+- `automatic`: `{mode, state, standby, voters, enabled, careful_opt_in, pending, reason?, offline?, needed?}`.
   `state` is `ready`, `not_ready` (`reason: voters_offline`, `offline`), `unavailable`
   (`reason: needs_computers`, `needed`) or `off`. `enabled` is the switch as the configuration holds
-  it; `pending` the value the owner asked for while that change settles with the voters, else `null`;
+  it; `pending` the value the owner asked for while that change settles with the voters, else `null`.
+  With two voters and no explicit consent, `enabled` may remain true while `mode: ask`, `state: off`
+  and `reason: careful_confirmation_required` show that careful continuation is not enabled;
 - `conflict.running_on`: the host the group keeps running on while `continued_on_two` is shown;
 - `moving`: `{to, step, started_at, reason}`, with `running` while a move waits for its turns
   (`step: "waiting_for_turns"`);

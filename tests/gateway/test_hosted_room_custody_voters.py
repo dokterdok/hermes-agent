@@ -18,7 +18,7 @@ from gateway import hosted_room_identity as identity
 from gateway import hosted_room_replication as publisher
 from gateway import hosted_rooms as rooms
 from gateway.hosted_rooms_common import open_sqlite
-from tests.gateway.fixtures.passive_copy import HOME, KEY, MEMBERS, TARGET, TASK, admit, append, pair  # noqa: F401
+from tests.gateway.fixtures.passive_copy import HOME, KEY, MEMBERS, TARGET, TASK, admit, append, pair as pair
 
 ROOM = "room"
 A, B, C, D = (f"install:{name}" for name in "abcd")
@@ -177,11 +177,27 @@ def test_a_stale_partitioned_voter_is_not_counted_under_a_newer_configuration(ho
     assert len(status(host)["voter_sets"]) == 2
     held = ack(host, A)
     current = status(host)
-    assert (current["voter_sets"], current["mode"]) == ([[HOME, A]], "careful")
+    assert (current["voter_sets"], current["mode"]) == ([[HOME, A]], "ask")
+    assert current["configuration"]["careful_opt_in"] is False
     append(host, "m1")
     append(host, "m2")
     ack(host, B)  # B is back and holds everything, but no longer votes
     assert status(host)["protected_seq"] == held < latest(host)
+
+
+def test_explicit_careful_consent_survives_a_majority_round_trip(host):
+    enroll(host, A, now=1)
+    settle(host, A)
+    custody.set_automatic(host, room_id=ROOM, enabled=True, accept_two_host_risk=True)
+    settle(host, A)
+    enroll(host, B, now=2)
+    settle(host, A, B)
+    assert status(host)["mode"] == "majority"
+    assert status(host)["configuration"]["careful_opt_in"] is True
+    custody.designate_successor(host, room_id=ROOM, install_id=B, successor=False)
+    settle(host, A)
+    assert status(host)["mode"] == "careful"
+    assert status(host)["configuration"]["careful_opt_in"] is True
 
 
 def test_dispatch_waits_for_copies_in_majority_mode(host):
@@ -228,6 +244,8 @@ def test_sends_wait_for_a_majority_only_in_majority_mode(host, hooks):
     custody.designate_successor(host, room_id=ROOM, install_id=B, successor=False)
     configure(host)
     ack(host, A)
+    custody.set_automatic(host, room_id=ROOM, enabled=True, accept_two_host_risk=True)
+    settle(host, A)
     assert status(host)["mode"] == "careful"
     hooks(lease_remaining_provider=lambda room_id: 60.0)
     unheld = append(host, "m2")["seq"]
@@ -487,6 +505,8 @@ def test_a_paused_host_appends_nothing(host, hooks):
     """While the lease layer says the host is paused, nothing here appends to the room's log."""
     enroll(host, A, now=1)
     settle(host, A)
+    custody.set_automatic(host, room_id=ROOM, enabled=True, accept_two_host_risk=True)
+    settle(host, A)
     before = latest(host)
     hooks(serving_provider=lambda room_id: False)
     enroll(host, B, now=2)
@@ -509,6 +529,10 @@ def test_without_the_lease_layer_a_host_that_could_move_by_itself_fails_closed(h
     hooks(serving_provider=None)
     enroll(host, A, now=1)
     assert configure(host)["voters"] == [HOME, A]  # from ask mode the first voter may still join
+    assert status(host)["mode"] == "ask"
+    ack(host, A)
+    custody.set_automatic(host, room_id=ROOM, enabled=True, accept_two_host_risk=True)
+    configure(host)
     assert status(host)["mode"] == "careful"
     before = latest(host)
     enroll(host, B, now=2)
