@@ -59,6 +59,8 @@ export function failureText(words: Words, failure: SuccessionMoveFailure, status
 
     case 'room_authority_promised': return words.errorPromised(computerName(controller, failure.other))
 
+    case 'handover_pending': return words.errorHandoverPending
+
     case 'preview_stale': return words.errorPreviewStale
 
     case 'target_not_ready': return words.errorTargetNotReady(target)
@@ -279,7 +281,7 @@ function OfflineBanner({ controller, status, host, members }: BannerProps & { me
       </div> : <p>{reasons[status.unavailable_reason ?? ''] ?? words.noFullCopy(host)}</p>}
       {failure && <div className="flex flex-wrap items-center gap-2 text-destructive" role="alert">
         <span>{words.continueFailed(computerName(controller, failure.target), failureText(words, failure, status, controller))}</span>
-        {controller.computerFor(failure.target.install_id) && failure.reason !== 'not_owner' &&
+        {controller.computerFor(failure.target.install_id) && failure.reason !== 'not_owner' && failure.reason !== 'handover_pending' &&
           <Button disabled={!!preparing} onClick={() => void choose(failure.target)} size="inline" variant="textStrong">{words.tryAgain}</Button>}
       </div>}
     </Strip>
@@ -344,6 +346,10 @@ export function CanonicalGroupSuccessionBanner({ controller, binding, members, g
 }) {
   const words = useBots().succession
   const status = controller.status
+
+  if (controller.handoverPending && status?.state !== 'moving') {return <Strip icon="sync" title={words.errorHandoverPending} tone="warning">
+    <div><Button onClick={controller.refresh} size="sm" variant="secondary">{words.checkSplit}</Button></div>
+  </Strip>}
 
   if (!status) {return null}
   const props = { controller, status, host: computerName(controller, status.host) }

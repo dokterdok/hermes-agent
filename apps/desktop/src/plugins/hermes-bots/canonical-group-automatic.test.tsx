@@ -474,3 +474,34 @@ it.each([2, 3].flatMap(voters => [true, false].map(pending => ({voters, pending}
   fireEvent.click(control)
   expect(calls('groups.custody.automatic')).toEqual([])
 })
+
+it.each(['typed', 'transport'] as const)('keeps a possibly delivered handover paused after a %s reply failure and unreadable status, without issuing another Move or Send', async kind => {
+  let pending = false
+  host({ 'groups.succession.status': () => {
+    if (pending) {throw new Error('status reply lost')}
+
+    return status({ automatic: {state: 'off'}, actions: [{action: 'move', targets: [VPS]}] })
+  }, 'groups.succession.move': () => {
+    pending = true
+    const error = new Error('handover not confirmed')
+    throw kind === 'typed' ? Object.assign(error, {code: 4001, data: {reason: 'handover_pending'}}) : error
+  }, 'groups.send': (_method, params) => ({accepted: true, client_event_id: params.event_id, event: {event_id: 'unsafe', seq: 1}}) })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const box = await screen.findByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(box.disabled).toBe(false))
+  fireEvent.change(box, {target: {value: 'After the move'}})
+  fireEvent.click(await screen.findByRole('button', {name: 'Hosted on Mac mini'}))
+  fireEvent.click(await screen.findByRole('button', {name: 'Move to another computer…'}))
+  fireEvent.click(await screen.findByRole('button', {name: 'Home VPS · up to date'}))
+  const dialog = within(await screen.findByRole('dialog'))
+  fireEvent.click(dialog.getByRole('button', {name: 'Move to Home VPS'}))
+  await dialog.findByText(/The group stays paused here while it checks the other computer/)
+  fireEvent.click(dialog.getByRole('button', {name: 'Cancel'}))
+  await screen.findByText('A message you send now will be delivered when the group resumes.')
+  expect(screen.queryByRole('button', {name: 'Move to another computer…'})).toBeNull()
+  fireEvent.click(screen.getByRole('button', {name: 'Send'}))
+  await waitFor(() => expect(Object.values(journal())).toHaveLength(1))
+  expect(Object.values(journal())[0]).toMatchObject({held: true, attempted: false})
+  expect(calls('groups.succession.move')).toHaveLength(1)
+  expect(calls('groups.send')).toEqual([])
+})

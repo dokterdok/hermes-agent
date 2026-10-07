@@ -35,6 +35,7 @@ interface ReadContext {
   setMoving: (moving: Moving | null) => void
   setFailure: (failure: SuccessionMoveFailure) => void
   setComputers: (computers: DesktopComputer[]) => void
+  onSettled: () => void
 }
 
 /** A computer listed with a copy of the room answers as a backup: while its host is up, the room opens there. One that
@@ -60,6 +61,8 @@ async function readMove(context: ReadContext, move: Moving) {
 
   if (context.stopped() || !next) {return !!next}
 
+  if (next.state === 'ok') {context.onSettled()}
+
   if (next.state === 'ok' && next.host.install_id === move.target.install_id) {
     context.onContinued({ status: next, preview: move.preview, previousHost: move.previousHost })
 
@@ -84,6 +87,8 @@ async function readBinding(context: ReadContext) {
   const next = await readSuccessionStatus(binding, binding.roomId).catch(() => null)
 
   if (context.stopped()) {return}
+
+  if (next?.state === 'ok') {context.onSettled()}
 
   if (next) {rememberBackups(binding.roomId, next)}
   context.setReading(next && { status: next, route: binding, fromBinding: true })
@@ -111,6 +116,8 @@ async function readBackups(context: ReadContext) {
     if (context.stopped()) {return}
 
     if (!next) {continue}
+
+    if (next.state === 'ok') {context.onSettled()}
     context.setComputers(found)
     context.setReading({ status: next, route: confirmed.route, fromBinding: false })
     // Another computer already hosts the room and Desktop reaches it: the room follows it there.
@@ -141,9 +148,15 @@ export function useCanonicalGroupSuccession({ binding, visible, hostFailing, eve
   const [tick, setTick] = useState(0)
   const [, setClock] = useState(0)
   const moved = useRef(false)
+  const bindingKey = JSON.stringify([binding.connectionId, binding.profile, binding.roomId])
+  const activeBinding = useRef(bindingKey)
+  activeBinding.current = bindingKey
+  const handoverVersion = useRef(0)
+  const [pendingHandover, setPendingHandover] = useState<{bindingKey: string; version: number} | null>(null)
+  const handoverPending = pendingHandover?.bindingKey === bindingKey
   const marker = useMemo(() => events.reduce((seq, event) => STATE_KINDS.has(event.kind) ? Math.max(seq, event.seq) : seq, 0), [events])
-  const status = reading?.status ?? null
-  const settled = !status || status.state === 'ok'
+  const status = useMemo(() => reading ? handoverPending ? {...reading.status, actions: []} : reading.status : null, [reading, handoverPending])
+  const settled = (!status || status.state === 'ok') && !handoverPending
   const hasReading = !!reading
 
   useEffect(() => {
@@ -171,9 +184,11 @@ export function useCanonicalGroupSuccession({ binding, visible, hostFailing, eve
     let timer: ReturnType<typeof setTimeout> | undefined
     let misses = 0
     const interval = moving ? MOVING_POLL_MS : hostFailing || !settled || watch ? SUCCESSION_POLL_MS : 0
+    const readVersion = handoverVersion.current
 
     const context: ReadContext = { binding, surface, stopped: () => stopped, onContinued, setReading, setMoving, setFailure, setComputers,
-      follow: route => {if (!moved.current) {moved.current = true; onMoved(route)}} }
+      follow: route => {if (!moved.current) {moved.current = true; onMoved(route)}},
+      onSettled: () => setPendingHandover(current => current?.bindingKey === bindingKey && current.version <= readVersion ? null : current) }
 
     const cycle = async () => {
       const reached = await (moving ? readMove(context, moving) : hostFailing ? readBackups(context) : readBinding(context)).catch(() => false)
@@ -187,7 +202,7 @@ export function useCanonicalGroupSuccession({ binding, visible, hostFailing, eve
     void cycle()
 
     return () => {stopped = true; clearTimeout(timer)}
-  }, [visible, surface, hostFailing, moving, settled, watch, marker, tick, binding, onMoved, onContinued])
+  }, [visible, surface, hostFailing, moving, settled, watch, marker, tick, binding, bindingKey, onMoved, onContinued])
 
   // Optimistic switches settle when status agrees. A failed write keeps its error until dismissed.
   useEffect(() => {
@@ -213,7 +228,13 @@ export function useCanonicalGroupSuccession({ binding, visible, hostFailing, eve
   const refresh = useCallback(() => setTick(value => value + 1), [])
   const computerFor = (installId: string | undefined) => installId ? computers.find(computer => computer.installId === installId) : undefined
   const answeredByHost = status?.this_install.role === 'host'
-  const hostRoute = answeredByHost ? reading?.route : undefined
+  const hostRoute = answeredByHost && !handoverPending ? reading?.route : undefined
+
+  const markHandoverPending = () => {
+    if (activeBinding.current !== bindingKey) {return}
+    setPendingHandover({bindingKey, version: ++handoverVersion.current})
+    refresh()
+  }
 
   const follow = (route: CanonicalGroupRoute) => {
     if (!moved.current) {moved.current = true; onMoved(route)}
@@ -232,7 +253,8 @@ export function useCanonicalGroupSuccession({ binding, visible, hostFailing, eve
     answeredByHost,
     /** The host can't take messages right now; Send holds them for when the group resumes. That includes a host that paused
      * itself to stay safe, and the side of a conflict that stopped serving. */
-    paused: !!status && (PAUSED_STATES.has(status.state) && !answeredByHost || status.state === 'paused' || answeredByHost &&
+    handoverPending,
+    paused: handoverPending || !!status && (PAUSED_STATES.has(status.state) && !answeredByHost || status.state === 'paused' || answeredByHost &&
       status.state === 'continued_on_two' && !!status.conflict_running_on && status.conflict_running_on.install_id !== status.this_install.install_id),
     moving: moving?.target ?? null,
     failure,
@@ -240,18 +262,19 @@ export function useCanonicalGroupSuccession({ binding, visible, hostFailing, eve
     refresh,
     clearFailure: () => setFailure(null),
     ...successionActions({ binding, status, reading, hostRoute, computerFor, refresh, follow, onContinued, setFailure, setMoving,
-      setReading, setSwitches })
+      setReading, setSwitches, markHandoverPending })
   }
 }
 
 /** Everything the room view can ask of the gateways, each on the computer the contract names. */
 function successionActions({ binding, status, reading, hostRoute, computerFor, refresh, follow, onContinued, setFailure, setMoving,
-  setReading, setSwitches }: {
+  setReading, setSwitches, markHandoverPending }: {
   binding: CanonicalGroupBinding; status: SuccessionStatus | null; reading: Reading | null; hostRoute?: CanonicalGroupRoute
   computerFor: (installId: string | undefined) => DesktopComputer | undefined; refresh: () => void
   follow: (route: CanonicalGroupRoute) => void; onContinued: (continued: ContinuedOn) => void
   setFailure: (failure: SuccessionMoveFailure | null) => void; setMoving: (moving: Moving | null) => void
   setReading: (reading: Reading) => void
+  markHandoverPending: () => void
   setSwitches: (update: (current: Record<string, PendingSwitch>) => Record<string, PendingSwitch>) => void
 }) {
   const roomId = binding.roomId
@@ -292,8 +315,16 @@ function successionActions({ binding, status, reading, hostRoute, computerFor, r
       if (!hostRoute) {return}
       const known = status?.backups.find(backup => backup.install_id === installId)
       const desktop = computerFor(installId)
-      watch(await moveGroup(hostRoute, roomId, installId), { watch: hostRoute, follow: desktop ? defaultRoute(desktop) : null, preview: null,
-        target: { install_id: installId, name: known?.name ?? desktop?.label ?? null }, previousHost: status?.host.name ?? null })
+
+      try {
+        watch(await moveGroup(hostRoute, roomId, installId), { watch: hostRoute, follow: desktop ? defaultRoute(desktop) : null, preview: null,
+          target: { install_id: installId, name: known?.name ?? desktop?.label ?? null }, previousHost: status?.host.name ?? null })
+      } catch (error) {
+        const typed = successionFailure(error)
+
+        if (!typed || typed.reason === 'handover_pending') {markHandoverPending()}
+        throw error
+      }
     },
 
     recordFailure(target: SuccessionComputer, error: unknown) {
