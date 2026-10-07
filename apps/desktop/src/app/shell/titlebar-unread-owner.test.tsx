@@ -1,8 +1,8 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { group, split } from '@/components/pane-shell/tree/model'
+import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $hiddenStripTabs, $layoutTree } from '@/components/pane-shell/tree/store'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { registry } from '@/contrib/registry'
@@ -87,8 +87,9 @@ describe('rendered unread badge ownership', () => {
     if (flipped) {
       $layoutTree.set(split('row', [group(['files']), group(['workspace']), group(['sessions'])]))
     }
-    setSidebarOpen(flipped)
-    setFileBrowserOpen(!flipped)
+
+    setSidebarOpen(false)
+    setFileBrowserOpen(true)
     renderControls()
 
     const controls = screen.getAllByRole('button', { name: /3 unread sessions/ })
@@ -97,4 +98,20 @@ describe('rendered unread badge ownership', () => {
     expect(controls[0].textContent).toContain('3')
     expect(controls[0].getAttribute('aria-label')).toMatch(/show/i)
   })
+})
+
+it.each(['dragged', 'flipped'])('tracks actual right Sessions visibility through a button press: %s', arrangement => {
+  const flipped = arrangement === 'flipped'
+  $panesFlipped.set(flipped)
+  setSidebarOpen(true)
+  setFileBrowserOpen(!flipped)
+  $layoutTree.set(split('row', [group(['files']), group(['workspace']), group(['sessions'])]))
+  renderControls()
+  // Sessions is physically right, unminimized and uncollapsed. Files preference is independent.
+  expect(screen.queryByRole('button', { name: /3 unread sessions/ })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: /Hide right sidebar/i }))
+  expect(findGroupOfPane($layoutTree.get()!, 'sessions')?.minimized).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: /Show right sidebar.*3 unread sessions/i }))
+  expect(findGroupOfPane($layoutTree.get()!, 'sessions')?.minimized).toBeFalsy()
+  expect(screen.queryByRole('button', { name: /3 unread sessions/ })).toBeNull()
 })

@@ -21,8 +21,8 @@ import { cn } from '@/lib/utils'
 import { toggleHud } from '@/store/hud'
 import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import {
-  $fileBrowserOpen,
   $leftSideOpen,
+  $rightSideOpen,
   sideToggleTargetsPane,
   toggleLeftSide,
   togglePanesFlipped,
@@ -158,7 +158,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const navigate = useNavigate()
   const location = useLocation()
   const modHeld = useModifierHeld()
-  const fileBrowserOpen = useStore($fileBrowserOpen)
+  const rightSideOpen = useStore($rightSideOpen)
   const hiddenStripTabs = useStore($hiddenStripTabs)
   const layoutTree = useStore($layoutTree)
   const narrow = useStore($narrowViewport)
@@ -194,7 +194,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // column, the sessions column, whatever is physically left / right. Never an
   // active highlight — plain show/hide affordances.
   const leftEdge = { open: leftSideOpen, toggle: toggleLeftSide }
-  const rightEdge = { open: fileBrowserOpen, toggle: toggleRightSide }
+  const rightEdge = { open: rightSideOpen, toggle: toggleRightSide }
   // Narrow toggles use fixed reveal aliases (chat-sidebar / file-browser),
   // independent of the wide tree's physical flip and docked-open flags.
   const leftVisible = narrow ? narrowOverlay?.paneId === 'sessions' : leftEdge.open
