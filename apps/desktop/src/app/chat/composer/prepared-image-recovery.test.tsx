@@ -78,3 +78,50 @@ test.each([
   expect(request).not.toHaveBeenCalled()
   expect($notifications.get()).toEqual([])
 })
+
+test('reads repaired draft storage on Retry without claiming a pending message or overwriting an occupied composer', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  const request = vi.fn()
+  const destination = captureSubmissionDestination('original', request)
+  const key = preparedSubmissionKey('original', destination, 'Keep my exact draft', [])
+  await writePreparedSubmission(key, {id: 'uncertain-intent', owner: destination.owner, text: 'Keep my exact draft', attachments: [], params: {session_id: 'original', submission_id: 'uncertain-intent'}})
+  const storageKey = 'hermes.desktop.preparedSubmissions.v1'
+  const saved = localStorage.getItem(storageKey)!
+  localStorage.setItem(storageKey, '[]')
+  const restore = vi.fn()
+  render(<PreparedImageRecovery occupied onRestore={restore} request={request} sessionKey="original" />)
+  await screen.findByText('Pending drafts could not be read. They have been kept; try again after storage is available.')
+  localStorage.setItem(storageKey, saved)
+  fireEvent.click(screen.getByRole('button', {name: 'Retry'}))
+  const recover = await screen.findByRole('button', {name: 'Restore draft'}) as HTMLButtonElement
+  expect(recover.disabled).toBe(true)
+  expect(localStorage.getItem(storageKey)).toBe(saved)
+  expect(restore).not.toHaveBeenCalled()
+  expect(request).not.toHaveBeenCalled()
+})
+
+test.each(['switch', 'unmount'] as const)('a repaired journal Retry cannot expose the old destination after %s', async action => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  const request = vi.fn()
+  const destination = captureSubmissionDestination('original', request)
+  await writePreparedSubmission(preparedSubmissionKey('original', destination, 'Old destination draft', []), {
+    id: 'old-destination', owner: destination.owner, text: 'Old destination draft', attachments: [], params: {session_id: 'original'}
+  })
+  const storage = localStorage.getItem('hermes.desktop.preparedSubmissions.v1')!
+  let resolve!: (value: string) => void
+  const read = vi.fn().mockRejectedValueOnce(new Error('storage unavailable')).mockImplementationOnce(() => new Promise<string>(done => {resolve = done})).mockResolvedValue('{}')
+  vi.stubGlobal('hermesDesktop', {preparedSubmissions: {read}})
+  const restore = vi.fn()
+  const view = render(<PreparedImageRecovery occupied={false} onRestore={restore} request={request} sessionKey="original" />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Retry'}))
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+
+  if (action === 'unmount') {view.unmount()}
+  else {view.rerender(<PreparedImageRecovery occupied={false} onRestore={restore} request={request} sessionKey="elsewhere" />)}
+
+  await act(async () => {resolve(storage)})
+  expect(screen.queryByText('Old destination draft')).toBeNull()
+  expect(restore).not.toHaveBeenCalled()
+  expect(request).not.toHaveBeenCalled()
+  expect(localStorage.getItem('hermes.desktop.preparedSubmissions.v1')).toBe(storage)
+})
