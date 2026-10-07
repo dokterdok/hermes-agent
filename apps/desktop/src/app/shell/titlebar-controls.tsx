@@ -24,7 +24,7 @@ import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode
 import {
   $fileBrowserOpen,
   $leftSideOpen,
-  $panesFlipped,
+  sideToggleTargetsPane,
   toggleLeftSide,
   togglePanesFlipped,
   toggleRightSide
@@ -73,14 +73,12 @@ export type SetTitlebarToolGroup = (id: string, tools: readonly TitlebarTool[], 
  *  Sessions workspace. */
 export function unreadBadgeForEdge(
   edge: TitlebarToolSide,
-  panesFlipped: boolean,
+  sessionsEdge: null | TitlebarToolSide,
   edgeOpen: boolean,
   unreadCount: number,
   workspaceIsSessions: boolean,
   sessionsPaneActive: boolean
 ): number | undefined {
-  const sessionsEdge: TitlebarToolSide = panesFlipped ? 'right' : 'left'
-
   return edge === sessionsEdge && !edgeOpen && workspaceIsSessions && sessionsPaneActive && unreadCount > 0
     ? unreadCount
     : undefined
@@ -167,7 +165,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const narrow = useStore($narrowViewport)
   const narrowOverlay = useStore($narrowOverlayChrome)
   const leftSideOpen = useStore($leftSideOpen)
-  const panesFlipped = useStore($panesFlipped)
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
@@ -176,6 +173,13 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const visibleTool = (tool: TitlebarTool) => !tool.hidden && shown(tool)
   const workspaceMode = useStore($workspaceMode)
   const sessionsPaneActive = isPaneActiveInLayoutGroup(layoutTree, hiddenStripTabs, 'sessions')
+
+  const sessionsEdge =
+    narrow || sideToggleTargetsPane('left', 'sessions')
+      ? 'left'
+      : sideToggleTargetsPane('right', 'sessions')
+        ? 'right'
+        : null
 
   // `titleBar.*` slot content is mount-scoped — a page's <Contribute> registers
   // only while that surface is up — so a non-empty area means a page is
@@ -201,7 +205,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const leftUnreadBadge = unreadBadgeForEdge(
     'left',
-    narrow ? false : panesFlipped,
+    sessionsEdge,
     narrow ? !!narrowOverlay?.tabIds.includes('sessions') : leftEdge.open,
     unreadCount,
     workspaceMode === 'sessions',
@@ -210,7 +214,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const rightUnreadBadge = unreadBadgeForEdge(
     'right',
-    narrow ? false : panesFlipped,
+    sessionsEdge,
     narrow ? !!narrowOverlay?.tabIds.includes('sessions') : rightEdge.open,
     unreadCount,
     workspaceMode === 'sessions',

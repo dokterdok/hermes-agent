@@ -748,6 +748,16 @@ function leftSideGroup(): GroupNode | null {
   return row.children.some(child => allPaneIds(child).some(isMainSurface)) ? edge : null
 }
 
+/** Which column the existing edge action actually opens, including custom
+ * dragged layouts. A pane's default side is not its current owner. */
+export function sideToggleTargetsPane(side: TreeSide, paneId: string): boolean {
+  const group = side === 'left' ? leftSideGroup() : rightSideGroup()
+
+  return group
+    ? allPaneIds(group).includes(paneId)
+    : paneRootSide(paneId) === (side === 'left' ? sidebarSide() : fileBrowserSide())
+}
+
 // Shown-state for the positional left column, same shape as rightSideShown.
 function leftSideShown(group: GroupNode): boolean {
   const side = paneRootSide(allPaneIds(group)[0])
