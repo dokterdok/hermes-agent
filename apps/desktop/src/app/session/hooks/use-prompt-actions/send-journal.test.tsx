@@ -295,3 +295,21 @@ it('a historical draft without dispatch provenance cannot downgrade even an exac
   expect(request).toHaveBeenCalledOnce()
   expect(request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({submission_id: 'historical'}), expect.any(Number))
 })
+
+it.each([undefined, 'another-id'] as const)('a corrupted retained wire identity never dispatches or rewrites the saved record: %j', async wireId => {
+  const store = await storeFor('window-a')
+  store.bind()
+  const request = vi.fn(async (_method: string, params?: Record<string, unknown>) => ({admission_id: params?.submission_id, status: 'terminal'}) as never)
+  const destination = captureSubmissionDestination('stored', request)
+  const key = preparedSubmissionKey('stored', destination, 'Saved retry', [])
+  await writePreparedSubmission(key, {id: 'saved-id', attempted: true, owner: destination.owner, text: 'Saved retry', attachments: [],
+    params: {session_id: 'runtime', text: 'Saved retry', ...wireId === undefined ? {} : {submission_id: wireId}}})
+  const before = JSON.stringify(store.store.read())
+  store.bridge.compareSend.mockClear()
+  const view = composer(request)
+  await act(async () => {expect(await view.hook.result.current('Saved retry')).toBe(false)})
+  await act(async () => {expect(await view.hook.result.current('Saved retry')).toBe(false)})
+  expect(request).not.toHaveBeenCalled()
+  expect(store.bridge.compareSend).not.toHaveBeenCalled()
+  expect(JSON.stringify(store.store.read())).toBe(before)
+})

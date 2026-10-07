@@ -14,6 +14,29 @@ export type PreparedPromptReceipt = Pick<PromptSubmitResult, 'user_row_id'> & {
   status?: string
 }
 
+/** Stored wire identity is evidence, never something a retry can reconstruct or replace. */
+export function assertPreparedPromptIdentity(prepared: PreparedSubmission) {
+  const params = prepared.params
+
+  if (
+    typeof prepared.id !== 'string' ||
+    !prepared.id.trim() ||
+    !params ||
+    typeof params !== 'object' ||
+    Array.isArray(params) ||
+    !Object.hasOwn(params, 'submission_id') ||
+    params.submission_id !== prepared.id
+  ) {
+    throw new Error('Saved Send delivery identity is inconsistent; retry was blocked')
+  }
+}
+
+/** The prompt preparation barrier validates evidence before changing any stored draft. */
+export async function persistIdentifiedPrompt(key: string, prepared: PreparedSubmission): Promise<void> {
+  assertPreparedPromptIdentity(prepared)
+  await writePreparedSubmission(key, prepared)
+}
+
 /** The legacy schema validator issues this exact refusal before the prompt handler runs. */
 function unsupportedSubmissionIdentity(error: unknown): boolean {
   const refusal = error as { code?: unknown; message?: unknown } | null
@@ -45,10 +68,12 @@ export async function requestPreparedPrompt(
   if (prepared.legacyAttempted) {
     throw new Error('Legacy submission acknowledgement is unknown; automatic retry is unsafe')
   }
+
+  assertPreparedPromptIdentity(prepared)
   // Missing historical markers do not prove an old draft was never dispatched.
   const firstAttempt = prepared.attempted === false
   prepared.attempted = true
-  await writePreparedSubmission(retryKey, prepared)
+  await persistIdentifiedPrompt(retryKey, prepared)
   assertDestinationCurrent(driftReason, sessionId)
   const params: Record<string, unknown> = { ...prepared.params, session_id: sessionId }
 
@@ -61,8 +86,9 @@ export async function requestPreparedPrompt(
     if (!firstAttempt || !unsupportedSubmissionIdentity(error) || prepared.legacyAttempted) {
       throw error
     }
+
     prepared.legacyAttempted = true
-    await writePreparedSubmission(retryKey, prepared)
+    await persistIdentifiedPrompt(retryKey, prepared)
     assertDestinationCurrent(driftReason, sessionId)
     const { submission_id: _id, ...legacyParams } = params
 
