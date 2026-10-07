@@ -19,7 +19,7 @@ function journalRecord<T>(value: unknown): Record<string, T> {
 
 export async function readJournal<T>(): Promise<Record<string, T>> {
   const native = window.hermesDesktop?.preparedSubmissions
-  const parsed: unknown = JSON.parse(native ? await native.read() : localStorage.getItem(STORAGE_KEY) || '{}')
+  const parsed: unknown = JSON.parse(native ? await native.read() : localStorage.getItem(STORAGE_KEY) ?? '{}')
 
   return journalRecord<T>(parsed)
 }
@@ -38,7 +38,7 @@ export async function compareJournal(key: string, expected: string | null, entry
   if (!navigator.locks) {throw new Error('Atomic draft storage unavailable in this browser')}
 
   return navigator.locks.request(STORAGE_KEY, () => {
-    const journal = journalRecord<unknown>(JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'))
+    const journal = journalRecord<unknown>(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}'))
     const current = Object.hasOwn(journal, key) ? JSON.stringify(journal[key]) : null
 
     if (current !== expected) {return false}

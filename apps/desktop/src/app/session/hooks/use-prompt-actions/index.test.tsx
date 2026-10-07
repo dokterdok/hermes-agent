@@ -422,7 +422,7 @@ describe('submit timeout admission fences', () => {
       if (method !== 'prompt.submit') {return {} as never}
       submits.push(params!)
 
-      if (submits.length === 1) {throw Object.assign(new Error('capability refused'), { code: 4094 })}
+      if (submits.length === 1) {throw Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'), { code: 4000 })}
 
       if (submits.length === 2) {throw new Error('request timed out: prompt.submit')}
 

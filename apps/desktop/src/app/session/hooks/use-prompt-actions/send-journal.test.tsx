@@ -175,7 +175,7 @@ it('keeps accepted identity in memory even when both ACK marking and removal fai
   a.bind()
   const compare = a.bridge.compareSend.getMockImplementation()!
   a.bridge.compareSend.mockImplementation(async (key, expected, entry) => {
-    if (expected !== null) {throw new Error('fixture disk unavailable after ACK')}
+    if (entry === null || JSON.parse(entry).acknowledged) {throw new Error('fixture disk unavailable after ACK')}
 
     return compare(key, expected, entry)
   })
@@ -205,11 +205,11 @@ it('gives a later independent Send a new ID even when the preceding accepted jou
   expect(request.mock.calls[0][1]?.submission_id).not.toBe(request.mock.calls[1][1]?.submission_id)
 })
 
-it('refuses admission when the browser journal becomes malformed between reading and the atomic preparation lock', async () => {
+it.each(['[]', ''])('refuses admission when the browser journal becomes malformed between reading and the atomic preparation lock: %j', async corrupt => {
   Object.defineProperty(window, 'hermesDesktop', {configurable: true, writable: true, value: undefined})
   const storageKey = 'hermes.desktop.preparedSubmissions.v1'
   vi.spyOn(navigator.locks, 'request').mockImplementation(async (...args) => {
-    localStorage.setItem(storageKey, '[]')
+    localStorage.setItem(storageKey, corrupt)
     const callback = args.at(-1) as (lock: Lock | null) => unknown
 
     return await callback(null)
@@ -218,7 +218,7 @@ it('refuses admission when the browser journal becomes malformed between reading
   const view = composer(request)
   await act(async () => {expect(await view.hook.result.current('Keep this draft')).toBe(false)})
   expect(request).not.toHaveBeenCalled()
-  expect(localStorage.getItem(storageKey)).toBe('[]')
+  expect(localStorage.getItem(storageKey)).toBe(corrupt)
 })
 
 it.each([
@@ -247,4 +247,51 @@ it.each([
   await act(async () => {expect(await view.hook.result.current('Preserve this intent')).toBe(true)})
   expect(request).toHaveBeenCalledTimes(2)
   expect(request.mock.calls[1][1]).toEqual(original)
+})
+
+it.each(['explicit', 'automatic'] as const)('a later exact legacy refusal cannot erase an earlier ambiguous ID-bearing submission: %s', async mode => {
+  const store = await storeFor('window-a')
+  store.bind()
+  let phase = 'lost'
+  let submitted = 0
+
+  const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'session.resume') {return {session_id: 'runtime'} as never}
+
+    if (method !== 'prompt.submit') {return {} as never}
+    expect(Object.values(store.store.read())).toEqual([expect.objectContaining({attempted: true, id: params?.submission_id})])
+
+    if (phase === 'lost' && ++submitted === 1) {throw new Error(mode === 'automatic' ? 'request timed out: prompt.submit' : 'connection closed after server admission')}
+
+    if (params?.submission_id) {throw Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'), {code: 4000})}
+
+    return {status: 'terminal'} as never
+  })
+
+  const view = composer(request)
+  await act(async () => {expect(await view.hook.result.current('Do this once')).toBe(false)})
+  const submits = () => request.mock.calls.filter(call => call[0] === 'prompt.submit')
+  const original = submits()[0][1]
+
+  if (mode === 'explicit') {
+    expect(submits()).toHaveLength(1)
+    phase = 'older-server'
+    await act(async () => {expect(await view.hook.result.current('Do this once')).toBe(false)})
+  }
+
+  expect(submits()).toHaveLength(2)
+  expect(submits()[1][1]).toEqual(original)
+})
+
+it('a historical draft without dispatch provenance cannot downgrade even an exact legacy refusal', async () => {
+  const store = await storeFor('window-a')
+  store.bind()
+  const request = vi.fn(async () => {throw Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'), {code: 4000})}) as GatewayRequest
+  const destination = captureSubmissionDestination('stored', request)
+  const key = preparedSubmissionKey('stored', destination, 'Historical draft', [])
+  await writePreparedSubmission(key, {id: 'historical', owner: destination.owner, text: 'Historical draft', attachments: [], params: {session_id: 'runtime', submission_id: 'historical', text: 'Historical draft'}})
+  const view = composer(request)
+  await act(async () => {expect(await view.hook.result.current('Historical draft')).toBe(false)})
+  expect(request).toHaveBeenCalledOnce()
+  expect(request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({submission_id: 'historical'}), expect.any(Number))
 })
