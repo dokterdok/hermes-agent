@@ -256,19 +256,20 @@ async def _tell(runner, authority, notice: Notice, chats: list, homes: list) -> 
     operator's."""
     from gateway.group_chat_access import chat_target
     from gateway.group_chat_actions import offer
+    sent = 0
     for grant in chats:
         try:
             if notice.kind is not None:
-                await offer(runner, authority, grant, room_id=notice.room_id, group=notice.group, kind=notice.kind,
-                            data=notice.data, text=notice.text)
+                sent += await offer(runner, authority, grant, room_id=notice.room_id, group=notice.group,
+                                    kind=notice.kind, data=notice.data, text=notice.text)
             elif (target := chat_target(runner, grant)) is not None:
-                await target[0].send(grant['chat_id'], notice.text, metadata=target[1])
+                result = await target[0].send(grant['chat_id'], notice.text, metadata=target[1])
+                sent += getattr(result, 'success', False) is True
         except Exception:
             logger.warning('A Group Chat notice could not be delivered to a private chat', exc_info=True)
     if chats:
-        return len(chats)
+        return sent
     text = f'{notice.text}\n\n{DESKTOP}' if notice.kind is not None else notice.text
-    sent = 0
     for home in homes:
         if _one_to_one(home):
             sent += await runner._send_home_channel_message(

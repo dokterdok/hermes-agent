@@ -173,10 +173,10 @@ async def offer(runner, authority, grant, *, room_id: str, group: str, kind: str
         except Exception:
             logger.debug('Group Chat action buttons unavailable; typed commands instead', exc_info=True)
             sent = None
-        if getattr(sent, 'success', False):
+        if getattr(sent, 'success', False) is True:
             return True
-    await adapter.send(grant['chat_id'], typed(record), metadata=metadata)
-    return True
+    sent = await adapter.send(grant['chat_id'], typed(record), metadata=metadata)
+    return getattr(sent, 'success', False) is True
 
 
 # ---- a tap ------------------------------------------------------------------------------------
