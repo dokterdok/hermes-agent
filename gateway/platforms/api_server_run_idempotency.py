@@ -637,8 +637,10 @@ class RunIdempotencyStore:
         for run_id, key, status, encoded, updated_at in rows[:limit]:
             try:
                 identity = validate_room_run_scope(json.loads(encoded))
-                prefix, task_id, generation = str(key).rsplit(":", 2)
-                if prefix != "room" or not task_id or not generation.isdigit():
+                prefix, attempt = str(key).split(":", 1)
+                task_id, separator, generation = attempt.rpartition(":")
+                if (prefix != "room" or not separator or not task_id
+                        or not generation.isascii() or not generation.isdigit() or int(generation) < 1):
                     raise ValueError("not a room dispatch key")
             except (TypeError, ValueError):
                 truncated = True
