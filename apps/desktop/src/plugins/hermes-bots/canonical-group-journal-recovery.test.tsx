@@ -38,10 +38,14 @@ import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGrou
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const originalDesktop = window.hermesDesktop
+const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks')
 afterEach(() => {
   cleanup()
   request.mockReset()
   window.hermesDesktop = originalDesktop
+  localStorage.clear()
+
+  if (originalLocks) {Object.defineProperty(navigator, 'locks', originalLocks)} else {Reflect.deleteProperty(navigator, 'locks')}
 })
 
 function nativeJournal() {
@@ -75,21 +79,35 @@ function nativeJournal() {
   return {
     read,
     compareSend,
+    corrupt: (value: string) => read.mockImplementation(async () => value),
+    repair: (value: string) => read.mockImplementation(async () => value),
     encoded: () =>
       JSON.stringify(Object.fromEntries(Object.entries(records).map(([key, value]) => [key, JSON.parse(value)])))
   }
 }
 
-it.each([false, true])(
-  'reloads repaired storage without replay or losing an uncertain message, preserving a later draft=%s',
-  async keepDraft => {
-    const journal = nativeJournal()
-    const binding = { connectionId: 'remote', profile: 'work', roomId: `repair-${keepDraft}` }
+function browserJournal() {
+  Object.defineProperty(window, 'hermesDesktop', {configurable: true, writable: true, value: undefined})
+  const compareSend = vi.fn(async (_key: string, run: () => unknown) => run())
+  Object.defineProperty(navigator, 'locks', {configurable: true, value: {request: compareSend}})
+  const key = 'hermes.desktop.canonicalGroupSends.v1'
+  request.mockImplementation(async (_route, method) => method === 'groups.state' ? {room: {name: 'Review'}, driver_status: {}} : {events: []})
+
+  return {compareSend, encoded: () => localStorage.getItem(key)!,
+    corrupt: (value: string) => localStorage.setItem(key, value), repair: (value: string) => localStorage.setItem(key, value)}
+}
+
+it.each([{kind: 'native', keepDraft: false, corrupt: '{broken'}, {kind: 'native', keepDraft: true, corrupt: '{broken'},
+  {kind: 'browser', keepDraft: true, corrupt: ''}])(
+  'reloads repaired $kind storage without replay or losing an uncertain message, preserving a later draft=$keepDraft',
+  async ({kind, keepDraft, corrupt}) => {
+    const journal = kind === 'native' ? nativeJournal() : browserJournal()
+    const binding = { connectionId: 'remote', profile: 'work', roomId: `repair-${kind}-${keepDraft}` }
     const saved = await prepareCanonicalGroupSend(binding, { text: 'Earlier uncertain message', attachments: [] })
     await attemptCanonicalGroupSend(binding, saved)
     const before = journal.encoded()
     journal.compareSend.mockClear()
-    journal.read.mockImplementation(async () => '{broken')
+    journal.corrupt(corrupt)
     render(
       <StrictMode>
         <CanonicalGroupWorkspace binding={binding} />
@@ -104,7 +122,8 @@ it.each([false, true])(
       fireEvent.change(editor, { target: { value: 'Keep my newer draft' } })
     }
 
-    journal.read.mockImplementation(async () => before)
+    expect(journal.encoded()).toBe(kind === 'browser' ? corrupt : before)
+    journal.repair(before)
     fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.journalReload }))
     await waitFor(() => expect(screen.queryByText(CANONICAL_GROUP_LOCALES.en.journalLoadFailed)).toBeNull())
     await waitFor(() => expect(editor.value).toBe(keepDraft ? 'Keep my newer draft' : 'Earlier uncertain message'))
