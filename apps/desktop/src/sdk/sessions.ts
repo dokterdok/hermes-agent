@@ -89,10 +89,12 @@ export async function refreshVisibleSessionTranscript(storedSessionId: string): 
   if (!visible) {
     return
   }
+
   const delegate = sessionTileDelegate()
 
   if (!delegate) {
     throw new Error('Transcript refresh is not ready for this session')
   }
+
   await delegate.resumeTile(storedSessionId, { refreshTranscript: true })
 }

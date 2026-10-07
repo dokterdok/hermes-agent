@@ -600,6 +600,7 @@ export function ackFocusedSession(
   ) {
     return
   }
+
   markSessionRead(focused)
   ackStoredSessionId(focused)
 }
