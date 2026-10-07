@@ -45,6 +45,29 @@ beforeEach(() => {
 const groupOf = (paneId: string) => findGroupOfPane($layoutTree.get() as LayoutNode, paneId)
 
 describe('positional right-side toggle', () => {
+  it('recomputes left-side visibility when a restored pane registers or disappears', () => {
+    const id = 'late-unread-pane'
+    $layoutTree.set(split('row', [group([id]), group(['workspace'])]))
+    const unsubscribe = $leftSideOpen.listen(() => undefined)
+    expect($leftSideOpen.get()).toBe(false)
+    const unregister = registry.register({
+      id,
+      area: 'panes',
+      title: id,
+      data: { placement: 'left' },
+      render: () => null
+    })
+
+    try {
+      expect($leftSideOpen.get()).toBe(true)
+      unregister()
+      expect($leftSideOpen.get()).toBe(false)
+    } finally {
+      unregister()
+      unsubscribe()
+    }
+  })
+
   // User's arrangement: left stack holds sessions+files (dragged), browser
   // column is its own zone on the right of the root row.
   const browserRight = () =>
