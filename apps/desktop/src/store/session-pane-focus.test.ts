@@ -6,6 +6,7 @@ import * as tree from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { applyDesktopOverlay } from '@/store/profile-share'
 import * as session from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import * as states from '@/store/session-states'
 import { $unreadFinishedMarkers, markSessionUnreadFinished } from '@/store/session-unread'
 
@@ -111,11 +112,11 @@ describe('focusing a saved Bot Chat requires a visible pane', () => {
     tree.$layoutTree.set(model.group(['workspace', paneId, groupPane], { active: paneId, id: 'main' }))
     tree.$activeTreeGroup.set('main')
     session.$selectedStoredSessionId.set('canonical-chat')
-    expect(states.$focusedStoredSessionId.get()).toBe('canonical-chat')
+    expect($focusedStoredSessionId.get()).toBe('canonical-chat')
     tree.activateTreePane('main', groupPane)
-    expect(states.$focusedStoredSessionId.get()).toBeNull()
+    expect($focusedStoredSessionId.get()).toBeNull()
     tree.activateTreePane('main', paneId)
-    expect(states.$focusedStoredSessionId.get()).toBe('canonical-chat')
+    expect($focusedStoredSessionId.get()).toBe('canonical-chat')
   })
 
   it('reports a miss through both helpers if the layout cannot place the saved tab', () => {
