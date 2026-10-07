@@ -11,6 +11,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  markSessionRead,
   sessionMatchesStoredId,
   sessionPinId
 } from './session'
@@ -498,7 +499,11 @@ function recomputeUnread(): void {
   const loadedRows = rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])
 
   for (const id of $unreadFinishedSessionIds.get()) {
-    if ((id !== selected || isBotChatReadProtected(id)) && !unread.includes(id) && !loadedRows.some(row => sessionMatchesStoredId(row, id))) {
+    if (
+      (id !== selected || isBotChatReadProtected(id)) &&
+      !unread.includes(id) &&
+      !loadedRows.some(row => sessionMatchesStoredId(row, id))
+    ) {
       unread.push(id)
     }
   }
@@ -579,4 +584,22 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
   // Unary on purpose: nanostores hands a listener (value, oldValue), and the
   // old selection would otherwise arrive as the profile hint.
   $selectedStoredSessionId.listen(id => ackStoredSessionId(id))
+}
+
+/** Focus acknowledges ordinary sessions immediately. A Bot Chat can still be
+ * painting a cached transcript: its successful refresh owns acknowledgement. */
+export function ackFocusedSession(
+  focused: null | string,
+  tiles: readonly { storedSessionId: string; workspaceMode?: string; workspaceTabTitle?: string }[]
+): void {
+  if (
+    !focused ||
+    tiles.some(
+      tile => tile.storedSessionId === focused && tile.workspaceMode === 'bots' && tile.workspaceTabTitle === 'Bot Chat'
+    )
+  ) {
+    return
+  }
+  markSessionRead(focused)
+  ackStoredSessionId(focused)
 }

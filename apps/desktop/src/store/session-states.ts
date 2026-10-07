@@ -77,7 +77,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
-import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
+import { ackFocusedSession, ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -2777,29 +2777,10 @@ function stampTileSessionFocus(focused: null | string) {
   }
 }
 
-// Bringing a finished session to the front clears its green dot. Keyed on the
-// FOCUSED session, not the selected one: a tile is never $selectedStoredSessionId,
-// and a tile tab click goes through activateTreePane rather than focusOpenSession,
-// so this is the one hook that catches every way a tile reaches the front.
-// Clears the whole conversation family (markSessionRead) AND acks the
-// persisted watermark/marker (ackStoredSessionId) so the next list refresh
-// doesn't repaint the dot the user just cleared by looking at it.
+// Focus-to-read policy is shared with the unread store; Bot Chat reads wait
+// for their actual transcript refresh, while the focus timer starts now.
 $focusedStoredSessionId.listen(focused => {
-  if (focused) {
-    // Bot Chat tiles may paint a cached transcript while their explicit roster
-    // open is still re-pulling newer off-window activity. The Bot plugin also
-    // refreshes direct tab focus; only a successful refresh acknowledges the
-    // mark. Ordinary session tiles keep focus-to-read.
-    const cachedBotChat = $sessionTiles
-      .get()
-      .some(tile => tile.storedSessionId === focused && tile.workspaceMode === 'bots' && tile.workspaceTabTitle === 'Bot Chat')
-
-    if (!cachedBotChat) {
-      markSessionRead(focused)
-      ackStoredSessionId(focused)
-    }
-  }
-
+  ackFocusedSession(focused, $sessionTiles.get())
   stampTileSessionFocus(focused)
 })
 

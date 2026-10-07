@@ -47,6 +47,17 @@ import type { GatewayRequester } from '../types'
 
 type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
+/** Both warm refresh and a resumed live session need an actual REST page.
+ * Call after the read-only recovery branch, which may find another owner. */
+function requireTranscriptPage(
+  refresh: boolean,
+  page: Awaited<ReturnType<typeof getLatestSessionMessages>> | null
+): void {
+  if (refresh && !page) {
+    throw new Error('Could not refresh the stored transcript')
+  }
+}
+
 function mergeTileTranscript(
   previous: ChatMessage[],
   prefetched: ChatMessage[],
@@ -339,9 +350,7 @@ export function useSessionTileDelegate({
           // A failed REST read is not a refreshed transcript. In particular a
           // cached Bot Chat must keep its unread marker until a real page was
           // merged, rather than treating null as an empty successful page.
-          if (refreshTranscript && !prefetch) {
-            throw new Error('Could not refresh the stored transcript')
-          }
+          requireTranscriptPage(refreshTranscript, prefetch)
 
           // A long turn can push every rendered row off the newest page; read
           // older pages until they overlap so the graft keeps earlier history.
@@ -435,9 +444,7 @@ export function useSessionTileDelegate({
           return readOnlyId
         }
 
-        if (refreshTranscript && !prefetch) {
-          throw new Error('Could not refresh the stored transcript')
-        }
+        requireTranscriptPage(refreshTranscript, prefetch)
 
         const resumed = outcome.resumed
 
