@@ -210,8 +210,9 @@ it('holds a message while a planned move waits, even when its host refuses it, a
       : status({ host: { install_id: VPS, name: 'Home VPS', reachable: true, since: null }, this_install: { install_id: MINI, name: 'Mac mini', role: 'backup' } }),
     // The move started elsewhere: the host already promised the group to Home VPS and stores nothing.
     'groups.send': () => {throw refusal('room_authority_promised', { other: { install_id: VPS, name: 'Home VPS' } })} })
-  handlers.vps = computer(VPS, { 'groups.state': () => roomState({}, 2), 'groups.log': () => ({ events: [] }),
-    'groups.succession.status': () => status(onVps),
+  handlers.vps = computer(VPS, { 'groups.state': () => roomState({}, phase === 'moved' ? 2 : 1), 'groups.log': () => ({ events: [] }),
+    'groups.succession.status': () => phase === 'moved' ? status(onVps)
+      : status({this_install: {install_id: VPS, name: 'Home VPS', role: 'backup'}}),
     'groups.send': (_method, params) => {
       delivered.push(['vps', String(params.event_id)])
 
