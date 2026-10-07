@@ -150,16 +150,35 @@ def initialize_fence_schema(conn: sqlite3.Connection) -> None:
         host_boot TEXT)""")
     # Back the admission check for every writer sharing the Runs store: a fenced room epoch
     # records no new scope, and a scope already recorded for it reserves no new run.
+    # Keep real admissions fenced while allowing a control-only cancellation
+    # record. Its scope can be restored only when every record there is such a barrier.
     if table_exists(conn, "group_run_scopes"):
-        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_room_fence_scope_insert
+        from gateway.platforms.api_server_run_scope import cancellation_record_sql
+        runs_exist = table_exists(conn, 'run_idempotency')
+        cancellation_schema = runs_exist and any(row[1] == 'stop_requested' for row in
+                                                conn.execute('PRAGMA table_info(run_idempotency)'))
+        suffix, scope_control, run_control = '', '0', '0'
+        if cancellation_schema:
+            suffix = '_v2'
+            conn.execute('DROP TRIGGER IF EXISTS trg_room_fence_scope_insert')
+            conn.execute('DROP TRIGGER IF EXISTS trg_room_fence_run_insert')
+            scope_control = f"""EXISTS (SELECT 1 FROM run_idempotency AS barrier WHERE barrier.scope=NEW.scope
+                AND ({cancellation_record_sql('barrier')})) AND NOT EXISTS (
+                SELECT 1 FROM run_idempotency AS other WHERE other.scope=NEW.scope
+                AND NOT ({cancellation_record_sql('other')}))"""
+            # An exemption cannot be used by REPLACE to delete either unique-key victim.
+            run_control = f"""({cancellation_record_sql('NEW')}) AND NOT EXISTS (
+                SELECT 1 FROM run_idempotency AS victim WHERE victim.run_id=NEW.run_id
+                OR (victim.scope=NEW.scope AND victim.idempotency_key=NEW.idempotency_key))"""
+        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_room_fence_scope_insert{suffix}
             BEFORE INSERT ON group_run_scopes
-            WHEN {_FENCED_IDENTITY.format(identity='NEW.identity_json')}
+            WHEN ({_FENCED_IDENTITY.format(identity='NEW.identity_json')}) AND NOT ({scope_control})
             BEGIN SELECT RAISE(ABORT, 'room authority fenced'); END""")
-        if table_exists(conn, "run_idempotency"):
-            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_room_fence_run_insert
+        if runs_exist:
+            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_room_fence_run_insert{suffix}
                 BEFORE INSERT ON run_idempotency
                 WHEN EXISTS (SELECT 1 FROM group_run_scopes AS recorded WHERE recorded.scope=NEW.scope
-                    AND {_FENCED_IDENTITY.format(identity='recorded.identity_json')})
+                    AND {_FENCED_IDENTITY.format(identity='recorded.identity_json')}) AND NOT ({run_control})
                 BEGIN SELECT RAISE(ABORT, 'room authority fenced'); END""")
 
 

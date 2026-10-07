@@ -13,7 +13,7 @@ from typing import Any, Dict
 
 from gateway import hosted_room_fence as fence
 from gateway.hosted_rooms_common import identifier
-from gateway.platforms.api_server_run_scope import room_run_scope_key, validate_room_run_scope
+from gateway.platforms.api_server_run_scope import cancellation_record_sql, room_run_scope_key, validate_room_run_scope
 from hermes_cli.sqlite_util import add_column_if_missing
 
 
@@ -234,12 +234,7 @@ class RunIdempotencyStore:
                 (victim.scope=NEW.scope AND victim.idempotency_key=NEW.idempotency_key))"""
         # A cancellation has no accepting fingerprint or execution owner. It may
         # add a barrier inside a frozen scope, but never replace a frozen victim.
-        cancellation_only = """NEW.stop_requested=1 AND NEW.fingerprint=''
-            AND NEW.owner_pid=0 AND NEW.owner_started=0 AND CASE WHEN json_valid(NEW.status_json)
-                THEN COALESCE(json_extract(NEW.status_json,'$.run_id')=NEW.run_id
-                    AND json_extract(NEW.status_json,'$.status') IN
-                        ('queued','running','waiting_for_approval','stopping','completed','failed','cancelled','interrupted'), 0)
-                ELSE 0 END"""
+        cancellation_only = cancellation_record_sql('NEW')
         self._conn.execute('DROP TRIGGER IF EXISTS group_run_frozen_insert_v2')
         self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_insert_v3
             BEFORE INSERT ON run_idempotency
