@@ -28,7 +28,7 @@ import {
   hasThreadScopedGroupSession
 } from './group-membership'
 import { groupDirectiveSurface, groupMentionSurface } from './group-mention-surface'
-import { type GroupRoundMemberContext, runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
+import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
 import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
 import { botsText } from './i18n'
@@ -649,23 +649,9 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-/** Harvest every member before selecting responders, stopping at the current room's lifetime boundary. */
-async function harvestRoundReplies(context: GroupRoundMemberContext): Promise<boolean> {
-  for (const member of context.members) {
-    if (!context.isCurrent()) {
-      recordGroupActivity(context.group, { kind: 'cancelled', member: null, thread: context.thread })
-
-      return false
-    }
-
-    await harvestStrandedGroupReply(context.group, member)
-
-    if (!context.binding.isLive()) {
-      return false
-    }
-  }
-
-  return true
+/** Capture only this thread's current room log for address and responder selection. */
+function groupThreadLog(group: string, thread: string): GroupMessage[] {
+  return (($groupChats.get()[group] || {}).log || []).filter((entry: GroupMessage) => groupThreadOf(entry) === thread)
 }
 
 export async function runGroupChatRounds(
@@ -687,7 +673,7 @@ export async function runGroupChatRounds(
 
   // #129443: the driving send's explicit addresses, frozen for the whole
   // drive — mid-drive member handoffs stay the #94478 continuation's job.
-  const startLog = (($groupChats.get()[group] || {}).log || []).filter((e: GroupMessage) => groupThreadOf(e) === thread)
+  const startLog = groupThreadLog(group, thread)
 
   const addressedKeys = explicitlyAddressedMemberKeys(startLog, members)
 
@@ -713,14 +699,28 @@ export async function runGroupChatRounds(
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
-      // Deliver late replies before selecting this round's responders.
-      if (!(await harvestRoundReplies(context))) {
-        return
+      // Deliver any replies that finished after their turn timed out —
+      // every member, not just this round's responders, so long work is
+      // late, never lost.
+      for (const member of members) {
+        if (!isCurrent()) {
+          recordGroupActivity(group, {
+            kind: 'cancelled',
+            member: null,
+            thread
+          })
+
+          return
+        }
+
+        await harvestStrandedGroupReply(group, member)
+
+        if (!binding.isLive()) {
+          return
+        }
       }
 
-      const roomLog = (($groupChats.get()[group] || {}).log || []).filter(
-        (e: GroupMessage) => groupThreadOf(e) === thread
-      )
+      const roomLog = groupThreadLog(group, thread)
 
       // Exclude members the harvest pass just above confirmed are STILL
       // running (their stranded marker survived harvest because
