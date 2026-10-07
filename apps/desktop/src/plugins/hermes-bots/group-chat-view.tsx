@@ -439,7 +439,7 @@ export function GroupChatSettingsDialog({
   // A rename can update this prop while its profile writes are still pending.
   // Keep that operation attached to the same chat across the name change.
   const openedSettings = useMemo(() => {
-    const room = $groupChats.get()[group]
+    const room = open ? $groupChats.get()[group] : undefined
 
     return { roomId: room?.roomId, image: room?.image || null, holdDetection: room?.holdDetection !== false }
   }, [group, open])
