@@ -79,6 +79,10 @@ function record(value: unknown): Record<string, unknown> {
 const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0
 const whole = (value: unknown, minimum = 0): value is number => Number.isSafeInteger(value) && (value as number) >= minimum
 
+/** A finite server timestamp can still exceed the dates the UI can format. */
+const timestamp = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(new Date(value * 1000).getTime())
+
 function parseFile(value: unknown, snapshotSeq: number): CanonicalFile {
   const item = record(value)
   const sharer = record(item.producer)
@@ -86,7 +90,7 @@ function parseFile(value: unknown, snapshotSeq: number): CanonicalFile {
   if (!text(item.event_id) || !text(item.attachment_id) || !whole(item.seq, 1) || item.seq > snapshotSeq ||
     !whole(item.manifest_index) || !text(item.kind) || !text(item.name) || !text(item.mime) || !whole(item.size, 1) ||
     (sharer.kind !== 'member' && sharer.kind !== 'user') || !text(sharer.id) || !text(sharer.label) ||
-    typeof item.shared_at !== 'number' || !Number.isFinite(item.shared_at)) {
+    !timestamp(item.shared_at)) {
     throw new CanonicalFilesError('verification')
   }
 

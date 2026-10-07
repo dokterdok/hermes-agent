@@ -188,8 +188,8 @@ it('recovers from a refused cursor by showing the latest files, and retries an u
   expect(calls('groups.attachment.list').filter(params => !params.cursor)).toHaveLength(3)
 })
 
-it('refuses a page whose order cannot be trusted', async () => {
-  gateway['groups.attachment.list'] = () => page([file(19), file(20)])
+it.each(['order', 'date'])('refuses a page with unusable %s data without breaking Files', async fault => {
+  gateway['groups.attachment.list'] = () => page(fault === 'order' ? [file(19), file(20)] : [{ ...file(19), shared_at: 1e30 }])
   const dialog = await openFiles()
   expect(await dialog.findByText('Files could not be loaded.')).toBeTruthy()
   expect(rows()).toHaveLength(0)
