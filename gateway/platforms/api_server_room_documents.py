@@ -1,6 +1,7 @@
 """Document admission recovery: a reserved Run is not an accepted canonical input."""
 import hashlib
 import json
+import sqlite3
 
 from hermes_state_runtime import RuntimeStoreError
 
@@ -34,11 +35,25 @@ def require_canonical_absence(adapter, *, run_id, scope, session_id, task_id, ex
         raise RuntimeStoreError('room_document_outcome_unknown')
 
 
-def pending_cancellation(dispatch, scope, *, session_id=None, key_absent=False):
+def cancellation_session_id(adapter, identity):
+    """Cancellation cannot guess a new member namespace when the learned alias is unreadable."""
+    from gateway.hosted_room_succession import member_session_for, session_home
+    from gateway.session_authorities import active_authority
+    authority = active_authority(adapter.gateway_runner)
+    if authority is None:
+        raise RuntimeStoreError('storage_unavailable')
+    try:
+        with authority.db._read_ctx() as conn:
+            origin = session_home(conn, identity['room_id'], identity['home_install_id'])
+    except sqlite3.Error as exc:
+        raise RuntimeStoreError('storage_unavailable') from exc
+    return member_session_for(origin, identity['room_id'], identity['member_id'], identity['target_profile'])
+
+
+def pending_cancellation(dispatch, scope, *, session_id, key_absent=False):
     """Bounded identity for id-Stop retries; never persist prompt, files or credentials."""
     from gateway.hosted_room_peer_output import dispatch_digest
-    from gateway.platforms.api_server_room_dispatch import _member_session_id
-    return dict(scope=scope, session_id=session_id or _member_session_id(dispatch), task_id=dispatch.task_id,
+    return dict(scope=scope, session_id=session_id, task_id=dispatch.task_id,
                 execution_generation=dispatch.execution_generation, dispatch_digest=dispatch_digest(dispatch),
                 output_enabled=dispatch.document_output is not None, key_absent=key_absent)
 

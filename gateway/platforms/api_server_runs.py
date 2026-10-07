@@ -275,7 +275,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
-        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]] + output_routes(self) + owner_stop_routes(self)
+        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]] + owner_stop_routes(self) + output_routes(self)
 
 
 def _run_state_errors(handler):
@@ -422,7 +422,6 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
         _remember_room_identity(request, claims)
-        from gateway.platforms.api_server_run_scope import room_run_scope_key
         return room_run_scope_key(claims)
     else:
         parts = (_api_server._api_request_profile.get() or "default",
@@ -766,7 +765,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
-    peer_files = bool(room_dispatch and (room_dispatch.get("document_inputs") or room_dispatch.get("document_output")))
+    peer_files = bool(room_dispatch and (room_dispatch.get('document_inputs') or room_dispatch.get('document_output')))
     from gateway.platforms.api_server_group_owner_stop import admission_storage_error
     storage_error = admission_storage_error(self, request, _openai_error)
     if storage_error is not None:
@@ -1166,6 +1165,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("interrupted")
             return
         self._set_run_status(run_id, "running")
+        if run.room_scope and _scope_is_frozen(self, run.room_scope):
+            self._run_idempotency_store.request_stop(run.room_scope, run_id)
         if _run_stop_requested(self, run_id) and run.admission is None:
             _finish("cancelled")
             return
@@ -1325,6 +1326,7 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
         from gateway.platforms.api_server_authority_runs import run_control_status
         from hermes_state_runtime import RuntimeStoreError
         try:
+            # A promised successor's Stop authenticates against the run's own admission scope.
             status = run_control_status(self, run_id, successor_scope or self._run_idempotency_scope(request))
         except RuntimeStoreError as exc:
             error = (_run_not_found(_openai_error, run_id) if exc.reason == 'not_found' else
@@ -1630,6 +1632,48 @@ def _run_stop_requested(self, run_id: str) -> bool:
         run_id in self._run_idempotency_ids and self._run_idempotency_store.stop_requested(run_id))
 
 
+def _check_cancellation_predecessors(self, request, dispatch):
+    """Missing HTTP records cannot hide an older canonical execution of this exact attempt."""
+    from gateway.platforms.api_server_run_idempotency import RunCancellationUnknown
+    from gateway.session_authorities import active_authority
+    identity, scope = _room_identity(request), self._run_idempotency_scope(request)
+    key = f'room:{dispatch.task_id}:{dispatch.execution_generation}'
+    own, predecessors, snapshot = self._run_idempotency_store.cancellation_state(identity, key)
+    if identity['authority_epoch'] <= 1:
+        return snapshot, None
+    known = {old_scope: entry['record']['run_id'] for old_scope, entry in predecessors.items()
+             if entry['record'] is not None}
+    if own is not None:
+        known[scope] = own['run_id']
+    if len(known) > 1:
+        raise RunCancellationUnknown()
+    authority = active_authority(self.gateway_runner)
+    if authority is None:
+        if any(entry['record'] is None for entry in predecessors.values()):
+            raise RunCancellationUnknown()
+        return snapshot, None
+    from gateway.platforms.api_server_room_documents import cancellation_session_id
+    from hermes_state_logical_attempts import lookup_logical_attempt
+    sessions = {cancellation_session_id(self, value)
+                for value in [identity, *(entry['identity'] for entry in predecessors.values())]}
+    sessions.update(record['status']['session_id'] for record in [own, *(entry['record'] for entry in predecessors.values())]
+                    if record is not None and isinstance(record['status'].get('session_id'), str))
+    own_canonical_id = None
+    for session_id in sessions:
+        with authority.db._read_ctx() as conn:
+            # Include immutable scopes whose HTTP inventory was lost or retired.
+            observed = {row[0] for row in conn.execute("""SELECT DISTINCT owner_scope FROM logical_attempts
+                WHERE principal_id='api' AND session_id=? AND owner_scope IS NOT NULL""", (session_id,))}
+        for owner_scope in observed | {scope, *predecessors}:
+            indexed = lookup_logical_attempt(authority.db, principal_id='api', session_id=session_id,
+                owner_scope=owner_scope, task_id=dispatch.task_id, execution_generation=dispatch.execution_generation)
+            if indexed is not None and known.get(owner_scope) != indexed['request_id']:
+                if owner_scope != scope or known or own_canonical_id not in (None, indexed['request_id']):
+                    raise RunCancellationUnknown()
+                own_canonical_id = indexed['request_id']
+    return snapshot, own_canonical_id
+
+
 async def _handle_stop_run_admission(self, request: "web.Request", *, _api_server) -> "web.Response":
     """Stop a RoomLink generation, fencing late admission when no run exists yet."""
     from gateway.platforms.api_server_room_dispatch import _validate_room_stop
@@ -1646,23 +1690,40 @@ async def _handle_stop_run_admission(self, request: "web.Request", *, _api_serve
             code="run_cancellation_unavailable", status=503)
     from gateway.platforms.api_server_room_documents import pending_cancellation
     from gateway.platforms.api_server_authority_runs import run_control_status
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        cancellation_snapshot, own_canonical_id = _check_cancellation_predecessors(self, request, dispatch)
+    except (GroupRunFreezeError, RoomFenceError, RuntimeStoreError) as exc:
+        return _json_error(_api_server._openai_error, str(exc),
+                           code=getattr(exc, 'code', getattr(exc, 'reason', 'run_cancellation_unknown')), status=503)
     key, now = request.headers["Idempotency-Key"].strip(), time.time()
     peer_files = bool(dispatch.document_inputs or dispatch.document_output)
-    run_id = ('run_' + hashlib.sha256((scope + '\0' + key).encode()).hexdigest()[:32]
+    run_id = own_canonical_id or ('run_' + hashlib.sha256((scope + '\0' + key).encode()).hexdigest()[:32]
               if peer_files else f'run_{uuid.uuid4().hex}')
-    canonical = run_control_status(self, run_id, scope) if peer_files else None
+    canonical = run_control_status(self, run_id, scope) if peer_files or own_canonical_id is not None else None
+    from gateway.platforms.api_server_room_documents import cancellation_session_id
+    session_id = cancellation_session_id(self, _room_identity(request)) if peer_files else None
     cancelled = canonical or {
         "object": "hermes.run", "run_id": run_id, "created_at": now, "updated_at": now,
         **({'status': 'stopping', 'canonical_admission_absence_pending':
-            pending_cancellation(dispatch, scope, key_absent=True)} if peer_files
+            pending_cancellation(dispatch, scope, session_id=session_id, key_absent=True)} if peer_files
            else {'status': 'cancelled', 'admission_cancelled': True})}
-    _, record = self._run_idempotency_store.reserve(
-        scope, key, "", run_id, cancelled,
-        retention_until=_room_retention_until(request), cancel_if_missing=True)
+    try:
+        _, record = self._run_idempotency_store.reserve(
+            scope, key, "", run_id, cancelled,
+            retention_until=_room_retention_until(request), identity=_room_identity(request), cancel_if_missing=True,
+            cancellation_snapshot=cancellation_snapshot)
+    except (GroupRunFreezeError, RoomFenceError) as exc:
+        return _json_error(_api_server._openai_error, str(exc), code=exc.code, status=exc.status)
     run_id = str(record["run_id"])
+    if record.get('scope', scope) != scope:
+        predecessor_scope = _successor_run_scope(self, request, run_id, 'stop')
+        if predecessor_scope != record['scope']:
+            return _run_not_found(_api_server._openai_error, run_id)
+        scope = predecessor_scope
     status = run_control_status(self, run_id, scope)
     if status is None:
-        status = self._durable_run_status(request, run_id) or record["status"]
+        status = _durable_run_status(self, request, run_id, scope=scope) or record["status"]
     return await _stop_owned_run(
         self, run_id, status, self._active_run_agents.get(run_id), self._active_run_tasks.get(run_id),
         scope=scope, _api_server=_api_server)
@@ -1676,7 +1737,10 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
         self, request, _api_server=_api_server, permission="stop", active_fallback=True, core_control=True)
     if err is not None:
         return err
-    scope = self._run_idempotency_scope(request)
+    scope = (_successor_run_scope(self, request, run_id, 'stop')
+             if not self._request_owns_run(request, run_id) else self._run_idempotency_scope(request))
+    if scope is None:
+        return _run_not_found(_api_server._openai_error, run_id)
     self._run_idempotency_store.request_stop(scope, run_id)
     return await _stop_owned_run(self, run_id, status, agent, task, scope=scope, _api_server=_api_server)
 
@@ -1697,8 +1761,6 @@ async def _stop_owned_run(self, run_id, status, agent, task, *, scope, _api_serv
 
 
 def _stop_loaded_run(self, run_id, status, agent, task, *, _api_server):
-    """Control already-authorized local work; callers retain ownership checks."""
-    _openai_error = _api_server._openai_error
     if status.get("status") in TERMINAL_STATUSES:
         return web.json_response(status)
     if agent is None and task is None and not _run_stop_requested(self, run_id):
@@ -1736,7 +1798,7 @@ async def _consume_owner_stop_intents(self):
     failed = False
     for run_id in list(self._active_run_tasks):
         scope = self._run_owners.get(run_id)
-        if not scope or run_id in self._stopping_run_ids or not _scope_is_frozen(self, scope):
+        if not scope or run_id in self._stopping_run_ids or not (self._run_idempotency_store.stop_requested(run_id) or _scope_is_frozen(self, scope)):
             continue
         status = self._run_statuses.get(run_id)
         if status is None:

@@ -70,6 +70,11 @@ class GroupStopStorageUnavailable(GroupRunFreezeError):
     pass
 
 
+class RunCancellationUnknown(GroupRunFreezeError):
+    code = "run_cancellation_unknown"
+    message = "The exact earlier admission cannot be identified safely."
+
+
 def _scope_key(scope: Any) -> str:
     if type(scope) is not str or re.fullmatch(r"[0-9a-f]{64}", scope) is None:
         raise ValueError("invalid internal Runs scope key")
@@ -479,7 +484,7 @@ class RunIdempotencyStore:
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
                 owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
-                identity: dict | None = None, cancel_if_missing: bool = False):
+                identity: dict | None = None, cancel_if_missing: bool = False, cancellation_snapshot=None):
         """Atomically reserve a key; return ``(outcome, stored_record)``.
 
         ``identity`` is the exact room scope behind ``scope``. A new run records it
@@ -493,8 +498,18 @@ class RunIdempotencyStore:
             if room_run_scope_key(identity) != scope:
                 raise ValueError("room scope identity does not match its Runs scope")
         with self._immediate_txn():
-            self._prune_stale_terminal_locked(now)
+            if not cancel_if_missing:
+                self._prune_stale_terminal_locked(now)
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
+            if cancel_if_missing and identity is not None:
+                predecessors = self._cancellation_predecessors_locked(identity, key, own_known=row is not None)
+                current_snapshot = self._cancellation_snapshot(row[1] if row else None, predecessors)
+                if cancellation_snapshot is not None and cancellation_snapshot != current_snapshot:
+                    raise RunCancellationUnknown()
+                existing = self._cancel_existing_locked(predecessors, key, scope, row)
+                if existing is not None:
+                    self._conn.commit()
+                    return existing
             if row is not None:
                 if retention_until:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
@@ -504,14 +519,15 @@ class RunIdempotencyStore:
                         (scope, key))
                 self._conn.commit()
                 return ("reused", _record(*row[1:])) if cancel_if_missing else _outcome(row, fingerprint)
-            if self._scope_frozen_locked(scope, identity):
+            if not cancel_if_missing and self._scope_frozen_locked(scope, identity):
                 raise GroupRunFrozen()
-            if identity is not None and identity["authority_epoch"] <= fence.fenced_epoch_locked(
+            if not cancel_if_missing and identity is not None and identity["authority_epoch"] <= fence.fenced_epoch_locked(
                     self._conn, identity["room_id"]):
                 raise fence.RoomAuthorityFenced()
             if identity is not None:
-                self._require_epoch_holder_locked(identity)
-                inherited = self._inherited_run_locked(identity, key)
+                if not cancel_if_missing:
+                    self._require_epoch_holder_locked(identity)
+                inherited = None if cancel_if_missing else self._inherited_run_locked(identity, key)
                 if inherited is not None:
                     self._conn.commit()
                     return "inherited", inherited
@@ -522,13 +538,79 @@ class RunIdempotencyStore:
                 ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
                  retention_until, now, now, int(cancel_if_missing)))
-            if identity is not None:
+            if identity is not None and not (cancel_if_missing and self._scope_identity_locked(scope) == identity):
                 self._conn.execute(
                     f"""INSERT INTO {_SCOPES}(scope,identity_json,first_admitted_at,last_admitted_at)
                         VALUES (?,?,?,?) ON CONFLICT(scope) DO UPDATE SET last_admitted_at=excluded.last_admitted_at""",
                     (scope, json.dumps(identity, sort_keys=True, separators=(",", ":")), now, now))
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
+
+    def cancellation_state(self, identity: dict, key: str):
+        """Read exact cancellation evidence without pruning it before the accepting transaction."""
+        identity = validate_room_run_scope(identity)
+        with self._lock:
+            row = self._conn.execute(_SELECT_BY_KEY, (room_run_scope_key(identity), key)).fetchone()
+            own = _record(*row[1:]) if row else None
+            predecessors = self._cancellation_predecessors_locked(identity, key, own_known=own is not None)
+            return own, predecessors, self._cancellation_snapshot(own['run_id'] if own else None, predecessors)
+
+    @staticmethod
+    def _cancellation_snapshot(own_id, predecessors):
+        return own_id, tuple(sorted((scope, entry['record']['run_id'] if entry['record'] else None)
+                                    for scope, entry in predecessors.items()))
+
+    def _cancellation_predecessors_locked(self, identity: dict, key: str, *, own_known=False) -> dict[str, dict]:
+        if identity['authority_epoch'] <= 1:
+            return {}
+        found = {}
+        rows = self._conn.execute(f"""SELECT scope, identity_json FROM {_SCOPES}
+            UNION ALL SELECT scope, identity_json FROM {_FREEZES}
+            WHERE scope NOT IN (SELECT scope FROM {_SCOPES})""").fetchall()
+        for scope, encoded in rows:
+            try:
+                previous = validate_room_run_scope(json.loads(encoded))
+            except (ValueError, TypeError):
+                raise RunCancellationUnknown() from None
+            if room_run_scope_key(previous) != scope:
+                raise RunCancellationUnknown()
+            if previous['authority_epoch'] >= identity['authority_epoch'] or any(
+                    previous[field] != identity[field] for field in (
+                        'room_id', 'member_id', 'target_install_id', 'target_profile')):
+                continue
+            controls = self._successor_controls_identity_locked(previous, identity)
+            if own_known and not controls:
+                continue  # A superseded owner retains control of its own exact record.
+            row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
+            record = None if row is None else _record(*row[1:])
+            if record is not None and (self._scope_identity_locked(scope) is None or not controls):
+                raise RunCancellationUnknown()
+            found[scope] = {'identity': previous, 'record': record}
+        return found
+
+    def _cancel_existing_locked(self, predecessors, key, scope, row):
+        matches = [(old_scope, value['record']) for old_scope, value in predecessors.items()
+                   if value['record'] is not None]
+        if row is not None:
+            matches.append((scope, _record(*row[1:])))
+        if len(matches) > 1:
+            raise RunCancellationUnknown()
+        if not matches:
+            return None
+        owner_scope, record = matches[0]
+        self._conn.execute('UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND idempotency_key=?',
+                           (owner_scope, key))
+        return ('reused' if owner_scope == scope else 'inherited'), {**record, 'scope': owner_scope}
+
+    def _successor_controls_identity_locked(self, previous, successor):
+        if any(previous[field] != successor[field] for field in (
+                'room_id', 'member_id', 'target_install_id', 'target_profile')):
+            return False
+        room_id = previous['room_id']
+        if previous['authority_epoch'] > fence.fenced_epoch_locked(self._conn, room_id):
+            return False
+        return fence.successor_controls_locked(self._conn, room_id,
+            candidate_install_id=successor['authority_gateway_id'], epoch=successor['authority_epoch'])
 
     def _require_epoch_holder_locked(self, identity: dict) -> None:
         """Work of a succeeded room's epoch comes only from the computer this store fenced it for."""
@@ -625,16 +707,7 @@ class RunIdempotencyStore:
         with self._lock:
             row = self._conn.execute("SELECT scope FROM run_idempotency WHERE run_id=?", (run_id,)).fetchone()
             identity = self._scope_identity_locked(row[0]) if row is not None else None
-            if identity is None or any(identity[key] != successor[key] for key in (
-                    "room_id", "member_id", "target_install_id", "target_profile")):
-                return None
-            room_id = identity["room_id"]
-            if identity["authority_epoch"] > fence.fenced_epoch_locked(self._conn, room_id):
-                return None
-            controls = fence.successor_controls_locked(
-                self._conn, room_id, candidate_install_id=successor["authority_gateway_id"],
-                epoch=successor["authority_epoch"])
-        return row[0] if controls else None
+            return row[0] if identity is not None and self._successor_controls_identity_locked(identity, successor) else None
 
     def room_run_evidence(self, room_id: str, *, through_epoch: int, limit: int = 256) -> dict[str, Any]:
         """The room runs this store admitted at or below an authority epoch, newest first.
