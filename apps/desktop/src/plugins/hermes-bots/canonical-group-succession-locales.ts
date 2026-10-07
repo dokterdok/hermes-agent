@@ -121,6 +121,9 @@ export type SuccessionMessages = {
   goBackBody: (to: string | null, from: string | null, time: string | null) => string
   askFirst: string
   ranOnBoth: (group: string, a: string, b: string, start: string, end: string) => string
+  splitUnconfirmedTitle: string
+  splitUnconfirmedBody: string
+  checkSplit: string
   runningTwiceTitle: string
   runningTwiceBody: (a: string, b: string, group: string) => string
   /** Under your message while the host holds it alone (`protected: false`). */
@@ -346,6 +349,9 @@ const en: SuccessionMessages = {
   goBackBody: (to, from, time) => `${to ?? 'This computer'} pauses now, and the group continues on ${from ?? 'the previous host'} as soon as it’s reachable. Messages sent on ${to ?? 'this computer'} since ${time ?? 'then'} are kept separately.`,
   askFirst: 'Ask me first next time',
   ranOnBoth: (group, a, b, start, end) => `“${group}” ran on both ${a} and ${b} while they couldn’t reach each other (${start}–${end}). Choose which one to keep. The other’s messages are kept separately.`,
+  splitUnconfirmedTitle: "The group may still be running in two places",
+  splitUnconfirmedBody: "Both computers were running this group. The connection broke before we could confirm one stopped. Check their connection before continuing work.",
+  checkSplit: "Check again",
   runningTwiceTitle: 'This group is running in two places',
   runningTwiceBody: (a, b, group) => `${a} and ${b} are both running “${group}”. Choose one now; the other’s messages are kept separately.`
 }
@@ -504,6 +510,9 @@ const ja: SuccessionMessages = {
   goBackBody: (to, from, time) => `${to ?? 'このコンピューター'}はすぐに一時停止し、${from ?? '以前のホスト'}に接続できしだい、そこでグループが続きます。${time ? `${time}以降` : 'それ以降'}に${to ?? 'このコンピューター'}で送信されたメッセージは別に保持されます。`,
   askFirst: '次回は先に確認する',
   ranOnBoth: (group, a, b, start, end) => `「${group}」は、${a}と${b}が互いに接続できない間、両方で動いていました（${start}～${end}）。残す方を選んでください。もう一方のメッセージは別に保持されます。`,
+  splitUnconfirmedTitle: "グループがまだ2か所で動いている可能性があります",
+  splitUnconfirmedBody: "両方のコンピューターでこのグループが動いていました。片方の停止を確認する前に接続が切れました。作業を続ける前に接続を確認してください。",
+  checkSplit: "再確認",
   runningTwiceTitle: 'このグループは2か所で動いています',
   runningTwiceBody: (a, b, group) => `${a}と${b}の両方で「${group}」が動いています。今すぐどちらかを選んでください。もう一方のメッセージは別に保持されます。`
 }
@@ -662,6 +671,9 @@ const zh: SuccessionMessages = {
   goBackBody: (to, from, time) => `${to ?? '这台电脑'}会立即暂停，一旦可以连接${from ?? '原主机'}，群聊就会在那里继续。自${time ?? '那时'}起在${to ?? '这台电脑'}上发送的消息会单独保留。`,
   askFirst: '下次先询问我',
   ranOnBoth: (group, a, b, start, end) => `“${group}”在${a}和${b}无法互相连接期间同时在两边运行（${start}–${end}）。请选择保留哪一台。另一台的消息会单独保留。`,
+  splitUnconfirmedTitle: "群聊可能仍在两个地方运行",
+  splitUnconfirmedBody: "两台电脑都在运行此群聊。在确认其中一台已停止之前，连接中断了。继续工作前，请检查连接。",
+  checkSplit: "再次检查",
   runningTwiceTitle: '此群聊正在两个地方运行',
   runningTwiceBody: (a, b, group) => `${a}和${b}都在运行“${group}”。请立即选择一台；另一台的消息会单独保留。`
 }
@@ -820,6 +832,9 @@ const zhHant: SuccessionMessages = {
   goBackBody: (to, from, time) => `${to ?? '這台電腦'}會立即暫停，一旦可以連線至${from ?? '原主機'}，群聊就會在那裡繼續。自${time ?? '那時'}起在${to ?? '這台電腦'}上傳送的訊息會另外保留。`,
   askFirst: '下次先詢問我',
   ranOnBoth: (group, a, b, start, end) => `「${group}」在${a}和${b}無法互相連線期間同時在兩邊執行（${start}–${end}）。請選擇保留哪一台。另一台的訊息會另外保留。`,
+  splitUnconfirmedTitle: "群聊可能仍在兩個地方執行",
+  splitUnconfirmedBody: "兩台電腦都在執行此群聊。在確認其中一台已停止之前，連線中斷了。繼續工作前，請檢查連線。",
+  checkSplit: "再次檢查",
   runningTwiceTitle: '此群聊正在兩個地方執行',
   runningTwiceBody: (a, b, group) => `${a}和${b}都在執行「${group}」。請立即選擇一台；另一台的訊息會另外保留。`
 }
@@ -980,6 +995,9 @@ const arabic: SuccessionMessages = {
   goBackBody: (to, from, time) => `يتوقف ${to ?? 'هذا الجهاز'} مؤقتًا الآن، وتستمر المجموعة على ${from ?? 'المضيف السابق'} بمجرد أن يصبح الوصول إليه ممكنًا. تُحفظ الرسائل المرسلة على ${to ?? 'هذا الجهاز'} ${time ? `منذ ${time}` : 'منذ ذلك الحين'} بشكل منفصل.`,
   askFirst: 'اسألني أولًا في المرة القادمة',
   ranOnBoth: (group, a, b, start, end) => `عملت «${group}» على ${a} و${b} معًا بينما تعذّر عليهما الوصول إلى بعضهما (${start}–${end}). اختر أيهما تريد الإبقاء عليه. تُحفظ رسائل الآخر بشكل منفصل.`,
+  splitUnconfirmedTitle: "قد تظل المجموعة تعمل في مكانين",
+  splitUnconfirmedBody: "كان الكمبيوتران يشغّلان هذه المجموعة. انقطع الاتصال قبل تأكيد توقف أحدهما. تحقق من الاتصال قبل متابعة العمل.",
+  checkSplit: "تحقق مجددًا",
   runningTwiceTitle: 'تعمل هذه المجموعة في مكانين',
   runningTwiceBody: (a, b, group) => `يشغّل كل من ${a} و${b} «${group}». اختر أحدهما الآن؛ تُحفظ رسائل الآخر بشكل منفصل.`
 }
@@ -1139,6 +1157,9 @@ const russian: SuccessionMessages = {
   goBackBody: (to, from, time) => `${to ? `Компьютер ${to}` : 'Этот компьютер'} сейчас приостановится, а группа продолжится на ${from ? `компьютере ${from}` : 'прежнем хосте'}, как только он станет доступен. Сообщения, отправленные на ${to ? `компьютере ${to}` : 'этом компьютере'} ${time ? `с ${time}` : 'с того момента'}, сохранятся отдельно.`,
   askFirst: 'В следующий раз сначала спросить меня',
   ranOnBoth: (group, a, b, start, end) => `«${group}» работала и на ${a}, и на ${b}, пока они не могли связаться друг с другом (${start}–${end}). Выберите, какой оставить. Сообщения с другого сохранятся отдельно.`,
+  splitUnconfirmedTitle: "Группа может всё ещё работать в двух местах",
+  splitUnconfirmedBody: "Оба компьютера запускали эту группу. Соединение прервалось до подтверждения остановки одного из них. Проверьте соединение, прежде чем продолжать работу.",
+  checkSplit: "Проверить снова",
   runningTwiceTitle: 'Эта группа работает в двух местах',
   runningTwiceBody: (a, b, group) => `«${group}» работает и на ${a}, и на ${b}. Выберите один прямо сейчас; сообщения с другого сохранятся отдельно.`
 }
@@ -1297,6 +1318,9 @@ const french: SuccessionMessages = {
   goBackBody: (to, from, time) => `${to ?? 'Cet ordinateur'} se met en pause maintenant, et le groupe continue sur ${from ?? 'l’ancien hôte'} dès qu’il est joignable. Les messages envoyés sur ${to ?? 'cet ordinateur'} depuis ${time ?? 'ce moment'} sont conservés à part.`,
   askFirst: 'Me demander d’abord la prochaine fois',
   ranOnBoth: (group, a, b, start, end) => `« ${group} » a tourné à la fois sur ${a} et sur ${b} pendant qu’ils ne pouvaient pas se joindre (${start}–${end}). Choisissez celui à garder. Les messages de l’autre sont conservés à part.`,
+  splitUnconfirmedTitle: "Ce groupe tourne peut-être encore à deux endroits",
+  splitUnconfirmedBody: "Les deux ordinateurs faisaient tourner ce groupe. La connexion a été interrompue avant de confirmer que l’un s’était arrêté. Vérifiez leur connexion avant de poursuivre le travail.",
+  checkSplit: "Vérifier à nouveau",
   runningTwiceTitle: 'Ce groupe tourne à deux endroits',
   runningTwiceBody: (a, b, group) => `${a} et ${b} font tous deux tourner « ${group} ». Choisissez-en un maintenant ; les messages de l’autre sont conservés à part.`
 }
@@ -1455,6 +1479,9 @@ const german: SuccessionMessages = {
   goBackBody: (to, from, time) => `${to ?? 'Dieser Computer'} pausiert jetzt, und die Gruppe geht auf ${from ?? 'dem bisherigen Host'} weiter, sobald er erreichbar ist. Nachrichten, die seit ${time ?? 'diesem Zeitpunkt'} auf ${to ?? 'diesem Computer'} gesendet wurden, werden getrennt aufbewahrt.`,
   askFirst: 'Nächstes Mal zuerst fragen',
   ranOnBoth: (group, a, b, start, end) => `„${group}“ lief sowohl auf ${a} als auch auf ${b}, während sie einander nicht erreichen konnten (${start}–${end}). Wähle aus, welchen du behalten willst. Die Nachrichten des anderen werden getrennt aufbewahrt.`,
+  splitUnconfirmedTitle: "Die Gruppe läuft möglicherweise noch an zwei Orten",
+  splitUnconfirmedBody: "Beide Computer haben diese Gruppe ausgeführt. Die Verbindung wurde unterbrochen, bevor der Stopp eines Computers bestätigt wurde. Prüfe die Verbindung, bevor du die Arbeit fortsetzt.",
+  checkSplit: "Erneut prüfen",
   runningTwiceTitle: 'Diese Gruppe läuft an zwei Orten',
   runningTwiceBody: (a, b, group) => `${a} und ${b} führen beide „${group}“ aus. Wähle jetzt einen aus; die Nachrichten des anderen werden getrennt aufbewahrt.`
 }
@@ -1613,6 +1640,9 @@ const spanish: SuccessionMessages = {
   goBackBody: (to, from, time) => `${to ?? 'Este equipo'} se pausa ahora, y el grupo continúa en ${from ?? 'el anfitrión anterior'} en cuanto se pueda contactar. Los mensajes enviados en ${to ?? 'este equipo'} desde ${time ?? 'entonces'} se guardan aparte.`,
   askFirst: 'Preguntarme primero la próxima vez',
   ranOnBoth: (group, a, b, start, end) => `«${group}» funcionó tanto en ${a} como en ${b} mientras no podían comunicarse entre sí (${start}–${end}). Elige cuál conservar. Los mensajes del otro se guardan aparte.`,
+  splitUnconfirmedTitle: "El grupo puede seguir funcionando en dos sitios",
+  splitUnconfirmedBody: "Ambos ordenadores estaban ejecutando este grupo. La conexión se cortó antes de confirmar que uno se detuvo. Comprueba la conexión antes de continuar el trabajo.",
+  checkSplit: "Comprobar de nuevo",
   runningTwiceTitle: 'Este grupo está funcionando en dos sitios',
   runningTwiceBody: (a, b, group) => `${a} y ${b} están ejecutando «${group}». Elige uno ahora; los mensajes del otro se guardan aparte.`
 }
