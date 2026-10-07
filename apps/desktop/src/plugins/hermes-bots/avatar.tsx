@@ -191,7 +191,7 @@ export function blobShapeString(seedPart: string, kind: string) {
 
 /** Static SVG markup for a blob face, tagged data-bot-face so the roster's
  *  PNG backfill (pushLocalAvatars → rasterizeSvgToPng) still finds it. */
-function blobMarkup(shape: null | string | undefined, name: string, size: number) {
+function blobMarkup(shape: null | string | undefined, name: string, size: number, discoverable = true) {
   if (!blobatarSvg) {
     return null
   }
@@ -209,7 +209,9 @@ function blobMarkup(shape: null | string | undefined, name: string, size: number
   }
 
   try {
-    return blobatarSvg(seed, opts).replace('<svg ', '<svg data-bot-face=' + JSON.stringify(name) + ' ')
+    const markup = blobatarSvg(seed, opts)
+
+    return discoverable ? markup.replace('<svg ', '<svg data-bot-face=' + JSON.stringify(name) + ' ') : markup
   } catch {
     return null
   }
@@ -979,6 +981,8 @@ export function stopFaceClock() {
 }
 
 interface BotFaceProps {
+  /** Only roster-authoritative renders may supply the SVG that automatic asset backfill exports. */
+  discoverable?: boolean
   color: string
   image?: null | string
   mood?: FaceMood
@@ -993,7 +997,7 @@ interface BotFaceProps {
  * Live math face. Photos still use <img>. Shape avatars stay SVG so
  * the clock can move them (a baked PNG cannot).
  */
-export function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle' }: BotFaceProps) {
+export function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle', discoverable = true }: BotFaceProps) {
   startFaceClock()
 
   if (image) {
@@ -1019,7 +1023,7 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
   // ignores it (no data-hb-math). Falls back to the legacy math face when the
   // SDK predates the export.
   if (isBlobShape(shape)) {
-    const markup = blobMarkup(shape, name, size)
+    const markup = blobMarkup(shape, name, size, discoverable)
 
     if (markup) {
       return (
@@ -1054,7 +1058,7 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
     )
 
     return (
-      <svg aria-hidden data-bot-face={name} height={size} viewBox="0 0 40 40" width={size}>
+      <svg aria-hidden data-bot-face={discoverable ? name : undefined} height={size} viewBox="0 0 40 40" width={size}>
         {shapeNode(shape, color, name)}
         {eyes}
       </svg>
@@ -1079,7 +1083,7 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
     <svg
       aria-hidden
       className="block overflow-visible"
-      data-bot-face={name}
+      data-bot-face={discoverable ? name : undefined}
       data-hb-math="1"
       data-hb-mood={mood}
       data-hb-shape={shape || 'circle'}
