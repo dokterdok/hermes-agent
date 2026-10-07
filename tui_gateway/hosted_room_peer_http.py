@@ -655,14 +655,6 @@ class PeerRunsHTTPClient:
                 )
             return result
 
-            if not str(result.get("run_id") or ""):
-                raise PeerRunsHTTPError(
-                    "peer did not return a run id",
-                    retryable=True,
-                    ambiguous=True,
-                )
-            return result
-
         try:
             result = admit()
         except PeerRunsHTTPError as first_error:
