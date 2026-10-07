@@ -228,6 +228,7 @@ class Automatic:
         self._restored: set[str] = set()
         self._online: tuple[float, bool] | None = None
         self._db: str | None = None
+        self._fence_db: Path | None = None
 
     def db_path(self) -> str | None:
         """The room store this lease layer holds the groups of (its hosted service's)."""
@@ -242,8 +243,7 @@ class Automatic:
         ctx = self.context()
         if ctx is None:
             raise RoomFenceError()
-        store = getattr(ctx, "runs_store", None)
-        return getattr(store, "path", None)
+        return self._fence_db
 
     def hosts(self, room_id: str) -> bool:
         ctx = self.context()
@@ -316,7 +316,16 @@ class Automatic:
         return result
 
     def context(self):
-        return self._context_factory()
+        ctx = self._context_factory()
+        path = getattr(getattr(ctx, "runs_store", None), "path", None)
+        if path is not None:
+            from gateway.hosted_room_fence import RoomFenceError
+            path = Path(path).resolve()
+            with self._lock:
+                if self._fence_db is not None and self._fence_db != path:
+                    raise RoomFenceError()
+                self._fence_db = path
+        return ctx
 
     # the hooks #104601 calls
     def request(self, room_id: str) -> dict[str, Any] | None:

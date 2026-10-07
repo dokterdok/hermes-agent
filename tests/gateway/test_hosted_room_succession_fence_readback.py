@@ -38,7 +38,7 @@ def test_copy_never_follows_a_fenced_epoch_when_its_fence_store_fails(tmp_path, 
         world.close()
 
 
-@pytest.mark.parametrize('fault', ['missing', 'failed'])
+@pytest.mark.parametrize('fault', ['missing', 'failed', 'fallback'])
 def test_missing_runtime_context_cannot_hide_a_durable_fence(tmp_path, monkeypatch, fault):
     world = World(tmp_path, monkeypatch, ('h', 'c', 'd', 'p'), voters=('h', 'c', 'd'), others=('p',))
     try:
@@ -51,11 +51,17 @@ def test_missing_runtime_context_cannot_hide_a_durable_fence(tmp_path, monkeypat
             fence.fence_room(participant.runs.path, room_id=ROOM, fence_epoch=2)
         before = world.head('p')
         def unavailable():
+            if fault == 'fallback':
+                from gateway.session_hosted_service import CanonicalHostedRoomService
+                from types import SimpleNamespace
+                service = SimpleNamespace(db_path=participant.db, succession_context=lambda: None)
+                return CanonicalHostedRoomService.lease_context(service)
             if fault == 'failed':
                 raise RuntimeError('runtime context temporarily unavailable')
             return None
         monkeypatch.setattr(world.automatics['p'], '_context_factory', unavailable)
-        with pytest.raises(fence.RoomFenceError if fault == 'missing' else RuntimeError):
+        expected = {'missing': fence.RoomFenceError, 'failed': RuntimeError, 'fallback': succession.ProofInvalid}
+        with pytest.raises(expected[fault]):
             copy_to(world.gateways['c'], participant)
         assert world.head('p') == before
     finally:
