@@ -505,3 +505,41 @@ it.each(['typed', 'transport'] as const)('keeps a possibly delivered handover pa
   expect(calls('groups.succession.move')).toHaveLength(1)
   expect(calls('groups.send')).toEqual([])
 })
+
+it('retains pending handover when an authenticated passive copy answers, releasing only after that computer serves as the host', async () => {
+  const {useCanonicalGroupSuccession} = await import('./canonical-group-succession-state')
+  let pending = false
+  let takeover = false
+  host({'groups.succession.status': () => {
+    if (pending) {throw new Error('host status unavailable')}
+
+    return status({actions: [{action: 'move', targets: [VPS]}]})
+  }, 'groups.succession.move': () => {
+    pending = true
+    throw Object.assign(new Error('unknown handover'), {code: 4001, data: {reason: 'handover_pending'}})
+  }})
+  handlers.vps = computer(VPS, {'groups.succession.status': () => status({this_install: {install_id: VPS, name: 'Home VPS', role: takeover ? 'host' : 'backup'},
+    host: {install_id: takeover ? VPS : MINI, name: takeover ? 'Home VPS' : 'Mac mini', reachable: true, since: null}})})
+  const onMoved = vi.fn(), onContinued = vi.fn(), events: never[] = []
+  let current!: ReturnType<typeof useCanonicalGroupSuccession>
+
+  function Probe({failing}: {failing: boolean}) {
+    current = useCanonicalGroupSuccession({binding, visible: true, hostFailing: failing, events, onMoved, onContinued})
+
+    return <div>{String(current.handoverPending)}</div>
+  }
+
+  const view = render(<Probe failing={false} />)
+  await waitFor(() => expect(current.hostRoute).toBeDefined())
+  await act(async () => {await expect(current.move(VPS)).rejects.toMatchObject({data: {reason: 'handover_pending'}})})
+  view.rerender(<Probe failing />)
+  await waitFor(() => expect(current.status?.this_install.role).toBe('backup'))
+  expect(current.handoverPending).toBe(true)
+  expect(current.paused).toBe(true)
+  expect(onMoved).not.toHaveBeenCalled()
+  takeover = true
+  act(() => current.refresh())
+  await waitFor(() => expect(current.handoverPending).toBe(false))
+  expect(onMoved).toHaveBeenCalledExactlyOnceWith({connectionId: 'vps', profile: 'default'})
+  expect(calls('groups.succession.move')).toHaveLength(1)
+})
