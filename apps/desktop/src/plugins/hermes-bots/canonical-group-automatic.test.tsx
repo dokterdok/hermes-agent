@@ -445,17 +445,25 @@ it('handles a topology-change confirmation refusal with a warning instead of an 
   expect(calls('groups.custody.automatic')[1][2]).toMatchObject({enabled: true, accept_two_host_risk: true})
 })
 
-it('does not turn an older ambiguous two-computer setting into consent and offers a safe off action', async () => {
+it.each([null, false] as const)('shows the older reported automatic setting without treating it as consent, and respects pending=%s', async pending => {
   const labels = (await import('./canonical-group-locales')).CANONICAL_GROUP_LOCALES.en
-  host({'groups.succession.status': () => status({automatic: {state: 'ready', mode: 'careful', voters: 2, enabled: true}, actions: [{action: 'automatic', enabled: true}]}),
+  host({'groups.succession.status': () => status({automatic: {state: 'ready', mode: 'careful', voters: 2, enabled: true, pending}, actions: [{action: 'automatic', enabled: true}]}),
     'groups.custody.automatic': (_method, params) => ({room_id: params.room_id, automatic: params.enabled, configuration_seq: 5})})
   render(<CanonicalGroupWorkspace binding={binding} />)
   fireEvent.click(await screen.findByRole('button', {name: 'Hosted on Mac mini'}))
   const control = await screen.findByRole('switch', {name: 'Move automatically if a computer goes offline'}) as HTMLButtonElement
-  expect(control.getAttribute('aria-checked')).toBe('false')
+  expect(control.getAttribute('aria-checked')).toBe(String(pending ?? true))
   expect(control.disabled).toBe(true)
   await screen.findByText(labels.twoHostLegacy)
-  fireEvent.click(screen.getByRole('button', {name: labels.twoHostDisable}))
+  const disable = screen.getByRole('button', {name: labels.twoHostDisable}) as HTMLButtonElement
+  expect(disable.disabled).toBe(pending !== null)
+  fireEvent.click(disable)
+
+  if (pending !== null) {expect(calls('groups.custody.automatic')).toEqual([]);
+
+ return}
+
+  expect(screen.getByText('Keeps running on its own. If Mac mini goes offline, another computer takes over after about 3 minutes.')).toBeTruthy()
   await waitFor(() => expect(calls('groups.custody.automatic')).toHaveLength(1))
   expect(calls('groups.custody.automatic')[0][2]).toEqual({room_id: binding.roomId, enabled: false, profile: binding.profile})
 })

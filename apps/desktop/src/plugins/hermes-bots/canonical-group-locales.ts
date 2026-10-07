@@ -245,7 +245,7 @@ export const CANONICAL_GROUP_LOCALES = {
     twoHostRiskTitle: "Allow automatic moves with two computers?",
     twoHostRiskBody: "If the connection breaks, both computers may run this group’s work at the same time and perform duplicate actions. Keep asking where to continue unless you accept this risk.",
     twoHostRiskConfirm: "Allow two-computer automatic moves",
-    twoHostLegacy: "Update the owning computer before enabling automatic moves with two computers. Its older setting does not record your risk consent.",
+    twoHostLegacy: "This older computer can still move the group automatically when its reported switch is on. If the connection breaks, both computers may run work. Turn it off here, or update Hermes before choosing the two-computer risk setting.",
     twoHostDisable: "Turn off automatic moves"
   },
   ja: {
@@ -373,7 +373,7 @@ export const CANONICAL_GROUP_LOCALES = {
     twoHostRiskTitle: "2台のコンピューターで自動移動を許可しますか？",
     twoHostRiskBody: "接続が切れると、両方のコンピューターが同時にこのグループの作業を実行し、操作が重複する可能性があります。このリスクを受け入れない場合は、継続先を毎回選ぶ設定のままにしてください。",
     twoHostRiskConfirm: "2台での自動移動を許可",
-    twoHostLegacy: "2台での自動移動を有効にする前に、管理元のコンピューターを更新してください。古い設定にはリスクへの同意が記録されていません。",
+    twoHostLegacy: "古いバージョンのこのコンピューターは、表示されたスイッチがオンならグループを自動で移動することがあります。接続が切れると両方で作業が動く可能性があります。ここでオフにするか、2台でのリスク設定を選ぶ前にHermesを更新してください。",
     twoHostDisable: "自動移動を無効にする"
   },
   zh: {
@@ -496,7 +496,7 @@ export const CANONICAL_GROUP_LOCALES = {
     twoHostRiskTitle: "允许两台电脑自动迁移吗？",
     twoHostRiskBody: "如果连接中断，两台电脑可能同时执行此群聊的工作并重复操作。除非你接受此风险，否则请继续每次询问在哪里继续。",
     twoHostRiskConfirm: "允许两台电脑自动迁移",
-    twoHostLegacy: "启用两台电脑的自动迁移前，请更新负责的电脑。旧设置没有记录你对风险的同意。",
+    twoHostLegacy: "这台电脑使用旧版 Hermes，报告的开关开启时仍可自动迁移群聊。连接中断时，两台电脑都可能运行工作。可在此关闭，或先更新 Hermes 再选择两台电脑的风险设置。",
     twoHostDisable: "关闭自动迁移"
   },
   'zh-hant': {
@@ -619,7 +619,7 @@ export const CANONICAL_GROUP_LOCALES = {
     twoHostRiskTitle: "允許兩台電腦自動移轉嗎？",
     twoHostRiskBody: "如果連線中斷，兩台電腦可能同時執行此群聊的工作並重複操作。除非你接受此風險，否則請繼續每次詢問在哪裡繼續。",
     twoHostRiskConfirm: "允許兩台電腦自動移轉",
-    twoHostLegacy: "啟用兩台電腦的自動移轉前，請更新負責的電腦。舊設定沒有記錄你對風險的同意。",
+    twoHostLegacy: "這台電腦使用舊版 Hermes，回報的開關開啟時仍可自動移轉群聊。連線中斷時，兩台電腦都可能執行工作。可在此關閉，或先更新 Hermes 再選擇兩台電腦的風險設定。",
     twoHostDisable: "關閉自動移轉"
   },
   ar: {
@@ -744,7 +744,7 @@ export const CANONICAL_GROUP_LOCALES = {
     twoHostRiskTitle: "السماح بالانتقال التلقائي مع جهازين؟",
     twoHostRiskBody: "إذا انقطع الاتصال، فقد يعمل الجهازان على مهام هذه المجموعة في الوقت نفسه وينفذان إجراءات مكررة. أبقِ اختيار مكان المتابعة يدويًا ما لم تقبل هذا الخطر.",
     twoHostRiskConfirm: "السماح بالانتقال التلقائي مع جهازين",
-    twoHostLegacy: "حدّث الجهاز المسؤول قبل تفعيل الانتقال التلقائي مع جهازين. الإعداد القديم لا يسجل موافقتك على الخطر.",
+    twoHostLegacy: "قد ينقل هذا الكمبيوتر القديم المجموعة تلقائيًا عندما يكون المفتاح المعروض مفعّلًا. إذا انقطع الاتصال، فقد يعمل الكمبيوتران معًا. أوقفه هنا أو حدّث Hermes قبل اختيار إعداد المخاطرة مع كمبيوترين.",
     twoHostDisable: "إيقاف الانتقال التلقائي"
   },
   ru: {
@@ -872,7 +872,7 @@ export const CANONICAL_GROUP_LOCALES = {
     twoHostRiskTitle: "Разрешить автоматический перенос между двумя компьютерами?",
     twoHostRiskBody: "При разрыве связи оба компьютера могут одновременно выполнять работу группы и повторять действия. Продолжайте выбирать место вручную, если не принимаете этот риск.",
     twoHostRiskConfirm: "Разрешить автоматический перенос с двумя компьютерами",
-    twoHostLegacy: "Обновите управляющий компьютер перед включением автоматического переноса с двумя компьютерами. Старое настройка не хранит согласие на риск.",
+    twoHostLegacy: "Этот компьютер со старым Hermes может автоматически переносить группу, когда показанный переключатель включён. При разрыве связи оба компьютера могут выполнять работу. Выключите настройку здесь или обновите Hermes перед выбором риска для двух компьютеров.",
     twoHostDisable: "Выключить автоматический перенос"
   },
   fr: {
@@ -1004,7 +1004,7 @@ export const CANONICAL_GROUP_LOCALES = {
     twoHostRiskTitle: "Autoriser le déplacement automatique avec deux ordinateurs ?",
     twoHostRiskBody: "En cas de coupure de connexion, les deux ordinateurs peuvent travailler simultanément pour cette discussion et répéter des actions. Continuez à choisir où poursuivre, sauf si vous acceptez ce risque.",
     twoHostRiskConfirm: "Autoriser le déplacement automatique avec deux ordinateurs",
-    twoHostLegacy: "Mettez à jour l’ordinateur responsable avant d’activer le déplacement automatique avec deux ordinateurs. L’ancien réglage ne conserve pas votre accord sur ce risque.",
+    twoHostLegacy: "Cet ordinateur utilise un ancien Hermes et peut encore déplacer le groupe automatiquement si le réglage affiché est activé. Si la connexion est coupée, les deux ordinateurs peuvent travailler en même temps. Désactivez ce réglage ici, ou mettez Hermes à jour avant de choisir le risque à deux ordinateurs.",
     twoHostDisable: "Désactiver le déplacement automatique"
   },
   de: {
@@ -1139,7 +1139,7 @@ export const CANONICAL_GROUP_LOCALES = {
     twoHostRiskTitle: "Automatische Wechsel mit zwei Computern erlauben?",
     twoHostRiskBody: "Wenn die Verbindung abbricht, können beide Computer gleichzeitig an dieser Gruppe arbeiten und Aktionen doppelt ausführen. Wähle weiterhin selbst, wo es weitergeht, wenn du dieses Risiko nicht akzeptierst.",
     twoHostRiskConfirm: "Automatische Wechsel mit zwei Computern erlauben",
-    twoHostLegacy: "Aktualisiere den zuständigen Computer, bevor du automatische Wechsel mit zwei Computern aktivierst. Die ältere Einstellung speichert deine Risikozustimmung nicht.",
+    twoHostLegacy: "Dieser Computer verwendet ein älteres Hermes und kann die Gruppe weiterhin automatisch verschieben, wenn der gemeldete Schalter an ist. Bei einem Verbindungsabbruch können beide Computer arbeiten. Schalte die Einstellung hier aus oder aktualisiere Hermes, bevor du das Risiko mit zwei Computern wählst.",
     twoHostDisable: "Automatische Wechsel ausschalten"
   },
   es: {
@@ -1267,7 +1267,7 @@ export const CANONICAL_GROUP_LOCALES = {
     twoHostRiskTitle: "¿Permitir movimientos automáticos con dos ordenadores?",
     twoHostRiskBody: "Si se interrumpe la conexión, ambos ordenadores pueden trabajar para este grupo al mismo tiempo y repetir acciones. Sigue eligiendo dónde continuar salvo que aceptes este riesgo.",
     twoHostRiskConfirm: "Permitir movimientos automáticos con dos ordenadores",
-    twoHostLegacy: "Actualiza el ordenador responsable antes de activar movimientos automáticos con dos ordenadores. La configuración antigua no registra tu consentimiento al riesgo.",
+    twoHostLegacy: "Este ordenador utiliza un Hermes antiguo y puede seguir moviendo el grupo automáticamente si el ajuste mostrado está activado. Si se corta la conexión, ambos ordenadores pueden ejecutar trabajo. Desactívalo aquí o actualiza Hermes antes de elegir el riesgo con dos ordenadores.",
     twoHostDisable: "Desactivar movimientos automáticos"
   }
 } satisfies Record<string, CanonicalGroupMessages>
