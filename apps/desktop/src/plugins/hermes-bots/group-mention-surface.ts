@@ -22,13 +22,32 @@ const HIDDEN_HTML = new Set(['code', 'pre', 'script', 'style', 'template'])
 
 export interface GroupMentionSurface {
   text: string
-  generatedAt: Set<number>
+  continuedHandleAt: Set<number>
   quotedLines: Set<number>
+}
+
+/** Generated punctuation can follow a complete literal handle. Generated handle characters cannot
+ * complete a different handle or turn its literal prefix into another Bot's address. Inline tokenization
+ * also sees character references in raw HTML blocks, which document tokens retain as one HTML span. */
+function generatedHandleContinuations(source: string): Set<number> {
+  const offsets = new Set<number>()
+  const events = postprocess(parse().text().write(preprocess()(source, undefined, true)))
+
+  for (const [event, token] of events) {
+    if (event !== 'enter' || !GENERATED.has(token.type)) {continue}
+    const raw = source.slice(token.start.offset, token.end.offset)
+    const fragment = token.type === 'characterReference' ? parseFragment(raw) : null
+    const node = fragment?.childNodes[0]
+    const decoded = node && 'value' in node ? node.value : raw.slice(1)
+
+    if (/^[\p{L}\p{N}._-]/u.test(decoded)) {offsets.add(token.start.offset)}
+  }
+
+  return offsets
 }
 
 function markdownLiteralSource(source: string): GroupMentionSurface {
   const surface: string[] = source.split('').map(character => (character === '\n' ? '\n' : ' '))
-  const generatedAt = new Set<number>()
   const quotedLines = new Set<number>()
 
   const events = postprocess(
@@ -54,10 +73,6 @@ function markdownLiteralSource(source: string): GroupMentionSurface {
       }
     }
 
-    if (GENERATED.has(token.type)) {
-      generatedAt.add(token.start.offset)
-    }
-
     if (token.type === 'data' || token.type === 'htmlFlow' || token.type === 'htmlText') {
       for (let offset = token.start.offset; offset < token.end.offset; offset++) {
         surface[offset] = source[offset]
@@ -65,7 +80,7 @@ function markdownLiteralSource(source: string): GroupMentionSurface {
     }
   }
 
-  return { text: surface.join(''), generatedAt, quotedLines }
+  return { text: surface.join(''), continuedHandleAt: generatedHandleContinuations(source), quotedLines }
 }
 
 /** Tree construction can merge prose around ignored end tags into one source range. Mask every
@@ -117,7 +132,7 @@ export function groupMentionSurface(value: unknown): GroupMentionSurface {
 
   maskHtmlMetadata(source.text, visible)
 
-  return { text: visible.join(''), generatedAt: source.generatedAt, quotedLines: source.quotedLines }
+  return { text: visible.join(''), continuedHandleAt: source.continuedHandleAt, quotedLines: source.quotedLines }
 }
 
 /** Preserve the existing quote-only Stop rules without returning metadata to the directive surface. */
