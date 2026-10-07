@@ -18,6 +18,7 @@ export interface CanonicalFile {
   size: number
   sharer: { kind: 'member' | 'user'; id: string; label: string }
   sharedAt: number
+  available: boolean
 }
 
 export interface CanonicalFilesPage {
@@ -27,7 +28,7 @@ export interface CanonicalFilesPage {
   authority: string
 }
 
-export type FilesFailure = 'access' | 'cursor' | 'error' | 'timeout' | 'unavailable' | 'verification'
+export type FilesFailure = 'access' | 'cursor' | 'error' | 'timeout' | 'unavailable' | 'verification' | 'missing'
 
 export class CanonicalFilesError extends Error {
   constructor(readonly kind: FilesFailure) {
@@ -37,6 +38,7 @@ export class CanonicalFilesError extends Error {
 
 const REASONS: Record<string, FilesFailure> = {
   attachment_cursor_invalid: 'cursor',
+  attachment_unavailable: 'missing',
   authority_conflict: 'access',
   permission_denied: 'access',
   profile_mismatch: 'access',
@@ -90,13 +92,13 @@ function parseFile(value: unknown, snapshotSeq: number): CanonicalFile {
   if (!text(item.event_id) || !text(item.attachment_id) || !whole(item.seq, 1) || item.seq > snapshotSeq ||
     !whole(item.manifest_index) || !text(item.kind) || !text(item.name) || !text(item.mime) || !whole(item.size, 1) ||
     (sharer.kind !== 'member' && sharer.kind !== 'user') || !text(sharer.id) || !text(sharer.label) ||
-    !timestamp(item.shared_at)) {
+    !timestamp(item.shared_at) || (item.available !== undefined && typeof item.available !== 'boolean')) {
     throw new CanonicalFilesError('verification')
   }
 
   return { eventId: item.event_id, attachmentId: item.attachment_id, seq: item.seq, index: item.manifest_index,
     kind: item.kind, name: item.name, mime: item.mime, size: item.size,
-    sharer: { kind: sharer.kind, id: sharer.id, label: sharer.label }, sharedAt: item.shared_at }
+    sharer: { kind: sharer.kind, id: sharer.id, label: sharer.label }, sharedAt: item.shared_at, available: item.available !== false }
 }
 
 /** Newest share first, then message order; anything else means the page cannot be trusted. */
@@ -137,6 +139,8 @@ export async function listCanonicalFiles(
 
 /** Fetch one listed version with the existing download and save it only if the bytes are exactly it. */
 export async function saveCanonicalFile(binding: CanonicalGroupBinding, file: CanonicalFile, signal: AbortSignal) {
+  if (file.available === false) {throw new CanonicalFilesError('missing')}
+
   const reply = record(await withDeadline(canonicalGroupRequest<unknown>(binding, 'groups.attachment.download', {
     room_id: binding.roomId, event_id: file.eventId, attachment_id: file.attachmentId
   }), signal))

@@ -138,7 +138,7 @@ function fileSize(bytes: number, locale?: string) {
 }
 
 function rowProblem(failure: FilesFailure, labels: Labels) {
-  return failure === 'verification' ? labels.fileVerificationFailed : failure === 'timeout' ? labels.fileTimeout
+  return failure === 'missing' ? labels.fileVersionUnavailable : failure === 'verification' ? labels.fileVerificationFailed : failure === 'timeout' ? labels.fileTimeout
     : failure === 'access' ? labels.filesAccess : failure === 'unavailable' ? labels.filesUnavailable
       : labels.fileDownloadFailed
 }
@@ -153,8 +153,10 @@ function FileRow({ binding, file, labels, active, onFocus }: {
   // Leaving the page or closing the dialog retires a Save that has not delivered its bytes yet.
   useEffect(() => () => request.current?.abort(), [])
 
+  const unavailable = file.available === false || saving.failure === 'missing'
+
   const save = async () => {
-    if (request.current) {return}
+    if (request.current || unavailable) {return}
     const controller = request.current = new AbortController()
     setSaving({ pending: true, failure: null })
 
@@ -182,7 +184,7 @@ function FileRow({ binding, file, labels, active, onFocus }: {
   const type = (file.name.includes('.') ? file.name.split('.').pop() : file.mime.split('/')[1])?.toUpperCase() ?? ''
   const details = ` · ${time} · ${type} · ${fileSize(file.size, labels.locale)}`
 
-  return <div aria-label={`${file.name} · ${sharer}${details}`} className="min-w-0 py-1.5 outline-none focus-visible:ring-1"
+  return <div aria-label={`${file.name} · ${sharer}${details}${unavailable ? ` · ${labels.fileVersionUnavailable}` : ''}`} className="min-w-0 py-1.5 outline-none focus-visible:ring-1"
     data-file-row onFocus={onFocus} role="listitem" tabIndex={active ? 0 : -1}>
     <div className="flex min-w-0 items-center gap-2">
       <Codicon className="shrink-0" name={file.kind === 'pdf' ? 'file-pdf' : file.kind === 'image' ? 'file-media' : 'file'} />
@@ -190,14 +192,15 @@ function FileRow({ binding, file, labels, active, onFocus }: {
         <bdi className="block truncate text-xs font-medium" title={file.name}>{file.name}</bdi>
         <div className="truncate text-[0.65rem]"><bdi>{sharer}</bdi>{details}</div>
       </div>
-      <Tip label={`${labels.download}: ${file.name}`}>
+      <Tip label={unavailable ? labels.fileVersionUnavailable : `${labels.download}: ${file.name}`}>
         <Button aria-busy={saving.pending} aria-label={`${labels.download}: ${file.name}`} data-file-save
-          disabled={saving.pending} onClick={() => void save()} size="icon-xs" type="button" variant="ghost">
+          disabled={saving.pending || unavailable} onClick={() => void save()} size="icon-xs" type="button" variant="ghost">
           <Codicon name={saving.pending ? 'loading' : 'cloud-download'} spinning={saving.pending} />
         </Button>
       </Tip>
     </div>
-    {saving.failure && <div className="mt-1 flex flex-wrap items-center gap-2 text-xs" role="alert">
+    {unavailable && <p className="mt-1 text-xs text-(--ui-text-tertiary)" role="status">{labels.fileVersionUnavailable}</p>}
+    {saving.failure && !unavailable && <div className="mt-1 flex flex-wrap items-center gap-2 text-xs" role="alert">
       <span>{rowProblem(saving.failure, labels)}</span>
       <Button onClick={() => void save()} size="inline" type="button" variant="textStrong">{labels.retry}</Button>
     </div>}
@@ -228,6 +231,15 @@ function FileRows({ binding, items, labels, loading }: {
   </div>
 }
 
+/** An empty local catalog does not erase file references already known from the shared log. */
+function filesEmptyLabel(labels: Labels, page: CanonicalFilesPage | undefined, index: number, query: string, latestFileSeq: number) {
+  if (page?.nextCursor || index > 0) {return labels.filesPageEmpty}
+
+  if (query) {return labels.filesNoResults}
+
+  return latestFileSeq > 0 ? labels.filesHistoryNotListed : labels.filesEmpty
+}
+
 function FilesDialog({ binding, roomName, latestFileSeq, onClose }: {
   binding: CanonicalGroupBinding; roomName: string; latestFileSeq: number; onClose: () => void
 }) {
@@ -249,8 +261,7 @@ function FilesDialog({ binding, roomName, latestFileSeq, onClose }: {
     : files.loading ? <Loader className="m-auto size-16" label={labels.filesLoading} type="lemniscate-bloom" />
       : failure ? <ErrorState className="my-auto" title={<p className="text-sm font-medium">{problem}</p>}>{recover}</ErrorState>
         : <div className="my-auto">
-          <EmptyState title={page?.nextCursor || files.index > 0 ? labels.filesPageEmpty
-            : files.query ? labels.filesNoResults : labels.filesEmpty} />
+          <EmptyState title={filesEmptyLabel(labels, page, files.index, files.query, latestFileSeq)} />
           {files.query && <div className="flex justify-center">
             <Button onClick={() => files.setQuery('')} size="inline" type="button" variant="textStrong">{labels.filesClearSearch}</Button>
           </div>}

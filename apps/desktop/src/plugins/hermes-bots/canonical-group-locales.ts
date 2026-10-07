@@ -54,6 +54,8 @@ export interface CanonicalGroupMessages {
   filesUnavailable: string
   filesAccess: string
   filesEmpty: string
+  filesHistoryNotListed: string
+  fileVersionUnavailable: string
   filesPageEmpty: string
   filesNoResults: string
   filesClearSearch: string
@@ -206,6 +208,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Files are temporarily unavailable.',
     filesAccess: 'Files are unavailable for this Group Chat.',
     filesEmpty: 'No files shared yet.',
+    filesHistoryNotListed: "Shared file references remain in the conversation, but no files are shown here.",
+    fileVersionUnavailable: "This version cannot be downloaded from the current host.",
     filesPageEmpty: 'No files on this page.',
     filesNoResults: 'No matching files.',
     filesClearSearch: 'Clear search',
@@ -357,6 +361,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'ファイルを一時的に利用できません。',
     filesAccess: 'このグループチャットのファイルを利用できません。',
     filesEmpty: '共有されたファイルはまだありません。',
+    filesHistoryNotListed: "共有ファイルの参照は会話に残っていますが、ここにはファイルが表示されていません。",
+    fileVersionUnavailable: "このバージョンは現在のホストからダウンロードできません。",
     filesPageEmpty: 'このページにファイルはありません。',
     filesNoResults: '一致するファイルはありません。',
     filesClearSearch: '検索をクリア',
@@ -504,6 +510,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: '文件暂时不可用。',
     filesAccess: '此群聊的文件不可用。',
     filesEmpty: '尚未共享任何文件。',
+    filesHistoryNotListed: "共享文件的引用仍保留在对话中，但此处未显示文件。",
+    fileVersionUnavailable: "无法从当前主机下载此版本。",
     filesPageEmpty: '此页没有文件。',
     filesNoResults: '没有匹配的文件。',
     filesClearSearch: '清除搜索',
@@ -650,6 +658,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: '檔案暫時無法使用。',
     filesAccess: '此群組聊天的檔案無法使用。',
     filesEmpty: '尚未共享任何檔案。',
+    filesHistoryNotListed: "共用檔案的參照仍保留在對話中，但此處未顯示檔案。",
+    fileVersionUnavailable: "無法從目前的主機下載此版本。",
     filesPageEmpty: '此頁沒有檔案。',
     filesNoResults: '找不到相符的檔案。',
     filesClearSearch: '清除搜尋',
@@ -798,6 +808,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'الملفات غير متاحة مؤقتاً.',
     filesAccess: 'الملفات غير متاحة لهذه المحادثة الجماعية.',
     filesEmpty: 'لم تتم مشاركة أي ملفات بعد.',
+    filesHistoryNotListed: "تبقى مراجع الملفات المشتركة في المحادثة، لكن لا تظهر ملفات هنا.",
+    fileVersionUnavailable: "لا يمكن تنزيل هذا الإصدار من المضيف الحالي.",
     filesPageEmpty: 'لا توجد ملفات في هذه الصفحة.',
     filesNoResults: 'لا توجد ملفات مطابقة.',
     filesClearSearch: 'مسح البحث',
@@ -948,6 +960,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Файлы временно недоступны.',
     filesAccess: 'Файлы недоступны для этого группового чата.',
     filesEmpty: 'Файлами ещё не делились.',
+    filesHistoryNotListed: "Ссылки на общие файлы остаются в разговоре, но файлы здесь не отображаются.",
+    fileVersionUnavailable: "Эту версию нельзя скачать с текущего хоста.",
     filesPageEmpty: 'На этой странице нет файлов.',
     filesNoResults: 'Подходящие файлы не найдены.',
     filesClearSearch: 'Очистить поиск',
@@ -1103,6 +1117,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Les fichiers sont temporairement indisponibles.',
     filesAccess: 'Les fichiers ne sont pas disponibles pour ce groupe.',
     filesEmpty: 'Aucun fichier partagé pour l’instant.',
+    filesHistoryNotListed: "Les références aux fichiers partagés restent dans la conversation, mais aucun fichier n’est affiché ici.",
+    fileVersionUnavailable: "Cette version ne peut pas être téléchargée depuis l’ordinateur qui héberge actuellement le groupe.",
     filesPageEmpty: 'Aucun fichier sur cette page.',
     filesNoResults: 'Aucun fichier correspondant.',
     filesClearSearch: 'Effacer la recherche',
@@ -1262,6 +1278,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Dateien sind vorübergehend nicht verfügbar.',
     filesAccess: 'Für diese Gruppe sind keine Dateien verfügbar.',
     filesEmpty: 'Noch keine Dateien geteilt.',
+    filesHistoryNotListed: "Verweise auf geteilte Dateien bleiben im Gespräch, aber hier werden keine Dateien angezeigt.",
+    fileVersionUnavailable: "Diese Version kann vom aktuellen Host nicht heruntergeladen werden.",
     filesPageEmpty: 'Keine Dateien auf dieser Seite.',
     filesNoResults: 'Keine passenden Dateien.',
     filesClearSearch: 'Suche löschen',
@@ -1416,6 +1434,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Los archivos no están disponibles temporalmente.',
     filesAccess: 'Los archivos no están disponibles para este grupo.',
     filesEmpty: 'Aún no se han compartido archivos.',
+    filesHistoryNotListed: "Las referencias a los archivos compartidos permanecen en la conversación, pero aquí no se muestran archivos.",
+    fileVersionUnavailable: "Esta versión no se puede descargar desde el host actual.",
     filesPageEmpty: 'No hay archivos en esta página.',
     filesNoResults: 'No hay archivos que coincidan.',
     filesClearSearch: 'Borrar búsqueda',
