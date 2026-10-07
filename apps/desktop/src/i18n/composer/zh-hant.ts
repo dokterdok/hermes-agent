@@ -1,7 +1,7 @@
 import type { TranslationOverrides } from '../define-locale'
 
 export const zhHantComposer: NonNullable<TranslationOverrides['composer']> = {
-  draftReadFailed: '無法讀取待還原的草稿。內容已保留；儲存恢復可用後，請重試。',
+  draftReadFailed: '無法讀取已儲存的草稿。儲存內容未被修改；恢復可用後，請重試。',
   message: '訊息',
   wakingProfile: profile => `正在喚醒 ${profile}…`,
   placeholderStarting: '正在啟動 Hermes...',

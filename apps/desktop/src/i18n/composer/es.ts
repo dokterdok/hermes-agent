@@ -2,7 +2,7 @@ import type { TranslationOverrides } from '../define-locale'
 
 export const esComposer: NonNullable<TranslationOverrides['composer']> = {
   draftReadFailed:
-    'No se pudieron leer los borradores pendientes. Se han conservado; inténtalo de nuevo cuando el almacenamiento esté disponible.',
+    'No se pudieron leer los borradores guardados. El almacenamiento no se ha modificado; inténtalo de nuevo cuando esté disponible.',
   message: 'Mensaje',
   wakingProfile: profile => `Despertando ${profile}…`,
   placeholderStarting: 'Iniciando Hermes...',

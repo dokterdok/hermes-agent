@@ -1,7 +1,7 @@
 import type { TranslationOverrides } from '../define-locale'
 
 export const arComposer: NonNullable<TranslationOverrides['composer']> = {
-  draftReadFailed: 'تعذّر قراءة المسودات المعلّقة. تم الاحتفاظ بها؛ حاول مجددًا عندما يصبح التخزين متاحًا.',
+  draftReadFailed: 'تعذّر قراءة المسودات المحفوظة. لم يتم تعديل التخزين؛ حاول مجددًا عندما يصبح متاحًا.',
   message: 'الرسالة',
   wakingProfile: profile => `جار إيقاظ ${profile}`,
   placeholderStarting: 'جار بدء Hermes...',

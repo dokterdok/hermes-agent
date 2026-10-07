@@ -1,7 +1,8 @@
 import type { ComposerMessages } from './types'
 
 export const enComposer: ComposerMessages = {
-  draftReadFailed: 'Pending drafts could not be read. They have been kept; try again after storage is available.',
+  draftReadFailed:
+    'Saved drafts could not be read. Their storage has been left unchanged; try again when it is available.',
   message: 'Message',
   wakingProfile: profile => `Waking up ${profile}…`,
   placeholderStarting: 'Starting Hermes...',

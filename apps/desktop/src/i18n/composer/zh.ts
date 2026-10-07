@@ -1,7 +1,7 @@
 import type { TranslationOverrides } from '../define-locale'
 
 export const zhComposer: NonNullable<TranslationOverrides['composer']> = {
-  draftReadFailed: '无法读取待恢复的草稿。内容已保留；存储恢复可用后，请重试。',
+  draftReadFailed: '无法读取已保存的草稿。存储内容未被修改；恢复可用后，请重试。',
   message: '消息',
   wakingProfile: profile => `正在唤醒 ${profile}…`,
   placeholderStarting: '正在启动 Hermes…',

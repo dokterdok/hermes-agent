@@ -2,7 +2,7 @@ import type { TranslationOverrides } from '../define-locale'
 
 export const deComposer: NonNullable<TranslationOverrides['composer']> = {
   draftReadFailed:
-    'Ausstehende Entwürfe konnten nicht gelesen werden. Sie bleiben gespeichert; versuche es erneut, sobald der Speicher verfügbar ist.',
+    'Gespeicherte Entwürfe konnten nicht gelesen werden. Der Speicher bleibt unverändert; versuche es erneut, sobald er verfügbar ist.',
   message: 'Nachricht',
   wakingProfile: profile => `Wecke ${profile}…`,
   placeholderStarting: 'Hermes wird gestartet…',
