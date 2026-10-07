@@ -479,7 +479,9 @@ export function GroupChatSettingsDialog({
       return
     }
 
-    if (!settingsBinding.current?.isLive() || ($groupChats.get()[group]?.roomId || group) !== scopeIdentity) {
+    const liveRoom = $groupChats.get()[group]
+
+    if (!settingsBinding.current?.isLive() || (liveRoom?.roomId || group) !== scopeIdentity) {
       host.notify({ kind: 'error', message: b.group.settingsUnavailable })
 
       return
@@ -487,7 +489,8 @@ export function GroupChatSettingsDialog({
 
     if (
       !openedSettings.roomId &&
-      (current !== openedSettings.image || currentHoldDetection !== openedSettings.holdDetection)
+      ((liveRoom?.image || null) !== openedSettings.image ||
+        (liveRoom?.holdDetection !== false) !== openedSettings.holdDetection)
     ) {
       host.notify({ kind: 'error', message: b.group.settingsChanged })
 
