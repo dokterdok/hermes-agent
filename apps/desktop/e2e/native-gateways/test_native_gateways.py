@@ -40,7 +40,7 @@ def test_desktop_ssh_attaches_to_owner_without_owning_its_lifetime(tmp_path):
         '\nexport HERMES_HOME=' + shlex.quote(str(ambient)) + '\nexec /bin/sh -c "$SSH_ORIGINAL_COMMAND"\n')
     shell.chmod(0o700)
     for name in ('host', 'client'):
-        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(tmp_path / name)], check=True)
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(tmp_path / name)], check=True, timeout=30)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     config = tmp_path / 'sshd_config'
@@ -60,7 +60,7 @@ def test_desktop_ssh_attaches_to_owner_without_owning_its_lifetime(tmp_path):
     subprocess.run([str(root / 'node_modules/.bin/esbuild'),
         str(root / 'apps/desktop/electron/ssh-gateway-live-fixture.ts'), '--bundle', '--platform=node', '--format=esm',
         "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
-        '--external:electron', '--outfile=' + str(fixture)], cwd=root, check=True, capture_output=True)
+        '--external:electron', '--outfile=' + str(fixture)], cwd=root, check=True, capture_output=True, timeout=60)
     control_dir = tempfile.mkdtemp(prefix='hss-', dir='/tmp')
     with (tmp_path / 'sshd.log').open('w+') as log:
         server = subprocess.Popen(['/usr/sbin/sshd', '-D', '-e', '-f', str(config)], stdout=log, stderr=log)
@@ -93,7 +93,7 @@ def test_native_peer_setup_lost_issuance_recovery_and_new_viewer(tmp_path):
     subprocess.run([str(root / 'node_modules/.bin/esbuild'),
         str(root / 'apps/desktop/electron/room-setup-live-fixture.ts'), '--bundle', '--platform=node', '--format=esm',
         "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
-        '--outfile=' + str(fixture)], cwd=root, check=True, capture_output=True)
+        '--outfile=' + str(fixture)], cwd=root, check=True, capture_output=True, timeout=60)
     try:
         with daemon(root, home, home_env, barrier=False) as (_, home_desc), daemon(root, peer, peer_env, barrier=False) as (_, peer_desc):
             def descriptor(home, desc):
