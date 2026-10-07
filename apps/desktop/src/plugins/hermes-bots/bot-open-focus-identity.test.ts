@@ -310,7 +310,7 @@ it.each(['warm-failure', 'cold-failure'])(
     const { saveSelectedRosterBot } = await import('./bot-state')
     const { $unreadFinishedMarkers } = await import('@/store/session-unread')
     const row = { ...bot, canonical_session: { id: `failed-read-${kind}`, last_active: 100 } } as RosterRow
-    const focused = vi.spyOn(host.state.focusedStoredSessionId, 'get').mockReturnValue(row.canonical_session!.id)
+    const focused = vi.spyOn(host.state.focusedStoredSessionId, 'get').mockReturnValue(row.canonical_session!.id!)
     const owner = vi
       .spyOn(host.state.focusedSessionOwner, 'get')
       .mockReturnValue({ connectionId: 'local', profile: 'ops' })
