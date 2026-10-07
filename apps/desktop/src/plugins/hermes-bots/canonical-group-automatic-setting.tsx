@@ -25,7 +25,7 @@ export function AutomaticMoveSetting({automatic, controller, offered, enabledFal
   const legacy = two && automatic.careful_opt_in === null
   const ordinary = automatic.enabled ?? enabledFallback
   const committed = two ? automatic.careful_opt_in === true && ordinary : ordinary
-  const requested = two ? committed : automatic.pending ?? committed
+  const requested = automatic.pending ?? committed
 
   const change = async (enabled: boolean, acceptRisk = false) => {
     if (pending.current) {return}
@@ -49,7 +49,7 @@ export function AutomaticMoveSetting({automatic, controller, offered, enabledFal
         onCheckedChange={enabled => {if (enabled && two) {setConfirming(true)} else {void change(enabled)}}} size="xs" />
       {words.automaticSwitch}
     </label>
-    <p className="text-(--ui-text-tertiary)">{automatic.pending !== null ? ordinary ? words.turningOn : words.turningOff : words.automaticHelp}</p>
+    <p className="text-(--ui-text-tertiary)">{automatic.pending !== null ? automatic.pending ? words.turningOn : words.turningOff : words.automaticHelp}</p>
     {legacy && <div className="grid gap-2" role="status"><p>{labels.twoHostLegacy}</p>
       {ordinary && <Button disabled={busy} onClick={() => void change(false)} size="sm" variant="secondary">{labels.twoHostDisable}</Button>}
     </div>}

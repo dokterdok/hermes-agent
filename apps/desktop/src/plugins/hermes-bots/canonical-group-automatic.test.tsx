@@ -296,6 +296,44 @@ it('ends a split it can see by handing the older host the newer chain, quietly, 
   expect(calls('groups.succession.learn')).toHaveLength(2)
 })
 
+it('retains an observed split until the older computer confirms it stopped, including a lost learn reply and unreadable status', async () => {
+  let phase: 'dual' | 'unreadable' | 'resolved' = 'dual'
+  let peerOnline = true
+  const chain = [{ seq: 6, event_id: 'new-host', kind: 'authority.transition', actor: system, payload: { to_epoch: 2 } }]
+  host({ 'groups.succession.status': () => {
+    if (phase === 'unreadable') {throw new Error('connection lost')}
+
+    return phase === 'resolved' ? status({ this_install: { install_id: MINI, name: 'Mac mini', role: 'backup' },
+      host: { install_id: VPS, name: 'Home VPS', reachable: true, since: null } })
+      : status({ actions: [{ action: 'keep', targets: [MINI, VPS] }] })
+  }, 'groups.succession.learn': () => {
+    phase = 'unreadable'
+    throw new Error('learn reply lost')
+  } })
+
+  const peer = computer(VPS, { 'groups.state': () => roomState({}, 2), 'groups.log': () => ({ events: chain }),
+    'groups.succession.status': () => status({ host: { install_id: VPS, name: 'Home VPS', reachable: true, since: null },
+      this_install: { install_id: VPS, name: 'Home VPS', role: 'host' } }) })
+
+  handlers.vps = (method, params) => peerOnline ? peer(method, params) : unreachable(method, params)
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  expect(await screen.findByText('The group may still be running in two places')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /Keep (Mac mini|Home VPS)/ })).toBeNull()
+  expect(calls('groups.succession.learn')).toHaveLength(1)
+
+  peerOnline = false
+  fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+  await waitFor(() => expect(calls('groups.succession.status').filter(call => call[0].connectionId === 'mac-mini').length).toBeGreaterThan(2))
+  expect(screen.getByText('The group may still be running in two places')).toBeTruthy()
+  expect(calls('groups.succession.learn')).toHaveLength(1)
+
+  phase = 'resolved'
+  peerOnline = true
+  fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+  await waitFor(() => expect(screen.queryByText('The group may still be running in two places')).toBeNull())
+  expect(calls('groups.succession.keep')).toEqual([])
+})
+
 const journal = () => JSON.parse(localStorage.getItem('hermes.desktop.canonicalGroupSends.v1') || '{}') as Record<string, Record<string, unknown>>
 const UNSAVED = 'Not yet saved on another computer'
 
@@ -420,4 +458,19 @@ it('does not turn an older ambiguous two-computer setting into consent and offer
   fireEvent.click(screen.getByRole('button', {name: labels.twoHostDisable}))
   await waitFor(() => expect(calls('groups.custody.automatic')).toHaveLength(1))
   expect(calls('groups.custody.automatic')[0][2]).toEqual({room_id: binding.roomId, enabled: false, profile: binding.profile})
+})
+
+it.each([2, 3].flatMap(voters => [true, false].map(pending => ({voters, pending}))))('shows the requested automatic direction while $voters voters confirm pending=$pending', async ({voters, pending}) => {
+  const words = (await import('./canonical-group-succession-locales')).SUCCESSION_LOCALES.en
+  host({'groups.succession.status': () => status({automatic: {state: 'off', mode: voters === 2 ? 'careful' : 'majority',
+    voters, enabled: !pending, pending, careful_opt_in: !pending}, actions: [{action: 'automatic', enabled: !pending}]})})
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Hosted on Mac mini'}))
+  const section = within(await screen.findByRole('region', {name: words.offlineHeading}))
+  const control = section.getByRole('switch', {name: words.automaticSwitch})
+  expect(control.getAttribute('aria-checked')).toBe(String(pending))
+  expect(control.getAttribute('data-disabled')).not.toBeNull()
+  expect(section.getByText(pending ? words.turningOn : words.turningOff)).toBeTruthy()
+  fireEvent.click(control)
+  expect(calls('groups.custody.automatic')).toEqual([])
 })

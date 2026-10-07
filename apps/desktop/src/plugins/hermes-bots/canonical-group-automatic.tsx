@@ -232,7 +232,8 @@ export function CarefulMoveWarning({ controller, roomId, events, group }: {
   </div>
 }
 
-interface Split { hosts: SuccessionComputer[]; keep: string[]; other: CanonicalGroupRoute }
+interface Split { hosts: SuccessionComputer[]; keep: string[]; other: CanonicalGroupRoute; uncertain: boolean; bindingKey: string }
+const splitBindingKey = (binding: CanonicalGroupBinding) => JSON.stringify([binding.connectionId, binding.profile, binding.roomId])
 
 async function epochOf(route: CanonicalGroupRoute, roomId: string) {
   const state = await canonicalGroupRequest<{ room?: { authority_epoch?: unknown } }>(route, 'groups.state', { room_id: roomId })
@@ -268,85 +269,119 @@ async function transitionChain(route: CanonicalGroupRoute, roomId: string, older
   return chain
 }
 
-/** Desktop ends splits it can see: two of its connections both host the room. It hands the older host the newer
- * side's chain once per incident, quietly; only a split that remains is shown, with an OS notification. */
+/** Deliver the newer chain once, then require an attributable status to prove the older host stopped. */
+async function reconcileSplit(binding: CanonicalGroupBinding, otherRoute: CanonicalGroupRoute, ours: SuccessionStatus,
+  theirs: SuccessionStatus, handled: Set<string>, stopped: () => boolean) {
+  const [mine, other] = await Promise.all([epochOf(binding, binding.roomId), epochOf(otherRoute, binding.roomId)]).catch(() => [null, null])
+  const key = JSON.stringify([splitBindingKey(binding), ...[mine, other].sort()])
+
+  if (mine === null || other === null || mine === other) {return { key, remains: true, uncertain: false }}
+
+  const [newer, older, olderEpoch, olderInstall] = mine > other
+    ? [binding, otherRoute, other, theirs.this_install.install_id] : [otherRoute, binding, mine, ours.this_install.install_id]
+
+  if (!handled.has(key)) {
+    handled.add(key)
+    const chain = await transitionChain(newer, binding.roomId, olderEpoch).catch(() => [])
+
+    if (chain.length && !stopped()) {await learnSuccession(older, binding.roomId, chain).catch(() => undefined)}
+  }
+
+  const checked = await readSuccessionStatus(older, binding.roomId).catch(() => null)
+  const attributable = checked?.this_install.install_id === olderInstall
+  const stoppedHosting = attributable && (checked.this_install.role === 'backup' || checked.this_install.role === 'member')
+
+  return { key, remains: !stoppedHosting, uncertain: !attributable || checked.this_install.role === 'none' }
+}
+
+/** Read-only discovery is bound to the backup's advertised installation. */
+async function readSplitComputer(found: Awaited<ReturnType<typeof desktopComputers>>, backup: SuccessionStatus['backups'][number],
+  binding: CanonicalGroupBinding, stopped: () => boolean) {
+  const computer = found.find(entry => entry.installId === backup.install_id && entry.connectionId !== binding.connectionId)
+  const confirmed = computer && await confirmComputer(computer).catch(() => null)
+
+  if (stopped() || !confirmed || !successionAdvertised(confirmed.methods)) {return null}
+  const theirs = await readSuccessionStatus(confirmed.route, binding.roomId).catch(() => null)
+
+  if (!theirs || theirs.this_install.install_id !== backup.install_id || theirs.this_install.role !== 'host' || theirs.state !== 'ok') {return null}
+
+  return { confirmed, theirs }
+}
+
+/** Desktop sends the older of two observed hosts the newer chain once. Unreadable status retains the observed risk. */
 export function useSplitEnding({ binding, controller, visible, group }: {
   binding: CanonicalGroupBinding; controller: SuccessionController; visible: boolean; group: string
 }) {
   const words = useBots().succession
   const [split, setSplit] = useState<Split | null>(null)
+  const [attempt, setAttempt] = useState(0)
   const handled = useRef(new Set<string>())
   const status = controller.status
-  // Only two hosts that both report serving are a split Desktop has to end; one the gateways already know about shows as a conflict.
+  const bindingKey = splitBindingKey(binding)
   const ours = controller.fromBinding && controller.answeredByHost && status?.state === 'ok' ? status : null
 
   useEffect(() => {
-    if (!visible || !ours) {return}
-    let stopped = false
+    if (!visible) {return}
 
+    if (!ours) {
+      setSplit(current => {
+        if (!current || current.bindingKey !== bindingKey) {return null}
+
+        const stoppedHere = controller.fromBinding && status?.this_install.install_id === current.hosts[0].install_id &&
+          (status.this_install.role === 'backup' || status.this_install.role === 'member')
+
+        return stoppedHere ? null : { ...current, uncertain: true, keep: [] }
+      })
+
+      return
+    }
+
+    let stopped = false
     void (async () => {
       const found = await desktopComputers()
 
       for (const backup of ours.backups) {
-        const computer = found.find(entry => entry.installId === backup.install_id && entry.connectionId !== binding.connectionId)
-        const confirmed = computer && await confirmComputer(computer).catch(() => null)
+        const candidate = await readSplitComputer(found, backup, binding, () => stopped)
 
         if (stopped) {return}
 
-        if (!confirmed || !successionAdvertised(confirmed.methods)) {continue}
-        const theirs = await readSuccessionStatus(confirmed.route, binding.roomId).catch(() => null)
-
-        if (stopped) {return}
-
-        if (theirs?.this_install.role !== 'host' || theirs.state !== 'ok') {continue}
-        const [mine, other] = await Promise.all([epochOf(binding, binding.roomId), epochOf(confirmed.route, binding.roomId)]).catch(() => [null, null])
-        const key = JSON.stringify([binding.roomId, ...[mine, other].sort()])
-        let remains = true
-
-        // Hand the older host the newer chain once; whether it stepped down is read every time.
-        if (mine !== null && other !== null && mine !== other) {
-          const [newer, older, olderEpoch] = mine > other ? [binding, confirmed.route, other] : [confirmed.route, binding, mine]
-
-          if (!handled.current.has(key)) {
-            handled.current.add(key)
-            const chain = await transitionChain(newer, binding.roomId, olderEpoch).catch(() => [])
-
-            if (chain.length) {await learnSuccession(older, binding.roomId, chain).catch(() => undefined)}
-          }
-
-          remains = (await readSuccessionStatus(older, binding.roomId).catch(() => null))?.this_install.role === 'host'
-        }
+        if (!candidate) {continue}
+        const { confirmed, theirs } = candidate
+        const result = await reconcileSplit(binding, confirmed.route, ours, theirs, handled.current, () => stopped)
 
         if (stopped) {return}
         const hosts = [ours.this_install, theirs.this_install]
 
-        if (remains && !handled.current.has(`shown:${key}`)) {
-          handled.current.add(`shown:${key}`)
-          notifyOs(words.runningTwiceTitle, words.runningTwiceBody(computerName(controller, hosts[0]) ?? words.computerNumber(1),
-            computerName(controller, hosts[1]) ?? words.computerNumber(2), group))
+        if (result.remains && !handled.current.has(`shown:${result.key}`)) {
+          handled.current.add(`shown:${result.key}`)
+          notifyOs(result.uncertain ? words.splitUnconfirmedTitle : words.runningTwiceTitle,
+            result.uncertain ? words.splitUnconfirmedBody : words.runningTwiceBody(computerName(controller, hosts[0]) ?? words.computerNumber(1),
+              computerName(controller, hosts[1]) ?? words.computerNumber(2), group))
         }
 
-        setSplit(remains ? { hosts, other: confirmed.route,
-          keep: [...new Set([...offeredTargets(ours, 'keep'), ...offeredTargets(theirs, 'keep')])] } : null)
+        setSplit(result.remains ? { hosts, other: confirmed.route, uncertain: result.uncertain, bindingKey,
+          keep: result.uncertain ? [] : [...new Set([...offeredTargets(ours, 'keep'), ...offeredTargets(theirs, 'keep')])] } : null)
 
-        if (!remains) {controller.refresh()}
+        if (!result.remains) {controller.refresh()}
 
         return
       }
 
-      if (!stopped) {setSplit(null)}
-    })()
+      if (!stopped) {setSplit(current => current?.bindingKey === bindingKey ? { ...current, uncertain: true, keep: [] } : null)}
+    })().catch(() => {
+      if (!stopped) {setSplit(current => current?.bindingKey === bindingKey ? { ...current, uncertain: true, keep: [] } : null)}
+    })
 
     return () => {stopped = true}
-    // The controller's methods are rebuilt each render; the status object is what changes the answer.
+    // The status object changes the answer; the controller's methods are rebuilt each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, ours, binding, group, words])
+  }, [visible, ours, binding, bindingKey, group, words, attempt, status, controller.fromBinding])
 
-  return ours ? split : null
+  return split?.bindingKey === bindingKey ? { ...split, check: () => {controller.refresh(); setAttempt(value => value + 1)} } : null
 }
 
 /** "This group is running in two places": loud, owner-only Keep, only when ending it quietly didn't work. */
-export function SplitBanner({ controller, split, group }: { controller: SuccessionController; split: Split; group: string }) {
+export function SplitBanner({ controller, split, group }: { controller: SuccessionController; split: Split & { check: () => void }; group: string }) {
   const words = useBots().succession
   const labels = useCanonicalGroupLabels()
   const [keeping, setKeeping] = useState<SuccessionComputer | null>(null)
@@ -355,8 +390,9 @@ export function SplitBanner({ controller, split, group }: { controller: Successi
 
   return <div className="shrink-0 border-b border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)" data-slot="group-split" role="alert">
     <div className="mx-auto grid w-full max-w-3xl gap-1.5 px-4 py-2.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
-      <p className="text-sm font-medium text-destructive">{words.runningTwiceTitle}</p>
-      <p>{words.runningTwiceBody(named[0].name, named[1].name, group)}</p>
+      <p className="text-sm font-medium text-destructive">{split.uncertain ? words.splitUnconfirmedTitle : words.runningTwiceTitle}</p>
+      <p>{split.uncertain ? words.splitUnconfirmedBody : words.runningTwiceBody(named[0].name, named[1].name, group)}</p>
+      {split.uncertain && <div><Button onClick={split.check} size="sm" variant="secondary">{words.checkSplit}</Button></div>}
       {!!split.keep.length && <div className="flex flex-wrap items-center gap-2 pt-0.5">
         {named.filter(entry => split.keep.includes(entry.computer.install_id)).map(entry =>
           <Button key={entry.computer.install_id} onClick={() => setKeeping(entry.computer)} size="sm" variant="secondary">{words.keep(entry.name)}</Button>)}
@@ -365,7 +401,7 @@ export function SplitBanner({ controller, split, group }: { controller: Successi
     <ConfirmDialog cancelLabel={labels.cancel} confirmLabel={keeper ? words.keep(keeper.name) : ''}
       description={named.find(entry => entry.computer.install_id !== keeping?.install_id)?.name
         ? words.keepBody(named.find(entry => entry.computer.install_id !== keeping?.install_id)!.name) : undefined}
-      onClose={() => setKeeping(null)} onConfirm={async () => {if (keeping) {await controller.keep(keeping.install_id)}}} open={!!keeping}
+      onClose={() => setKeeping(null)} onConfirm={async () => {if (keeping && !split.uncertain && split.keep.includes(keeping.install_id)) {await controller.keep(keeping.install_id)}}} open={!!keeping && !split.uncertain}
       title={keeper ? words.keepTitle(keeper.name) : ''} />
   </div>
 }
