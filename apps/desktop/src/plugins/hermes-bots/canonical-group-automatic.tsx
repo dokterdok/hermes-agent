@@ -167,6 +167,22 @@ function notifyOs(title: string, body: string) {
   try {void getPluginCtx()?.os?.notify?.({ title, body })} catch {/* Best effort. */}
 }
 
+/** Decide who can acknowledge or reverse the latest evidence move, using only offered actions. */
+function carefulMoveChoices(controller: SuccessionController, roomId: string, latest: CanonicalGroupEvent | undefined, dismissed: string | null) {
+  const status = controller.status
+  const evidence = latest?.payload.proof_kind === 'evidence' && latest.event_id ? latest : null
+  const seen = evidence ? readNotices()[roomId] : undefined
+  const fromInstall = status?.previous_host?.install_id
+  const goBack = !!fromInstall && offeredTargets(status, 'keep').includes(fromInstall)
+  const askFirst = offers(status, 'automatic')
+  const owner = goBack || askFirst
+
+  return { evidence, fromInstall, goBack, askFirst, owner,
+    to: evidence ? evidence.payload.to_name ?? computerName(controller, status?.host) : null,
+    from: evidence ? evidence.payload.from_name ?? computerName(controller, status?.previous_host) : null,
+    shown: evidence && owner && dismissed !== evidence.event_id && !seen?.dismissed?.includes(evidence.event_id!) }
+}
+
 /** After a careful move (`proof_kind: "evidence"`): the owner gets one warning per transition, with its choices, until
  * acknowledged. Who decides is read from `actions`; everyone else sees an info line while the host reports the move. */
 export function CarefulMoveWarning({ controller, roomId, events, group }: {
@@ -181,15 +197,7 @@ export function CarefulMoveWarning({ controller, roomId, events, group }: {
   const status = controller.status
 
   const latest = useMemo(() => [...events].reverse().find(event => event.kind === 'authority.transition'), [events])
-  const evidence = latest?.payload.proof_kind === 'evidence' && latest.event_id ? latest : null
-  const seen = evidence ? readNotices()[roomId] : undefined
-  const to = evidence ? evidence.payload.to_name ?? computerName(controller, status?.host) : null
-  const from = evidence ? evidence.payload.from_name ?? computerName(controller, status?.previous_host) : null
-  const fromInstall = status?.previous_host?.install_id
-  const goBack = !!fromInstall && offeredTargets(status, 'keep').includes(fromInstall)
-  const askFirst = offers(status, 'automatic')
-  const owner = goBack || askFirst
-  const shown = evidence && owner && dismissed !== evidence.event_id && !seen?.dismissed?.includes(evidence.event_id!)
+  const {evidence, to, from, fromInstall, goBack, askFirst, owner, shown} = carefulMoveChoices(controller, roomId, latest, dismissed)
 
   useEffect(() => {
     if (!shown || !evidence?.event_id || readNotices()[roomId]?.notified?.includes(evidence.event_id)) {return}

@@ -31,9 +31,11 @@ export function AutomaticMoveSetting({automatic, controller, offered, enabledFal
     if (pending.current) {return}
     pending.current = true; setBusy(true); setFailed(false)
 
-    try {await controller.setAutomatic(enabled, acceptRisk);
+    try {
+      await controller.setAutomatic(enabled, acceptRisk)
 
- return true} catch (error) {
+      return true
+    } catch (error) {
       if (!acceptRisk && successionFailure(error)?.reason === 'careful_confirmation_required') {setConfirming(true); controller.refresh()}
       else {setFailed(true)}
 

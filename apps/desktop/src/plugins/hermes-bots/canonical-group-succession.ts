@@ -162,6 +162,42 @@ function actions(value: unknown) {
 }
 
 /** Unknown states and malformed payloads show nothing rather than a guess. */
+/** Automatic preference, effective mode and pending direction are independent wire fields. */
+function parseAutomatic(value: unknown): SuccessionAutomatic | null {
+  const automatic = record(value), state = oneOf(AUTOMATIC, automatic?.state)
+
+  if (!state) {return null}
+  const flag = (value: unknown) => typeof value === 'boolean' ? value : null
+
+  return { state, mode: oneOf(MODES, automatic?.mode), standby: computer(automatic?.standby),
+    reason: typeof automatic?.reason === 'string' ? automatic.reason : null,
+    offline: Array.isArray(automatic?.offline) ? automatic.offline.flatMap(entry => typeof entry === 'string' ? [{install_id: '', name: displayLabel(entry)}]
+      : computer(entry) ?? []) : [],
+    voters: count(automatic?.voters), careful_opt_in: flag(automatic?.careful_opt_in),
+    needed: count(automatic?.needed), enabled: flag(automatic?.enabled), pending: flag(automatic?.pending) }
+}
+
+/** Transition receipts and conflict provenance remain separate from ordinary serving state. */
+function parseTransitions(item: Json): Pick<SuccessionStatus, 'moving' | 'moved' | 'conflict_window' | 'previous_host' | 'last_attempt' | 'moved_in'> {
+  const moving = record(item.moving), moved = record(item.moved), conflict = record(item.conflict)
+  const previous = record(item.previous_host), previousComputer = computer(item.previous_host)
+  const attempt = record(item.last_attempt), attemptTarget = computer(attempt?.to)
+  const movingTo = computer(moving?.to), movedTo = computer(moved?.to)
+  const movedIn = record(item.moved_in)
+  const start = seconds(conflict?.start), end = seconds(conflict?.end)
+
+  return {
+    moving: movingTo ? {to: movingTo, step: oneOf(STEPS, moving?.step), reason: typeof moving?.reason === 'string' ? moving.reason : null,
+      running: count(moving?.running)} : null,
+    moved: movedTo ? {to: movedTo, branch_id: typeof moved?.branch_id === 'string' && moved.branch_id ? moved.branch_id : null,
+      separate_events: count(moved?.separate_events)} : null,
+    conflict_window: start && end ? {start, end} : null,
+    previous_host: previousComputer ? {...previousComputer, offline_since: seconds(previous?.offline_since)} : null,
+    last_attempt: attemptTarget && typeof attempt?.error === 'string' && attempt.error ? {to: attemptTarget, error: attempt.error} : null,
+    moved_in: movedIn ? {from: computer(movedIn.from), proof_kind: typeof movedIn.proof_kind === 'string' ? movedIn.proof_kind : null} : null
+  }
+}
+
 export function parseSuccessionStatus(value: unknown): SuccessionStatus | null {
   const item = record(value)
   const state = oneOf(STATES, item?.state)
@@ -169,13 +205,7 @@ export function parseSuccessionStatus(value: unknown): SuccessionStatus | null {
   const self = record(item?.this_install), selfComputer = computer(item?.this_install)
 
   if (!item || !state || !hostRecord || !hostComputer) {return null}
-  const moving = record(item.moving), moved = record(item.moved), conflict = record(item.conflict)
-  const previous = record(item.previous_host), previousComputer = computer(item.previous_host)
-  const attempt = record(item.last_attempt), attemptTarget = computer(attempt?.to)
-  const movingTo = computer(moving?.to), movedTo = computer(moved?.to)
-  const automatic = record(item.automatic), automaticState = oneOf(AUTOMATIC, automatic?.state), paused = record(item.paused)
-  const movedIn = record(item.moved_in), flag = (value: unknown) => typeof value === 'boolean' ? value : null
-  const start = seconds(conflict?.start), end = seconds(conflict?.end)
+  const conflict = record(item.conflict), paused = record(item.paused)
 
   return {
     state,
@@ -185,28 +215,16 @@ export function parseSuccessionStatus(value: unknown): SuccessionStatus | null {
     owner: { name: displayLabel(record(item.owner)?.name) },
     backups: Array.isArray(item.backups) ? item.backups.flatMap(backup) : [],
     at_risk: count(record(item.at_risk)?.count),
-    moving: movingTo ? { to: movingTo, step: oneOf(STEPS, moving?.step), reason: typeof moving?.reason === 'string' ? moving.reason : null,
-      running: count(moving?.running) } : null,
+    ...parseTransitions(item),
     conflict: Array.isArray(conflict?.hosts) ? conflict.hosts.flatMap(entry => computer(entry) ?? []) : [],
-    conflict_window: start && end ? { start, end } : null,
     conflict_running_on: computer(conflict?.running_on),
-    automatic: automaticState ? { state: automaticState, mode: oneOf(MODES, automatic?.mode), standby: computer(automatic?.standby),
-      reason: typeof automatic?.reason === 'string' ? automatic.reason : null,
-      offline: Array.isArray(automatic?.offline) ? automatic.offline.flatMap(entry => typeof entry === 'string' ? [{ install_id: '', name: displayLabel(entry) }]
-        : computer(entry) ?? []) : [],
-      voters: count(automatic?.voters), careful_opt_in: flag(automatic?.careful_opt_in),
-      needed: count(automatic?.needed), enabled: flag(automatic?.enabled), pending: flag(automatic?.pending) } : null,
+    automatic: parseAutomatic(item.automatic),
     paused: state === 'paused' ? { reason: typeof paused?.reason === 'string' ? paused.reason : 'lost_majority',
       waiting_for: Array.isArray(paused?.waiting_for) ? paused.waiting_for.flatMap(entry => computer(entry) ?? []) : [] } : null,
-    moved: movedTo ? { to: movedTo, branch_id: typeof moved?.branch_id === 'string' && moved.branch_id ? moved.branch_id : null,
-      separate_events: count(moved?.separate_events) } : null,
     work: work(item.work),
     actions: actions(item.actions),
     unavailable_reason: oneOf(UNAVAILABLE, item.unavailable_reason),
-    previous_host: previousComputer ? { ...previousComputer, offline_since: seconds(previous?.offline_since) } : null,
-    unavailable_bots: bots(item.unavailable_bots),
-    last_attempt: attemptTarget && typeof attempt?.error === 'string' && attempt.error ? { to: attemptTarget, error: attempt.error } : null,
-    moved_in: movedIn ? { from: computer(movedIn.from), proof_kind: typeof movedIn.proof_kind === 'string' ? movedIn.proof_kind : null } : null
+    unavailable_bots: bots(item.unavailable_bots)
   }
 }
 
