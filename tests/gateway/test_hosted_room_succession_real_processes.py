@@ -1,7 +1,7 @@
 """Three real gateways in majority mode: the host is killed and a standby takes the group over by itself.
 
-H hosts a Group Chat of its two Bots. S and T are custodian-only backups: each consented to continue
-it, the owner designated them in that order, and each says it is always on (``group_chat.always_on``),
+H hosts a Group Chat with two local Bots and one Bot each on S and T. S and T both keep copies
+and consent to continue it; the owner designated them in that order, and each says it is always on (``group_chat.always_on``),
 so the voters are [H, S, T] and the group moves by itself. Every exchange between
 the three is real HTTP between separate processes, each with its own ``HERMES_HOME``.
 
@@ -12,7 +12,8 @@ whole run: at no observed instant may two computers admit work, nor at two diffe
 standby must take over within the bound (the ~20 s lease, 10 s grace, then promises and catch-up)
 with a certified, automatic move; its history holds the protected message and the turn's admission,
 and the other standby follows it. H then restarts: it refuses work, rejoins as a copy of the new
-host, and never serves. H's turn runs once, never again there or anywhere else.
+host, and never serves. H's turn runs once, never again there or anywhere else. With H still down, both
+available Bots answer fresh addressed messages under the new authority, each exactly once.
 
 Real timing: about 80 s of wall clock per case, like the other daemon tests' grant renewal waits.
 """
@@ -206,17 +207,29 @@ def test_a_killed_host_is_replaced_by_a_majority_within_the_bound_and_never_by_t
             await watching
 
     async def setup():
-        room = (await h.result('groups.create', room_id=ROOM, name='Linked', members=MEMBERS))['room']
-        ids = {'h': room['authority_gateway_id']}
-        for backup in (s, t):  # the owner's order of standbys: S first
+        links = {}
+        members = list(MEMBERS)
+        for backup in (s, t):
             link = await _until(lambda: backup.result('groups.capabilities'), lambda c: c['room_link']['enabled'],
                                 30, f'{backup.name} room link')
+            links[backup.name] = link['room_link']
+            catalog = link['room_link']['catalog']
+            members.append({'member_id': backup.name, 'profile': 'default', 'handle': backup.name,
+                            'target': {'kind': 'peer', 'peer_id': backup.name,
+                                       'installation_id': catalog['installation_id'], 'profile': 'default',
+                                       'capability_digest': catalog['catalog_digest']}})
+        room = (await h.result('groups.create', room_id=ROOM, name='Linked', members=members))['room']
+        ids = {'h': room['authority_gateway_id']}
+        for backup in (s, t):  # the owner's order of standbys: S first
+            link = links[backup.name]
             invited = await backup.result(
-                'groups.peer.invite', room_id=ROOM, home_install_id=ids['h'], authority_gateway_id=ids['h'],
-                authority_epoch=room['authority_epoch'], custody_only=True, successor=True)
-            added = await h.result('groups.custody.add', room_id=ROOM, target_url=link['room_link']['endpoint']['url'],
-                                   catalog=invited['catalog'], grant=invited['grant'], successor=True)
-            ids[backup.name] = added['install_id']
+                'groups.peer.invite', room_id=ROOM, member_id=backup.name, home_install_id=ids['h'],
+                authority_gateway_id=ids['h'], authority_epoch=room['authority_epoch'], successor=True)
+            await h.result('groups.peer.register', room_id=ROOM, member_id=backup.name,
+                           target_url=link['endpoint']['url'], target_profile='default',
+                           catalog=invited['catalog'], grant=invited['grant'])
+            ids[backup.name] = invited['catalog']['installation_id']
+            await h.result('groups.custody.designate', room_id=ROOM, install_id=ids[backup.name], successor=True)
         observer.ids.update({install_id: name for name, install_id in ids.items()})
         report['ids'] = ids
         voters = [ids[name] for name in 'hst']
@@ -284,6 +297,19 @@ def test_a_killed_host_is_replaced_by_a_majority_within_the_bound_and_never_by_t
                      == (report['ids'][name], epoch), 30, f'{other.name} to follow the new host')
         assert any(event['event_id'] == report['message_event_id'] for event in await _events(other))
 
+        # The offline original host's Bot does not stall the other members. These are real API
+        # runs under fresh continuation grants, including the new host's own member when selected.
+        for available in ('s', 't'):
+            marker = f'AVAILABLE_{available.upper()}_AFTER_KILL'
+            sent = await new.result('groups.send', room_id=ROOM, event_id=f'after-kill-{available}',
+                                    payload={'text': f'@{available} {marker}', 'thread_id': 'thread'})
+            assert sent['accepted'] and sent.get('protected') is True, sent
+            await _until(lambda: _events(new), lambda history: any(
+                event['kind'] == 'message.member' and event['payload'].get('member_id') == available
+                and event['payload'].get('text') == f'{available.upper()}_REPLY' for event in history),
+                90, f'{available} to answer while H stays down')
+        report['continued_members'] = ['s', 't']
+
     async def restart_old_host():
         h.home.joinpath('restart.log').rename(h.home / 'killed.log')
         await h.start(root)
@@ -310,7 +336,9 @@ def test_a_killed_host_is_replaced_by_a_majority_within_the_bound_and_never_by_t
         assert not observer.violations, observer.violations
         # H's turn ran once, on H, and never again: neither when H came back nor on another computer.
         assert [message in _last_user_text(r) for r in models['h'].requests] == [True], models['h'].requests
-        assert models['s'].requests == models['t'].requests == [], (models['s'].requests, models['t'].requests)
+        for name in ('s', 't'):
+            assert len(models[name].requests) == 1, (name, models[name].requests)
+            assert f'AVAILABLE_{name.upper()}_AFTER_KILL' in _last_user_text(models[name].requests[0])
         print('takeover', json.dumps({k: report[k] for k in ('turn', 'new_host', 'epoch', 'took_s')}))
     except BaseException as exc:
         details = {'report': report, 'violations': observer.violations, 'changes': observer.changes,

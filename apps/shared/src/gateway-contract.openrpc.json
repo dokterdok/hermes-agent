@@ -12314,6 +12314,18 @@
             "title": "Automatic",
             "type": "boolean"
           },
+          "careful_opt_in": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Careful Opt In"
+          },
           "voters": {
             "default": [],
             "items": {
@@ -15248,6 +15260,11 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "accept_two_host_risk": {
+            "default": false,
+            "title": "Accept Two Host Risk",
+            "type": "boolean"
           }
         },
         "required": [
@@ -15268,6 +15285,10 @@
             "title": "Automatic",
             "type": "boolean"
           },
+          "careful_opt_in": {
+            "title": "Careful Opt In",
+            "type": "boolean"
+          },
           "configuration_seq": {
             "title": "Configuration Seq",
             "type": "integer"
@@ -15280,6 +15301,7 @@
         "required": [
           "room_id",
           "automatic",
+          "careful_opt_in",
           "configuration_seq",
           "pending"
         ],
@@ -37201,6 +37223,18 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "careful_opt_in": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Careful Opt In"
           },
           "pending": {
             "anyOf": [
