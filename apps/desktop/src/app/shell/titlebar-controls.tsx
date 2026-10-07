@@ -23,11 +23,11 @@ import { toggleHud } from '@/store/hud'
 import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
+  $leftSideOpen,
   $panesFlipped,
-  $sidebarOpen,
+  toggleLeftSide,
   togglePanesFlipped,
-  toggleRightSide,
-  toggleSidebarOpen
+  toggleRightSide
 } from '@/store/layout'
 import { $unreadSessionCount } from '@/store/session-dot-state'
 import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
@@ -166,8 +166,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const layoutTree = useStore($layoutTree)
   const narrow = useStore($narrowViewport)
   const narrowOverlay = useStore($narrowOverlayChrome)
+  const leftSideOpen = useStore($leftSideOpen)
   const panesFlipped = useStore($panesFlipped)
-  const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
@@ -186,11 +186,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they
-  // stay correct through flips and rearranges. $sidebarOpen ≙ left side; the
-  // right toggle resolves its column from the live tree (see toggleRightSide)
-  // — the browser column, the files column, whatever is physically right.
-  // Never an active highlight — plain show/hide affordances.
-  const leftEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
+  // stay correct through flips and rearranges. Both edges resolve their column
+  // from the live tree (see toggleLeftSide / toggleRightSide) — the browser
+  // column, the sessions column, whatever is physically left / right. Never an
+  // active highlight — plain show/hide affordances.
+  const leftEdge = { open: leftSideOpen, toggle: toggleLeftSide }
   const rightEdge = { open: fileBrowserOpen, toggle: toggleRightSide }
   // Narrow toggles use fixed reveal aliases (chat-sidebar / file-browser),
   // independent of the wide tree's physical flip and docked-open flags.
