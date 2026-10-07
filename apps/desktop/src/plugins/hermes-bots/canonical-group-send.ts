@@ -54,7 +54,7 @@ async function journalOwner(): Promise<string> {
 
 async function readJournal(): Promise<Record<string, PreparedCanonicalGroupSend>> {
   const native = nativeJournal()
-  const parsed: unknown = JSON.parse(native ? await native.read() : window.localStorage.getItem(STORAGE_KEY) || '{}')
+  const parsed: unknown = JSON.parse(native ? await native.read() : window.localStorage.getItem(STORAGE_KEY) ?? '{}')
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {throw new Error('Invalid canonical group Send journal')}
 
@@ -71,7 +71,7 @@ async function compareJournal(key: string, expected: string | null, entry: strin
   if (!navigator.locks) {throw new Error('Atomic draft storage unavailable in this browser')}
 
   return navigator.locks.request(STORAGE_KEY, () => {
-    const journal = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
+    const journal = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}')
 
     if (!journal || typeof journal !== 'object' || Array.isArray(journal)) {throw new Error('Invalid canonical group Send journal')}
     const current = Object.hasOwn(journal, key) ? JSON.stringify(journal[key]) : null
