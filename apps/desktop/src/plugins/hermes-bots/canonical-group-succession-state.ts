@@ -55,13 +55,19 @@ async function followHost(context: ReadContext, next: SuccessionStatus, hostInst
   if (host && !context.stopped()) {context.follow(defaultRoute(host))}
 }
 
+/** A healthy passive copy is not evidence that an unresolved handover has completed. */
+function servingHost(status: SuccessionStatus, expectedInstall: string | undefined) {
+  return !!expectedInstall && status.state === 'ok' && status.this_install.role === 'host' &&
+    status.this_install.install_id === expectedInstall && status.host.install_id === expectedInstall
+}
+
 /** False when the computer watching the move didn't answer. */
 async function readMove(context: ReadContext, move: Moving) {
   const next = await readSuccessionStatus(move.watch, context.binding.roomId).catch(() => null)
 
   if (context.stopped() || !next) {return !!next}
 
-  if (next.state === 'ok') {context.onSettled()}
+  if (servingHost(next, move.watch === context.binding ? context.surface.installId : move.target.install_id)) {context.onSettled()}
 
   if (next.state === 'ok' && next.host.install_id === move.target.install_id) {
     context.onContinued({ status: next, preview: move.preview, previousHost: move.previousHost })
@@ -88,7 +94,7 @@ async function readBinding(context: ReadContext) {
 
   if (context.stopped()) {return}
 
-  if (next?.state === 'ok') {context.onSettled()}
+  if (next && servingHost(next, surface.installId)) {context.onSettled()}
 
   if (next) {rememberBackups(binding.roomId, next)}
   context.setReading(next && { status: next, route: binding, fromBinding: true })
@@ -117,7 +123,7 @@ async function readBackups(context: ReadContext) {
 
     if (!next) {continue}
 
-    if (next.state === 'ok') {context.onSettled()}
+    if (servingHost(next, computer.installId)) {context.onSettled()}
     context.setComputers(found)
     context.setReading({ status: next, route: confirmed.route, fromBinding: false })
     // Another computer already hosts the room and Desktop reaches it: the room follows it there.
