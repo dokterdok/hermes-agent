@@ -153,7 +153,7 @@ it('offers one retry for failed sync using the current name and membership', asy
 
   const request = vi.spyOn(host, 'request').mockImplementation(async (method, params) => {
     if (method === 'profiles.configure') {
-      return { applied: { ui_meta: params.name === 'gamma' } }
+      return { applied: { ui_meta: params?.name === 'gamma' } }
     }
 
     return {}
@@ -197,7 +197,9 @@ it.each([false, true])(
     const notify = vi.spyOn(host, 'notify').mockReturnValue('missing-notice')
     const onClose = vi.fn()
     render(<GroupChatSettingsDialog group="Planning" onClose={onClose} open />)
-    const remaining = replaced ? { Planning: { log: [], roomId: 'replacement-settings', watermarks: {} } } : {}
+    const remaining: ReturnType<typeof $groupChats.get> = replaced
+      ? { Planning: { log: [], roomId: 'replacement-settings', watermarks: {} } }
+      : {}
     act(() => $groupChats.set(remaining))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() =>
