@@ -221,3 +221,30 @@ it('refuses admission when the browser journal becomes malformed between reading
   expect(localStorage.getItem(storageKey)).toBe('[]')
 })
 
+it.each([
+  'submission_id was admitted before this handler failed',
+  'submission_id must be unique',
+  'invalid params for prompt.submit: another_field: Extra inputs are not permitted; submission_id retained'
+])('does not downgrade a generic validation failure mentioning submission identity: %s', async message => {
+  const store = await storeFor('window-a')
+  store.bind()
+  let failed = true
+
+  const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method !== 'prompt.submit') {return {} as never}
+
+    if (failed) {throw Object.assign(new Error(message), {code: 4000})}
+
+    return {admission_id: params?.submission_id, status: 'terminal'} as never
+  })
+
+  const view = composer(request)
+  await act(async () => {expect(await view.hook.result.current('Preserve this intent')).toBe(false)})
+  expect(request).toHaveBeenCalledOnce()
+  const original = request.mock.calls[0][1]
+  expect(original?.submission_id).toBeTruthy()
+  failed = false
+  await act(async () => {expect(await view.hook.result.current('Preserve this intent')).toBe(true)})
+  expect(request).toHaveBeenCalledTimes(2)
+  expect(request.mock.calls[1][1]).toEqual(original)
+})
