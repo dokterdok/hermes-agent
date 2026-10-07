@@ -1,5 +1,6 @@
 """Two-gateway schedules requiring the separately owned runtime/participant controls."""
 import asyncio
+import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
@@ -114,11 +115,201 @@ class _LostReplyProxy(BaseHTTPRequestHandler):
             self.wfile.write(data)
 
 
-def _proxy(target, port=0):
-    server = ThreadingHTTPServer(('127.0.0.1', port), _LostReplyProxy)
+def _proxy(target, port=0, *, handler=_LostReplyProxy):
+    server = ThreadingHTTPServer(('127.0.0.1', port), handler)
     server.target, server.drop, server.accepted = target, False, threading.Event()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+class _CancellationProxy(_LostReplyProxy):
+    """Lose admission before the target and cancellation only after its durable effect."""
+
+    def forward(self):
+        body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        headers = {k.lower(): v for k, v in self.headers.items() if k.lower() not in {'host', 'connection'}}
+        if self.command == 'POST' and self.path == '/v1/runs':
+            self.server.admission_keys.append(headers['idempotency-key'])
+            if self.server.hold_admission:
+                self.server.original = self.server.original or (body, headers)
+                self.server.dropped.set()
+                self.connection.shutdown(socket.SHUT_RDWR)
+                return
+            self.server.new_admissions += 1
+        if self.server.cancellation_down:
+            self.connection.shutdown(socket.SHUT_RDWR)
+            return
+        request = urllib.request.Request(self.server.target + self.path, method=self.command,
+            data=body if self.command == 'POST' else None, headers=headers)
+        try:
+            response = urllib.request.urlopen(request, timeout=15)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            data = response.read()
+            if self.command == 'POST' and self.path == '/v1/runs/stop':
+                self.server.cancellation_keys.append(headers['idempotency-key'])
+                if self.server.lose_cancel and response.status == 200:
+                    self.server.lose_cancel = False
+                    self.server.cancellation_down = True
+                    self.server.cancelled.set()
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    return
+            self.send_response(response.status)
+            for key in ('Content-Type', 'Hermes-Room-Proof', 'Hermes-Room-Nonce'):
+                if response.headers.get(key):
+                    self.send_header(key, response.headers[key])
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+
+@pytest.mark.parametrize('operation', ['stop', 'disband'])
+@pytest.mark.parametrize('target_file_tools', [False, True])
+def test_absent_peer_cancellation_never_admits_on_two_canonical_gateways(tmp_path, operation, target_file_tools):
+    """Real canonical writers fence the unseen turn, including lost cancellation and restart."""
+    from gateway.hosted_room_proof import verify_response, RESPONSE_HEADER, RESPONSE_NONCE_HEADER
+
+    root = Path(__file__).resolve().parents[2]
+    home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY', 'ABSENT_CANCEL')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    home, home_env = _gateway(tmp_path, 'home', home_model, root)
+    target, target_env = _gateway(tmp_path, 'target', target_model, root, api_port=port)
+    if target_file_tools:
+        config = json.loads((target / 'config.yaml').read_text())
+        config['platform_toolsets']['api_server'] = ['file', 'bot_room']
+        (target / 'config.yaml').write_text(json.dumps(config))
+    target_url = f'http://127.0.0.1:{port}'
+    proxy = _proxy(target_url, handler=_CancellationProxy)
+    proxy.hold_admission, proxy.lose_cancel, proxy.cancellation_down = False, True, False
+    proxy.original, proxy.new_admissions = None, 0
+    proxy.admission_keys, proxy.cancellation_keys = [], []
+    proxy.dropped, proxy.cancelled = threading.Event(), threading.Event()
+    retained = {}
+    fixture = 'peer_cancellation_daemon.py'
+
+    def task():
+        task_id = proxy.admission_keys[0].removeprefix('room:').rsplit(':', 1)[0]
+        with sqlite3.connect(home / 'state.db') as db:
+            rows = db.execute('SELECT task_id,execution_generation,status FROM hosted_room_driver_tasks WHERE task_id=?',
+                              (task_id,)).fetchall()
+        assert len(rows) == 1, rows
+        return rows[0]
+
+    def no_admission():
+        with sqlite3.connect(target / 'state.db') as db:
+            assert db.execute("SELECT COUNT(*) FROM session_admissions WHERE principal_id='api'").fetchone()[0] == 0
+        assert not target_model.requests and proxy.new_admissions == 0
+
+    def output_consent():
+        with sqlite3.connect(home / 'state.db') as db:
+            values = db.execute("SELECT value FROM state_meta WHERE key LIKE 'group.peer-output.v1.%'").fetchall()
+        rows = [json.loads(value) for value, in values]
+        rows = [row for row in rows if (row.get('dispatch') or {}).get('task_id') == task()[0]]
+        assert len(rows) == 1 and rows[0]['contract'] is not None, rows
+        return rows[0]
+
+    async def first(hd, td):
+        async with websocket(home, hd) as hw, websocket(target, td) as tw:
+            _, invitation = await _join_pair(hw, tw, peer_first=True)
+            retained.update(invitation)
+            registered = await rpc(hw, 'groups.peer.register', room_id='linked', member_id='reviewer',
+                target_url=f'http://127.0.0.1:{proxy.server_port}', target_profile='default',
+                grant=invitation['grant'], catalog=invitation['catalog'])
+            assert registered['result']['registered'], registered
+            proxy.hold_admission = True
+            await _send(hw, 'absent-cancel', '@reviewer ABSENT_CANCEL')
+            assert await asyncio.to_thread(proxy.dropped.wait, 20)
+            async with asyncio.timeout(30):
+                while task()[2] != 'deferred':
+                    await asyncio.sleep(.05)
+            assert task()[1] == 1
+            no_admission()
+            proxy.hold_admission = False
+            response = await rpc(hw, f'groups.{operation}', room_id='linked')
+            assert 'result' in response or response.get('error', {}).get('message') == 'room_retiring', response
+            no_admission()
+            cancellation_reply_lost = await asyncio.to_thread(proxy.cancelled.wait, 10)
+            no_admission()
+            assert cancellation_reply_lost, response
+            assert task()[1:] == (1, 'stopping')
+            if target_file_tools:
+                assert output_consent().get('canonical_admission_absent') is None
+            retained['task_id'] = task()[0]
+
+    async def recover(hd):
+        async with websocket(home, hd) as hw:
+            async with asyncio.timeout(30):
+                while task()[2] != 'cancelled':
+                    await rpc(hw, f'groups.{operation}', room_id='linked')
+                    await asyncio.sleep(.05)
+            assert task()[1:] == (1, 'cancelled')
+            no_admission()
+            expected = f"room:{retained['task_id']}:1"
+            assert set(proxy.admission_keys) == set(proxy.cancellation_keys) == {expected}
+            assert len(proxy.cancellation_keys) >= 2
+            if target_file_tools:
+                from gateway.hosted_room_peer import HostedMemberDispatch
+                from gateway.hosted_room_peer_output import dispatch_digest
+                saved = output_consent()
+                assert saved['canonical_admission_absent'] == dispatch_digest(
+                    HostedMemberDispatch.from_mapping(saved['dispatch']))
+            if operation == 'disband':
+                async with asyncio.timeout(30):
+                    while True:
+                        state = (await rpc(hw, 'groups.state', room_id='linked', include_disbanded=True))['result']
+                        if state['room'].get('disbanded_at') and not state['driver_status']['peer_cleanup']:
+                            break
+                        await rpc(hw, 'groups.disband', room_id='linked')
+                        await asyncio.sleep(.05)
+                assert not any(action['kind'] == 'output_retry' for action in state['driver_status']['pending_actions'])
+                if target_file_tools:
+                    from gateway.session_hosted_output_publication import OBLIGATIONS
+                    with sqlite3.connect(home / 'state.db') as db:
+                        rows = db.execute(f'SELECT operation,state,manifest_json FROM {OBLIGATIONS} WHERE task_id=?',
+                                          (retained['task_id'],)).fetchall()
+                    assert all(operation == 'discard' and status == 'completed'
+                               and (manifest is None or json.loads(manifest) is None)
+                               for operation, status, manifest in rows), rows
+
+    def late_original():
+        body, headers = proxy.original
+        request = urllib.request.Request(target_url + '/v1/runs', data=body, headers=headers)
+        try:
+            response = urllib.request.urlopen(request, timeout=10)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            envelope = headers['authorization'].partition(' ')[2]
+            envelope = json.loads(base64.urlsafe_b64decode(envelope + '=' * (-len(envelope) % 4)))
+            key = retained['grant'].split('.')[1]
+            key = base64.urlsafe_b64decode(key + '=' * (-len(key) % 4))
+            proof = json.loads(verify_response(key, envelope['mac'], response.status, response.read(),
+                response.headers[RESPONSE_HEADER], response.headers[RESPONSE_NONCE_HEADER]))
+            assert response.status in ({202} if operation == 'stop' else {202, 403}), proof
+            if response.status == 202:
+                assert proof['status'] == 'cancelled' and proof['replayed'] is True
+        no_admission()
+
+    try:
+        with daemon(root, target, target_env, barrier=True, fixture=fixture) as (_, td):
+            with daemon(root, home, home_env, barrier=True, fixture=fixture) as (_, hd):
+                asyncio.run(first(hd, td))
+            proxy.cancellation_down = False
+            with daemon(root, home, home_env, barrier=True, fixture=fixture) as (_, hd):
+                asyncio.run(recover(hd))
+            late_original()
+        with daemon(root, target, target_env, barrier=True, fixture=fixture):
+            late_original()
+    finally:
+        target_model.gates['ABSENT_CANCEL'][1].set()
+        proxy.shutdown()
+        proxy.server_close()
+        for model in (home_model, target_model):
+            model.shutdown()
+            model.server_close()
 
 
 @pytest.mark.skipif(not (Path(__file__).resolve().parents[1] / 'tui_gateway/test_hosted_room_peer_recovery.py').is_file(),

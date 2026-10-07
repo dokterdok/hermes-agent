@@ -109,6 +109,18 @@ class Peer:
             raise PeerRunsHTTPError("unreachable", retryable=True)
         return {"run_id": "run-accepted", "status": self.stop_status}
 
+    def cancel_dispatch(self, *, dispatch, grant):
+        from gateway.hosted_room_peer import HostedMemberDispatch, verify_room_grant
+        checked = HostedMemberDispatch.from_mapping(dispatch)
+        verify_room_grant(self.secret, grant, checked, permission='stop')
+        receipt = rooms.remote_run_receipt(self.db_path, record={
+            **self.bound_scope, 'task_id': checked.task_id,
+            'execution_generation': checked.execution_generation})
+        if receipt is None:
+            raise PeerRunsHTTPError('exact cancellation remains unknown', ambiguous=True)
+        return self.stop_receipt(task_id=checked.task_id,
+                                 execution_generation=checked.execution_generation, grant=grant)
+
 
 @pytest.fixture
 def case(tmp_path, monkeypatch):

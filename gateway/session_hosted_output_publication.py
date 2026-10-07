@@ -417,8 +417,20 @@ class CanonicalHostedOutput:
         return changed or held
 
     def _discard_output(self, identity, scope, manifest) -> bool:
-        return self._run_obligation(identity, scope, manifest, "discard", lambda: self._output_source(
-            identity, scope, manifest).discard_durably(scope))
+        from tui_gateway.hosted_room_peer_output import cancelled_admission_proven, stored_consent
+        def discard():
+            return self._output_source(identity, scope, manifest).discard_durably(scope)
+        if manifest is None and cancelled_admission_proven(stored_consent(self.db_path, scope.as_mapping()), scope):
+            row = self._record_intent(identity, scope, manifest, "discard")
+            if (row['operation'] == 'discard' and row['manifest_json'] is None
+                    and row['scope_json'] == _canonical(scope.as_mapping())
+                    and row['identity_json'] == _canonical(asdict(identity))):
+                if row['state'] == 'completed':
+                    return True
+                # This new authenticated evidence resolves the earlier missing-producer
+                # refusal. Retire only its exact manifest-less discard obligation.
+                return self._force_obligation(identity, scope, manifest, "discard", discard, reason="cancelled")
+        return self._run_obligation(identity, scope, manifest, "discard", discard)
 
     def _stage_for_publication(self, room, identity, scope, manifest, existing_message):
         """Copy the verified bytes into the room store, held for the one member message."""

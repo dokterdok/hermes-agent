@@ -14,6 +14,12 @@ except ImportError:
 from gateway.platforms.api_server_room_grants import _json_error
 
 
+def _member_session_id(dispatch):
+    seed = (f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
+            f"{dispatch.member_id}\0{dispatch.target_profile}")
+    return f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+
+
 async def _ensure_hosted_member_session(self, dispatch: Any, *, create=True) -> str:
     """Create or verify the target's canonical hidden group session. The ``Group: <room_id>``
     namespace is reused on purpose (Desktop-assisted -> hosted keeps one transcript); a
@@ -22,10 +28,7 @@ async def _ensure_hosted_member_session(self, dispatch: Any, *, create=True) -> 
     if db is None:
         raise RuntimeError("session database unavailable")
     title = f"Group: {dispatch.room_id}"
-    seed = (
-        f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
-        f"{dispatch.member_id}\0{dispatch.target_profile}")
-    session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+    session_id = _member_session_id(dispatch)
     if not create:
         return session_id
     from gateway.session_authorities import active_authority
@@ -125,3 +128,21 @@ async def _normalize_room_dispatch(
         }, None
     except Exception as exc:
         return body, _room_dispatch_error(exc, _openai_error=_openai_error)
+
+
+def _validate_room_stop(self, request, body, *, _api_server):
+    """Authenticate an exact admission identity without dispatching or creating its session."""
+    from gateway.hosted_room_peer import HostedMemberDispatch, verify_room_grant
+    from gateway.platforms.api_server_room_grants import _local_target
+
+    claims = self._room_grant_claims(request, permission="stop")
+    _local_target(claims, _api_server._api_request_profile)
+    if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch"}:
+        raise ValueError("Room stop accepts only input and hosted_room_dispatch.")
+    dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
+    verify_room_grant(self._room_grant_secret(), self._room_grant_token(request), dispatch, permission="stop")
+    if body.get("input") not in {None, dispatch.prompt}:
+        raise ValueError("room stop input does not match its prompt")
+    if request.headers.get("Idempotency-Key", "").strip() != f"room:{dispatch.task_id}:{dispatch.execution_generation}":
+        raise ValueError("room stop idempotency key is invalid")
+    return dispatch

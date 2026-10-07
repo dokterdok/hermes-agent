@@ -37,3 +37,13 @@ def dispatch_digest(dispatch):
     """Commit the complete immutable peer attempt, excluding only transfer bytes."""
     return hashlib.sha256(json.dumps(dispatch.as_mapping(), sort_keys=True,
                                     separators=(',', ':')).encode()).hexdigest()
+
+
+def proves_cancelled_admission(record, status, *, expected, target_proof):
+    """Only an authenticated exact absence can replace missing output admission evidence."""
+    return (target_proof == record['target_install_id'] and target_proof is not None
+            and status.get('run_id') == record['run_id'] and status.get('status') == 'cancelled'
+            and status.get('admission_id') is None and status.get('peer_output_dispatch_digest') is None
+            and status.get('canonical_admission_absent') == {'dispatch_digest': expected}
+            and not any(status.get(key) is not None for key in (
+                'artifacts', 'artifact_scope', 'peer_output_empty', 'peer_output_unresolved')))

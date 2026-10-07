@@ -234,6 +234,9 @@ class PeerOutputSource:
     def discard_durably(self, scope):
         if scope != self.scope:
             raise ValueError('peer output scope changed')
+        self._authorize('discard')
+        if self.manifest is None and cancelled_admission_proven(stored_consent(self.service.db_path, scope.as_mapping()), scope):
+            return 0  # The target's permanent cancellation barrier forbids any output producer.
         value = self._call('discard')
         if set(value) != {'discarded', 'removed'} or value['discarded'] is not True or type(value['removed']) is not int:
             raise ValueError('peer output discard unconfirmed')
@@ -258,3 +261,30 @@ def remember_unreceived_discard(conn, binding, task):
     value['unreceived_cancel_generation'] = task['cancel_generation'] + 1
     conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
                  (key, json.dumps(value, sort_keys=True, separators=(',', ':'))))
+
+
+def remember_cancelled_admission(db_path, record, digest):
+    """Retain a verified target absence beside this attempt's existing frozen consent."""
+    from gateway.hosted_room_peer import HostedMemberDispatch
+    from gateway.hosted_room_peer_output import dispatch_digest, output_scope
+    with hosted_rooms._transaction(db_path) as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='state_meta'").fetchone() is None:
+            return  # A receipt-only transport has no source output obligation.
+    saved = stored_consent(db_path, record)
+    if saved is None:
+        return  # A bare transport caller has no source output obligation to reconcile.
+    dispatch = HostedMemberDispatch.from_mapping(saved['dispatch'])
+    scope = output_scope(dispatch).as_mapping()
+    if dispatch_digest(dispatch) != digest or any(record.get(key) != value for key, value in scope.items()):
+        raise ValueError('peer cancellation evidence differs from frozen consent')
+    _save_consent(db_path, record, saved, {**saved, 'canonical_admission_absent': digest})
+
+
+def cancelled_admission_proven(saved, scope):
+    from gateway.hosted_room_peer import HostedMemberDispatch
+    from gateway.hosted_room_peer_output import dispatch_digest, output_scope
+    if saved is None or not saved.get('canonical_admission_absent'):
+        return False
+    dispatch = HostedMemberDispatch.from_mapping(saved['dispatch'])
+    return (saved['canonical_admission_absent'] == dispatch_digest(dispatch)
+            and output_scope(dispatch) == scope)
