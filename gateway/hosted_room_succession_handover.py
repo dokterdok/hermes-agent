@@ -258,7 +258,7 @@ def _begin_handover(ctx, room_id: str, target: str, epoch: int, **phase) -> dict
     with rooms._transaction(ctx.db_path, immediate=True) as conn:
         previous = succession.load_record_locked(conn, room_id, "move") or {}
         if previous.get("state") == "handing_over":
-            raise SuccessionError("the previous signed handover is still pending", reason="room_authority_promised")
+            raise SuccessionError("the previous signed handover is still pending", reason="handover_pending")
         holder = conn.execute("SELECT authority_gateway_id, authority_epoch FROM hosted_rooms "
                               "WHERE room_id=? AND disbanded_at IS NULL", (room_id,)).fetchone()
         if holder is None or tuple(holder) != (succession.local_install_id(), epoch):
@@ -270,10 +270,11 @@ def _begin_handover(ctx, room_id: str, target: str, epoch: int, **phase) -> dict
 
 def move_now(ctx, room_id: str) -> None:
     """The owner moves a group waiting for its turns at once: turns still running become unknown there."""
-    record = succession.load_record(ctx.db_path, room_id, "move") or {}
-    if record.get("state") != "handing_over" or record.get("step") != "waiting_for_turns":
-        raise SuccessionError("this group isn't waiting to move", reason="invalid_params")
-    succession.save_record(ctx.db_path, room_id, "move", {**record, "now": True})
+    with rooms._transaction(ctx.db_path, immediate=True) as conn:
+        record = succession.load_record_locked(conn, room_id, "move") or {}
+        if record.get("state") != "handing_over" or record.get("step") != "waiting_for_turns":
+            raise SuccessionError("this group isn't waiting to move", reason="invalid_params")
+        succession.save_record_locked(conn, room_id, "move", {**record, "now": True})
     continue_move(ctx, room_id)
 
 
@@ -290,10 +291,11 @@ def continue_move(ctx, room_id: str) -> bool:
     try:
         current, target = _target(ctx, room_id, str(record.get("to")))
     except SuccessionError as exc:
-        _resume(ctx, room_id, exc)
+        _resume(ctx, room_id, exc, expected=record)
         return False
-    record = {**record, "step": "fencing", "from_epoch": current["head"]["authority_epoch"]}
-    _pause(ctx, room_id, record)
+    updated = {**record, "step": "fencing", "from_epoch": current["head"]["authority_epoch"]}
+    _advance_handover(ctx, room_id, record, updated)
+    record = updated
     _complete(ctx, room_id, str(record["to"]), target, record, 0)
     return True
 
@@ -305,8 +307,9 @@ def _complete(ctx, room_id: str, target_install_id: str, target: Mapping[str, An
     from gateway import hosted_room_succession_return as returning
     own = fence.room_fence_state(ctx.runs_store.path, room_id)
     to_epoch = max(int(record["from_epoch"]), int(own["fenced_epoch"] or 0)) + 1
-    record = {**record, "to_epoch": to_epoch}
-    _pause(ctx, room_id, record)
+    updated = {**record, "to_epoch": to_epoch}
+    _advance_handover(ctx, room_id, record, updated)
+    record = updated
     _active.add((str(ctx.db_path), room_id))
     try:
         if ctx.service is not None:
@@ -315,22 +318,21 @@ def _complete(ctx, room_id: str, target_install_id: str, target: Mapping[str, An
         with closing(rooms._read_connection(ctx.db_path)) as conn:
             proof, release = signed_over(ctx, conn, room_id, successor=target_install_id, to_epoch=to_epoch)
         # From here the standby may continue: neither an unknown outcome nor a restart resumes blindly.
-        _pause(ctx, room_id, {**record, "signed": True, "unsettled": running})
+        _advance_handover(ctx, room_id, record, {**record, "signed": True, "unsettled": running})
         demoted, stepped = _send(ctx, room_id, target_install_id, str(target["endpoint"]), proof,
                                  release=release, at_risk=len(running))
     except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
         if not (succession.load_record(ctx.db_path, room_id, "move") or {}).get("signed"):
-            _resume(ctx, room_id, exc)
-        else:  # the standby may have continued: upkeep learns the outcome (``recover``) before resuming
+            _resume(ctx, room_id, exc, expected=record)
+        else:  # the standby may have continued: upkeep resolves the same handover
             _attempt_failed(ctx, room_id, exc)
+            raise SuccessionError("the handover outcome is not confirmed", reason="handover_pending") from exc
         if isinstance(exc, SuccessionError):
             raise
         raise SuccessionError("the handover outcome is not confirmed", reason="target_not_ready") from exc
     finally:
         _active.discard((str(ctx.db_path), room_id))
-    record = succession.load_record(ctx.db_path, room_id, "move") or {}
-    succession.save_record(ctx.db_path, room_id, "move", {**record, "state": "handed_over", "step": None,
-                                                         "handed_over_at": time.time()})
+    _record_handed_over(ctx, room_id, record)
     returning.follow_up(ctx, room_id)
     return demoted or stepped
 
@@ -367,19 +369,25 @@ def _send(ctx, room_id: str, target_install_id: str, endpoint: str, proof: Mappi
 
 
 def _attempt_failed(ctx, room_id: str, exc: Exception) -> None:
-    """Keep the reason while the host stays paused, waiting to learn whether the standby continued."""
+    """Keep a failed check's reason without overwriting a concurrent signed phase or completion."""
     from gateway import hosted_room_succession_move as move
-    record = succession.load_record(ctx.db_path, room_id, "move") or {}
-    if record.get("state") != "handing_over":
-        return
-    configuration = move.view(ctx, room_id)["configuration"]
-    succession.save_record(ctx.db_path, room_id, "move", {**record, "last_attempt": {
-        "to": move.named(configuration, record.get("to")), "at": time.time(),
-        "error": getattr(exc, "reason", None) or "target_not_ready"}})
+    with rooms._transaction(ctx.db_path, immediate=True) as conn:
+        record = succession.load_record_locked(conn, room_id, "move") or {}
+        if record.get("state") != "handing_over":
+            return
+        configuration = succession.configuration_locked(conn, room_id)
+        succession.save_record_locked(conn, room_id, "move", {**record, "last_attempt": {
+            "to": move.named(configuration, record.get("to")), "at": time.time(),
+            "error": getattr(exc, "reason", None) or "target_not_ready"}})
 
 
-def _pause(ctx, room_id: str, record: Mapping[str, Any]) -> None:
-    succession.save_record(ctx.db_path, room_id, "move", dict(record))
+def _advance_handover(ctx, room_id: str, expected: Mapping[str, Any], updated: Mapping[str, Any]) -> None:
+    """Publish each phase against the same writer used to resume an interrupted unsigned move."""
+    with rooms._transaction(ctx.db_path, immediate=True) as conn:
+        current = succession.load_record_locked(conn, room_id, "move") or {}
+        if current != expected or current.get("state") != "handing_over":
+            raise SuccessionError("the handover changed while it was being completed", reason="preview_stale")
+        succession.save_record_locked(conn, room_id, "move", updated)
 
 
 def recover(ctx, room_id: str) -> bool:
@@ -396,13 +404,12 @@ def recover(ctx, room_id: str) -> bool:
             "step") == "waiting_for_turns":
         return False  # a move waiting for its turns continues in ``continue_move``
     if not record.get("signed"):
-        _resume(ctx, room_id, SuccessionError("the handover was interrupted", reason="target_not_ready"))
-        return True
+        return _resume(ctx, room_id, SuccessionError("the handover was interrupted", reason="target_not_ready"),
+                       expected=record)
     if check(ctx, room_id) is not None or _stepped_down_to(ctx, room_id, record.get("to")):
         # The standby continued and this computer follows it now: the handover is done.
         from gateway.hosted_room_succession_return import follow_up
-        succession.save_record(ctx.db_path, room_id, "move", {**record, "state": "handed_over", "step": None,
-                                                             "handed_over_at": time.time()})
+        _record_handed_over(ctx, room_id, record)
         follow_up(ctx, room_id)
         return False
     configuration = move.view(ctx, room_id)["configuration"]
@@ -432,18 +439,32 @@ def _stepped_down_to(ctx, room_id: str, successor: Any) -> bool:
     return stepped.get("state") in {"stepped_down", "rebased"} and stepped.get("successor") == successor
 
 
-def _resume(ctx, room_id: str, exc: Exception) -> None:
+
+def _record_handed_over(ctx, room_id: str, expected: Mapping[str, Any]) -> None:
+    """Finish only this intent, idempotently, without restoring a stale phase snapshot."""
+    with rooms._transaction(ctx.db_path, immediate=True) as conn:
+        record = succession.load_record_locked(conn, room_id, "move") or {}
+        if record.get("state") != "handing_over" or any(record.get(key) != expected.get(key)
+                for key in ("to", "from_epoch", "to_epoch", "started_at")):
+            return
+        succession.save_record_locked(conn, room_id, "move", {
+            **record, "state": "handed_over", "step": None, "handed_over_at": time.time()})
+
+def _resume(ctx, room_id: str, exc: Exception, *, expected: Mapping[str, Any]) -> bool:
+    """Resume only the exact unsigned move examined by the caller, before any signed phase wins."""
     from gateway import hosted_room_succession_move as move
-    record = succession.load_record(ctx.db_path, room_id, "move") or {}
-    if record.get("state") != "handing_over":
-        return
-    configuration = move.view(ctx, room_id)["configuration"]
-    succession.save_record(ctx.db_path, room_id, "move", {
-        **{k: v for k, v in record.items() if k != "step"}, "state": "failed", "last_attempt": {
-            "to": move.named(configuration, record.get("to")), "at": time.time(),
-            "error": getattr(exc, "reason", None) or "target_not_ready"}})
+    with rooms._transaction(ctx.db_path, immediate=True) as conn:
+        record = succession.load_record_locked(conn, room_id, "move") or {}
+        if record != expected or record.get("state") != "handing_over" or record.get("signed"):
+            return False
+        configuration = succession.configuration_locked(conn, room_id)
+        succession.save_record_locked(conn, room_id, "move", {
+            **{k: v for k, v in record.items() if k != "step"}, "state": "failed", "last_attempt": {
+                "to": move.named(configuration, record.get("to")), "at": time.time(),
+                "error": getattr(exc, "reason", None) or "target_not_ready"}})
     if ctx.service is not None:
         ctx.service.wakeup()
+    return True
 
 
 def answer_handover(context, request: Mapping[str, Any]) -> dict[str, Any]:

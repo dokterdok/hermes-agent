@@ -95,16 +95,20 @@ def test_keep_and_allow_call_the_gateway(gateway, capsys):
     assert ("groups.custody.allow", {"room_id": "room", "successor": True}) in calls
 
 
-def test_errors_use_the_products_words(gateway, capsys):
+@pytest.mark.parametrize("reason,message", [
+    ("not_owner", "Only the group's owner can do that."),
+    ("handover_pending", "The move is not confirmed. The group stays paused here while it checks the other computer."),
+])
+def test_errors_use_the_products_words(gateway, capsys, reason, message):
     from hermes_cli.gateway_client import GatewayClientError
 
     def refuse(**params):
-        raise group.GroupCommandError(group._MESSAGES["not_owner"])
+        raise group.GroupCommandError(group._MESSAGES[reason])
 
     calls, replies = gateway
     replies["groups.succession.status"] = refuse
     assert group.cmd_status(argparse.Namespace(group="room")) == 1
-    assert capsys.readouterr().err.strip() == "Only the group's owner can do that."
+    assert capsys.readouterr().err.strip() == message
     assert GatewayClientError  # the real transport maps its reason codes through _MESSAGES
 
 

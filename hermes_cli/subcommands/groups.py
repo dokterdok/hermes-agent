@@ -19,6 +19,7 @@ _MESSAGES = {
     "host_reachable": "The group's host can be reached, so the group doesn't need to move.",
     "room_authority_promised": "Another computer is already continuing this group.",
     "preview_stale": "Something changed since the summary. Run the command again.",
+    "handover_pending": "The move is not confirmed. The group stays paused here while it checks the other computer.",
     "target_not_ready": "This computer can't continue the group: it isn't allowed to, or keeps no usable copy.",
     "target_not_local": "Run this on the computer the group should continue on.",
     "room_not_found": "This computer has no group by that name.",

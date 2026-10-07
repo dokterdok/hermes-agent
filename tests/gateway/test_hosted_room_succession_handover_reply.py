@@ -30,8 +30,9 @@ def test_handover_reply_failure_keeps_the_old_host_paused_until_signed_readback(
                 raise failure
             return result
         ctx.post = lost_reply
-        with h.acting(), pytest.raises(succession.SuccessionError):
+        with h.acting(), pytest.raises(succession.SuccessionError) as refused:
             handover.hand_over(ctx, ROOM, s.install_id)
+        assert refused.value.reason == "handover_pending"
         assert head(s)['authoritative'] and head(s)['authority_epoch'] == 2
         with h.acting():
             assert succession.paused_reason(h.db, ROOM) == 'room_authority_promised'
@@ -60,8 +61,9 @@ def test_a_delayed_signed_handover_cannot_revive_the_old_host_after_an_empty_que
                 raise TimeoutError('request outcome unknown')
             return post(endpoint, path, body, timeout)
         ctx.post = retain_request
-        with h.acting(), pytest.raises(succession.SuccessionError):
+        with h.acting(), pytest.raises(succession.SuccessionError) as refused:
             handover.hand_over(ctx, ROOM, s.install_id)
+        assert refused.value.reason == "handover_pending"
         assert not head(s)['authoritative']
         with h.acting():
             with pytest.raises(succession.SuccessionError, match='previous signed handover'):
