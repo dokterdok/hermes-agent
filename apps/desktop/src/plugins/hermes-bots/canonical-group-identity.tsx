@@ -17,10 +17,11 @@ export function CanonicalMemberFace({
   name: string
   size?: number
 }) {
-  const identity = member?.member_id || seed || name
+  const profile = typeof member?.profile === 'string' ? member.profile.trim() : ''
+  const identity = profile || member?.member_id || seed || name
   const appearance = botAppearance(identity, undefined)
 
   return (
-    <BotFace color={avatarColor(appearance.color, identity)} name={identity} shape={appearance.shape} size={size} />
+    <BotFace color={avatarColor(appearance.color, identity)} discoverable={false} name={identity} shape={appearance.shape} size={size} />
   )
 }
