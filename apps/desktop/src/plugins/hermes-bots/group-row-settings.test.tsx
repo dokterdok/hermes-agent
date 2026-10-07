@@ -197,9 +197,11 @@ it.each([false, true])(
     const notify = vi.spyOn(host, 'notify').mockReturnValue('missing-notice')
     const onClose = vi.fn()
     render(<GroupChatSettingsDialog group="Planning" onClose={onClose} open />)
+
     const remaining: ReturnType<typeof $groupChats.get> = replaced
       ? { Planning: { log: [], roomId: 'replacement-settings', watermarks: {} } }
       : {}
+
     act(() => $groupChats.set(remaining))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() =>
@@ -237,4 +239,47 @@ it('an earlier save finishing does not close or unlock another group’s pending
   expect(save.disabled).toBe(true)
   await act(async () => finish[1]())
   await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
+})
+
+it.each(['changed', 'removed'] as const)('refuses stale legacy settings after a witnessed %s group', async change => {
+  $groupChats.set({ Planning: { log: [], watermarks: {} } })
+  $botMeta.set({})
+  const notify = vi.spyOn(host, 'notify').mockReturnValue('stale-notice')
+  const onClose = vi.fn()
+  render(<GroupChatSettingsDialog group="Planning" onClose={onClose} open />)
+  const replacement = { log: [], watermarks: {}, image: change === 'changed' ? 'replacement.png' : null }
+  act(() => {
+    if (change === 'removed') {
+      $groupChats.set({})
+    }
+    $groupChats.set({ Planning: replacement })
+  })
+  fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), { target: { value: 'Accidental rename' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' })))
+  expect($groupChats.get()).toEqual({ Planning: replacement })
+  expect(onClose).not.toHaveBeenCalled()
+})
+
+it('preserves newer image settings and allows ordinary legacy transcript updates during a rename', async () => {
+  $groupChats.set({ Modern: { log: [], roomId: 'modern-dirty', watermarks: {} }, Legacy: { log: [], watermarks: {} } })
+  $botMeta.set({})
+  const onClose = vi.fn()
+  const view = render(<GroupChatSettingsDialog group="Modern" onClose={onClose} open />)
+  act(() =>
+    $groupChats.set({ ...$groupChats.get(), Modern: { ...$groupChats.get().Modern, image: 'new-picture.png' } })
+  )
+  fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), { target: { value: 'Modern renamed' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
+  expect($groupChats.get()['Modern renamed'].image).toBe('new-picture.png')
+
+  view.rerender(<GroupChatSettingsDialog group="Legacy" onClose={onClose} open />)
+  const message = { from: { kind: 'user' as const }, text: 'A new message while settings are open', at: 1 }
+  act(() => $groupChats.set({ ...$groupChats.get(), Legacy: { ...$groupChats.get().Legacy, log: [message] } }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), { target: { value: 'Legacy renamed' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(2))
+  expect($groupChats.get()['Legacy renamed'].log).toEqual([message])
+  expect($groupChats.get()['Legacy renamed'].roomId).toBeUndefined()
 })
