@@ -37,12 +37,11 @@ import { sessionContextDrift } from '../session-context-drift'
 import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import { readPreparedPromptRecovery } from './prepared-prompt-recovery'
-import { requestPreparedPrompt } from './prepared-prompt-request'
+import { persistIdentifiedPrompt, requestPreparedPrompt } from './prepared-prompt-request'
 import type { PreparedPromptReceipt } from './prepared-prompt-request'
 import {
   preparedSubmissionKey,
-  settlePreparedSubmission,
-  writePreparedSubmission
+  settlePreparedSubmission
 } from './prepared-submissions'
 import { reportPromptSubmissionFailure } from './prompt-submit-failure'
 import { beginComposerSubmission, captureComposerSubmitInput } from './prompt-submit-input'
@@ -869,7 +868,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         const retryKey = retryKeyForTarget()
-        await writePreparedSubmission(retryKey, prepared)
+        await persistIdentifiedPrompt(retryKey, prepared)
 
         if (sessionDriftReason()) {return abortForSessionSwitch(liveSessionId)}
 
