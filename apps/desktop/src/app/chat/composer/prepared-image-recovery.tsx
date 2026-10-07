@@ -18,6 +18,8 @@ interface Props {
 export function PreparedImageRecovery({ sessionKey, request, occupied, onRestore }: Props) {
   const { t } = useI18n()
   const [drafts, setDrafts] = useState<Awaited<ReturnType<typeof listPreparedDrafts>>>([])
+  const [readError, setReadError] = useState<string | null>(null)
+  const [readAttempt, setReadAttempt] = useState(0)
   const scopeKey = captureSubmissionDestination(sessionKey, request).scopeKey
   const current = useRef({ sessionKey, scopeKey, occupied, onRestore })
   current.current = { sessionKey, scopeKey, occupied, onRestore }
@@ -34,19 +36,26 @@ export function PreparedImageRecovery({ sessionKey, request, occupied, onRestore
   useEffect(() => {
     let cancelled = false
     setDrafts([])
+    setReadError(null)
 
     if (sessionKey) {
       void listPreparedDrafts(sessionKey, scopeKey).then(entries => {
         if (!cancelled) { setDrafts(entries) }
       }).catch(error => {
-        if (!cancelled) { notifyError(error, t.composer.restoreImageDraft) }
+        if (!cancelled) {setReadError(error instanceof Error ? error.message : t.composer.draftReadFailed)}
       })
     }
 
     return () => { cancelled = true }
-  }, [sessionKey, scopeKey, t.composer.restoreImageDraft])
+  }, [sessionKey, scopeKey, t.composer.draftReadFailed, readAttempt])
 
-  return drafts.map(draft => (
+  return <>
+    {readError && <div className="grid gap-2 rounded-md border bg-background px-3 py-2 text-xs" role="alert">
+      <p>{t.composer.draftReadFailed}</p>
+      <Button className="justify-self-start" onClick={() => setReadAttempt(value => value + 1)} size="sm" type="button" variant="outline">{t.common.retry}</Button>
+      <details className="text-muted-foreground"><summary>{t.notifications.details}</summary><pre className="whitespace-pre-wrap break-words pt-1">{readError}</pre></details>
+    </div>}
+    {drafts.map(draft => (
     <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-xs" key={draft.key}>
       <span className="min-w-0 flex-1 truncate">{draft.text || draft.attachments.map(attachment => attachment.label).join(', ')}</span>
       <Button disabled={occupied || pending} onClick={async () => {
@@ -71,5 +80,6 @@ export function PreparedImageRecovery({ sessionKey, request, occupied, onRestore
         }
       }} size="sm" type="button" variant="outline">{t.composer.restoreImageDraft}</Button>
     </div>
-  ))
+  ))}
+  </>
 }
