@@ -111,7 +111,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
-import { sessionsHost } from './sessions'
+import { refreshVisibleSessionTranscript, sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
@@ -1127,34 +1127,10 @@ export const host = {
 
           const intent = options.intent ?? 'in-place'
 
-          // Background refresh (refreshInPlace): this wake was triggered by
-          // something that HAPPENED in the background (a reclaim, roster
-          // activity), not by the user navigating. Never touch the route or
-          // the tab strip — the user may be reading the Kanban board, a
-          // settings page, or another chat (issue 121874: /kanban was
-          // replaced by the Bot Chat route). Refresh only whichever surface
-          // already holds the session, through the shared transcript cache's
-          // resumeTile(refreshTranscript). The cache also mirrors the primary
-          // chat; waiting for its read must not be confused with merely queuing
-          // a route resume. An off-screen session re-opens nothing.
+          // Background activity refreshes the actual transcript owner in place;
+          // only a completed read may acknowledge unread messages.
           if (options.refreshInPlace) {
-            const existingTile = $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId)
-            const mainShowing = $selectedStoredSessionId.get() === storedSessionId
-            // The shared transcript cache also owns the primary chat. Await
-            // its actual read for either surface: merely queuing a route resume
-            // reports success before a failed REST read can preserve unread.
-            const tileDelegate = existingTile || mainShowing ? sessionTileDelegate() : null
-
-            if ((existingTile || mainShowing) && !tileDelegate) {
-              // The session is visible but its resume owner is not mounted yet.
-              // Do not report success to a caller that would acknowledge unread
-              // without ever issuing a transcript refresh.
-              throw new Error('Transcript refresh is not ready for this session')
-            }
-
-            if (tileDelegate) {
-              await tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true })
-            }
+            await refreshVisibleSessionTranscript(storedSessionId)
 
             break
           }

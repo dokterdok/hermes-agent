@@ -5,8 +5,9 @@ import {
   setSidebarSessionOrderManual,
   unpinSession
 } from '@/store/layout'
-import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 import { setSessionColorOverride } from '@/store/session-color'
+import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 
 /** Pins and colours are keyed by the DURABLE (lineage-root) id so they survive
  *  compression's session-id rotation; a row's live id resolves through
@@ -76,4 +77,22 @@ export const sessionsHost = {
   setColor: (storedSessionId: string, color: null | string): void => {
     setSessionColorOverride(durableSessionPinId(storedSessionId), color)
   }
+}
+
+/** Refresh the actual cached transcript without changing the user's view.
+ * A visible chat without its mounted resume owner cannot confirm a read. */
+export async function refreshVisibleSessionTranscript(storedSessionId: string): Promise<void> {
+  const visible =
+    $selectedStoredSessionId.get() === storedSessionId ||
+    $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId)
+
+  if (!visible) {
+    return
+  }
+  const delegate = sessionTileDelegate()
+
+  if (!delegate) {
+    throw new Error('Transcript refresh is not ready for this session')
+  }
+  await delegate.resumeTile(storedSessionId, { refreshTranscript: true })
 }
