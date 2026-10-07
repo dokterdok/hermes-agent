@@ -143,6 +143,7 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     if (surface.continuedHandleAt.has(end)) {
       continue
     }
+
     const handle = (match[1] ?? match[2]).toLowerCase()
 
     if (handle === 'everyone' || handle === 'all') {
@@ -653,6 +654,7 @@ async function harvestRoundReplies(context: GroupRoundMemberContext): Promise<bo
   for (const member of context.members) {
     if (!context.isCurrent()) {
       recordGroupActivity(context.group, { kind: 'cancelled', member: null, thread: context.thread })
+
       return false
     }
 
@@ -919,6 +921,7 @@ export function sendToGroupChat(
   if (group.startsWith('canonical:')) {
     throw new Error('Canonical rooms are driven by the gateway')
   }
+
   const trimmed = String(text || '').trim()
 
   if (rejectGroupSlashCommand(trimmed)) {
