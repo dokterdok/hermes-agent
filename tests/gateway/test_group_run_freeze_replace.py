@@ -1,6 +1,7 @@
 """REPLACE must not erase frozen receipts through either declared unique key."""
 
 import sqlite3
+import json
 from contextlib import closing
 
 import pytest
@@ -87,3 +88,70 @@ def test_unfrozen_replacements_and_frozen_bookkeeping_pruning_remain_usable(tmp_
         snapshot = store.room_stop_snapshot("stop")
         assert snapshot["counts"] == {"total": 2, "terminal": 1, "nonterminal": 0, "unknown": 1}
         assert snapshot["missing_runs"] == 1 and snapshot["truncated"]
+
+
+def test_old_frozen_store_migrates_only_negative_cancellation_rows(tmp_path):
+    """The legacy trigger is the negative control, with its future schema column already present."""
+    path = tmp_path / 'runs.db'
+    scope, other_scope = room_run_scope_key(IDENTITY), room_run_scope_key({**IDENTITY, 'room_id': 'other'})
+    with closing(storage.RunIdempotencyStore(str(path))) as store:
+        reserve(store, 'victim', status='running')
+        store.freeze_room_scope(IDENTITY, 'stop')
+    with closing(sqlite3.connect(path)) as legacy:
+        # Compose the prerequisite even on the old head: RED must be the old freeze trigger.
+        if 'stop_requested' not in {row[1] for row in legacy.execute('PRAGMA table_info(run_idempotency)')}:
+            legacy.execute('ALTER TABLE run_idempotency ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0')
+        for trigger in ('group_run_frozen_insert_v3', 'group_run_frozen_identity_v3',
+                        'group_run_frozen_insert_v2', 'group_run_frozen_identity_v2'):
+            legacy.execute(f'DROP TRIGGER IF EXISTS {trigger}')
+        victim = """SELECT 1 FROM run_idempotency AS victim JOIN group_run_freezes AS frozen
+            ON frozen.scope=victim.scope WHERE victim.run_id=NEW.run_id OR
+              (victim.scope=NEW.scope AND victim.idempotency_key=NEW.idempotency_key)"""
+        legacy.execute(f"""CREATE TRIGGER group_run_frozen_insert_v2 BEFORE INSERT ON run_idempotency
+            WHEN EXISTS (SELECT 1 FROM group_run_freezes WHERE scope=NEW.scope) OR EXISTS ({victim})
+            BEGIN SELECT RAISE(ABORT, 'group run scope frozen'); END""")
+        legacy.execute(f"""CREATE TRIGGER group_run_frozen_identity_v2 BEFORE UPDATE ON run_idempotency
+            WHEN (EXISTS (SELECT 1 FROM group_run_freezes WHERE scope IN (OLD.scope,NEW.scope))
+              AND (NEW.scope IS NOT OLD.scope OR NEW.idempotency_key IS NOT OLD.idempotency_key
+                OR NEW.fingerprint IS NOT OLD.fingerprint OR NEW.run_id IS NOT OLD.run_id
+                OR NEW.owner_pid IS NOT OLD.owner_pid OR NEW.owner_started IS NOT OLD.owner_started))
+              OR EXISTS ({victim} AND NOT (victim.scope=OLD.scope AND victim.idempotency_key=OLD.idempotency_key))
+            BEGIN SELECT RAISE(ABORT, 'group run scope frozen'); END""")
+        legacy.commit()
+    with closing(storage.RunIdempotencyStore(str(path))) as reopened, closing(sqlite3.connect(path)) as client:
+        client.execute('PRAGMA recursive_triggers=OFF')
+
+        def insert(label, **changes):
+            values = dict(scope=scope, key='cancel-' + label, fingerprint='', run_id=label,
+                owner_pid=0, owner_started=0, stop_requested=1)
+            values.update(changes)
+            values.setdefault('status_json', json.dumps(
+                {'run_id': values['run_id'], 'status': 'cancelled', 'admission_cancelled': True}))
+            client.execute("""INSERT OR REPLACE INTO run_idempotency
+                (scope,idempotency_key,fingerprint,run_id,status_json,owner_pid,owner_started,stop_requested,created_at,updated_at)
+                VALUES (:scope,:key,:fingerprint,:run_id,:status_json,:owner_pid,:owner_started,:stop_requested,1,1)""", values)
+
+        insert('absent')
+        client.commit()
+        assert reopened.is_scope_frozen(scope)
+        assert client.execute("""SELECT stop_requested,owner_pid,owner_started,fingerprint FROM run_idempotency
+            WHERE run_id='absent'""").fetchone() == (1, 0, 0, '')
+        for changes in ({'stop_requested': 0}, {'fingerprint': 'actual-admission'}, {'owner_pid': 123},
+                        {'owner_started': 456}, {'status_json': '{}'}, {'status_json': 'null'},
+                        {'status_json': 'not-json'},
+                        {'status_json': json.dumps({'run_id': 'invalid', 'status': None})},
+                        {'status_json': json.dumps({'run_id': 'wrong', 'status': 'cancelled'})},
+                        {'status_json': json.dumps({'run_id': 'invalid', 'status': 'unknown'})}):
+            with pytest.raises(sqlite3.IntegrityError, match='group run scope frozen'):
+                insert('invalid', **changes)
+            client.rollback()
+        for changes in ({'run_id': 'victim', 'scope': other_scope}, {'key': 'key-victim'},
+                        {'run_id': 'absent'}):
+            with pytest.raises(sqlite3.IntegrityError, match='group run scope frozen'):
+                insert('replacement', **changes)
+            client.rollback()
+        with pytest.raises(sqlite3.IntegrityError, match='group run scope frozen'):
+            client.execute("UPDATE run_idempotency SET stop_requested=0 WHERE run_id='absent'")
+        client.rollback()
+        assert client.execute("SELECT run_id FROM run_idempotency ORDER BY run_id").fetchall() == [('absent',), ('victim',)]
+        assert reopened.is_scope_frozen(scope)

@@ -235,17 +235,28 @@ class RunIdempotencyStore:
             JOIN {_FREEZES} AS frozen ON frozen.scope=victim.scope
             WHERE (victim.run_id=NEW.run_id OR
                 (victim.scope=NEW.scope AND victim.idempotency_key=NEW.idempotency_key))"""
-        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_insert_v2
+        # A cancellation has no accepting fingerprint or execution owner. It may
+        # add a barrier inside a frozen scope, but never replace a frozen victim.
+        cancellation_only = """NEW.stop_requested=1 AND NEW.fingerprint=''
+            AND NEW.owner_pid=0 AND NEW.owner_started=0 AND CASE WHEN json_valid(NEW.status_json)
+                THEN COALESCE(json_extract(NEW.status_json,'$.run_id')=NEW.run_id
+                    AND json_extract(NEW.status_json,'$.status') IN
+                        ('queued','running','waiting_for_approval','stopping','completed','failed','cancelled','interrupted'), 0)
+                ELSE 0 END"""
+        self._conn.execute('DROP TRIGGER IF EXISTS group_run_frozen_insert_v2')
+        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_insert_v3
             BEFORE INSERT ON run_idempotency
-            WHEN EXISTS (SELECT 1 FROM {_FREEZES} WHERE scope=NEW.scope)
+            WHEN (EXISTS (SELECT 1 FROM {_FREEZES} WHERE scope=NEW.scope) AND NOT ({cancellation_only}))
               OR EXISTS ({frozen_victim})
             BEGIN SELECT RAISE(ABORT, 'group run scope frozen'); END""")
-        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_identity_v2
+        self._conn.execute('DROP TRIGGER IF EXISTS group_run_frozen_identity_v2')
+        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_identity_v3
             BEFORE UPDATE ON run_idempotency
             WHEN (EXISTS (SELECT 1 FROM {_FREEZES} WHERE scope IN (OLD.scope,NEW.scope))
               AND (NEW.scope IS NOT OLD.scope OR NEW.idempotency_key IS NOT OLD.idempotency_key
                 OR NEW.fingerprint IS NOT OLD.fingerprint OR NEW.run_id IS NOT OLD.run_id
-                OR NEW.owner_pid IS NOT OLD.owner_pid OR NEW.owner_started IS NOT OLD.owner_started))
+                OR NEW.owner_pid IS NOT OLD.owner_pid OR NEW.owner_started IS NOT OLD.owner_started
+                OR (OLD.stop_requested=1 AND NEW.stop_requested IS NOT 1)))
               OR EXISTS ({frozen_victim}
                 AND NOT (victim.scope=OLD.scope AND victim.idempotency_key=OLD.idempotency_key))
             BEGIN SELECT RAISE(ABORT, 'group run scope frozen'); END""")
