@@ -1,5 +1,6 @@
 """Room worker threads use the real authority ledger, never TUI dispatch."""
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, m
     from pathlib import Path
     import time
 
-    from gateway import hosted_room_driver as tasks, session_hosted_attachments
+    from gateway import hosted_room_driver as tasks, hosted_room_input_preparation
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions
@@ -48,14 +49,14 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, m
     coords = {'profile': 'default', 'source': 'bot_room'}
     sid = rpc.create(**coords, title='Group: room')['session_id']
     preparing, release = threading.Event(), threading.Event()
-    original = session_hosted_attachments.submission_payload
+    original = hosted_room_input_preparation.prepare_hosted_input
 
     def paused_preparation(*args, **kwargs):
         preparing.set()
         assert release.wait(10), 'test did not release preparation'
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(session_hosted_attachments, 'submission_payload', paused_preparation)
+    monkeypatch.setattr(hosted_room_input_preparation, 'prepare_hosted_input', paused_preparation)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         submitted = executor.submit(rpc.submit, **coords, session_id=sid, prompt='frozen',
             task=identity, execution_generation=task['execution_generation'],
@@ -90,6 +91,50 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, m
                 submitted.result(timeout=10)
     rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
     assert len(rows) == (1 if revocation is None else 0)
+
+
+def test_same_home_custody_guard_keeps_shared_room_refusal_and_exact_controls(owner, monkeypatch):
+    """New work honors the shared room fence on its writer; status and exact Stop remain readable."""
+    from pathlib import Path
+    import time
+    from gateway import hosted_room_driver as tasks, hosted_rooms
+    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_state_runtime import RuntimeStoreError
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+
+    authority, loop, _, _ = owner
+    service = CanonicalHostedRoomService(authority, loop)
+    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
+    service.authorize_room('alice', 'room', create=True)
+    gateway = hosted_rooms.local_authority_gateway_id()
+    hosted_rooms.create_room(authority.db.db_path, room_id='room', name='Room',
+        authority_gateway_id=gateway, members=[{'member_id': 'one', 'profile': 'default', 'handle': 'one'}])
+    identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
+    tasks.admit_task(authority.db.db_path, identity, payload={
+        'target_profile': 'default', 'target_member_id': 'one', 'source_event_seq': 1, 'prompt': 'frozen'}, clock=time.time)
+    lease = tasks.acquire_lease(authority.db.db_path, room_id='room', gateway_id=gateway,
+        authority_epoch=1, process_generation='test', ttl_seconds=120, clock=time.time)
+    started = tasks.start_task(authority.db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
+    task, = tasks.list_tasks(authority.db.db_path, room_id='room')
+    rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1), task)
+    seen = []
+
+    def refuse(conn, room_id, gateway_id, epoch):
+        assert (room_id, gateway_id, epoch) == ('room', gateway, 1)
+        seen.append(conn)
+        raise tasks.RoomUnavailableError('hosted room authority is quarantined')
+
+    monkeypatch.setattr(tasks, '_require_room_authority', refuse)
+    assert rpc.authorizer('execute', identity, started.execution_generation) is False
+
+    def check(conn):
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            rpc.authorize_write(conn, identity, started.execution_generation)
+        assert seen[-1] is conn and conn.in_transaction
+    authority.db._execute_write(check)
+    for operation in ('history', 'info', 'interrupt'):
+        assert rpc.authorizer(operation, None, None) is True
+    assert len(seen) == 2
 
 
 @pytest.fixture
@@ -179,6 +224,44 @@ def test_room_binding_exact_retry_terminal_history_and_unknown(owner):
     assert seen and all(t != threading.get_ident() for t in seen)
 
 
+def test_local_submit_rechecks_owner_after_real_preparation(owner, monkeypatch):
+    """A revoked producer cannot cross the preparation-to-admission boundary."""
+    from gateway import hosted_room_input_preparation as preparation
+    from gateway.hosted_room_driver import TaskIdentity
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+    authority, loop, principal, _ = owner
+    admitted = [True]
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member',
+        profile='default', principal=principal,
+        authorize=lambda operation, task, generation: admitted[0])
+    coords = dict(profile='default', source='bot_room')
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    entered, release = threading.Event(), threading.Event()
+    real_prepare = preparation.prepare_hosted_input
+    def paused(*args, **kwargs):
+        result = real_prepare(*args, **kwargs)
+        entered.set()
+        assert release.wait(8)
+        return result
+    monkeypatch.setattr(preparation, 'prepare_hosted_input', paused)
+    args = dict(**coords, session_id=sid, prompt='input',
+        task=TaskIdentity('room', 'task', 'thread', 'turn'), execution_generation=1,
+        on_terminal=lambda receipt: None)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(rpc.submit, **args)
+        try:
+            assert entered.wait(8)
+            admitted[0] = False
+        finally:
+            release.set()
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            future.result(timeout=8)
+    assert list_session_admissions(authority.db, session_id=sid, pending_only=False) == []
+    assert rpc.callbacks == {}
+
+
 def test_controls_are_exact_current_admission_and_loop_safe(owner):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
@@ -222,6 +305,8 @@ def test_controls_are_exact_current_admission_and_loop_safe(owner):
     assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1) == {
         'interrupted': False, 'status': 'running'}
     assert agent.interrupted
+    # The request alone does not end the turn: the admission is still running.
+    assert rpc.info(**coords, session_id=sid)['status'] == 'started'
     with pytest.raises(RuntimeStoreError):
         rpc.approve(session_id=sid, request_id='missing', choice='once',
             expected_task_id='task', expected_execution_generation=1)
@@ -431,3 +516,32 @@ def test_old_producer_stop_does_not_target_a_later_explicit_retry(owner, monkeyp
     else:
         assert stopped == {'interrupted': False, 'status': 'running'}
         assert current['status'] == 'started' and agent.interrupted
+
+
+def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(owner, monkeypatch):
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_state_runtime import claim_session_input
+    authority, loop, principal, agent = owner
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
+                                 principal=principal, authorize=lambda *args: True)
+    coords = dict(profile='default', source='bot_room')
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'),
+               execution_generation=1, on_terminal=lambda receipt: None)
+    original = authority.cancel_queued
+    claimed = []
+
+    async def claim_first(actor, ref, admission_id):
+        claimed.append(claim_session_input(authority.db, epoch=authority.epoch, session_id=sid))
+        return await original(actor, ref, admission_id)
+    monkeypatch.setattr(authority, 'cancel_queued', claim_first)
+    interrupted = []
+
+    async def interrupt(actor, ref, generation):
+        interrupted.append(generation)
+    monkeypatch.setattr(authority, 'interrupt', interrupt)
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1) == {
+        'interrupted': False, 'status': 'running'}
+    assert interrupted == [claimed[0]['generation']]
+    assert rpc.info(**coords, session_id=sid)['status'] == 'started'

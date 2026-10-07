@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -263,20 +264,39 @@ def _initialize_run_state(self, *, store_factory) -> None:
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     from gateway.platforms.api_server_group_owner_stop import http_routes as owner_stop_routes
     from gateway.platforms.api_server_room_proof import wrap
-    return [(method, path, wrap(self, handler)) for method, path, handler in [
-        ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
+    from gateway.hosted_room_documents import DOCUMENT_HTTP_MAX_BYTES
+    from gateway.platforms.api_server_peer_output import http_routes as output_routes
+    return [(method, path, wrap(self, _run_state_errors(handler), max_bytes=DOCUMENT_HTTP_MAX_BYTES if path == "/v1/runs" else None)) for method, path, handler in [
+        ("POST", "/v1/runs", self._handle_runs),
+        ("POST", "/v1/runs/stop", self._handle_stop_run),
+        ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
-        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]] + owner_stop_routes(self)
+        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]] + output_routes(self) + owner_stop_routes(self)
+
+
+def _run_state_errors(handler):
+    """Translate canonical read failures before the proof transport seals the reply."""
+    from gateway.platforms.api_server_authority_runs import RunStateUnavailable
+    from gateway.session_peer_output import PeerOutputStateUnavailable
+    async def handle(request):
+        try:
+            return await handler(request)
+        except PeerOutputStateUnavailable:
+            return web.json_response({'error': {'code': 'peer_output_state_unavailable'}}, status=503)
+        except RunStateUnavailable:
+            return web.json_response({'error': {'code': 'run_state_unavailable'}}, status=503)
+    return handle
 
 
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
     return {
         "supported": True,
         "durable": self._run_idempotency_store.durable,
+        "cancel_by_key": self._run_idempotency_store.durable,
         "retention_seconds": store_type.RETENTION_SECONDS}
 
 
@@ -402,6 +422,7 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
         _remember_room_identity(request, claims)
+        from gateway.platforms.api_server_run_scope import room_run_scope_key
         return room_run_scope_key(claims)
     else:
         parts = (_api_server._api_request_profile.get() or "default",
@@ -450,13 +471,17 @@ def _durable_run_status(
     if record is None:
         return None
     status = dict(record["status"])
-    if status.get("status") not in TERMINAL_STATUSES and not _owner_alive(
-        int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0)):
+    if (status.get("status") not in TERMINAL_STATUSES
+            and not status.get('canonical_admission_absence_pending') and not _owner_alive(
+        int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0))):
         status.update(
             status="interrupted", error="The gateway restarted before this run settled.",
             last_event="run.interrupted", updated_at=time.time())
         self._run_idempotency_store.update_status(run_id, status)
-    self._run_statuses[run_id] = status
+    # Another process may own the live executor. Do not freeze its status in this
+    # process: subsequent polls must observe the owner's durable terminal receipt.
+    if status.get("status") in TERMINAL_STATUSES:
+        self._run_statuses[run_id] = status
     self._run_idempotency_ids.add(run_id)
     self._run_owners[run_id] = scope
     return status
@@ -741,6 +766,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
+    peer_files = bool(room_dispatch and (room_dispatch.get("document_inputs") or room_dispatch.get("document_output")))
     from gateway.platforms.api_server_group_owner_stop import admission_storage_error
     storage_error = admission_storage_error(self, request, _openai_error)
     if storage_error is not None:
@@ -778,17 +804,27 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         return _json_error(_openai_error, selection_error, status=400)
     # A lost-acceptance replay must resolve even while the original run holds the last
     # concurrency slot; this read reserves nothing (the atomic reserve below closes the race).
-    if idempotency_key:
-        outcome, record = self._run_idempotency_store.lookup(
-            idempotency_scope, idempotency_key, idempotency_fingerprint,
-            retention_until=_room_retention_until(request))
-        if outcome == "conflict" or (outcome == "reused" and record is not None):
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+    from gateway.platforms.api_server_room_documents import lookup_run_response
+    replay = lookup_run_response(
+        self, request, scope=idempotency_scope, key=idempotency_key, fingerprint=idempotency_fingerprint,
+        session_id=session_id, gateway_session_key=gateway_session_key,
+        peer_files=peer_files, _openai_error=_openai_error)
+    if replay is not None:
+        return replay
+    document_bytes = None
+    if peer_files:
+        from gateway.platforms.api_server_room_documents import prepare_peer_files
+        document_bytes, document_response = await prepare_peer_files(
+            self, request, room_dispatch, idempotency_scope=idempotency_scope, idempotency_key=idempotency_key,
+            session_id=session_id, gateway_session_key=gateway_session_key, _openai_error=_openai_error)
+        if document_response is not None:
+            return document_response
     # Enforce concurrency only for a genuinely new run.
     limited = self._concurrency_limited_response()
     if limited is not None:
         return limited
-    run_id = f"run_{uuid.uuid4().hex}"
+    run_id = ("run_" + hashlib.sha256((idempotency_scope + "\0" + idempotency_key).encode()).hexdigest()[:32]
+              if peer_files else f"run_{uuid.uuid4().hex}")
     self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).
@@ -814,6 +850,14 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     session_history_delivery = not previous_response_id and not conversation_history
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
+    if peer_files:
+        # History resolution can yield; recheck before allocating this deterministic run.
+        replay = lookup_run_response(
+            self, request, scope=idempotency_scope, key=idempotency_key, fingerprint=idempotency_fingerprint,
+            session_id=session_id, gateway_session_key=gateway_session_key,
+            peer_files=peer_files, _openai_error=_openai_error)
+        if replay is not None:
+            return replay
     q = self._run_streams[run_id] = _RunStream()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
@@ -841,31 +885,15 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
     # Under session authority the same call admits the turn to the Bot Chat's own FIFO, which is
     # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
-    admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
-    if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
-        from gateway.session_api_turn import admit_api_turn
-        from gateway.platforms.api_server_room_grants import authorize_room_admission
-        from hermes_state_runtime import RuntimeStoreError
-        try:
-            with self._profile_scope(launch.request_profile):
-                launch.admission = admit_api_turn(self, user_message=launch.user_message,
-                    conversation_history=launch.conversation_history, active_run_id=run_id,
-                    run_owner_scope=self._run_owners[run_id],
-                    turn_author=launch.turn_author,
-                    history_from_session=session_history_delivery,
-                    session_history_delivery='1' if session_history_delivery else '',
-                    bind_declared_conversation=_declared_selected,
-                    _authorize_write=authorize_room_admission(self, request),
-                    **launch.agent_kwargs)
-        except RuntimeStoreError as exc:
-            # A refused admission owns no run: drop every reservation so an exact
-            # retry is refused again instead of replaying a run nobody executes.
-            _forget_run(
-                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners, self._run_idempotency_ids)
-            if idempotency_key:
-                self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
-            return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+    admitted = (
+        await self._admit_to_live_bot_chat(session_id, user_message, turn_author)
+        if selected_session_id and not _run_stop_requested(self, run_id) else None)
+    admission_error = _canonical_run_admission(
+        self, request, launch, admitted=admitted, idempotency_scope=idempotency_scope,
+        idempotency_key=idempotency_key, peer_files=peer_files,
+        document_bytes=document_bytes, _openai_error=_openai_error)
+    if admission_error is not None:
+        return admission_error
     self._activate_admitted_request()
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
@@ -877,6 +905,60 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+
+
+def _canonical_run_admission(self, request, launch, *, admitted, idempotency_scope, idempotency_key,
+                             peer_files, document_bytes, _openai_error):
+    """Admit through the canonical writer without discarding an uncertain document reservation."""
+    if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
+        from gateway.session_api_turn import admit_api_turn
+        from gateway.platforms.api_server_authority_runs import authorize_run_admission
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            with self._profile_scope(launch.request_profile):
+                launch.admission = admit_api_turn(self, user_message=launch.user_message,
+                    conversation_history=launch.conversation_history, active_run_id=launch.run_id,
+                    run_owner_scope=self._run_owners[launch.run_id],
+                    turn_author=launch.turn_author,
+                    history_from_session=launch.session_history_delivery,
+                    session_history_delivery='1' if launch.session_history_delivery else '',
+                    bind_declared_conversation=launch.declared_selected,
+                    _authorize_write=authorize_run_admission(self, request, launch.run_id),
+                    _room_document_bytes=document_bytes,
+                    **launch.agent_kwargs)
+        except RuntimeStoreError as exc:
+            stopping = self._run_idempotency_store.stop_requested(launch.run_id)
+            if peer_files or stopping:
+                from gateway.platforms.api_server_authority_runs import run_admission
+                try:
+                    accepted = run_admission(self, launch.run_id)
+                except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+                    return _json_error(_openai_error, "Document admission outcome is unknown.",
+                                       code="room_document_outcome_unknown", status=503)
+                if accepted is not None:
+                    return _json_error(_openai_error, "Document admission outcome is unknown.",
+                                       code="room_document_outcome_unknown", status=503)
+            if stopping:
+                from gateway.hosted_room_peer import HostedMemberDispatch
+                from gateway.platforms.api_server_room_documents import pending_cancellation, settle_cancelled_admission
+                if peer_files:
+                    dispatch = HostedMemberDispatch.from_mapping(launch.agent_kwargs['room_dispatch'])
+                    pending = self._set_run_status(launch.run_id, 'stopping', canonical_admission_absence_pending=
+                        pending_cancellation(dispatch, idempotency_scope, session_id=launch.session_id))
+                    self._run_idempotency_store.update_status(launch.run_id, pending)
+                    settle_cancelled_admission(self, launch.run_id, pending, scope=idempotency_scope)
+                else:
+                    self._set_run_status(launch.run_id, 'cancelled', last_event='run.cancelled')
+                return _accepted_response(launch.run_id, 'cancelled', launch.gateway_session_key, replayed=True)
+            # A refused admission owns no run: drop every reservation so an exact
+            # retry is refused again instead of replaying a run nobody executes.
+            _forget_run(
+                self, launch.run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+                self._run_statuses, self._run_owners, self._run_idempotency_ids)
+            if idempotency_key:
+                self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
+            return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+    return None
 
 
 def _run_usage(agent) -> Dict[str, int]:
@@ -953,9 +1035,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
-            r = agent.run_conversation(
-                user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id, **author_kwargs)
+            if _run_stop_requested(self, run.run_id):
+                r = {"interrupted": True}
+            else:
+                r = agent.run_conversation(
+                    user_message=run.user_message, conversation_history=run.conversation_history,
+                    task_id=effective_task_id, **author_kwargs)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -993,8 +1078,8 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     The receipt is the only truth about the turn: ``settled`` completes the run with the owner's
     reply, a failed receipt fails it with the owner's classified reason. ``/stop`` cannot reach the
     owner's turn — the mailbox has no recall once a record is claimed — so a stop ends this run
-    as ``cancelled`` while the chat finishes on its own; the stop handler already reports that a
-    run without an in-process agent is not interruptible here.
+    as ``cancelled`` while the chat finishes on its own for ordinary API runs. A RoomLink Stop
+    must prove that execution ended, so room runs keep observing the owner's terminal receipt.
     """
     from gateway.platforms.api_server_bot_chat import await_live_delivery
 
@@ -1013,7 +1098,8 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     try:
         self._set_run_status(run_id, "running", delivery_id=delivery_id)
         record = await await_live_delivery(
-            self, home, record, None, should_stop=lambda: run_id in self._stopping_run_ids)
+            self, home, record, None,
+            should_stop=lambda: run.agent_kwargs["room_dispatch"] is None and _run_stop_requested(self, run_id))
         if record["status"] in ("queued", "claimed"):
             _finish("cancelled", completed=False, partial=False, interrupted=True)
             return
@@ -1080,11 +1166,12 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("interrupted")
             return
         self._set_run_status(run_id, "running")
-        if run_id in self._stopping_run_ids or (run.room_scope and _scope_is_frozen(self, run.room_scope)):
+        if _run_stop_requested(self, run_id) and run.admission is None:
             _finish("cancelled")
             return
         if run.admission is not None:
-            from gateway.session_api_turn import observe_api_controls, observe_api_turn
+            from gateway.session_api_turn import observe_api_controls
+            from gateway.platforms.api_server_authority_runs import observe_run
             tool_cb = self._make_run_event_callback(run_id, loop)
 
             def _control_cb(event_type, prompt):
@@ -1103,8 +1190,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error))
 
             with observe_api_controls(run.admission, _control_cb):
-                result, usage = await observe_api_turn(
-                    run.admission, stream_delta_callback=_text_cb,
+                result, usage = await observe_run(
+                    self, run_id, run.admission, stream_delta_callback=_text_cb,
                     tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
@@ -1117,8 +1204,15 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-            result, usage, served_runtime = await _submit_api_worker(
+            worker = _submit_api_worker(
                 loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+            if run.agent_kwargs["room_dispatch"] is not None:
+                while not worker.done():
+                    await asyncio.wait({worker}, timeout=0.5)
+                    if _run_stop_requested(self, run_id) and run_id not in self._stopping_run_ids:
+                        _stop_loaded_run(self, run_id, self._run_statuses[run_id], agent,
+                                         self._active_run_tasks.get(run_id), _api_server=_api_server)
+            result, usage, served_runtime = await worker
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
@@ -1208,7 +1302,8 @@ def _successor_run_scope(self, request, run_id: str, permission: Optional[str]) 
     return scope if scope is not None and owner in (None, scope) else None
 
 
-def _load_owned_run(self, request, *, _api_server, permission: Optional[str], active_fallback: bool):
+def _load_owned_run(self, request, *, _api_server, permission: Optional[str], active_fallback: bool,
+                    core_control: bool = False):
     """Authenticate (*permission* -> room-grant aware; ``None`` -> API key only) and resolve
     ``(run_id, status, agent, task, error)``; *active_fallback* reports a live in-process run
     without pollable status as ``running`` instead of 404."""
@@ -1225,8 +1320,19 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
             return run_id, None, None, None, _run_not_found(_openai_error, run_id)
     agent = self._active_run_agents.get(run_id)
     task = self._active_run_tasks.get(run_id)
-    status = (self._durable_run_status(request, run_id) if successor_scope is None
-              else _durable_run_status(self, request, run_id, scope=successor_scope))
+    status = None
+    if core_control:
+        from gateway.platforms.api_server_authority_runs import run_control_status
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            status = run_control_status(self, run_id, successor_scope or self._run_idempotency_scope(request))
+        except RuntimeStoreError as exc:
+            error = (_run_not_found(_openai_error, run_id) if exc.reason == 'not_found' else
+                     _json_error(_openai_error, exc.reason, code=exc.reason, status=409))
+            return run_id, None, agent, task, error
+    if status is None:
+        status = (self._durable_run_status(request, run_id) if successor_scope is None
+                  else _durable_run_status(self, request, run_id, scope=successor_scope))
     if status is None and active_fallback and (agent is not None or task is not None):
         status = self._set_run_status(run_id, "running")
     if status is None:
@@ -1236,9 +1342,21 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
 
 async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.Response":
     """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
-    _, status, _, _, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission="status", active_fallback=True)
-    return err or web.json_response(status)
+    from gateway.session_peer_output import PeerOutputStateUnavailable, dispatch_evidence
+    try:
+        run_id, status, _, _, err = _load_owned_run(
+            self, request, _api_server=_api_server, permission="status", active_fallback=True)
+        if err is not None:
+            return err
+        if request.get('verified_room_grant') and request.headers.get('Hermes-Room-Features') == 'document-output-v1':
+            from gateway.platforms.api_server_authority_runs import run_admission
+            owned = run_admission(self, run_id)
+            evidence = dispatch_evidence(owned[1]) if owned is not None else None
+            if evidence is not None:
+                status = {**status, 'peer_dispatch_evidence': evidence}
+        return web.json_response(status)
+    except PeerOutputStateUnavailable:
+        return web.json_response({'error': {'code': 'peer_output_state_unavailable'}}, status=503)
 
 
 async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "web.StreamResponse":
@@ -1507,23 +1625,74 @@ async def _handle_steer_run(self, request: "web.Request", *, _api_server) -> "we
     return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
 
 
+def _run_stop_requested(self, run_id: str) -> bool:
+    return run_id in self._stopping_run_ids or (
+        run_id in self._run_idempotency_ids and self._run_idempotency_store.stop_requested(run_id))
+
+
+async def _handle_stop_run_admission(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """Stop a RoomLink generation, fencing late admission when no run exists yet."""
+    from gateway.platforms.api_server_room_dispatch import _validate_room_stop
+
+    try:
+        body = await request.json()
+        dispatch = _validate_room_stop(self, request, body, _api_server=_api_server)
+        scope = self._run_idempotency_scope(request)
+    except (ValueError, TypeError) as exc:
+        return _room_grant_error_response(exc, _openai_error=_api_server._openai_error)
+    if not self._run_idempotency_store.durable:
+        return _json_error(
+            _api_server._openai_error, "Durable admission cancellation is unavailable.",
+            code="run_cancellation_unavailable", status=503)
+    from gateway.platforms.api_server_room_documents import pending_cancellation
+    from gateway.platforms.api_server_authority_runs import run_control_status
+    key, now = request.headers["Idempotency-Key"].strip(), time.time()
+    peer_files = bool(dispatch.document_inputs or dispatch.document_output)
+    run_id = ('run_' + hashlib.sha256((scope + '\0' + key).encode()).hexdigest()[:32]
+              if peer_files else f'run_{uuid.uuid4().hex}')
+    canonical = run_control_status(self, run_id, scope) if peer_files else None
+    cancelled = canonical or {
+        "object": "hermes.run", "run_id": run_id, "created_at": now, "updated_at": now,
+        **({'status': 'stopping', 'canonical_admission_absence_pending':
+            pending_cancellation(dispatch, scope, key_absent=True)} if peer_files
+           else {'status': 'cancelled', 'admission_cancelled': True})}
+    _, record = self._run_idempotency_store.reserve(
+        scope, key, "", run_id, cancelled,
+        retention_until=_room_retention_until(request), cancel_if_missing=True)
+    run_id = str(record["run_id"])
+    status = run_control_status(self, run_id, scope)
+    if status is None:
+        status = self._durable_run_status(request, run_id) or record["status"]
+    return await _stop_owned_run(
+        self, run_id, status, self._active_run_agents.get(run_id), self._active_run_tasks.get(run_id),
+        scope=scope, _api_server=_api_server)
+
+
 async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web.Response":
-    """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
-    _openai_error = _api_server._openai_error
+    """Stop an exact run, or atomically cancel a RoomLink admission identity."""
+    if not request.match_info.get("run_id"):
+        return await _handle_stop_run_admission(self, request, _api_server=_api_server)
     run_id, status, agent, task, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission="stop", active_fallback=True)
+        self, request, _api_server=_api_server, permission="stop", active_fallback=True, core_control=True)
     if err is not None:
         return err
-    # A run whose turn a live Bot Chat owns (``_execute_run_via_live_owner``) is not an API
-    # admission: its stop is the legacy in-process task cancel below, never ``stop_run``.
-    if (getattr(self.gateway_runner, 'session_authority', None) is not None
-            and not (task is not None and status.get("delivery_id"))):
-        from gateway.platforms.api_server_authority_runs import stop_run
-        from hermes_state_runtime import RuntimeStoreError
-        try:
+    scope = self._run_idempotency_scope(request)
+    self._run_idempotency_store.request_stop(scope, run_id)
+    return await _stop_owned_run(self, run_id, status, agent, task, scope=scope, _api_server=_api_server)
+
+
+async def _stop_owned_run(self, run_id, status, agent, task, *, scope, _api_server):
+    from gateway.platforms.api_server_authority_runs import run_admission, stop_run
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        # A reservation may precede its canonical write; a live Bot Chat mailbox has
+        # separate ownership. Only an actual API admission enters canonical controls.
+        if run_admission(self, run_id) is not None:
             return web.json_response(await stop_run(self, run_id))
-        except RuntimeStoreError as exc:
-            return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+        from gateway.platforms.api_server_room_documents import settle_cancelled_admission
+        status = settle_cancelled_admission(self, run_id, status, scope=scope)
+    except RuntimeStoreError as exc:
+        return _json_error(_api_server._openai_error, exc.reason, code=exc.reason, status=409)
     return _stop_loaded_run(self, run_id, status, agent, task, _api_server=_api_server)
 
 
@@ -1532,10 +1701,14 @@ def _stop_loaded_run(self, run_id, status, agent, task, *, _api_server):
     _openai_error = _api_server._openai_error
     if status.get("status") in TERMINAL_STATUSES:
         return web.json_response(status)
-    if agent is None and task is None:
+    if agent is None and task is None and not _run_stop_requested(self, run_id):
         return _json_error(
-            _openai_error, f"Run is not active in this gateway process: {run_id}",
+            _api_server._openai_error, f"Run is not active in this gateway process: {run_id}",
             code="run_not_active", status=409)
+    if agent is None and task is None and run_id not in self._run_statuses:
+        # Its executor lives in another process; only that owner may publish terminal
+        # state. The durable intent will be consumed there, and polls read its receipt.
+        return web.json_response({"run_id": run_id, "status": "stopping"})
     self._set_run_status(run_id, "stopping", last_event="run.stopping")
     self._stopping_run_ids.add(run_id)
     if agent is not None:
@@ -1592,7 +1765,7 @@ async def _handle_resolve_unknown_run(
 ) -> "web.Response":
     """POST /v1/runs/{run_id}/resolve-unknown — acknowledge one lost owner epoch."""
     run_id, _, _, _, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission="stop", active_fallback=False)
+        self, request, _api_server=_api_server, permission="stop", active_fallback=False, core_control=True)
     if err is not None:
         return err
     try:

@@ -425,6 +425,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     for statement in _SCHEMA_DDL:
         conn.execute(statement)
     _migrate_legacy_columns(conn)
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_hosted_room_events_authority_claim
+                    ON hosted_room_events(room_id, authority_epoch, seq DESC)
+                    WHERE kind='authority.claimed'""")
+
     # Old schemas kept the final identity tombstone in hosted_rooms itself. Copy those identities before
     # bounded history pruning can remove their heavier room/event payloads. This compact registry is
     # intentionally permanent: a stale coordinate must never name a different Group Chat.
@@ -439,6 +443,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 def _schema_is_current(conn: sqlite3.Connection) -> bool:
     # Read every table first (fixed PRAGMA order), then compare.
     actual = [table_columns(conn, table) for table, _ in _REQUIRED_COLUMNS]
+    if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_authority_claim'"
+    ).fetchone() is None:
+        return False
+
     return all(
         required.issubset(columns)
         and (table != "hosted_room_remote_runs" or _remote_run_schema_current(conn, columns))
@@ -1066,9 +1075,11 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
     authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
-    expected_latest_seq: int | None = None) -> dict[str, Any]:
+    expected_latest_seq: int | None = None, expected_output: dict | None = None) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
-    with identical content returns the original, different content fails closed."""
+    with identical content returns the original, different content fails closed.
+
+    ``expected_output`` binds a Bot's shared files to their exact attempt inside this transaction."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     if expected_latest_seq is not None:
@@ -1087,6 +1098,10 @@ def append_event(
     with _transaction(db_path, immediate=True) as conn:
         room_safety._raise_if_quarantined(conn, room_id)
         existing = _load_event(conn, room_id, event_id)
+        if expected_output is not None:
+            from gateway.hosted_room_output_fence import require_output_publication
+            require_output_publication(conn, room_id, expected_output, kind=kind, actor=normalized_actor,
+                                       payload=json.loads(payload_json))
         if existing is not None:
             if _event_content(existing) != (kind, actor_json, authority_epoch, payload_json):
                 raise EventConflictError("event_id already exists with different content")

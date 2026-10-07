@@ -1258,7 +1258,7 @@ def _has_replayable_sidecar(role: Any, content: Any, msg: Dict[str, Any]) -> boo
 
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]], *, channel_prompt: Optional[str] = None,
-    inject_timestamps: bool = False) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    inject_timestamps: bool = False, files_bindings=None) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
@@ -1322,6 +1322,9 @@ def _build_gateway_agent_history(
                 entry["content"] = f"[Delivered from {mirror_src}] {entry['content']}"
                 entry.pop("api_content", None)  # prefix rewrite: the sidecar no longer matches
             agent_history.append(entry)
+            if files_bindings is not None:
+                files_bindings.transformed(msg, entry, unchanged=(
+                    content == msg.get("content") and not msg.get("mirror")))
 
     # Keep gateway resume byte-identical to the TUI resume and send paths. The
     # canonicalizer owns interrupted-block, dangling-tail, and stale-confirmation
@@ -4609,6 +4612,10 @@ def _start_gateway_housekeeping(
         # PID alive — the thread (or a chore blocked on the loop) wedged (#113372). Runs first so a
         # wedged chore stops the NEXT stamp instead of a slow one delaying this tick's.
         (1, "Runtime heartbeat", _write_runtime_status_quiet)]
+    if runner is not None:
+        from gateway.run_input_reclamation import collect_gateway_input_copies
+        # Collector enumerates owned authorities itself; do not run it once per profile.
+        chores.append((5, "Working-copy collection", lambda: collect_gateway_input_copies(runner)))
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.

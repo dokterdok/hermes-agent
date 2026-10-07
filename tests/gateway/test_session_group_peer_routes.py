@@ -275,6 +275,8 @@ async def test_accepted_work_is_read_and_stopped_with_its_routes_current_grant(g
         status = await asyncio.to_thread(tracked.status, room_id='linked', profile='default',
                                          session_id=accepted['session_id'], grant=route.grant)
         assert status['active'] and sent == [(f"/v1/runs/{accepted['run_id']}", second)]
+        cancelled = await asyncio.to_thread(tracked.cancel_dispatch, dispatch=dispatch, grant=route.grant)
+        assert cancelled is not None and sent[-1] == (f"/v1/runs/{accepted['run_id']}/stop", second)
         stopped = await asyncio.to_thread(tracked.stop_receipt, task_id=dispatch['task_id'],
                                           execution_generation=1, grant=route.grant)
         assert stopped is not None and sent[-1][1] == second

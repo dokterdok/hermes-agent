@@ -30,6 +30,10 @@ MAX_IDENTIFIER_CHARS = 128
 MAX_PROMPT_BYTES = 128 * 1024
 MAX_RESULT_JSON_BYTES = 256 * 1024
 TERMINAL_TASK_RETENTION_SECONDS = 30 * 24 * 60 * 60
+# Shared-file obligations (gateway.session_hosted_output_publication) pin their task row;
+# the source bytes expire after 30 days, so the pin ends after that horizon too.
+OUTPUT_OBLIGATIONS_TABLE = "hosted_room_output_obligations"
+OUTPUT_OBLIGATION_RETENTION_SECONDS = 60 * 24 * 60 * 60
 MAX_RETAINED_TERMINAL_TASKS = 2048
 MAX_TASK_PRUNE_BATCH = 1000
 TASK_STATUSES = frozenset(get_args(TaskStatus))
@@ -708,6 +712,43 @@ def settle_task(
         sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement")
 
 
+
+def settle_unsubmitted_task(db_path: DbPath, attempt: TaskAttempt, *, error: str, clock: Clock) -> dict[str, Any]:
+    """Fail a fresh attempt before submit, retaining exact durable evidence for output publication."""
+    lease = attempt.lease
+    proof = {
+        "identity": dataclasses.asdict(attempt.identity),
+        "execution_generation": attempt.execution_generation, "cancel_generation": attempt.cancel_generation,
+        "authority_epoch": lease.authority_epoch, "run_gateway_id": lease.gateway_id,
+        "run_process_generation": lease.process_generation, "run_lease_generation": lease.lease_generation,
+    }
+    return settle_task(db_path, attempt,
+        settlement_id=f"failure:{attempt.identity.task_id}:{attempt.execution_generation}", status="failed",
+        result={"error": error, "pre_dispatch_failure": proof}, clock=clock)
+
+
+def is_proven_unsubmitted(task: Mapping[str, Any], *, gateway_id: str, authority_epoch: int) -> bool:
+    """Only the exact failed attempt's local evidence can rule out unreported output.
+
+    This is not the deferred nonadmission proof that authorizes Retry. Peer receipts
+    cannot supply it: terminal result normalization retains only declared output fields.
+    """
+    result = task.get("result")
+    proof = result.get("pre_dispatch_failure") if isinstance(result, dict) else None
+    if task.get("status") != "failed" or not isinstance(proof, dict):
+        return False
+    expected = {"identity": dataclasses.asdict(task["identity"]), "authority_epoch": authority_epoch,
+                **{key: task.get(key) for key in ("execution_generation", "cancel_generation",
+                   "run_gateway_id", "run_process_generation", "run_lease_generation")}}
+    if proof != expected or proof["run_gateway_id"] != gateway_id:
+        return False
+    return (all(type(proof[key]) is int and proof[key] >= low for key, low in (
+                ("execution_generation", 1), ("cancel_generation", 0), ("authority_epoch", 1),
+                ("run_lease_generation", 1)))
+            and all(isinstance(proof[key], str) and proof[key] for key in (
+                "run_gateway_id", "run_process_generation")))
+
+
 def settle_stopping_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
@@ -973,12 +1014,20 @@ def prune_published_terminal_tasks(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_policy_publications'").fetchone()
         if publications is None:
             return 0
-        rows = conn.execute("""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
+        # A Bot's shared files still being published or retired keep their task row.
+        output_guard, output_params = "", ()
+        if table_exists(conn, OUTPUT_OBLIGATIONS_TABLE):
+            output_guard = f"""AND NOT EXISTS (SELECT 1 FROM {OUTPUT_OBLIGATIONS_TABLE} o
+                                WHERE o.room_id=t.room_id AND o.task_id=t.task_id
+                                  AND o.state IN ('pending', 'blocked') AND o.created_at>?)"""
+            output_params = (now - OUTPUT_OBLIGATION_RETENTION_SECONDS,)
+        rows = conn.execute(f"""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
                 WHERE t.room_id=? AND t.status IN ('settled', 'failed', 'cancelled')
                   AND EXISTS (SELECT 1 FROM hosted_room_policy_publications p
                               WHERE p.room_id=t.room_id AND p.task_id=t.task_id
                                 AND p.kind IN ('turn.settled', 'turn.failed', 'turn.cancelled'))
-                ORDER BY t.terminal_at DESC, t.task_id ASC""", (room_id,)).fetchall()
+                  {output_guard}
+                ORDER BY t.terminal_at DESC, t.task_id ASC""", (room_id, *output_params)).fetchall()
         cutoff = now - float(retention_seconds)
         candidates = [
             str(row["task_id"]) for index, row in enumerate(rows)

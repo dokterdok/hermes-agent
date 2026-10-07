@@ -158,12 +158,18 @@ class HostedRoomService:
     def _room(self, room_id: str) -> dict[str, Any]:
         return hosted_rooms.room_state(self.db_path, room_id=room_id)
 
-    def _owned_authority(self, room_id: str) -> tuple[str, int]:
-        """(gateway_id, epoch) of a room this gateway owns; conflict error otherwise."""
-        gateway_id, epoch = _authority(self._room(room_id))
+    def _owned_room(self, room_id: str) -> tuple[dict[str, Any], str, int]:
+        """A room this gateway owns, with its (gateway_id, epoch); conflict error otherwise."""
+        room = self._room(room_id)
+        gateway_id, epoch = _authority(room)
         if gateway_id != hosted_rooms.local_authority_gateway_id():
             raise hosted_rooms.AuthorityConflictError(
                 "This Group Chat is managed by another gateway.")
+        return room, gateway_id, epoch
+
+    def _owned_authority(self, room_id: str) -> tuple[str, int]:
+        """(gateway_id, epoch) of a room this gateway owns; conflict error otherwise."""
+        _room, gateway_id, epoch = self._owned_room(room_id)
         return gateway_id, epoch
 
     def _turn_lock(self, profile: str) -> contextlib.AbstractContextManager[Path]:
@@ -263,11 +269,17 @@ class HostedRoomService:
             bind_observation(task_id=identity.task_id, execution_generation=execution_generation)
 
         tracked_client = self._track_peer_client(binding, key, route, client)
-        self._recover_peer_admission(binding, task, route, tracked_client)
+        from tui_gateway.hosted_room_peer_documents import task_documents
+        documents = task_documents(self.db_path, binding, task)
+        from tui_gateway.hosted_room_peer_output import task_output
+        output = task_output(self.db_path, binding, task, route, tracked_client, negotiate=False)
+        self._recover_peer_admission(binding, task, route, tracked_client, document_inputs=documents, document_output=output)
         return PeerHostedRoomTransport(
             binding=binding, route=route, client=tracked_client,
             source_event_seq=int(payload.get("source_event_seq") or 0),
-            task_id=getattr(identity, "task_id", None), execution_generation=execution_generation)
+            task_id=getattr(identity, "task_id", None), execution_generation=execution_generation, document_inputs=documents, document_output=output,
+            output_factory=(lambda: task_output(self.db_path, binding, task, route, tracked_client))
+                if task.get('status') == 'queued' else None)
 
     def _track_peer_client(
         self, binding: HostedRoomBinding, key: tuple[str, str], route: PeerMemberRoute, client: Any) -> Any:
@@ -281,11 +293,15 @@ class HostedRoomService:
             on_refreshed=lambda grant, catalog=None: self._rotate_route_grant(
                 *key, grant, catalog))
 
+
     def _recover_peer_admission(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], route: PeerMemberRoute,
-        client: Any) -> None:
+        client: Any, *, document_inputs=None, document_output=None) -> None:
         """Rediscover an admitted peer run without advancing its generation."""
-        recover = _hook(client, "recover_dispatch")
+        stopping = task.get("status") == "stopping"
+        recover = _hook(client, "cancel_dispatch" if stopping else "recover_dispatch")
+        if stopping and recover is None:
+            raise RuntimeError("peer cannot cancel an uncertain admission; update the target gateway")
         identity, payload = task.get("identity"), task.get("payload")
         execution_generation = int(task.get("execution_generation") or 0)
         if (
@@ -301,8 +317,12 @@ class HostedRoomService:
         dispatch = build_member_dispatch(
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
-            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id)
-        recover(dispatch=dispatch.as_mapping(), grant=route.grant)
+            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id, document_inputs=document_inputs, document_output=document_output)
+        options = {}
+        if document_output is not None and not stopping:
+            if document_inputs and task['status'] == 'indeterminate':
+                options['preparation_cancel_generation'] = task['cancel_generation']
+        recover(dispatch=dispatch.as_mapping(), grant=route.grant, **options)
 
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:
         for m in self._room(room_id).get("members") or []:
@@ -504,8 +524,12 @@ class HostedRoomService:
         return room
 
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
-        normalized = discussion.validate_user_payload(payload)
-        gateway_id, epoch = self._owned_authority(room_id)
+        room, gateway_id, epoch = self._owned_room(room_id)
+        # A message without a thread starts its own, as Desktop's client already does.
+        if isinstance(payload, Mapping) and "thread_id" not in payload:
+            payload = {**payload, "thread_id": event_id}
+        normalized = discussion.validate_user_payload(
+            payload, member_ids=[member["member_id"] for member in room["members"]])
         from gateway.session_hosted_attachments import append_user_event
         event = append_user_event(
             self, room_id=room_id, event_id=event_id, payload=normalized,

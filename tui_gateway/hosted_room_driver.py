@@ -131,6 +131,9 @@ class HostedRoomRuntime:
         self.db_path = Path(db_path)
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
+        # (binding, current task, attempt generation, receipt result): retires the files a
+        # late receipt reports for an attempt that can no longer publish them.
+        self.retire_stale_output: Callable[..., None] | None = None
         self.pending_action, self.clock = pending_action, clock
         # Upkeep for the leased room (peer grant renewal): after Stop and new work, and between
         # polls of an active turn.
@@ -454,8 +457,8 @@ class HostedRoomRuntime:
                 "execution_generation": int(task["execution_generation"]),
                 "run_id": info.get("run_id"), "session_id": session_id,
                 "request_id": safe_approval.get("request_id"), "approval": safe_approval}
-        if info.get("status") == "stopping":
-            action = {"kind": "stopping", "task_id": task["identity"].task_id,
+        if info.get("status") in {"stopping", "unknown"}:
+            action = {"kind": info["status"], "task_id": task["identity"].task_id,
                       "execution_generation": int(task["execution_generation"]),
                       "run_id": info.get("run_id"), "session_id": session_id}
         self.pending_action(task["identity"].room_id, _member_id(task), action)
@@ -732,7 +735,9 @@ class HostedRoomRuntime:
                 self._mark_ambiguous(binding, attempt)
                 self._record_task_error(attempt, f"observation failed after submit: {exc}")
             else:
-                self._settle_failure_if_current(attempt, exc)
+                self._settle_failure_if_current(attempt, exc, unsubmitted=(
+                    task.get("status") == "queued"
+                    and task.get("execution_generation") == attempt.execution_generation - 1))
         finally:
             with self._status_lock:
                 self._current_tasks.pop(binding.room_id, None)
@@ -770,6 +775,8 @@ class HostedRoomRuntime:
                         state.settle_stopping_task, binding, current, attempt.lease,
                         **asdict(terminal),
                         expected_execution_generation=attempt.execution_generation)
+                elif self.retire_stale_output is not None and terminal.result.get("artifacts"):
+                    self.retire_stale_output(binding, current, attempt.execution_generation, terminal.result)
         except state.StaleLeaseError:
             # Cancellation, disband, or authority transfer won the durable race: the model
             # result is discarded rather than turning a correct fence into a thread exception.
@@ -1010,12 +1017,15 @@ class HostedRoomRuntime:
             return transport.create(**coords) if create else None
         return transport.resume(**_session_kw(profile, _session_id(session)))
 
-    def _settle_failure_if_current(self, attempt: state.TaskAttempt, exc: Exception) -> None:
+    def _settle_failure_if_current(self, attempt: state.TaskAttempt, exc: Exception, *, unsubmitted=False) -> None:
         with suppress(state.DriverStateError, state.RoomUnavailableError):
-            state.settle_task(
-                self.db_path, attempt,
-                settlement_id=f"failure:{attempt.identity.task_id}:{attempt.execution_generation}",
-                status="failed", result={"error": str(exc)}, clock=self.clock)
+            if unsubmitted:
+                state.settle_unsubmitted_task(self.db_path, attempt, error=str(exc), clock=self.clock)
+            else:
+                state.settle_task(
+                    self.db_path, attempt,
+                    settlement_id=f"failure:{attempt.identity.task_id}:{attempt.execution_generation}",
+                    status="failed", result={"error": str(exc)}, clock=self.clock)
         self._record_task_error(attempt, f"failed: {exc}")
 
     def _record_task_error(self, attempt: state.TaskAttempt, message: str) -> None:
@@ -1057,10 +1067,12 @@ def _truncate_utf8(value: Any, *, max_bytes: int) -> tuple[str, bool]:
 
 
 def _bounded_terminal_result(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    from gateway.session_hosted_output import terminal_output_fields
     text, truncated = _truncate_utf8(receipt.get("text", ""), max_bytes=MAX_TERMINAL_TEXT_BYTES)
     error, error_truncated = _truncate_utf8(receipt.get("error", ""), max_bytes=4096)
     return {
         "message_id": receipt.get("message_id"), "text": text,
+        **terminal_output_fields(dict(receipt)),
         **({"error": error} if error else {}),
         **({"truncated": True} if truncated or error_truncated else {})}
 
@@ -1081,7 +1093,8 @@ def _find_terminal_receipt(
         return _TerminalReceipt(
             status=cast(state.TerminalStatus, status), settlement_id=receipt_id,
             result=_bounded_terminal_result(
-                {"message_id": receipt_id, "text": message.get("content", "")}))
+                {"message_id": receipt_id, "text": message.get("content", ""),
+                 **{key: message[key] for key in ("artifacts", "artifact_scope", "peer_output_empty") if key in message}}))
     return None
 
 

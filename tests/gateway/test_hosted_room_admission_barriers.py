@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as tasks, hosted_rooms as rooms, session_hosted_attachments
+from gateway import hosted_room_driver as tasks, hosted_rooms as rooms, hosted_room_input_preparation
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state_runtime import (
     RuntimeStoreError, admit_session_input, cancel_session_input, get_session_admission, list_session_admissions,
@@ -24,7 +24,7 @@ def local_case(owner, monkeypatch, *, previous_stop=False):
     authority, loop, _, _ = owner
     service = CanonicalHostedRoomService(authority, loop)
     authority.hosted_room_service = service
-    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
+    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id), 'other': Path(authority.profile_id)})
     service.authorize_room('alice', 'room', create=True)
     gateway = rooms.local_authority_gateway_id()
     rooms.create_room(authority.db.db_path, room_id='room', name='Room', authority_gateway_id=gateway,
@@ -32,19 +32,16 @@ def local_case(owner, monkeypatch, *, previous_stop=False):
                  {'member_id': 'two', 'profile': 'other', 'handle': 'two'}])
     if previous_stop:
         assert service.stop_room('room', cancel_id='before-source') == 0
-    event = rooms.append_event(authority.db.db_path, room_id='room', event_id='input', kind='message.user',
-        actor={'kind': 'user', 'id': 'alice'}, payload={'text': 'frozen', 'thread_id': 'thread'},
-        authority_gateway_id=gateway, authority_epoch=1)
-    identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
-    tasks.admit_task(authority.db.db_path, identity, payload={'target_profile': 'default',
-        'target_member_id': 'one', 'source_event_seq': event['seq'], 'prompt': 'frozen'}, clock=time.time)
+    service.send(room_id='room', event_id='input', payload={'text': '@one frozen', 'thread_id': 'thread'})
+    task, = tasks.list_tasks(authority.db.db_path, room_id='room', status='queued')
+    identity = task['identity']
     binding = service.bindings()[0]
     lease = service.runtime._ensure_lease(binding)
     tasks.start_task(authority.db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
     member = service._resolve_member_transport(binding, tasks.get_task(authority.db.db_path, identity))
     coords = dict(profile='default', source='bot_room')
     sid = member.create(**coords, title='Group: room')['session_id']
-    args = dict(**coords, session_id=sid, prompt='frozen', task=identity, execution_generation=1,
+    args = dict(**coords, session_id=sid, prompt=task['payload']['prompt'], task=identity, execution_generation=1,
                 on_terminal=lambda _: None)
     return SimpleNamespace(authority=authority, loop=loop, service=service, member=member,
                            sid=sid, identity=identity, args=args, lease=lease, gateway=gateway)
@@ -140,14 +137,14 @@ def barrier(c, kind, monkeypatch):
 def test_new_admission_reads_room_barrier_in_its_writer(owner, monkeypatch, kind):
     c = local_case(owner, monkeypatch, previous_stop=kind == 'previous_stop')
     preparing, release = threading.Event(), threading.Event()
-    original = session_hosted_attachments.submission_payload
+    original = hosted_room_input_preparation.prepare_hosted_input
 
     def prepare(*args, **kwargs):
         preparing.set()
         assert release.wait(10)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(session_hosted_attachments, 'submission_payload', prepare)
+    monkeypatch.setattr(hosted_room_input_preparation, 'prepare_hosted_input', prepare)
     receipt = error = None
     with ThreadPoolExecutor(max_workers=1) as workers:
         submitted = workers.submit(c.member.submit, **c.args)

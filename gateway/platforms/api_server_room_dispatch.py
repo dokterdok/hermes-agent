@@ -14,7 +14,13 @@ except ImportError:
 from gateway.platforms.api_server_room_grants import _json_error
 
 
-async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
+def _member_session_id(dispatch):
+    seed = (f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
+            f"{dispatch.member_id}\0{dispatch.target_profile}")
+    return f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+
+
+async def _ensure_hosted_member_session(self, dispatch: Any, *, create=True) -> str:
     """Create or verify the target's canonical hidden group session. The ``Group: <room_id>``
     namespace is reused on purpose (Desktop-assisted -> hosted keeps one transcript); a
     conflicting title under another session id fails closed rather than merging."""
@@ -27,6 +33,8 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     session_id = member_session_id(
         _grant_db(self), home_install_id=dispatch.home_install_id, room_id=dispatch.room_id,
         member_id=dispatch.member_id, target_profile=dispatch.target_profile)
+    if not create:
+        return session_id
     from gateway.session_authorities import active_authority
     authority = active_authority(self.gateway_runner)
     if authority is not None:
@@ -73,8 +81,12 @@ async def _normalize_room_dispatch(
     """Validate and normalize a scoped RoomLink dispatch request."""
     _openai_error, room_token = _api_server._openai_error, self._room_grant_token(request)
     if not room_token:
+        declared = body.get('hosted_room_dispatch') if isinstance(body, dict) else None
+        if isinstance(declared, dict) and declared.get('document_output') is not None:
+            return body, _json_error(_openai_error, 'Peer output requires authenticated room consent.',
+                                     code='invalid_room_output', status=403)
         return body, None
-    if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch"}:
+    if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch", "document_bytes"}:
         return body, _json_error(
             _openai_error, "Room dispatch accepts only input and hosted_room_dispatch.",
             code="invalid_room_dispatch", status=400)
@@ -84,7 +96,12 @@ async def _normalize_room_dispatch(
         from gateway.hosted_room_execution_policy import RoomExecutionPolicy
         from gateway.platforms.api_server_room_grants import _local_room_catalog
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
+        if (dispatch.document_inputs is not None or dispatch.document_output is not None) and not request.get("verified_room_grant"):
+            raise ValueError("document inputs require proof-v2 transport")
         verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
+        if dispatch.document_output is not None:
+            for permission in ('status', 'stop'):
+                verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission=permission)
         active_profile = _api_server._api_request_profile.get() or "default"
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:
@@ -101,7 +118,12 @@ async def _normalize_room_dispatch(
         expected_key = f"room:{dispatch.task_id}:{dispatch.execution_generation}"
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
-        session_id = await self._ensure_hosted_member_session(dispatch)
+        if "document_bytes" in body and dispatch.document_inputs is None:
+            raise ValueError("unbound document transfer")
+        request["room_document_bytes"] = body.get("document_bytes")
+        # Document transfer is checked after accepted-run lookup, before any new session/input effects.
+        session_id = (await self._ensure_hosted_member_session(dispatch) if dispatch.document_inputs is None
+                      else await _ensure_hosted_member_session(self, dispatch, create=False))
         return {
             "input": dispatch.prompt,
             "session_id": session_id,
@@ -110,3 +132,21 @@ async def _normalize_room_dispatch(
         }, None
     except Exception as exc:
         return body, _room_dispatch_error(exc, _openai_error=_openai_error)
+
+
+def _validate_room_stop(self, request, body, *, _api_server):
+    """Authenticate an exact admission identity without dispatching or creating its session."""
+    from gateway.hosted_room_peer import HostedMemberDispatch, verify_room_grant
+    from gateway.platforms.api_server_room_grants import _local_target
+
+    claims = self._room_grant_claims(request, permission="stop")
+    _local_target(claims, _api_server._api_request_profile)
+    if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch"}:
+        raise ValueError("Room stop accepts only input and hosted_room_dispatch.")
+    dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
+    verify_room_grant(self._room_grant_secret(), self._room_grant_token(request), dispatch, permission="stop")
+    if body.get("input") not in {None, dispatch.prompt}:
+        raise ValueError("room stop input does not match its prompt")
+    if request.headers.get("Idempotency-Key", "").strip() != f"room:{dispatch.task_id}:{dispatch.execution_generation}":
+        raise ValueError("room stop idempotency key is invalid")
+    return dispatch

@@ -285,7 +285,14 @@ async def _handle_room_member_capabilities(
     room_identity = {"install_id": installation_id, "public_key": local_public_key(), "name": name,
                      "operator_name": operator_name, "allowed": local_consent(_grant_db(self), claims["room_id"]),
                      "always_on": local_always_on()}
+    from gateway.hosted_room_documents import advertised_capability
+    documents = advertised_capability(self) if request.headers.get("Hermes-Room-Features") == "document-input-v1" else None
+    from gateway.session_peer_output import output_available
+    output = output_available(self) if (request.headers.get("Hermes-Room-Features") == "document-output-v1"
+                                      and {"status", "stop", "dispatch"} <= set(claims["permissions"])) else None
     return web.json_response({
+        **({"document_output": output} if output is not None else {}),
+        **({"document_inputs": documents} if documents is not None else {}),
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
         "target_profile": profile, "catalog": catalog, "passive_replication": passive_capabilities(),
         "room_identity": room_identity, "permissions": list(claims.get("permissions", ())),

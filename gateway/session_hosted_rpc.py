@@ -124,6 +124,9 @@ class HostedRoomAuthorityRPC:
         receipt = {'status': status, 'text': value.get('final_response', ''),
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
                    'task_id': task.task_id, 'execution_generation': generation}
+        if status == 'settled':
+            from gateway.session_hosted_output import output_receipt_fields
+            receipt.update(output_receipt_fields(value))
         callback = self.callbacks.pop(row['admission_id'], None)
         if callback is not None:
             callback(receipt)
@@ -136,12 +139,16 @@ class HostedRoomAuthorityRPC:
         rows = self._rows()
         if any(row['status'] == 'unknown' for row, _, _ in rows):
             raise RuntimeStoreError('unknown_execution')
-        from gateway.session_hosted_attachments import submission_payload
-        payload = await asyncio.to_thread(
-            submission_payload, self, params['prompt'], params.get('attachments'))
+        from gateway.hosted_room_input_preparation import prepare_hosted_input
+        prepared = await asyncio.to_thread(prepare_hosted_input, self, request_id=request_id,
+            prompt=params['prompt'], attachments=params.get('attachments'))
         authorize_write = self.authorize_write
+        # Transports without a writer guard still recheck after background preparation.
+        # Same-home admission checks the newer snapshot inside the accepting write.
+        if authorize_write is None and self.authorizer('submit', task, generation) is not True:
+            raise RuntimeStoreError('permission_denied')
         receipt = await self.authority.submit(self.principal, Submission(
-            request_id, self.ref, payload, 'queue'),
+            request_id, self.ref, prepared.payload, 'queue'), _input_custody=prepared.handle,
             _authorize_write=(lambda conn: authorize_write(conn, task, generation))
             if authorize_write is not None else None)
         self.callbacks[receipt.admission_id] = params['on_terminal']
@@ -209,12 +216,28 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
-            await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
-            # Queued input never ran; cancellation is already its terminal.
+            try:
+                await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
+            except RuntimeStoreError as exc:
+                if exc.reason != 'stale_generation':
+                    raise
+                # The claim won the queued CAS: interrupt only this exact, now started row.
+                matches = [fresh for fresh, task, _ in self._rows()
+                           if fresh['admission_id'] == row['admission_id'] and task == current[1]]
+                if len(matches) != 1 or any(matches[0][key] != row[key] for key in (
+                        'request_id', 'principal_id', 'target_session_id', 'owner_epoch', 'payload', 'intent')):
+                    raise RuntimeStoreError('stale_generation') from None
+                fresh = matches[0]
+                if fresh['status'] == 'unknown':
+                    raise RuntimeStoreError('unknown_execution') from None
+                if fresh['status'] != 'started' or type(fresh['generation']) is not int or fresh['generation'] < 1:
+                    raise RuntimeStoreError('stale_generation') from None
+                await self.authority.interrupt(self.principal, self.ref, fresh['generation'])
+                return {'interrupted': False, 'status': 'running'}
+            # A queued row never ran: its cancellation is the exact terminal.
             return {'interrupted': True, 'status': 'interrupted'}
         await self.authority.interrupt(self.principal, self.ref, row['generation'])
-        # Interrupt requests can outlive their delivery. Keep the hosted task
-        # stopping until the producer commits an actual terminal outcome.
+        # A request is not the producer's terminal: Stop completes once the turn has ended.
         return {'interrupted': False, 'status': 'running'}
 
     async def _discard(self, params):
@@ -232,8 +255,19 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             await self.authority.resolve_unknown(
                 self.principal, self.ref, row['admission_id'], row['generation'])
+        # A discarded attempt never publishes, so files it shared are retired with it.
+        await asyncio.to_thread(self._discard_attempt_output, task.task_id, generation)
         return {'discarded': True, 'status': 'cancelled', 'task_id': task.task_id,
                 'execution_generation': generation}
+
+    def _discard_attempt_output(self, task_id, generation):
+        from gateway.hosted_room_artifacts import RoomArtifactOutbox, output_store_exists
+        with self.authority.db._read_ctx() as conn:
+            if not output_store_exists(conn):
+                return 0
+        return RoomArtifactOutbox(self.authority.db.db_path).discard_attempt(
+            room_id=self.room_id, task_id=task_id, execution_generation=generation,
+            member_id=self.member_id, target_profile=self.profile)
 
     async def _approve(self, params):
         expected_task = params.get('expected_task_id')

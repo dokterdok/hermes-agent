@@ -9,6 +9,7 @@ import time
 from gateway.session_contract import Principal
 from gateway.session_authorities import active_authority, all_authorities, owner_scope
 from gateway.session_hosted_controls import HostedControls
+from gateway.session_hosted_output_publication import CanonicalHostedOutput
 from hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
 
@@ -22,7 +23,7 @@ def _held_as_copy(conn, room_id):
         'SELECT 1 FROM hosted_room_replicas WHERE room_id=?', (room_id,)).fetchone() is not None
 
 
-class CanonicalHostedRoomService(HostedControls, HostedRoomService):
+class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
@@ -33,6 +34,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         self._peer_cleanup_inflight = set()
         self._peer_renewals, self._peer_renewal_scans = {}, {}  # session_group_peer_routes
         super().__init__(None, db_path=authority.db.db_path)
+        self.runtime.retire_stale_output = self.retire_stale_output
         from gateway.hosted_room_replication import HostedRoomReplicationPublisher
         # Copies history to the room's custodians; idle until such a route exists.
         self.replication = HostedRoomReplicationPublisher(self.db_path)
@@ -191,6 +193,15 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                                                params.get('execution_generation'))
             if asdict(current['identity']) != task:
                 raise RuntimeStoreError('permission_denied')
+        if operation == 'output_scope':
+            from gateway.session_hosted_output_owner import attest_output_scope
+            result['scope'] = attest_output_scope(self, room_id, member, profile, params)
+            return result
+        from gateway.session_hosted_output_owner import OUTPUT_OPERATIONS
+        if operation in OUTPUT_OPERATIONS:
+            from gateway.session_hosted_output_owner import attest_output_action
+            result.update(attest_output_action(self, room_id, member, profile, operation, params))
+            return result
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -558,7 +569,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             rpc = self._resolve_member_transport(HostedRoomBinding(identity.room_id,
                 room['authority_gateway_id'], room['authority_epoch']), task)
             if (getattr(rpc, 'ref', None) != ref or task['status'] != 'running'
-                    or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'))
+                    or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'), admission=row)
                     or rpc.authorizer('execute', identity, generation) is not True):
                 raise ValueError('changed hosted binding')
             if _for_claim:
@@ -610,6 +621,9 @@ async def _ensure_hosted_service(runner, authority):
             install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
                                      attest=service.attest)
             service._transport_installed = True
+        # Finish any shared-file cleanup a restart interrupted before new turns run.
+        from gateway.session_hosted_output import replay_output_cleanups
+        await asyncio.to_thread(replay_output_cleanups, authority)
 
 
 def start_ready_hosted_services(runner):
