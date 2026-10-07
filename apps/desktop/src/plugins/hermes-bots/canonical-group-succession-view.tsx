@@ -82,19 +82,9 @@ function ContinueDialog({ controller, preparation, members, onClose, onPrepared 
 }) {
   const words = useBots().succession
   const labels = useCanonicalGroupLabels()
-  const { locale } = useI18n()
   const status = controller.status
   const preview = preparation?.preview
   const target = preview ? preview.target.name ?? preparation?.target.label ?? null : null
-  const host = computerName(controller, status?.host)
-  const list = (names: string[]) => new Intl.ListFormat(locale, { type: 'conjunction' }).format(names)
-  const bots = preview?.unavailable_bots.map(bot => bot.name ?? members.find(member => member.member_id === bot.member_id)?.display_name ?? labels.unknownBot) ?? []
-  const work = preview?.work
-  const owner = preview?.owner.name ?? status?.owner.name ?? null
-  const operator = preview?.target.operator_name ?? null
-  const cautions = preview?.cautions ?? []
-  const fencing = cautions.find(caution => caution.code === 'participant_not_fenced')
-  const unreachable = cautions.find(caution => caution.code === 'voters_unreachable')
   const inFlight = useRef(false)
 
   // One promote at a time: the dialog stays open and busy until it answers, and a second click does nothing.
@@ -116,6 +106,32 @@ function ContinueDialog({ controller, preparation, members, onClose, onPrepared 
           reason: successionFailure(error)?.reason ?? 'unreachable', other: successionFailure(error)?.other ?? null }, status, controller)))
       } finally {inFlight.current = false}
     }} open={!!preparation} title={words.confirmTitle(target)}>
+    <ContinueSummary controller={controller} members={members} preparation={preparation} />
+  </ConfirmDialog>
+}
+
+function continuationSummary(controller: SuccessionController, preparation: Preparation | null, members: CanonicalRoomMember[], unknownBot: string) {
+  const status = controller.status
+  const preview = preparation?.preview
+  const cautions = preview?.cautions ?? []
+
+  return { preview, target: preview ? preview.target.name ?? preparation?.target.label ?? null : null,
+    host: computerName(controller, status?.host),
+    bots: preview?.unavailable_bots.map(bot => bot.name ?? members.find(member => member.member_id === bot.member_id)?.display_name ?? unknownBot) ?? [],
+    work: preview?.work, owner: preview?.owner.name ?? status?.owner.name ?? null,
+    operator: preview?.target.operator_name ?? null, cautions,
+    fencing: cautions.find(caution => caution.code === 'participant_not_fenced'),
+    unreachable: cautions.find(caution => caution.code === 'voters_unreachable') }
+}
+
+function ContinueSummary({controller, preparation, members}: {controller: SuccessionController; preparation: Preparation | null; members: CanonicalRoomMember[]}) {
+  const words = useBots().succession
+  const labels = useCanonicalGroupLabels()
+  const {locale} = useI18n()
+  const {preview, target, host, bots, work, owner, operator, cautions, fencing, unreachable} = continuationSummary(controller, preparation, members, labels.unknownBot)
+  const list = (names: string[]) => new Intl.ListFormat(locale, {type: 'conjunction'}).format(names)
+
+  return (
     <div className="grid gap-2 text-sm text-(--ui-text-secondary)" data-slot="continue-summary">
       {!!bots.length && <p>{words.botsUnavailable(bots.length, host, list(bots))}</p>}
       {work && (work.completed || work.elsewhere || work.unknown) > 0 && <p>{words.workInProgress(work.completed, work.elsewhere, work.unknown)}</p>}
@@ -133,7 +149,7 @@ function ContinueDialog({ controller, preparation, members, onClose, onPrepared 
           <span>{words.hostMayBeRunning(host)}</span>
         </p>}
     </div>
-  </ConfirmDialog>
+  )
 }
 
 function Separate({ binding, branchId, members }: { binding: CanonicalGroupBinding; branchId: string; members: CanonicalRoomMember[] }) {

@@ -1140,6 +1140,135 @@ interface CreateGroupChatDialogProps {
   roster: RosterRow[]
 }
 
+/** The selected members and routable roster share one checkbox/chip selection state. */
+function GroupCreateSelection({selected, visible, allMeta, checked, createPending, atCap, query, onSelection}: {
+  selected: RosterRow[]; visible: RosterRow[]; allMeta: Record<string, BotMeta>; checked: Record<string, boolean>
+  createPending: boolean; atCap: boolean; query: string; onSelection: (key: string, selected: boolean) => void
+}) {
+  const b = useBots()
+
+  return <>
+        {selected.length ? (
+          <div className="flex flex-wrap gap-1">
+            {selected.map(bot => (
+              <Badge
+                asChild
+                className="rounded-full bg-(--chrome-action-hover) pl-2 pr-1.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:text-foreground"
+                key={botRosterKey(bot)}
+                variant="muted"
+              >
+                <RowButton
+                  disabled={createPending}
+                  onClick={() =>
+                    onSelection(botRosterKey(bot), false)
+                  }
+                  title={b.group.removeFromSelection}
+                >
+                  {displayName(bot, botRosterMeta(bot, allMeta))}
+                  <Codicon className="text-[0.6rem]" name="close" />
+                </RowButton>
+              </Badge>
+            ))}
+          </div>
+        ) : null}
+        <div className="max-h-64 min-h-0 overflow-y-auto overscroll-contain">
+          <div className="grid gap-0.5 pr-2">
+            {visible.length ? (
+              visible.map(bot => {
+                const meta = botRosterMeta(bot, allMeta)
+                const { shape, color, image } = botAppearance(bot.name, meta)
+                const isChecked = Boolean(checked[botRosterKey(bot)])
+                const disabled = createPending || (!isChecked && atCap)
+
+                return (
+                  <label
+                    className={cn(
+                      'flex min-w-0 cursor-pointer items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-(--chrome-action-hover)',
+                      disabled && 'cursor-not-allowed opacity-50'
+                    )}
+                    key={botRosterKey(bot)}
+                  >
+                    <BotFace
+                      color={avatarColor(color, bot.name)}
+                      image={image && !isBackfilledFacePng(image) ? image : null}
+                      name={bot.name}
+                      shape={shape}
+                      size={32}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-foreground">{displayName(bot, meta)}</div>
+                      {bot.connectionLabel && <div className="truncate text-xs text-(--ui-text-secondary)">{bot.connectionLabel}</div>}
+                    </div>
+                    <Checkbox
+                      checked={isChecked}
+                      disabled={disabled}
+                      onCheckedChange={value =>
+                        onSelection(botRosterKey(bot), Boolean(value))
+                      }
+                    />
+                  </label>
+                )
+              })
+            ) : (
+              <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
+                {query.trim() ? b.canonical.noMatchingBots.replace('{query}', query.trim()) : b.canonical.noBots}
+              </div>
+            )}
+          </div>
+        </div>
+
+  </>
+}
+
+function GroupSetupNotice({cleanup, storageBlocked, error, recovering, pending, onRecover}: {
+  cleanup: boolean; storageBlocked: boolean; error: string; recovering: boolean; pending: boolean; onRecover: () => void
+}) {
+  const b = useBots()
+  const {t} = useI18n()
+
+  if (!cleanup && !error) {return null}
+
+  return <div className="grid gap-2 text-sm text-(--ui-text-secondary)" role="alert">
+    <p>{cleanup ? storageBlocked ? b.canonical.peerSetupStorage : b.canonical.peerSetupCleanup : error}</p>
+    {cleanup && <Button className="justify-self-start" disabled={recovering || pending} onClick={onRecover} variant="secondary">{t.common.retry}</Button>}
+  </div>
+}
+
+function createFreshClassicGroup(base: string, selected: RosterRow[], allMeta: Record<string, BotMeta>, roomMembers: ReturnType<typeof durableGroupChatMembers>, notice: string) {
+  // Fresh identity also prevents re-creation from reopening an old room's member sessions.
+  const taken = new Set(liveGroupChatNames())
+
+  for (const meta of Object.values($botMeta.get() || {})) {
+    for (const existing of botGroups(meta)) {taken.add(existing)}
+  }
+
+  const groupName = uniqueGroupChatName(base, taken)
+  const roomId = mintGroupRoomId()
+
+  for (const bot of selected) {void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))}
+
+  updateGroupChat(groupName, (room: GroupChatRoom) => {
+    room.members = roomMembers
+    room.roomId = roomId
+
+    return room
+  })
+  host.notify({kind: 'info', message: notice.replace('{name}', groupName)})
+
+  return groupName
+}
+
+function groupCreateFailure(error: unknown, labels: ReturnType<typeof useBots>['canonical']) {
+  const reason = (error as {roomSetupReason?: string})?.roomSetupReason
+
+  const message = reason === 'cleanup_pending' ? labels.peerSetupCleanup
+    : reason && ['secure_storage_required', 'setup_journal_unreadable', 'setup_journal_write_failed'].includes(reason)
+      ? labels.peerSetupStorage : reason ? labels.peerSetupFailed : undefined
+
+  return {reason, message: message || canonicalGroupCreateErrorMessage(error, labels,
+    error instanceof Error && error.message === labels.driverUnavailable ? labels.driverUnavailable : labels.peerSetupFailed)}
+}
+
 /** Discord-style group chat creation: pick 2+ bots via checkboxes (with
  *  search), name the group, create. Assignment appends to each local bot's
  *  group membership list, so the room appears in the roster and syncs
@@ -1153,6 +1282,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [setupStorageBlocked, setSetupStorageBlocked] = useState(false)
   const [recoveringSetup, setRecoveringSetup] = useState(false)
   const setupRecoveryEpoch = useRef(0)
+  const retireSetupRecovery = useCallback(() => {setupRecoveryEpoch.current++}, [])
 
   const recoverSetup = async () => {
     const native = window.hermesDesktop?.roomSetup
@@ -1191,7 +1321,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
   const dismiss = () => {
     retireInteraction()
-    setupRecoveryEpoch.current++
+    retireSetupRecovery()
     setCreatePending(false)
     onClose()
   }
@@ -1211,8 +1341,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       void recoverSetup()
     }
 
-    return () => {retireInteraction(); setupRecoveryEpoch.current++}
-  }, [open, connectionId, profile, retireInteraction])
+    return () => {retireInteraction(); retireSetupRecovery()}
+  }, [open, connectionId, profile, retireInteraction, retireSetupRecovery])
 
   // An outage placeholder preserves one selected owner's identity in the
   // sidebar, but it is not a routable room member. Never offer it here.
@@ -1281,56 +1411,15 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         host.notify({ kind: 'info', message: b.canonical[rosterEligibility.reason] })
       }
 
-      // Creating a group is always a FRESH room. Without this, re-creating a
-      // group under an existing name (easy — the default name is just the
-      // member names) silently reopens the old room with its full log, which
-      // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
-      // both live rooms and any bot's current grouping, then mint a fresh
-      // roomId: member sessions are titled by that roomId, so a
-      // disbanded-and-recreated group with the SAME display name still gets
-      // new sessions instead of resuming the old room's by title.
-      const taken = new Set(liveGroupChatNames())
-
-      for (const meta of Object.values($botMeta.get() || {})) {
-        for (const existing of botGroups(meta)) {
-          taken.add(existing)
-        }
-      }
-
-      const groupName = uniqueGroupChatName(base, taken)
-      const roomId = mintGroupRoomId()
-
-      for (const bot of selected) {
-        void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
-      }
-
-      // Persist every machine identity, including today's active source. That
-      // member becomes remote after a source switch and cannot rely on the new
-      // gateway's name-keyed bot metadata to remain seated in this room.
-      updateGroupChat(groupName, (room: GroupChatRoom) => {
-        room.members = roomMembers
-        room.roomId = roomId
-
-        return room
-      })
-      host.notify({
-        kind: 'info',
-        message: b.canonical.createdGroup.replace('{name}', groupName)
-      })
+      const groupName = createFreshClassicGroup(base, selected, allMeta, roomMembers, b.canonical.createdGroup)
       onClose()
       onCreated?.(groupName)
     } catch (error) {
       if (!ownsInteraction()) {return}
-      const setupReason = (error as { roomSetupReason?: string })?.roomSetupReason
+      const failure = groupCreateFailure(error, b.canonical)
 
-      if (setupReason) {void recoverSetup()}
-
-      const setupMessage = setupReason === 'cleanup_pending' ? b.canonical.peerSetupCleanup
-        : setupReason && ['secure_storage_required', 'setup_journal_unreadable', 'setup_journal_write_failed'].includes(setupReason)
-          ? b.canonical.peerSetupStorage : setupReason ? b.canonical.peerSetupFailed : undefined
-
-      setCreateError(setupMessage || canonicalGroupCreateErrorMessage(error, b.canonical,
-        error instanceof Error && error.message === b.canonical.driverUnavailable ? b.canonical.driverUnavailable : b.canonical.peerSetupFailed))
+      if (failure.reason) {void recoverSetup()}
+      setCreateError(failure.message)
     } finally {
       if (creating.current === generation) {
         creating.current = null
@@ -1356,10 +1445,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogDescription>{b.canonical.createDescription}</DialogDescription>
         </DialogHeader>
         {selected.length >= 2 && !eligibility.eligible && !peerEligible && <p role="status">{b.canonical[eligibility.reason]}</p>}
-        {(setupCleanup || createError) && <div className="grid gap-2 text-sm text-(--ui-text-secondary)" role="alert">
-          <p>{setupCleanup ? (setupStorageBlocked ? b.canonical.peerSetupStorage : b.canonical.peerSetupCleanup) : createError}</p>
-          {setupCleanup && <Button className="justify-self-start" disabled={recoveringSetup || createPending} onClick={() => void recoverSetup()} variant="secondary">{t.common.retry}</Button>}
-        </div>}
+        <GroupSetupNotice cleanup={setupCleanup} error={createError} onRecover={() => void recoverSetup()} pending={createPending}
+          recovering={recoveringSetup} storageBlocked={setupStorageBlocked} />
         <SearchField
           aria-label={b.group.searchToAdd}
           containerClassName="w-full opacity-100"
@@ -1370,80 +1457,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           value={query}
         />
         <p className="text-xs text-(--ui-text-secondary)" role="status">{b.canonical.selectionCount.replace('{count}', String(selected.length))}</p>
-        {selected.length ? (
-          <div className="flex flex-wrap gap-1">
-            {selected.map(bot => (
-              <Badge
-                asChild
-                className="rounded-full bg-(--chrome-action-hover) pl-2 pr-1.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:text-foreground"
-                key={botRosterKey(bot)}
-                variant="muted"
-              >
-                <RowButton
-                  disabled={createPending}
-                  onClick={() =>
-                    setChecked(prev => ({
-                      ...prev,
-                      [botRosterKey(bot)]: false
-                    }))
-                  }
-                  title={b.group.removeFromSelection}
-                >
-                  {displayName(bot, botRosterMeta(bot, allMeta))}
-                  <Codicon className="text-[0.6rem]" name="close" />
-                </RowButton>
-              </Badge>
-            ))}
-          </div>
-        ) : null}
-        <div className="max-h-64 min-h-0 overflow-y-auto overscroll-contain">
-          <div className="grid gap-0.5 pr-2">
-            {visible.length ? (
-              visible.map(bot => {
-                const meta = botRosterMeta(bot, allMeta)
-                const { shape, color, image } = botAppearance(bot.name, meta)
-                const isChecked = Boolean(checked[botRosterKey(bot)])
-                const disabled = createPending || (!isChecked && atCap)
-
-                return (
-                  <label
-                    className={cn(
-                      'flex min-w-0 cursor-pointer items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-(--chrome-action-hover)',
-                      disabled && 'cursor-not-allowed opacity-50'
-                    )}
-                    key={botRosterKey(bot)}
-                  >
-                    <BotFace
-                      color={avatarColor(color, bot.name)}
-                      image={image && !isBackfilledFacePng(image) ? image : null}
-                      name={bot.name}
-                      shape={shape}
-                      size={32}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-foreground">{displayName(bot, meta)}</div>
-                      {bot.connectionLabel && <div className="truncate text-xs text-(--ui-text-secondary)">{bot.connectionLabel}</div>}
-                    </div>
-                    <Checkbox
-                      checked={isChecked}
-                      disabled={disabled}
-                      onCheckedChange={value =>
-                        setChecked(prev => ({
-                          ...prev,
-                          [botRosterKey(bot)]: Boolean(value)
-                        }))
-                      }
-                    />
-                  </label>
-                )
-              })
-            ) : (
-              <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                {query.trim() ? b.canonical.noMatchingBots.replace('{query}', query.trim()) : b.canonical.noBots}
-              </div>
-            )}
-          </div>
-        </div>
+        <GroupCreateSelection allMeta={allMeta} atCap={atCap} checked={checked} createPending={createPending}
+          onSelection={(key, selected) => setChecked(prev => ({...prev, [key]: selected}))} query={query} selected={selected} visible={visible} />
         <SuccessorOffer disabled={createPending} offer={successors} />
         <div className="grid gap-2">
           <form onSubmit={event => {event.preventDefault(); void create()}}>

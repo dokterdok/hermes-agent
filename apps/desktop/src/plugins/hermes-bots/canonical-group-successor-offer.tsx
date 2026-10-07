@@ -80,6 +80,21 @@ function hostChoices(words: Words, current: string, members: GroupMember[], surf
   })
 }
 
+/** Offered destinations retain explicit ownership and eligibility before any default is picked. */
+function hostPlacement(choices: HostChoice[], connectionId: string | null, chosen: string | null, words: Words) {
+  const shown = choices.some(choice => choice.id !== connectionId && choice.eligible)
+  const preferred = choices.find(choice => choice.eligible && choice.alwaysOn && choice.owner === 'own')?.id ?? connectionId
+  const picked = shown && choices.some(choice => choice.id === chosen && choice.eligible) ? chosen : shown ? preferred : connectionId
+  const pickedChoice = choices.find(choice => choice.id === picked)
+  const standby = choices.find(choice => choice.eligible && choice.alwaysOn && choice.owner === 'own' && choice.id !== picked)
+  const suggested = pickedChoice?.alwaysOn ? undefined : choices.find(choice => choice.eligible && choice.alwaysOn && choice.owner === 'unknown')
+
+  return {shown, choices, picked,
+    line: !shown || !pickedChoice ? null : pickedChoice.alwaysOn ? words.hostedAlwaysOn(pickedChoice.label, onMac())
+      : standby ? words.hostSleeps(pickedChoice.label, standby.label) : null,
+    suggestion: shown && suggested ? {id: suggested.id, text: words.hostTip(suggested.label, onMac())} : null}
+}
+
 const onMac = () => typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || '')
 
 /** Creating a group with Bots on your other computers: they keep a full copy, and with this on (the default) they
@@ -119,30 +134,21 @@ export function useSuccessorOffer({ open, connectionId, profile, peerEligible, e
 
   const offered = peerSelection && support?.source === source && support.designates
   const choices = peerSelection && connectionId ? hostChoices(words, connectionId, members, surfaces, support?.labels ?? {}) : []
-  const shown = choices.some(choice => choice.id !== connectionId && choice.eligible)
-  // One of your own always-on computers is preselected. One whose owner isn't known is only suggested, and someone else's
-  // computer is never chosen for you.
-  const preferred = choices.find(choice => choice.eligible && choice.alwaysOn && choice.owner === 'own')?.id ?? connectionId
-  const picked = shown && choices.some(choice => choice.id === chosen && choice.eligible) ? chosen : shown ? preferred : connectionId
-  const pickedChoice = choices.find(choice => choice.id === picked)
-  const standby = choices.find(choice => choice.eligible && choice.alwaysOn && choice.owner === 'own' && choice.id !== picked)
-  const suggested = pickedChoice?.alwaysOn ? undefined : choices.find(choice => choice.eligible && choice.alwaysOn && choice.owner === 'unknown')
+  const hosts = hostPlacement(choices, connectionId, chosen, words)
 
   const others = computers.filter(id => id !== connectionId).map(id => ({ label: support?.labels[id] ?? id,
     owner: ownership(connectionId ? surfaces[connectionId]?.operatorName : undefined, surfaces[id]?.operatorName), person: surfaces[id]?.operatorName }))
 
   // The route the room is created on: the chosen computer's default profile, or the current connection unchanged.
-  const home = (route: CanonicalGroupRoute): CanonicalGroupRoute => shown && picked && picked !== route.connectionId
-    ? { connectionId: picked, profile: 'default' } : route
+  const home = (route: CanonicalGroupRoute): CanonicalGroupRoute => hosts.shown && hosts.picked && hosts.picked !== route.connectionId
+    ? { connectionId: hosts.picked, profile: 'default' } : route
 
   return {
     offered,
     enabled,
     setEnabled,
     host: connectionId ? support?.labels[connectionId] ?? null : null,
-    hosts: { shown, choices, picked, pick: setChosen, line: !shown || !pickedChoice ? null : pickedChoice.alwaysOn
-      ? words.hostedAlwaysOn(pickedChoice.label, onMac()) : standby ? words.hostSleeps(pickedChoice.label, standby.label) : null,
-      suggestion: shown && suggested ? { id: suggested.id, text: words.hostTip(suggested.label, onMac()) } : null },
+    hosts: {...hosts, pick: setChosen},
     /** What the other computers keeping the group's history means: whose they are, or which ones when that isn't known. */
     notices: peerSelection && connectionId && Object.keys(surfaces).length ? historyNotices(words, others) : [],
     /** What the create request asks for. */

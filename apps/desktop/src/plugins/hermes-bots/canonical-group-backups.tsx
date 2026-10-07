@@ -31,20 +31,28 @@ function readinessLine(words: Words, backup: SuccessionBackup, name: string | nu
   }
 }
 
+/** Pending consent changes own the row until confirmed or explicitly dismissed after a failure. */
+function backupSwitchState(controller: SuccessionController, backup: SuccessionBackup, words: Words, host: string | null, name: string | null) {
+  const pending = controller.switches[backup.install_id]
+  const designate = offeredTargets(controller.status, 'designate').includes(backup.install_id)
+  const blocked = !backup.allowed && !controller.computerFor(backup.install_id)
+  const checked = pending && !pending.error ? pending.on : backup.successor
+
+  const hint = pending?.error ? words.changeFailed : pending ? Date.now() - pending.since >= CONSENT_CONFIRM_MS ? words.waitingToConfirm(host) : words.updating
+    : blocked && designate ? words.notAllowed(backup.operator_name, name) : null
+
+  return { pending, designate, checked, hint, disabled: blocked || !!pending && !pending.error,
+    automatic: hint ? null : automaticSublabel(words, controller.status, backup.always_on, checked) }
+}
+
 function BackupRow({ controller, backup, onRemove }: { controller: SuccessionController; backup: SuccessionBackup; onRemove: () => void }) {
   const words = useBots().succession
   const { locale } = useI18n()
   const status = controller.status
   const name = computerName(controller, backup)
   const host = computerName(controller, status?.host)
-  const pending = controller.switches[backup.install_id]
-  const designate = offeredTargets(status, 'designate').includes(backup.install_id)
+  const {pending, designate, checked, hint, disabled, automatic} = backupSwitchState(controller, backup, words, host, name)
   const removable = backup.kind === 'backup' && offeredTargets(status, 'remove_backup').includes(backup.install_id)
-  // Your own computer can record its operator's consent as well; someone else's computer has to allow it first.
-  const blocked = !backup.allowed && !controller.computerFor(backup.install_id)
-
-  const hint = pending?.error ? words.changeFailed : pending ? Date.now() - pending.since >= CONSENT_CONFIRM_MS ? words.waitingToConfirm(host) : words.updating
-    : blocked && designate ? words.notAllowed(backup.operator_name, name) : null
 
   // Someone else's computer, when both names are known and differ: it keeps the whole history. The row already says it
   // keeps a full copy, so a computer whose owner isn't known gets no extra line.
@@ -53,16 +61,15 @@ function BackupRow({ controller, backup, onRemove }: { controller: SuccessionCon
   return <li className="grid gap-1.5" data-install-id={backup.install_id} data-slot="backup-copy">
     <span className="text-xs text-(--ui-text-primary)"><bdi>{readinessLine(words, backup, name, locale)}</bdi></span>
     {designate && backup.readiness !== 'unsupported' && <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
-      <Switch aria-label={words.canContinue} checked={pending && !pending.error ? pending.on : backup.successor}
-        disabled={blocked || !!pending && !pending.error} onCheckedChange={on => {
+      <Switch aria-label={words.canContinue} checked={checked}
+        disabled={disabled} onCheckedChange={on => {
           controller.dismissSwitchError(backup.install_id)
           void controller.setSuccessor(backup.install_id, on).catch(() => undefined)
         }} size="xs" />
       {words.canContinue}
     </label>}
     {hint && <span className={pending?.error ? 'text-xs text-destructive' : 'text-xs text-(--ui-text-tertiary)'} role={pending?.error ? 'alert' : undefined}>{hint}</span>}
-    {!hint && automaticSublabel(words, status, backup.always_on, pending && !pending.error ? pending.on : backup.successor) &&
-      <span className="text-xs text-(--ui-text-tertiary)">{automaticSublabel(words, status, backup.always_on, pending && !pending.error ? pending.on : backup.successor)}</span>}
+    {automatic && <span className="text-xs text-(--ui-text-tertiary)">{automatic}</span>}
     {guest && <span className="text-xs text-(--ui-text-tertiary)" data-slot="guest-history">{words.guestHistory(guest)}</span>}
     {removable && <div><Button onClick={onRemove} size="inline" variant="text">{words.stopKeepingCopy(name)}</Button></div>}
   </li>
