@@ -2,7 +2,7 @@ import type { TranslationOverrides } from '../define-locale'
 
 export const frComposer: NonNullable<TranslationOverrides['composer']> = {
   draftReadFailed:
-    'Impossible de lire les brouillons en attente. Ils sont conservés ; réessayez lorsque le stockage sera disponible.',
+    'Impossible de lire les brouillons enregistrés. Le stockage est resté inchangé ; réessayez lorsqu’il sera disponible.',
   message: 'Message',
   wakingProfile: profile => `Réveil de ${profile}…`,
   placeholderStarting: 'Démarrage de Hermes…',

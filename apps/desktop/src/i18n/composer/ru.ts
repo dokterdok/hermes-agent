@@ -3,7 +3,7 @@ import { RU_NOUN } from '../plural-ru'
 
 export const ruComposer: NonNullable<TranslationOverrides['composer']> = {
   draftReadFailed:
-    'Не удалось прочитать сохранённые черновики. Они сохранены; повторите попытку, когда хранилище станет доступно.',
+    'Не удалось прочитать сохранённые черновики. Хранилище не изменено; повторите попытку, когда оно станет доступно.',
   message: 'Сообщение',
   wakingProfile: profile => `Пробуждаем ${profile}…`,
   placeholderStarting: 'Запуск Hermes...',

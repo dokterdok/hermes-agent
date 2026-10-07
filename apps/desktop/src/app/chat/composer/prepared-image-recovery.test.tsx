@@ -90,7 +90,7 @@ test('reads repaired draft storage on Retry without claiming a pending message o
   localStorage.setItem(storageKey, '[]')
   const restore = vi.fn()
   render(<PreparedImageRecovery occupied onRestore={restore} request={request} sessionKey="original" />)
-  await screen.findByText('Pending drafts could not be read. They have been kept; try again after storage is available.')
+  await screen.findByText('Saved drafts could not be read. Their storage has been left unchanged; try again when it is available.')
   localStorage.setItem(storageKey, saved)
   fireEvent.click(screen.getByRole('button', {name: 'Retry'}))
   const recover = await screen.findByRole('button', {name: 'Restore draft'}) as HTMLButtonElement

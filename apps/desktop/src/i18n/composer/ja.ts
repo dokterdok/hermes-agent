@@ -2,7 +2,7 @@ import type { TranslationOverrides } from '../define-locale'
 
 export const jaComposer: NonNullable<TranslationOverrides['composer']> = {
   draftReadFailed:
-    '保留中の下書きを読み取れませんでした。内容は保持されています。ストレージが利用可能になったら再試行してください。',
+    '保存された下書きを読み取れませんでした。ストレージは変更していません。利用可能になったら再試行してください。',
   message: 'メッセージ',
   wakingProfile: profile => `${profile} を起動中…`,
   placeholderStarting: 'Hermes を起動中...',
