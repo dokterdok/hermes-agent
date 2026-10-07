@@ -7,6 +7,7 @@ from contextlib import closing
 import pytest
 
 from gateway.platforms import api_server_run_idempotency as storage
+from gateway import hosted_room_fence as fence
 from gateway.platforms.api_server_run_scope import room_run_scope_key
 from tests.gateway.test_group_run_freeze_store import reserve
 from tests.gateway.test_group_run_scope import IDENTITY
@@ -134,6 +135,7 @@ def test_old_frozen_store_migrates_only_negative_cancellation_rows(tmp_path):
         insert('absent')
         client.commit()
         assert reopened.is_scope_frozen(scope)
+
         assert client.execute("""SELECT stop_requested,owner_pid,owner_started,fingerprint FROM run_idempotency
             WHERE run_id='absent'""").fetchone() == (1, 0, 0, '')
         for changes in ({'stop_requested': 0}, {'fingerprint': 'actual-admission'}, {'owner_pid': 123},
@@ -155,3 +157,52 @@ def test_old_frozen_store_migrates_only_negative_cancellation_rows(tmp_path):
         client.rollback()
         assert client.execute("SELECT run_id FROM run_idempotency ORDER BY run_id").fetchall() == [('absent',), ('victim',)]
         assert reopened.is_scope_frozen(scope)
+
+
+def test_epoch_fence_keeps_negative_cancellation_and_rejects_late_admission(tmp_path):
+    path = tmp_path / 'runs.db'
+    scope = room_run_scope_key(IDENTITY)
+    with closing(storage.RunIdempotencyStore(str(path))) as store:
+        reserve(store, 'victim', status='running', identity=IDENTITY)
+        with store._immediate_txn():
+            store._conn.execute('INSERT INTO group_run_scopes VALUES(?,?,1,1)',
+                                (scope, json.dumps(IDENTITY)))
+            store._conn.commit()
+        fence.fence_room(path, room_id=IDENTITY['room_id'], fence_epoch=IDENTITY['authority_epoch'])
+        with closing(sqlite3.connect(path)) as client:
+            client.execute('PRAGMA recursive_triggers=OFF')
+
+            def insert(label, **changes):
+                values = dict(scope=scope, key='cancel-' + label, fingerprint='', run_id=label,
+                              owner_pid=0, owner_started=0, stop_requested=1)
+                values.update(changes)
+                values.setdefault('status_json', json.dumps({'run_id': values['run_id'], 'status': 'cancelled'}))
+                client.execute("""INSERT OR REPLACE INTO run_idempotency
+                    (scope,idempotency_key,fingerprint,run_id,status_json,owner_pid,owner_started,stop_requested,created_at,updated_at)
+                    VALUES (:scope,:key,:fingerprint,:run_id,:status_json,:owner_pid,:owner_started,:stop_requested,1,1)""", values)
+
+            insert('absent')
+            client.commit()
+            before = client.execute('SELECT * FROM run_idempotency ORDER BY run_id').fetchall()
+            for changes in ({'fingerprint': 'late-admission', 'owner_pid': 123},
+                            {'stop_requested': 0}, {'run_id': 'victim'}, {'key': 'key-victim'}):
+                with pytest.raises(sqlite3.IntegrityError, match='room authority fenced'):
+                    insert('late', **changes)
+                client.rollback()
+            assert client.execute('SELECT * FROM run_idempotency ORDER BY run_id').fetchall() == before
+            fresh = {**IDENTITY, 'member_id': 'never-admitted'}
+            fresh_scope = room_run_scope_key(fresh)
+            insert('fresh-negative', scope=fresh_scope)
+            client.execute('INSERT INTO group_run_scopes VALUES(?,?,1,1)',
+                           (fresh_scope, json.dumps(fresh)))
+            client.commit()
+            mixed = {**IDENTITY, 'member_id': 'mixed'}
+            mixed_scope = room_run_scope_key(mixed)
+            insert('mixed-negative', scope=mixed_scope)
+            insert('mixed-real', scope=mixed_scope, fingerprint='actual-admission', owner_pid=123, stop_requested=0)
+            client.commit()
+            with pytest.raises(sqlite3.IntegrityError, match='room authority fenced'):
+                client.execute('INSERT INTO group_run_scopes VALUES(?,?,1,1)',
+                               (mixed_scope, json.dumps(mixed)))
+            client.rollback()
+            assert fence.room_fence_state(path, IDENTITY['room_id'])['fenced_epoch'] == IDENTITY['authority_epoch']
