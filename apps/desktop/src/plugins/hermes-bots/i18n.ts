@@ -256,7 +256,10 @@ export type BotsMessages = {
     manageDesc: string
     manageTitle: string
     settingsTitle: string
+    manageMembers: (count: number) => string
     settingsDesc: string
+    settingsUnavailable: string
+    settingsSaveFailed: string
     nameLabel: string
     holdDetection: string
     holdDetectionHint: string

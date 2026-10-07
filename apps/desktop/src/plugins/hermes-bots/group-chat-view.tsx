@@ -67,19 +67,17 @@ import {
   groupThreadOf,
   rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
-  setGroupChatHoldDetection,
-  setGroupChatImage,
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
-import { compressGroupMemberHistory } from './group-compress'
 import { sweepExternalGroupWrites } from './group-external-writes'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
+  followGroupChat,
   groupChatMemberBots,
   groupDisbandMetadataPlan,
   groupMemberKey,
@@ -101,6 +99,13 @@ import {
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
+import {
+  applyGroupSettings,
+  renameGroupMemberships,
+  reportGroupSettingsSyncFailure,
+  summarizeGroupMember
+} from './group-settings-actions'
+import type { GroupSettingsPatch } from './group-settings-actions'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
@@ -258,12 +263,30 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
  *  rename, so even a member whose sid is later lost falls back to the same
  *  "Group: <roomId>" title lookup instead of a fresh "Group: <new name>".
  *  Returns the new name, or null when the target name is taken. */
-export async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
+export async function renameGroupChat(
+  oldName: string,
+  newName: string,
+  members: GroupMember[] | null | undefined,
+  settings: GroupSettingsPatch = {}
+) {
   const next = String(newName || '')
     .trim()
     .slice(0, 64)
 
+  const room = $groupChats.get()[oldName]
+
+  if (
+    room?.tombstone ||
+    (!room && !(members || []).some(member => botGroups(botRosterMeta(member, $botMeta.get())).includes(oldName)))
+  ) {
+    host.notify({ kind: 'error', message: botsText().group.settingsUnavailable })
+
+    return null
+  }
+
   if (!next || next === oldName) {
+    applyGroupSettings(oldName, settings)
+
     return oldName
   }
 
@@ -295,17 +318,13 @@ export async function renameGroupChat(oldName: string, newName: string, members:
     ...$groupChats.get()
   }
 
-  const room = all[oldName]
-
   if (room) {
     migrateGroupComposerDraft(groupComposerDraftKey(oldName, room), groupComposerDraftKey(next, room))
   }
 
   delete all[oldName]
 
-  if (room) {
-    all[next] = room
-  }
+  all[next] = room || { log: [], watermarks: {} }
 
   $groupChats.set(all)
 
@@ -323,21 +342,7 @@ export async function renameGroupChat(oldName: string, newName: string, members:
   // must follow the room to its new name, not disappear.
   renameGroupClarify(oldName, next)
 
-  // Local memberships: swap the name inside each member's canonical groups
-  // list (syncs cross-machine via ui_meta). Remote members' seating lives in
-  // the room record we just moved.
-  for (const member of members || []) {
-    if (!member?.name) {
-      continue
-    }
-
-    const meta = botRosterMeta(member, $botMeta.get()) || {}
-    const groups = [...new Set(botGroups(meta).map(g => (g === oldName ? next : g)))]
-    await saveBotMeta(member, {
-      groups,
-      group: groups[0] || null
-    })
-  }
+  applyGroupSettings(next, settings)
 
   // Persist the re-keyed map (updateGroupChat writes the whole durable map).
   updateGroupChat(next, (r: GroupChatRoom) => r, {
@@ -369,7 +374,23 @@ export async function renameGroupChat(oldName: string, newName: string, members:
     })
   }
 
-  return next
+  let currentName = next
+
+  const binding = followGroupChat(next, name => {
+    currentName = name
+  })
+
+  try {
+    const failed = await renameGroupMemberships(oldName, members || [], () => (binding.isLive() ? currentName : null))
+
+    if (binding.isLive()) {
+      reportGroupSettingsSyncFailure(currentName, failed)
+    }
+  } finally {
+    binding.dispose()
+  }
+
+  return binding.isLive() ? currentName : null
 }
 
 interface GroupChatSettingsDialogProps {
@@ -415,57 +436,76 @@ export function GroupChatSettingsDialog({
   // symptom (empty replies) owns the repair. One member at a time — the
   // gateway refuses a second compress while one holds the lock.
   const compressMember = async (member: GroupMember) => {
-    const memberName = displayName(member, botRosterMeta(member, $botMeta.get()))
     setCompressing(groupMemberKey(member))
-    host.notify({ kind: 'info', message: b.group.compressing(memberName) })
 
     try {
-      const outcome = await compressGroupMemberHistory(group, member)
-
-      if (outcome.compressed === 0 && outcome.pending === 0) {
-        host.notify({ kind: 'info', message: b.group.compressNothing(memberName) })
-      } else {
-        host.notify({
-          kind: 'success',
-          message: b.group.compressDone(memberName, outcome.compressed + outcome.pending, outcome.lines.join('; '))
-        })
-      }
-    } catch (error) {
-      host.notify({
-        kind: 'error',
-        message: b.group.compressFailed(memberName, error instanceof Error ? error.message : String(error))
-      })
+      await summarizeGroupMember(group, member)
     } finally {
       setCompressing(null)
     }
   }
 
-  const save = async () => {
-    const finalName = await renameGroupChat(group, name, members)
+  const savingRef = useRef(false)
+  const [saving, setSaving] = useState(false)
+  const saveScope = useRef(0)
+  // A rename can update this prop while its profile writes are still pending.
+  // Keep that operation attached to the same chat across the name change.
+  const scopeIdentity = useMemo(() => $groupChats.get()[group]?.roomId || group, [group])
+  // eslint-disable-next-line no-restricted-syntax -- Operation lifetime and singleflight refs, not a mirrored atom value.
+  useEffect(() => {
+    saveScope.current += 1
+    savingRef.current = false
+    setSaving(false)
 
-    if (finalName === null) {
-      return // collision — dialog stays open for a different name
+    return () => {
+      saveScope.current += 1
     }
+  }, [scopeIdentity, open])
+
+  const save = async () => {
+    if (savingRef.current) {
+      return
+    }
+    savingRef.current = true
+    setSaving(true)
+    const scope = saveScope.current
+    const settings: GroupSettingsPatch = {}
 
     if (image !== current) {
-      setGroupChatImage(finalName, image)
+      settings.image = image
     }
 
     if (holdDetection !== currentHoldDetection) {
-      setGroupChatHoldDetection(finalName, holdDetection)
+      settings.holdDetection = holdDetection
     }
 
-    onClose()
+    try {
+      const finalName = await renameGroupChat(group, name, members, settings)
 
-    if (finalName !== group) {
-      onRenamed?.(finalName)
+      if (finalName === null || scope !== saveScope.current) {
+        return
+      }
+      onClose()
+
+      if (finalName !== group) {
+        onRenamed?.(finalName)
+      }
+    } catch (error) {
+      if (scope === saveScope.current) {
+        host.notifyError(error, b.group.settingsSaveFailed)
+      }
+    } finally {
+      if (scope === saveScope.current) {
+        savingRef.current = false
+        setSaving(false)
+      }
     }
   }
 
   return (
     <Dialog
       onOpenChange={value => {
-        if (!value) {
+        if (!value && !savingRef.current) {
           onClose()
         }
       }}
@@ -476,79 +516,81 @@ export function GroupChatSettingsDialog({
           <DialogTitle>{b.group.settingsTitle}</DialogTitle>
           <DialogDescription>{b.group.settingsDesc}</DialogDescription>
         </DialogHeader>
-        <GroupImageControls
-          image={image}
-          onImage={setImage}
-          seedMembers={(members || []).map(member => member.name)}
-          seedName={name.trim() || group}
-        />
-        <form
-          onSubmit={event => {
-            event.preventDefault()
-            void save()
-          }}
-        >
-          <Input
-            aria-label={b.group.nameLabel}
-            autoFocus
-            maxLength={64}
-            onChange={event => setName(event.target.value)}
-            value={name}
+        <fieldset className="contents" disabled={saving}>
+          <GroupImageControls
+            image={image}
+            onImage={setImage}
+            seedMembers={(members || []).map(member => member.name)}
+            seedName={name.trim() || group}
           />
-        </form>
-        <ToggleRow
-          checked={holdDetection}
-          description={b.group.holdDetectionHint}
-          label={b.group.holdDetection}
-          onChange={setHoldDetection}
-        />
-        {(members || []).length > 0 ? (
-          <ul className="flex flex-col gap-1" data-testid="group-settings-members">
-            {(members || []).map(member => {
-              const key = groupMemberKey(member)
-
-              return (
-                <li className="flex items-center justify-between gap-2 text-sm" key={key}>
-                  <span className="truncate">{displayName(member, botRosterMeta(member, $botMeta.get()))}</span>
-                  <Tip label={b.group.compressHistoryHint(member.name)}>
-                    <Button
-                      aria-label={`${b.group.compressHistory}: ${member.name}`}
-                      disabled={compressing !== null}
-                      onClick={() => void compressMember(member)}
-                      size="sm"
-                      variant="secondary"
-                    >
-                      <Codicon name={compressing === key ? 'loading' : 'fold'} spinning={compressing === key} />
-                      {b.group.compressHistory}
-                    </Button>
-                  </Tip>
-                </li>
-              )
-            })}
-          </ul>
-        ) : null}
-        {onManageMembers ? (
-          <Button
-            className="w-fit"
-            onClick={() => {
-              onClose()
-              onManageMembers()
+          <form
+            onSubmit={event => {
+              event.preventDefault()
+              void save()
             }}
-            size="sm"
-            variant="secondary"
           >
-            <Codicon name="organization" />
-            {`Manage members (${(members || []).length})…`}
-          </Button>
-        ) : null}
-        <DialogFooter>
-          <Button onClick={onClose} variant="secondary">
-            {t.common.cancel}
-          </Button>
-          <Button disabled={!name.trim()} onClick={() => void save()}>
-            {t.common.save}
-          </Button>
-        </DialogFooter>
+            <Input
+              aria-label={b.group.nameLabel}
+              autoFocus
+              maxLength={64}
+              onChange={event => setName(event.target.value)}
+              value={name}
+            />
+          </form>
+          <ToggleRow
+            checked={holdDetection}
+            description={b.group.holdDetectionHint}
+            label={b.group.holdDetection}
+            onChange={setHoldDetection}
+          />
+          {(members || []).length > 0 ? (
+            <ul className="flex flex-col gap-1" data-testid="group-settings-members">
+              {(members || []).map(member => {
+                const key = groupMemberKey(member)
+
+                return (
+                  <li className="flex items-center justify-between gap-2 text-sm" key={key}>
+                    <span className="truncate">{displayName(member, botRosterMeta(member, $botMeta.get()))}</span>
+                    <Tip label={b.group.compressHistoryHint(member.name)}>
+                      <Button
+                        aria-label={`${b.group.compressHistory}: ${member.name}`}
+                        disabled={compressing !== null}
+                        onClick={() => void compressMember(member)}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        <Codicon name={compressing === key ? 'loading' : 'fold'} spinning={compressing === key} />
+                        {b.group.compressHistory}
+                      </Button>
+                    </Tip>
+                  </li>
+                )
+              })}
+            </ul>
+          ) : null}
+          {onManageMembers ? (
+            <Button
+              className="w-fit"
+              onClick={() => {
+                onClose()
+                onManageMembers()
+              }}
+              size="sm"
+              variant="secondary"
+            >
+              <Codicon name="organization" />
+              {b.group.manageMembers((members || []).length)}
+            </Button>
+          ) : null}
+          <DialogFooter>
+            <Button onClick={onClose} variant="secondary">
+              {t.common.cancel}
+            </Button>
+            <Button aria-busy={saving} disabled={saving || !name.trim()} onClick={() => void save()}>
+              {saving ? t.common.saving : t.common.save}
+            </Button>
+          </DialogFooter>
+        </fieldset>
       </DialogContent>
     </Dialog>
   )

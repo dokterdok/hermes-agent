@@ -204,7 +204,7 @@ export const en: BotsMessages = {
     petLoadFailed: 'Could not load that pet — try another.',
     imageTooLarge: 'Image too large (max 15MB).',
     generationFailed: 'Avatar generation failed',
-    savedLocally: 'Saved look locally; remote persistence failed',
+    savedLocally: 'Saved on this computer. Couldn’t sync the Bot’s settings.',
     savedLocallyDescriptionFailed: 'Saved look locally; description update failed',
     generate: 'Generate',
     generating: 'Generating…'
@@ -214,18 +214,20 @@ export const en: BotsMessages = {
     manageDesc: 'A bot can join multiple group chats. Memberships sync to every machine.',
     manageTitle: 'Manage groups',
     settingsTitle: 'Group settings',
-    settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
+    manageMembers: count => `Manage members (${count})…`,
+    settingsUnavailable: 'That group is no longer available.',
+    settingsSaveFailed: 'Couldn’t save group settings. Try again.',
+    settingsDesc: 'Change the group’s name or picture. Members and chat history stay the same.',
     nameLabel: 'Group name',
-    holdDetection: 'Detect stop directives',
-    holdDetectionHint: 'Let room messages put addressed members on hold until they are mentioned again.',
-    compressHistory: 'Compress history',
-    compressHistoryHint: (member: string) =>
-      `Compress ${member}'s hidden room history so the member stops failing with empty replies`,
-    compressing: (member: string) => `Compressing ${member}'s room history…`,
+    holdDetection: 'Let messages pause Bots',
+    holdDetectionHint: 'A message can ask a Bot to pause. Mention it again when you want it to reply.',
+    compressHistory: 'Summarize history',
+    compressHistoryHint: (member: string) => `Create a shorter history summary for ${member} to use in future replies`,
+    compressing: (member: string) => `Summarizing history for ${member}…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `Compressed ${compressed} room session${compressed === 1 ? '' : 's'} for ${member}${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `Nothing to compress for ${member} — no room session yet`,
-    compressFailed: (member: string, error: string) => `Could not compress ${member}'s room history: ${error}`,
+      `Summarized ${compressed} conversation${compressed === 1 ? '' : 's'} for ${member}${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `No chat history to summarize for ${member} yet.`,
+    compressFailed: (member: string, error: string) => `Couldn’t summarize history for ${member}: ${error}`,
     searchToAdd: 'Search bots to add',
     searchToAddPlaceholder: 'Search bots to add…',
     removeFromSelection: 'Remove from selection',
@@ -641,7 +643,7 @@ const ja: BotsMessages = {
     petLoadFailed: 'そのペットを読み込めませんでした。別のペットを試してください。',
     imageTooLarge: '画像が大きすぎます（最大 15MB）。',
     generationFailed: 'アバターの生成に失敗しました',
-    savedLocally: '見た目はローカルに保存されましたが、リモートへの保存に失敗しました',
+    savedLocally: 'このコンピューターには保存されましたが、ボットの設定を同期できませんでした。',
     savedLocallyDescriptionFailed: '見た目はローカルに保存されましたが、説明の更新に失敗しました',
     generate: '生成',
     generating: '生成中…'
@@ -651,18 +653,20 @@ const ja: BotsMessages = {
     manageDesc: 'ボットは複数のグループチャットに参加できます。メンバーシップはすべてのマシンに同期されます。',
     manageTitle: 'グループを管理',
     settingsTitle: 'グループ設定',
-    settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
+    manageMembers: count => `メンバーを管理（${count}）…`,
+    settingsUnavailable: 'このグループは利用できなくなりました。',
+    settingsSaveFailed: 'グループ設定を保存できませんでした。もう一度お試しください。',
+    settingsDesc: 'グループ名や画像を変更できます。メンバーとチャット履歴はそのまま残ります。',
     nameLabel: 'グループ名',
-    holdDetection: '停止指示を検出',
-    holdDetectionHint: 'ルームのメッセージで、再びメンションされるまで対象メンバーを保留にします。',
-    compressHistory: '履歴を圧縮',
-    compressHistoryHint: (member: string) =>
-      `${member} の非表示のルーム履歴を圧縮し、空の応答で失敗しなくなるようにします`,
-    compressing: (member: string) => `${member} のルーム履歴を圧縮中…`,
+    holdDetection: 'メッセージでボットを一時停止',
+    holdDetectionHint: 'メッセージでボットに一時停止を頼めます。返信してほしいときは、もう一度メンションしてください。',
+    compressHistory: '履歴を要約',
+    compressHistoryHint: (member: string) => `${member} が今後の返信で使う履歴を短くまとめます`,
+    compressing: (member: string) => `${member} の履歴を要約中…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `${member} のルームセッション ${compressed} 件を圧縮しました${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} に圧縮する履歴はありません — ルームセッションがまだありません`,
-    compressFailed: (member: string, error: string) => `${member} のルーム履歴を圧縮できませんでした: ${error}`,
+      `${member} の会話 ${compressed} 件を要約しました${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} にはまだ要約するチャット履歴がありません。`,
+    compressFailed: (member: string, error: string) => `${member} の履歴を要約できませんでした: ${error}`,
     searchToAdd: '追加するボットを検索',
     searchToAddPlaceholder: '追加するボットを検索…',
     removeFromSelection: '選択から外す',
@@ -1071,7 +1075,7 @@ const zh: BotsMessages = {
     petLoadFailed: '无法加载该宠物 — 请换一只试试。',
     imageTooLarge: '图片过大（最大 15MB）。',
     generationFailed: '头像生成失败',
-    savedLocally: '外观已保存在本地；远程持久化失败',
+    savedLocally: '已保存在这台电脑上，但无法同步机器人的设置。',
     savedLocallyDescriptionFailed: '外观已保存在本地；描述更新失败',
     generate: '生成',
     generating: '生成中…'
@@ -1081,17 +1085,20 @@ const zh: BotsMessages = {
     manageDesc: '一个机器人可以加入多个群聊。成员关系会同步到每台设备。',
     manageTitle: '管理群组',
     settingsTitle: '群组设置',
-    settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
+    manageMembers: count => `管理成员（${count}）…`,
+    settingsUnavailable: '这个群聊已不可用。',
+    settingsSaveFailed: '无法保存群聊设置，请重试。',
+    settingsDesc: '更改群聊名称或图片，成员和聊天记录会保留。',
     nameLabel: '群组名称',
-    holdDetection: '检测停止指令',
-    holdDetectionHint: '允许房间消息将指定成员保持暂停，直到再次提及该成员。',
-    compressHistory: '压缩历史',
-    compressHistoryHint: (member: string) => `压缩 ${member} 隐藏的房间历史，避免该成员因空回复而失败`,
-    compressing: (member: string) => `正在压缩 ${member} 的房间历史…`,
+    holdDetection: '允许通过消息暂停机器人',
+    holdDetectionHint: '消息可以要求机器人暂停。需要它回复时，再次提及它即可。',
+    compressHistory: '总结聊天记录',
+    compressHistoryHint: (member: string) => `为 ${member} 总结聊天记录，供后续回复使用`,
+    compressing: (member: string) => `正在总结 ${member} 的聊天记录…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `已压缩 ${member} 的 ${compressed} 个房间会话${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} 没有可压缩的历史 — 还没有房间会话`,
-    compressFailed: (member: string, error: string) => `无法压缩 ${member} 的房间历史: ${error}`,
+      `已为 ${member} 总结 ${compressed} 段对话${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} 还没有可总结的聊天记录。`,
+    compressFailed: (member: string, error: string) => `无法总结 ${member} 的聊天记录：${error}`,
     searchToAdd: '搜索要添加的机器人',
     searchToAddPlaceholder: '搜索要添加的机器人…',
     removeFromSelection: '从选择中移除',
@@ -1495,7 +1502,7 @@ const zhHant: BotsMessages = {
     petLoadFailed: '無法載入該寵物 — 請換一隻試試。',
     imageTooLarge: '圖片過大（最大 15MB）。',
     generationFailed: '頭像產生失敗',
-    savedLocally: '外觀已儲存在本機；遠端持久化失敗',
+    savedLocally: '已儲存在這台電腦上，但無法同步機器人的設定。',
     savedLocallyDescriptionFailed: '外觀已儲存在本機；描述更新失敗',
     generate: '生成',
     generating: '生成中…'
@@ -1505,17 +1512,20 @@ const zhHant: BotsMessages = {
     manageDesc: '一個機器人可以加入多個群組聊天。成員關係會同步到每台裝置。',
     manageTitle: '管理群組',
     settingsTitle: '群組設定',
-    settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
+    manageMembers: count => `管理成員（${count}）…`,
+    settingsUnavailable: '這個群聊已無法使用。',
+    settingsSaveFailed: '無法儲存群聊設定，請再試一次。',
+    settingsDesc: '變更群聊名稱或圖片，成員和聊天記錄會保留。',
     nameLabel: '群組名稱',
-    holdDetection: '偵測停止指令',
-    holdDetectionHint: '允許房間訊息暫停指定成員，直到再次提及該成員。',
-    compressHistory: '壓縮歷史',
-    compressHistoryHint: (member: string) => `壓縮 ${member} 隱藏的房間歷史，避免該成員因空回覆而失敗`,
-    compressing: (member: string) => `正在壓縮 ${member} 的房間歷史…`,
+    holdDetection: '允許透過訊息暫停機器人',
+    holdDetectionHint: '訊息可以要求機器人暫停。需要它回覆時，再次提及它即可。',
+    compressHistory: '整理聊天記錄',
+    compressHistoryHint: (member: string) => `為 ${member} 整理聊天記錄，供後續回覆使用`,
+    compressing: (member: string) => `正在整理 ${member} 的聊天記錄…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `已壓縮 ${member} 的 ${compressed} 個房間會話${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} 沒有可壓縮的歷史 — 還沒有房間會話`,
-    compressFailed: (member: string, error: string) => `無法壓縮 ${member} 的房間歷史: ${error}`,
+      `已為 ${member} 整理 ${compressed} 段對話${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} 還沒有可整理的聊天記錄。`,
+    compressFailed: (member: string, error: string) => `無法整理 ${member} 的聊天記錄：${error}`,
     searchToAdd: '搜尋要加入的機器人',
     searchToAddPlaceholder: '搜尋要加入的機器人…',
     removeFromSelection: '從選取中移除',
@@ -1726,5 +1736,116 @@ const zhHant: BotsMessages = {
   }
 }
 
+const fr = {
+  avatar: { savedLocally: 'Enregistré sur cet ordinateur. Impossible de synchroniser les réglages du Bot.' },
+  group: {
+    settingsTitle: 'Réglages du groupe',
+    settingsDesc: 'Modifiez le nom ou l’image du groupe. Les membres et les messages sont conservés.',
+    settingsUnavailable: 'Ce groupe n’est plus disponible.',
+    settingsSaveFailed: 'Impossible d’enregistrer les réglages du groupe. Réessayez.',
+    nameLabel: 'Nom du groupe',
+    manageMembers: (count: number) => `Gérer les membres (${count})…`,
+    holdDetection: 'Autoriser les messages à mettre les Bots en pause',
+    holdDetectionHint:
+      'Un message peut demander à un Bot de faire une pause. Mentionnez-le à nouveau pour obtenir une réponse.',
+    compressHistory: 'Résumer l’historique',
+    compressHistoryHint: (member: string) => `Créer un résumé pour les prochaines réponses de ${member}`,
+    compressing: (member: string) => `Résumé de l’historique de ${member} en cours…`,
+    compressDone: (member: string, count: number, detail: string) =>
+      `${count} conversation(s) résumée(s) pour ${member}${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} n’a pas encore d’historique à résumer.`,
+    compressFailed: (member: string, error: string) => `Impossible de résumer l’historique de ${member} : ${error}`
+  }
+}
+
+const de = {
+  avatar: {
+    savedLocally: 'Auf diesem Computer gespeichert. Die Bot-Einstellungen konnten nicht synchronisiert werden.'
+  },
+  group: {
+    settingsTitle: 'Gruppeneinstellungen',
+    settingsDesc: 'Namen oder Bild der Gruppe ändern. Mitglieder und Nachrichten bleiben erhalten.',
+    settingsUnavailable: 'Diese Gruppe ist nicht mehr verfügbar.',
+    settingsSaveFailed: 'Die Gruppeneinstellungen konnten nicht gespeichert werden. Bitte erneut versuchen.',
+    nameLabel: 'Gruppenname',
+    manageMembers: (count: number) => `Mitglieder verwalten (${count})…`,
+    holdDetection: 'Bots durch Nachrichten pausieren',
+    holdDetectionHint:
+      'Eine Nachricht kann einen Bot zum Pausieren auffordern. Erwähne ihn erneut, wenn er antworten soll.',
+    compressHistory: 'Verlauf zusammenfassen',
+    compressHistoryHint: (member: string) => `Eine Zusammenfassung für künftige Antworten von ${member} erstellen`,
+    compressing: (member: string) => `Verlauf für ${member} wird zusammengefasst…`,
+    compressDone: (member: string, count: number, detail: string) =>
+      `${count} Unterhaltung(en) für ${member} zusammengefasst${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `Für ${member} gibt es noch keinen Verlauf zum Zusammenfassen.`,
+    compressFailed: (member: string, error: string) =>
+      `Verlauf für ${member} konnte nicht zusammengefasst werden: ${error}`
+  }
+}
+
+const es = {
+  avatar: { savedLocally: 'Guardado en este equipo. No se pudieron sincronizar los ajustes del Bot.' },
+  group: {
+    settingsTitle: 'Ajustes del grupo',
+    settingsDesc: 'Cambia el nombre o la imagen del grupo. Se conservan los miembros y el historial.',
+    settingsUnavailable: 'Este grupo ya no está disponible.',
+    settingsSaveFailed: 'No se pudieron guardar los ajustes del grupo. Inténtalo de nuevo.',
+    nameLabel: 'Nombre del grupo',
+    manageMembers: (count: number) => `Gestionar miembros (${count})…`,
+    holdDetection: 'Permitir que los mensajes pausen los Bots',
+    holdDetectionHint:
+      'Un mensaje puede pedir a un Bot que se detenga. Menciónalo de nuevo cuando quieras que responda.',
+    compressHistory: 'Resumir historial',
+    compressHistoryHint: (member: string) => `Crear un resumen para las próximas respuestas de ${member}`,
+    compressing: (member: string) => `Resumiendo el historial de ${member}…`,
+    compressDone: (member: string, count: number, detail: string) =>
+      `${count} conversación(es) resumida(s) para ${member}${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} aún no tiene historial que resumir.`,
+    compressFailed: (member: string, error: string) => `No se pudo resumir el historial de ${member}: ${error}`
+  }
+}
+
+const ru = {
+  avatar: { savedLocally: 'Сохранено на этом компьютере. Не удалось синхронизировать настройки бота.' },
+  group: {
+    settingsTitle: 'Настройки группы',
+    settingsDesc: 'Измените название или изображение группы. Участники и история чата сохранятся.',
+    settingsUnavailable: 'Эта группа больше недоступна.',
+    settingsSaveFailed: 'Не удалось сохранить настройки группы. Попробуйте ещё раз.',
+    nameLabel: 'Название группы',
+    manageMembers: (count: number) => `Участники (${count})…`,
+    holdDetection: 'Разрешить приостанавливать ботов сообщениями',
+    holdDetectionHint: 'В сообщении можно попросить бота подождать. Упомяните его снова, когда понадобится ответ.',
+    compressHistory: 'Сократить историю',
+    compressHistoryHint: (member: string) => `Подготовить краткое содержание истории для будущих ответов ${member}`,
+    compressing: (member: string) => `Подготовка краткой истории для ${member}…`,
+    compressDone: (member: string, count: number, detail: string) =>
+      `Для ${member} сокращено бесед: ${count}${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `У ${member} пока нет истории для сокращения.`,
+    compressFailed: (member: string, error: string) => `Не удалось сократить историю для ${member}: ${error}`
+  }
+}
+
+const ar = {
+  avatar: { savedLocally: 'تم الحفظ على هذا الكمبيوتر. تعذرت مزامنة إعدادات البوت.' },
+  group: {
+    settingsTitle: 'إعدادات المجموعة',
+    settingsDesc: 'غيّر اسم المجموعة أو صورتها. يبقى الأعضاء وسجل المحادثة كما هما.',
+    settingsUnavailable: 'هذه المجموعة لم تعد متاحة.',
+    settingsSaveFailed: 'تعذر حفظ إعدادات المجموعة. حاول مرة أخرى.',
+    nameLabel: 'اسم المجموعة',
+    manageMembers: (count: number) => `إدارة الأعضاء (${count})…`,
+    holdDetection: 'السماح للرسائل بإيقاف البوتات مؤقتًا',
+    holdDetectionHint: 'يمكن للرسالة أن تطلب من البوت التوقف مؤقتًا. أشر إليه مجددًا عندما تريد منه الرد.',
+    compressHistory: 'تلخيص السجل',
+    compressHistoryHint: (member: string) => `إنشاء ملخص للسجل ليستخدمه ${member} في الردود القادمة`,
+    compressing: (member: string) => `جارٍ تلخيص سجل ${member}…`,
+    compressDone: (member: string, count: number, detail: string) =>
+      `تم تلخيص ${count} من المحادثات لـ ${member}${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `لا يوجد سجل لتلخيصه لـ ${member} بعد.`,
+    compressFailed: (member: string, error: string) => `تعذر تلخيص سجل ${member}: ${error}`
+  }
+}
+
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant, fr, de, es, ru, ar }
