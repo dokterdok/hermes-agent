@@ -34,7 +34,7 @@ const file = (seq: number, name = `file-${seq}.txt`, index = 0) => ({
   producer: { kind: 'user', id: 'desktop', label: 'You' }, shared_at: 1_700_000_000 + seq
 })
 
-const page = (items: ReturnType<typeof file>[], cursor: null | string = null, snapshot = 20) =>
+const page = (items: Array<ReturnType<typeof file> & {available?: unknown}>, cursor: null | string = null, snapshot = 20) =>
   ({ room_id: binding.roomId, authority, snapshot_seq: snapshot, items, next_cursor: cursor, has_more: cursor !== null })
 
 const advertised = { ...CANONICAL_GROUP_CAPABILITIES, methods: [...CANONICAL_GROUP_CAPABILITIES.methods, 'groups.attachment.list'] }
@@ -200,8 +200,8 @@ it('recovers from a refused cursor by showing the latest files, and retries an u
   expect(calls('groups.attachment.list').filter(params => !params.cursor)).toHaveLength(3)
 })
 
-it.each(['order', 'date'])('refuses a page with unusable %s data without breaking Files', async fault => {
-  gateway['groups.attachment.list'] = () => page(fault === 'order' ? [file(19), file(20)] : [{ ...file(19), shared_at: 1e30 }])
+it.each(['order', 'date', 'availability'])('refuses a page with unusable %s data without breaking Files', async fault => {
+  gateway['groups.attachment.list'] = () => page(fault === 'order' ? [file(19), file(20)] : [fault === 'date' ? { ...file(19), shared_at: 1e30 } : { ...file(19), available: 'false' }])
   const dialog = await openFiles()
   expect(await dialog.findByText('Files could not be loaded.')).toBeTruthy()
   expect(rows()).toHaveLength(0)
@@ -219,4 +219,46 @@ it('tells the header which file the room log shared last', async () => {
 
  return null }} binding={binding} />)
   await waitFor(() => expect(seen.at(-1)).toBe(3))
+})
+
+it('keeps verified unavailable versions visible and never requests bytes through pointer or keyboard actions', async () => {
+  const unavailable = {...file(20, 'report.txt'), available: false}
+  gateway['groups.attachment.list'] = params => params.cursor ? page([{...file(19, 'report.txt'), available: false}]) : page([unavailable], 'after-20')
+  const dialog = await openFiles(20)
+  const version = await dialog.findByRole('listitem')
+  expect(version.textContent).toContain('This version cannot be downloaded from the current host.')
+  const download = within(version).getByRole('button', {name: 'Download: report.txt'}) as HTMLButtonElement
+  expect(download.disabled).toBe(true)
+  fireEvent.click(download)
+  version.focus()
+  fireEvent.keyDown(version, {key: 'Enter'})
+  fireEvent.click(dialog.getByRole('button', {name: 'Older files'}))
+  await waitFor(() => expect(calls('groups.attachment.list')).toHaveLength(2))
+  expect(within(rows()[0]).getByRole('button', {name: 'Download: report.txt'}).hasAttribute('disabled')).toBe(true)
+  expect(calls('groups.attachment.download')).toEqual([])
+  expect(observed.create).not.toHaveBeenCalled()
+  expect(dialog.queryByRole('button', {name: 'Retry'})).toBeNull()
+})
+
+it('does not deny known file history when an older promoted-host catalog returns an empty list', async () => {
+  gateway['groups.attachment.list'] = () => ({...page([], null, 40), authority: {gateway_id: 'install:successor', epoch: 2}})
+  const dialog = await openFiles(30)
+  expect(await dialog.findByText('Shared file references remain in the conversation, but no files are shown here.')).toBeTruthy()
+  expect(dialog.queryByText('No files shared yet.')).toBeNull()
+  expect(dialog.queryByRole('button', {name: 'Retry'})).toBeNull()
+  expect(calls('groups.attachment.download')).toEqual([])
+})
+
+it('keeps a known missing version unavailable after the download response instead of offering a bogus Retry', async () => {
+  gateway['groups.attachment.list'] = () => page([file(20, 'report.txt')])
+
+  gateway['groups.attachment.download'] = () => {throw {code: 4001, data: {reason: 'attachment_unavailable'}}}
+  const dialog = await openFiles(20)
+  fireEvent.click(await dialog.findByRole('button', {name: 'Download: report.txt'}))
+  await dialog.findByText('This version cannot be downloaded from the current host.')
+  expect((dialog.getByRole('button', {name: 'Download: report.txt'}) as HTMLButtonElement).disabled).toBe(true)
+  expect(dialog.queryByRole('button', {name: 'Retry'})).toBeNull()
+  fireEvent.keyDown(rows()[0], {key: 'Enter'})
+  expect(calls('groups.attachment.download')).toHaveLength(1)
+  expect(observed.create).not.toHaveBeenCalled()
 })
