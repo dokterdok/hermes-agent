@@ -1540,6 +1540,7 @@ export interface GroupsAttachmentListResult {
   has_more: boolean
 }
 export interface RoomFileItem {
+  available?: boolean
   attachment_id: string
   kind: string
   name: string
@@ -4902,7 +4903,7 @@ export interface RpcMethods {
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
   /** Read bytes bound to a canonical room event, subject to current viewer authorization. */
   'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: GroupsAttachmentDownloadResult }
-  /** List authorized published room-file versions with stable paging, search and producer filtering. */
+  /** List authorized published room-file references with stable paging, search and producer filtering. available=false retains a historical reference whose bytes are unavailable here; omitted means locally available. */
   'groups.attachment.list': { params: GroupsAttachmentListParams; result: GroupsAttachmentListResult }
   /** Upload owner-authorized bytes for a canonical room message. */
   'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: GroupsAttachmentResult }

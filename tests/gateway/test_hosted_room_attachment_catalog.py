@@ -199,6 +199,8 @@ def test_rare_search_and_sparse_history_need_one_page_without_blob_reads(tmp_pat
     records[1] = ["needle.md"]
     _seed_events(db, total_events=10000, records=records)
     _seed_events(db, total_events=12000, records={}, start_seq=10001)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE hosted_room_events SET payload_json=json_set(payload_json, '$.attachments', json('[]')) WHERE seq>10000")
     monkeypatch.setattr(HostedRoomAttachmentStore, "_read_blob",
                         lambda *args, **kwargs: pytest.fail("browsing must not read file bytes"))
 
@@ -208,7 +210,7 @@ def test_rare_search_and_sparse_history_need_one_page_without_blob_reads(tmp_pat
     assert not page["has_more"]
 
 
-def test_lists_only_what_download_serves(tmp_path):
+def test_keeps_unavailable_public_versions_but_omits_conflicting_or_staged_metadata(tmp_path):
     db, store = _create_catalog(tmp_path)
     _seed_events(db, total_events=6, records={seq: [f"file-{seq}.bin"] for seq in range(1, 7)})
     store.put(room_id=ROOM_ID, upload_id="staged-upload", kind="file", name="staged.bin",
@@ -231,13 +233,16 @@ def test_lists_only_what_download_serves(tmp_path):
         conn.execute("DELETE FROM hosted_room_attachment_blobs WHERE blob_id=?", (blob_id,))
         conn.execute("UPDATE hosted_room_attachments SET state='uploaded' WHERE upload_id='upload-6-0'")
 
-    assert [item["name"] for item in _all_items(db, limit=32)] == ["file-1.bin"]
+    rows = _all_items(db, limit=32)
+    assert [item["name"] for item in rows] == ["file-5.bin", "file-2.bin", "file-1.bin"]
+    # This bulk metadata fixture has no blob files; expired/missing bytes stay historical references.
+    assert all(item["available"] is False for item in rows)
 
 
 @pytest.mark.parametrize("corruption", [
     "actor", "payload", "manifest", "manifest-string", "viewer-access", "recipients", "wrong-room",
     "missing-event", "blob-digest"])
-def test_corrupt_or_private_metadata_is_not_listed(tmp_path, corruption):
+def test_byte_failure_remains_visible_but_private_or_conflicting_metadata_does_not(tmp_path, corruption):
     db, _store = _create_catalog(tmp_path)
     _seed_events(db, total_events=2, records={1: ["good.bin"], 2: ["bad.bin"]})
     with sqlite3.connect(db) as conn:
@@ -258,7 +263,11 @@ def test_corrupt_or_private_metadata_is_not_listed(tmp_path, corruption):
         }
         conn.execute(*statements[corruption])
 
-    assert [item["name"] for item in _all_items(db)] == ["good.bin"]
+    rows = _all_items(db)
+    # A blob digest conflict makes known public bytes unavailable, not the public log reference private.
+    expected = ["bad.bin", "good.bin"] if corruption == "blob-digest" else ["good.bin"]
+    assert [item["name"] for item in rows] == expected
+    assert all(item["available"] is False for item in rows)
 
 
 def test_epochless_share_is_listed_because_download_serves_it(tmp_path):

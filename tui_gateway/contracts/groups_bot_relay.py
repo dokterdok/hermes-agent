@@ -424,6 +424,8 @@ class RoomFileProducer(Result):
 
 
 class RoomFileItem(Result):
+    # Omitted by older hosts and for available rows; false never authorizes Download.
+    available: bool = True
     attachment_id: str
     kind: str
     name: str
@@ -446,7 +448,8 @@ class GroupsAttachmentListResult(Result):
 
 
 method("groups.attachment.list", params=GroupsAttachmentListParams, result=GroupsAttachmentListResult,
-       doc="List authorized published room-file versions with stable paging, search and producer filtering.")
+       doc="List authorized published room-file references with stable paging, search and producer filtering. "
+           "available=false retains a historical reference whose bytes are unavailable here; omitted means locally available.")
 
 
 # ── replication / authority takeover ──────────────────────────────────────────────────────────
