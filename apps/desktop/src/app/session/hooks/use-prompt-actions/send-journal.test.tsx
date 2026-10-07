@@ -204,3 +204,20 @@ it('gives a later independent Send a new ID even when the preceding accepted jou
   await act(async () => {expect(await view.hook.result.current('same text')).toBe(true)})
   expect(request.mock.calls[0][1]?.submission_id).not.toBe(request.mock.calls[1][1]?.submission_id)
 })
+
+it('refuses admission when the browser journal becomes malformed between reading and the atomic preparation lock', async () => {
+  Object.defineProperty(window, 'hermesDesktop', {configurable: true, writable: true, value: undefined})
+  const storageKey = 'hermes.desktop.preparedSubmissions.v1'
+  vi.spyOn(navigator.locks, 'request').mockImplementation(async (...args) => {
+    localStorage.setItem(storageKey, '[]')
+    const callback = args.at(-1) as (lock: Lock | null) => unknown
+
+    return await callback(null)
+  })
+  const request = vi.fn(async (_method: string, params?: Record<string, unknown>) => ({admission_id: params?.submission_id, status: 'terminal'}) as never)
+  const view = composer(request)
+  await act(async () => {expect(await view.hook.result.current('Keep this draft')).toBe(false)})
+  expect(request).not.toHaveBeenCalled()
+  expect(localStorage.getItem(storageKey)).toBe('[]')
+})
+

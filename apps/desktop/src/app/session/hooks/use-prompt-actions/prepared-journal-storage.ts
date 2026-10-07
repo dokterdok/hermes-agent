@@ -10,13 +10,18 @@ export async function journalOwner(): Promise<string> {
   return browserOwner ??= crypto.randomUUID()
 }
 
+/** Validate again inside the atomic lock: another window or storage repair can change the root. */
+function journalRecord<T>(value: unknown): Record<string, T> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {throw new Error('Invalid prepared submission journal')}
+
+  return value as Record<string, T>
+}
+
 export async function readJournal<T>(): Promise<Record<string, T>> {
   const native = window.hermesDesktop?.preparedSubmissions
   const parsed: unknown = JSON.parse(native ? await native.read() : localStorage.getItem(STORAGE_KEY) || '{}')
 
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {throw new Error('Invalid prepared submission journal')}
-
-  return parsed as Record<string, T>
+  return journalRecord<T>(parsed)
 }
 
 export async function compareJournal(key: string, expected: string | null, entry: string | null): Promise<boolean> {
@@ -33,7 +38,7 @@ export async function compareJournal(key: string, expected: string | null, entry
   if (!navigator.locks) {throw new Error('Atomic draft storage unavailable in this browser')}
 
   return navigator.locks.request(STORAGE_KEY, () => {
-    const journal = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+    const journal = journalRecord<unknown>(JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'))
     const current = Object.hasOwn(journal, key) ? JSON.stringify(journal[key]) : null
 
     if (current !== expected) {return false}
