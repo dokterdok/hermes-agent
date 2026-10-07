@@ -122,6 +122,18 @@ it('searches by name or sharer and ignores a superseded reply', async () => {
   expect(calls('groups.attachment.list').map(params => params.query)).toEqual([undefined, 'Builder', 'nothing', undefined])
 })
 
+it('distinguishes same-name versions shared seconds apart across pages', async () => {
+  gateway['groups.attachment.list'] = params => params.cursor
+    ? page([file(19, 'report.txt')]) : page([file(20, 'report.txt')], 'after-20')
+  const dialog = await openFiles()
+  await waitFor(() => expect(rows()).toHaveLength(1))
+  const newest = rows()[0].getAttribute('aria-label')
+  fireEvent.click(dialog.getByRole('button', { name: 'Older files' }))
+  await waitFor(() => expect(calls('groups.attachment.list')).toHaveLength(2))
+  await waitFor(() => expect(rows()[0].getAttribute('aria-label')).not.toBe(newest))
+  expect(dialog.getByText('report.txt')).toBeTruthy()
+})
+
 it('saves the exact listed version through the existing download', async () => {
   const selected = { ...file(19, 'same.txt'), size: 10 }
   gateway['groups.attachment.list'] = () => page([file(20, 'same.txt'), selected])
