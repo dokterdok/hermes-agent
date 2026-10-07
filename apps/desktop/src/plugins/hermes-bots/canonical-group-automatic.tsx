@@ -33,7 +33,7 @@ function readinessLine(words: Words, controller: SuccessionController, status: S
   const standby = computerName(controller, automatic?.standby)
   const offline = (automatic?.offline ?? []).map((computer, index) => computerName(controller, computer) ?? words.computerNumber(index + 1))
 
-  if (automatic && twoHostAutomatic(automatic) && automatic.careful_opt_in !== true) {return automatic.careful_opt_in === null && automatic.enabled !== false ? null : words.automaticOff}
+  if (automatic && twoHostAutomatic(automatic) && automatic.careful_opt_in === false) {return words.automaticOff}
 
   switch (automatic?.state) {
     case 'ready': return automatic.mode === 'ask' ? words.automaticOff
