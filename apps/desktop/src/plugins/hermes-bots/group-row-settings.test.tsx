@@ -189,20 +189,24 @@ it('offers one retry for failed sync using the current name and membership', asy
   expect($groupChats.get().New).toBeUndefined()
 })
 
-it('does not recreate a deleted group when its open settings are saved', async () => {
-  $groupChats.set({ Planning: { log: [], roomId: 'deleted-settings', watermarks: {} } })
-  $botMeta.set({})
-  const notify = vi.spyOn(host, 'notify').mockReturnValue('missing-notice')
-  const onClose = vi.fn()
-  render(<GroupChatSettingsDialog group="Planning" onClose={onClose} open />)
-  act(() => $groupChats.set({}))
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-  await waitFor(() =>
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'That group is no longer available.' }))
-  )
-  expect($groupChats.get()).toEqual({})
-  expect(onClose).not.toHaveBeenCalled()
-})
+it.each([false, true])(
+  'does not edit a removed or replaced group from its stale settings (replacement=%s)',
+  async replaced => {
+    $groupChats.set({ Planning: { log: [], roomId: 'deleted-settings', watermarks: {} } })
+    $botMeta.set({})
+    const notify = vi.spyOn(host, 'notify').mockReturnValue('missing-notice')
+    const onClose = vi.fn()
+    render(<GroupChatSettingsDialog group="Planning" onClose={onClose} open />)
+    const remaining = replaced ? { Planning: { log: [], roomId: 'replacement-settings', watermarks: {} } } : {}
+    act(() => $groupChats.set(remaining))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'That group is no longer available.' }))
+    )
+    expect($groupChats.get()).toEqual(remaining)
+    expect(onClose).not.toHaveBeenCalled()
+  }
+)
 
 it('an earlier save finishing does not close or unlock another group’s pending settings', async () => {
   const member = { name: 'alpha' } as RosterRow

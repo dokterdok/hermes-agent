@@ -110,6 +110,7 @@ import { isGroupChatSelf } from './group-round-prompt'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import {
   applyGroupSettings,
+  groupSettingsAvailable,
   renameGroupMemberships,
   reportGroupSettingsSyncFailure,
   summarizeGroupMember
@@ -263,10 +264,7 @@ export async function renameGroupChat(
 
   const room = $groupChats.get()[oldName]
 
-  if (
-    room?.tombstone ||
-    (!room && !(members || []).some(member => botGroups(botRosterMeta(member, $botMeta.get())).includes(oldName)))
-  ) {
+  if (!groupSettingsAvailable(oldName, members || [])) {
     host.notify({ kind: 'error', message: botsText().group.settingsUnavailable })
 
     return null
@@ -454,6 +452,13 @@ export function GroupChatSettingsDialog({
     if (savingRef.current) {
       return
     }
+
+    if (($groupChats.get()[group]?.roomId || group) !== scopeIdentity) {
+      host.notify({ kind: 'error', message: b.group.settingsUnavailable })
+
+      return
+    }
+
     savingRef.current = true
     setSaving(true)
     const scope = saveScope.current
@@ -473,6 +478,7 @@ export function GroupChatSettingsDialog({
       if (finalName === null || scope !== saveScope.current) {
         return
       }
+
       onClose()
 
       if (finalName !== group) {

@@ -1,7 +1,7 @@
 import { host, translateNow } from '@hermes/plugin-sdk'
 
 import { $botMeta, saveBotMeta } from './data'
-import { setGroupChatHoldDetection, setGroupChatImage } from './group-chat'
+import { $groupChats, setGroupChatHoldDetection, setGroupChatImage } from './group-chat'
 import { compressGroupMemberHistory } from './group-compress'
 import { botGroups, followGroupChat } from './group-membership'
 import { botsText } from './i18n'
@@ -12,6 +12,16 @@ import type { GroupMember } from './types'
 export interface GroupSettingsPatch {
   holdDetection?: boolean
   image?: null | string
+}
+
+export function groupSettingsAvailable(group: string, members: GroupMember[] = []) {
+  const room = $groupChats.get()[group]
+
+  if (room) {
+    return !room.tombstone
+  }
+
+  return members.some(member => botGroups(botRosterMeta(member, $botMeta.get())).includes(group))
 }
 
 export function applyGroupSettings(group: string, settings: GroupSettingsPatch) {
@@ -74,6 +84,7 @@ export function reportGroupSettingsSyncFailure(group: string, members: GroupMemb
     if (retrying) {
       return
     }
+
     retrying = true
     const failed: GroupMember[] = []
     let unsupported = false
@@ -83,16 +94,19 @@ export function reportGroupSettingsSyncFailure(group: string, members: GroupMemb
         if (!binding.isLive()) {
           break
         }
+
         const groups = botGroups(botRosterMeta(member, $botMeta.get()))
 
         if (!groups.includes(current)) {
           continue
         }
+
         const result = await saveBotMeta(member, { groups, group: groups[0] || null })
 
         if (result.serverOutcome === 'failed') {
           failed.push(member)
         }
+
         unsupported ||= result.serverOutcome === 'unsupported'
       }
 
