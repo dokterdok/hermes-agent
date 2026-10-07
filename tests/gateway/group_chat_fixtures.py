@@ -3,6 +3,7 @@ with one real canonical authority store, and messages from people in private or 
 from types import SimpleNamespace
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from hermes_state_runtime import begin_runtime_epoch
@@ -21,6 +22,7 @@ class Bot:
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent.append((chat_id, content, metadata))
+        return SendResult(success=True)
 
 
 class Buttons(Bot):
