@@ -88,6 +88,22 @@ describe('visible mention dispatch', () => {
     expect([...new Set(room.gateway.calls.map(call => call.profile))]).toEqual(['builder'])
   })
 
+  it.each([
+    '@builder check\n\n<div>one</span data-mention="@all">two</div>',
+    '@builder check\n\n<div>one</a href="@ops">two</div>'
+  ])('keeps discarded closing-tag attributes inert in the real renderer and round: %s', async text => {
+    const [{createElement}, {render}, {Streamdown}] = await Promise.all([import('react'), import('@testing-library/react'), import('streamdown')])
+    const view = render(createElement(Streamdown, {mode: 'static', parseIncompleteMarkdown: false}, text))
+    expect(view.container.textContent).toContain('@builder check')
+    expect(view.container.textContent).toContain('onetwo')
+    expect(view.container.textContent).not.toMatch(/@all|@ops/)
+    view.unmount()
+    const room = await loadRoom({turn: () => '(pass)'})
+    room.rounds.sendToGroupChat('Visible', MEMBERS, text)
+    await settle(room, 'Visible')
+    expect([...new Set(room.gateway.calls.map(call => call.profile))]).toEqual(['builder'])
+  })
+
   it('keeps quoted friendly names and mixed Bot/human addresses while rejecting manufactured handle prefixes', async () => {
     const room = await loadRoom({turn: () => '(pass)'})
     expect([...room.rounds.parseGroupChatMentions('@"The Ops" check this @user', MEMBERS).mentioned]).toEqual(['ops'])

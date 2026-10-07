@@ -1,6 +1,7 @@
 import { parse, postprocess, preprocess } from 'micromark'
 import { gfm } from 'micromark-extension-gfm'
-import { parseFragment } from 'parse5'
+import { parseFragment, Tokenizer } from 'parse5'
+import type { Token } from 'parse5'
 import type { DefaultTreeAdapterMap } from 'parse5'
 
 // These are parser token ancestors, not another Markdown scanner.
@@ -15,6 +16,7 @@ const METADATA = new Set([
   'autolink',
   'literalAutolink'
 ])
+
 const GENERATED = new Set(['characterEscape', 'characterReference'])
 const HIDDEN_HTML = new Set(['code', 'pre', 'script', 'style', 'template'])
 
@@ -28,11 +30,13 @@ function markdownLiteralSource(source: string): GroupMentionSurface {
   const surface: string[] = source.split('').map(character => (character === '\n' ? '\n' : ' '))
   const generatedAt = new Set<number>()
   const quotedLines = new Set<number>()
+
   const events = postprocess(
     parse({ extensions: [gfm()] })
       .document()
       .write(preprocess()(source, undefined, true))
   )
+
   let blocked = 0
 
   for (const [event, token] of events) {
@@ -64,6 +68,27 @@ function markdownLiteralSource(source: string): GroupMentionSurface {
   return { text: surface.join(''), generatedAt, quotedLines }
 }
 
+/** Tree construction can merge prose around ignored end tags into one source range. Mask every
+ * tokenizer markup span so discarded attributes cannot re-enter through a merged text node. */
+function maskHtmlMetadata(source: string, visible: string[]) {
+  const hide = (token: Token.Token) => {
+    if (!token.location) {return}
+
+    for (let offset = token.location.startOffset; offset < token.location.endOffset; offset++) {
+      visible[offset] = source[offset] === '\n' ? '\n' : ' '
+    }
+  }
+
+  const ignore = () => undefined
+
+  const tokenizer = new Tokenizer({ sourceCodeLocationInfo: true }, {
+    onStartTag: hide, onEndTag: hide, onComment: hide, onDoctype: hide,
+    onCharacter: ignore, onNullCharacter: ignore, onWhitespaceCharacter: ignore, onEof: ignore
+  })
+
+  tokenizer.write(source, true)
+}
+
 /** Same CommonMark/GFM grammar as the message renderer, retaining literal source positions.
  * Escapes/entities do not manufacture an address, code and metadata never become prose. */
 export function groupMentionSurface(value: unknown): GroupMentionSurface {
@@ -89,6 +114,8 @@ export function groupMentionSurface(value: unknown): GroupMentionSurface {
       pending.push(...node.childNodes)
     }
   }
+
+  maskHtmlMetadata(source.text, visible)
 
   return { text: visible.join(''), generatedAt: source.generatedAt, quotedLines: source.quotedLines }
 }
