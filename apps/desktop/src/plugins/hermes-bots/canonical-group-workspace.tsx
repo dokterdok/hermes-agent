@@ -124,6 +124,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
     setPending(entry)
   }
 
+  const clearPending = (entry: PreparedCanonicalGroupSend) => {
+    if (alive.current && pendingRecord.current?.params.event_id === entry.params.event_id) {
+      showPending(null)
+    }
+  }
+
   const show = (entry: PreparedCanonicalGroupSend) => {showPending(entry); setDraft(String(entry.params.payload.text ?? '')); setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])}
 
   // Mount lifetime is separate from a read-only journal retry.
@@ -286,7 +292,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
         if (outcome === 'refused' && alive.current) {
           await retireCanonicalGroupSend(binding, exact.params.event_id, exact)
 
-          if (alive.current && pendingRecord.current?.params.event_id === exact.params.event_id) {showPending(null)}
+          clearPending(exact)
         }
 
         if (alive.current) {setSendHint(outcome === 'refused' ? labels.sendRefused : outcome === 'retryable' ? labels.sendNotYet : labels.sendMaybe)}
@@ -296,7 +302,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
       await continuity.settle(exact, accepted)
 
       if (alive.current) {
-        if (pendingRecord.current?.params.event_id === exact.params.event_id) {showPending(null)}
+        clearPending(exact)
         if (inputRevision.current === editing) {setDraft(''); setAttachments([])}
         try {
           const recoverable = await listCanonicalGroupSends(binding)
