@@ -91,9 +91,11 @@ describe('unread acknowledgement follows a successful foreground transition', ()
     const { $unreadFinishedMarkers } = await import('@/store/session-unread')
     const row = { ...bot, canonical_session: { ...bot.canonical_session!, resolved_id: 'tip-9' } } as RosterRow
     const focused = vi.spyOn(host.state.focusedStoredSessionId, 'get').mockReturnValue('tip-9')
+
     const owner = vi
       .spyOn(host.state.focusedSessionOwner, 'get')
       .mockReturnValue({ connectionId: 'local', profile: 'ops' })
+
     const restore = withFocusApi(() => null)
     let first!: (value: { openedId: string; registryId: string }) => void
     let fresh!: (value: { openedId: string; registryId: string }) => void
@@ -300,3 +302,55 @@ describe('focus on either owned identity keeps the claim', () => {
     expect($openBotChat.get()).toBeNull()
   })
 })
+
+it.each(['warm-failure', 'cold-failure'])(
+  'retains newly observed activity when its first transcript read fails: %s',
+  async kind => {
+    const { trackInboundActivity } = await import('./roster-actions')
+    const { saveSelectedRosterBot } = await import('./bot-state')
+    const { $unreadFinishedMarkers } = await import('@/store/session-unread')
+    const row = { ...bot, canonical_session: { id: `failed-read-${kind}`, last_active: 100 } } as RosterRow
+    const focused = vi.spyOn(host.state.focusedStoredSessionId, 'get').mockReturnValue(row.canonical_session!.id)
+    const owner = vi
+      .spyOn(host.state.focusedSessionOwner, 'get')
+      .mockReturnValue({ connectionId: 'local', profile: 'ops' })
+    const busy = vi.spyOn(host.state.busy, 'get').mockReturnValue(false)
+    const restore = withFocusApi(() => null)
+    let fail!: (error: Error) => void
+    openBotCanonicalChat.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          fail = reject
+        })
+    )
+
+    try {
+      trackInboundActivity([row])
+      expect($unreadFinishedMarkers.get().ops || []).not.toContain(row.canonical_session!.id)
+      let opening: Promise<boolean> | undefined
+
+      if (kind === 'cold-failure') {
+        opening = openRosterBot(row)
+        await vi.waitFor(() => expect(openBotCanonicalChat).toHaveBeenCalledOnce())
+      } else {
+        saveSelectedRosterBot(row)
+      }
+
+      trackInboundActivity([{ ...row, canonical_session: { ...row.canonical_session!, last_active: 200 } }])
+      await vi.waitFor(() => expect(openBotCanonicalChat).toHaveBeenCalledOnce())
+      fail(new Error('transcript unavailable'))
+
+      if (opening) {
+        await expect(opening).resolves.toBe(false)
+      }
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(ackStoredSessionId).not.toHaveBeenCalled()
+      expect($unreadFinishedMarkers.get().ops || []).toContain(row.canonical_session!.id)
+    } finally {
+      focused.mockRestore()
+      owner.mockRestore()
+      busy.mockRestore()
+      restore()
+    }
+  }
+)
