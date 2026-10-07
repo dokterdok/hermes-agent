@@ -1749,6 +1749,7 @@ export interface CustodyConfiguration {
   custodians: CustodyCustodian[]
   owner_name?: string | null
   automatic?: boolean
+  careful_opt_in?: boolean | null
   voters?: string[]
 }
 /** One entry of a ``custody.configured`` event. */
@@ -1817,10 +1818,12 @@ export interface GroupsCustodyAutomaticParams {
   profile?: string | null
   room_id: string
   enabled: boolean
+  accept_two_host_risk?: boolean
 }
 export interface GroupsCustodyAutomaticResult {
   room_id: string
   automatic: boolean
+  careful_opt_in: boolean
   configuration_seq: number
   pending: boolean
 }
@@ -1942,6 +1945,7 @@ export interface SuccessionAutomatic {
   standby?: SuccessionComputer | null
   voters: SuccessionComputer[]
   enabled: boolean
+  careful_opt_in?: boolean | null
   pending?: boolean | null
   reason?: string | null
   offline?: SuccessionComputer[] | null
