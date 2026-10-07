@@ -12,6 +12,8 @@ export interface PreparedSubmission {
   text: string
   displayText?: string
   params: Record<string, unknown>
+  /** Explicit false proves a newly prepared, undispatched input; historical absence is uncertain. */
+  attempted?: boolean
   legacyAttempted?: boolean
   acknowledged?: boolean
   journal?: { lookup: string; storageKey: string; owner: string }
