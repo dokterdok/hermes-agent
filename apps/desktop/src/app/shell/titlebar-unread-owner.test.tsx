@@ -24,8 +24,14 @@ const renderControls = () =>
   )
 
 beforeAll(() => {
-  const disposers = Object.entries({ sessions: 'left', bots: 'left', terminal: 'left', workspace: 'main' }).map(
-    ([id, placement]) => registry.register({ id, area: 'panes', title: id, data: { placement }, render: () => null })
+  const disposers = Object.entries({
+    sessions: 'left',
+    bots: 'left',
+    terminal: 'left',
+    files: 'right',
+    workspace: 'main'
+  }).map(([id, placement]) =>
+    registry.register({ id, area: 'panes', title: id, data: { placement }, render: () => null })
   )
 
   return () => disposers.forEach(dispose => dispose())
@@ -45,6 +51,14 @@ afterEach(() => {
 })
 
 describe('rendered unread badge ownership', () => {
+  it('keeps the count on Sessions after dragging it to the other side without flipping the layout', () => {
+    setFileBrowserOpen(false)
+    $layoutTree.set(split('row', [group(['files']), group(['workspace']), group(['sessions'])]))
+    renderControls()
+    expect(screen.getAllByRole('button', { name: /3 unread sessions/ })).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /3 unread sessions/ }).getAttribute('aria-label')).toMatch(/right/i)
+  })
+
   it('does not attach a count to the visible sidebar hide button', () => {
     renderControls()
 
@@ -69,6 +83,10 @@ describe('rendered unread badge ownership', () => {
 
   it.each([false, true])('puts one count on the hidden Sessions reveal control (flipped=%s)', flipped => {
     $panesFlipped.set(flipped)
+
+    if (flipped) {
+      $layoutTree.set(split('row', [group(['files']), group(['workspace']), group(['sessions'])]))
+    }
     setSidebarOpen(flipped)
     setFileBrowserOpen(!flipped)
     renderControls()
