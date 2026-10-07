@@ -46,7 +46,7 @@ vi.mock('./canonical-chat', async () => ({
 }))
 
 const { host } = await import('@hermes/plugin-sdk')
-const { $openBotChat, $pendingBotOpen } = await import('./bot-state')
+const { $openBotChat, $pendingBotOpen, rosterWatermarks } = await import('./bot-state')
 const { openRosterBot } = await import('./roster-actions')
 const { releaseStaleOpenBotChat } = await import('./roster-pane')
 
@@ -70,6 +70,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   $openBotChat.set(null)
   $pendingBotOpen.set(null)
+  rosterWatermarks.clear()
   prepareBotSource.mockResolvedValue(undefined)
   openBotCanonicalChat.mockResolvedValue({ openedId: 'tip-9', registryId: 'reg-1' })
 })
@@ -85,6 +86,61 @@ describe('an open claims both identities of the chat it opened', () => {
 })
 
 describe('unread acknowledgement follows a successful foreground transition', () => {
+  it.each(['success', 'failure'])('waits for the newer activity read after a cold open (%s)', async outcome => {
+    const { trackInboundActivity } = await import('./roster-actions')
+    const { $unreadFinishedMarkers } = await import('@/store/session-unread')
+    const row = { ...bot, canonical_session: { ...bot.canonical_session!, resolved_id: 'tip-9' } } as RosterRow
+    const focused = vi.spyOn(host.state.focusedStoredSessionId, 'get').mockReturnValue('tip-9')
+    const owner = vi
+      .spyOn(host.state.focusedSessionOwner, 'get')
+      .mockReturnValue({ connectionId: 'local', profile: 'ops' })
+    const restore = withFocusApi(() => null)
+    let first!: (value: { openedId: string; registryId: string }) => void
+    let fresh!: (value: { openedId: string; registryId: string }) => void
+    let fail!: (error: Error) => void
+    const result = { openedId: 'tip-9', registryId: 'reg-1' }
+    openBotCanonicalChat
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            first = resolve
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            fresh = resolve
+            fail = reject
+          })
+      )
+
+    try {
+      trackInboundActivity([row])
+      const opening = openRosterBot(row)
+      await vi.waitFor(() => expect(openBotCanonicalChat).toHaveBeenCalledOnce())
+      trackInboundActivity([{ ...row, canonical_session: { ...row.canonical_session!, last_active: 200 } }])
+      first(result)
+      await expect(opening).resolves.toBe(true)
+      await vi.waitFor(() => expect(openBotCanonicalChat).toHaveBeenCalledTimes(2))
+      expect(ackStoredSessionId).not.toHaveBeenCalled()
+      expect($unreadFinishedMarkers.get().ops).toContain('tip-9')
+
+      if (outcome === 'failure') {
+        fail(new Error('latest transcript unavailable'))
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect(ackStoredSessionId).not.toHaveBeenCalled()
+        expect($unreadFinishedMarkers.get().ops).toContain('tip-9')
+      } else {
+        fresh(result)
+        await vi.waitFor(() => expect(ackStoredSessionId).toHaveBeenCalledOnce())
+      }
+    } finally {
+      focused.mockRestore()
+      owner.mockRestore()
+      restore()
+    }
+  })
+
   it('acknowledges only after the canonical chat opens', async () => {
     openBotCanonicalChat.mockImplementation(async () => {
       expect(ackStoredSessionId).not.toHaveBeenCalled()
@@ -152,7 +208,12 @@ describe('unread acknowledgement follows a successful foreground transition', ()
       await Promise.resolve()
       expect(ackStoredSessionId).not.toHaveBeenCalled()
 
-      openBotCanonicalChat.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+      openBotCanonicalChat.mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            complete = resolve
+          })
+      )
       await expect(openRosterBot(bot)).resolves.toBe(true)
       expect(ackStoredSessionId).not.toHaveBeenCalled()
       complete({ openedId: 'reg-1', registryId: 'reg-1' })
@@ -169,7 +230,12 @@ describe('unread acknowledgement follows a successful foreground transition', ()
     let complete!: (value: { openedId: string; registryId: string }) => void
 
     try {
-      openBotCanonicalChat.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+      openBotCanonicalChat.mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            complete = resolve
+          })
+      )
       openBotCanonicalChat.mockResolvedValueOnce({ openedId: 'reg-1', registryId: 'reg-1' })
       await expect(openRosterBot(bot)).resolves.toBe(true)
       await expect(openRosterBot(bot)).resolves.toBe(true)

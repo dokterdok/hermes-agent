@@ -8,7 +8,16 @@
  * them can own an action the others call without importing a sibling surface.
  */
 
-import { ackStoredSessionId, afterSuccessfulBotChatRefresh, atom, haptic, host, markSessionRead, markSessionUnreadFinished, protectBotChatRead } from '@hermes/plugin-sdk'
+import {
+  ackStoredSessionId,
+  afterSuccessfulBotChatRefresh,
+  atom,
+  haptic,
+  host,
+  markSessionRead,
+  markSessionUnreadFinished,
+  protectBotChatRead
+} from '@hermes/plugin-sdk'
 
 import {
   $openBotChat,
@@ -150,10 +159,15 @@ export function refreshBotChatOnFocus(focusedId: null | string | undefined): voi
 
     const owner = host.state.focusedSessionOwner?.get?.()
 
-    const bot = owner && $lastRoster.get().find(row =>
-      botRosterKey(row) === `${owner.connectionId}::${owner.profile}` &&
-      [row.canonical_session?.id, row.canonical_session?.resolved_id].includes(focusedId)
-    )
+    const bot =
+      owner &&
+      $lastRoster
+        .get()
+        .find(
+          row =>
+            botRosterKey(row) === `${owner.connectionId}::${owner.profile}` &&
+            [row.canonical_session?.id, row.canonical_session?.resolved_id].includes(focusedId)
+        )
 
     if (bot) {
       void refreshOpenBotChat(bot, { allowWhileBusy: true })
@@ -176,7 +190,9 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
     // arrive before that open completes; a second background SDK open would
     // advance openSessionGeneration and reject the foreground wait as superseded.
     $pendingBotOpen.get()?.key === key ||
-    !focused || !canonicalIds.includes(focused) || (!allowWhileBusy && host.state.busy.get()) ||
+    !focused ||
+    !canonicalIds.includes(focused) ||
+    (!allowWhileBusy && host.state.busy.get()) ||
     (owner && key !== `${owner.connectionId}::${owner.profile}`)
   ) {
     return
@@ -194,15 +210,23 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   const stillCurrent = () => {
     const currentOwner = host.state.focusedSessionOwner?.get?.()
 
-    return generation === getBotOpenGeneration() && epoch === botFocusEpoch &&
+    return (
+      generation === getBotOpenGeneration() &&
+      epoch === botFocusEpoch &&
       activity === rosterWatermarks.get(botSelectionKey(bot)) &&
       host.state.focusedStoredSessionId?.get?.() === focused &&
       (!owner || (currentOwner?.connectionId === owner.connectionId && currentOwner?.profile === owner.profile))
+    )
   }
 
   const run = openBotCanonicalChat(bot, { background: true, openingStillCurrent: stillCurrent })
     .then(opened => {
-      if (opened && stillCurrent() && opened.registryId === String(bot.canonical_session?.id) && opened.openedId === focused) {
+      if (
+        opened &&
+        stillCurrent() &&
+        opened.registryId === String(bot.canonical_session?.id) &&
+        opened.openedId === focused
+      ) {
         afterSuccessfulBotChatRefresh([focused], () => {
           markSessionRead(focused)
           ackStoredSessionId(focused, bot.name)
@@ -375,6 +399,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   }
 
   try {
+    const openingActivity = rosterWatermarks.get(botSelectionKey(bot))
     const opened = await openBotCanonicalChat(bot, { openingStillCurrent: () => generation === getBotOpenGeneration() })
 
     if (generation !== getBotOpenGeneration()) {
@@ -396,15 +421,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
         openedRegistryId: opened.registryId,
         openedSessionId: opened.openedId
       })
-      // Reading acknowledgement follows a successful foreground transition.
-      // A failed source lookup/open leaves the persisted marker intact so
-      // Retry still tells the truth. The owner hint is required because a bot
-      // open deliberately leaves the gateway on the launch profile.
-      afterSuccessfulBotChatRefresh([opened.openedId, opened.registryId], () => {
-        markSessionRead(opened.openedId)
-        ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
-      })
-      settlePendingBotOpen(generation)
+      finishColdBotRead(bot, opened, openingActivity, generation)
 
       return true
     }
@@ -438,6 +455,29 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   settlePendingBotOpen(generation)
 
   return true
+}
+
+/** A newer delivery during hydration is not part of the completed read.
+ * Keep it unread, then use the existing foreground-only refresh path. */
+function finishColdBotRead(
+  bot: RosterRow,
+  opened: { openedId: string; registryId: string },
+  openingActivity: number | undefined,
+  generation: number
+) {
+  settlePendingBotOpen(generation)
+
+  if (openingActivity !== rosterWatermarks.get(botSelectionKey(bot))) {
+    markSessionUnreadFinished(opened.openedId, bot.name)
+    void refreshOpenBotChat(bot, { allowWhileBusy: true })
+
+    return
+  }
+
+  afterSuccessfulBotChatRefresh([opened.openedId, opened.registryId], () => {
+    markSessionRead(opened.openedId)
+    ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
+  })
 }
 
 /** Bot-open handoff: capture the selected group and retire its registered
