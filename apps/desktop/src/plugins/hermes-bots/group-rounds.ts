@@ -140,7 +140,7 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     explicit = true
     const end = (match.index ?? 0) + match[0].length
 
-    if (surface.generatedAt.has(end) || source[end] === '&') {continue}
+    if (surface.continuedHandleAt.has(end)) {continue}
     const handle = (match[1] ?? match[2]).toLowerCase()
 
     if (handle === 'everyone' || handle === 'all') {

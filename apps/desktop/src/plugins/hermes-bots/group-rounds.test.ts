@@ -104,6 +104,17 @@ describe('visible mention dispatch', () => {
     expect([...new Set(room.gateway.calls.map(call => call.profile))]).toEqual(['builder'])
   })
 
+  it.each(['@ops\\! review', '@ops&#33; review'])('keeps a literal address before rendered punctuation: %s', async text => {
+    const [{createElement}, {render}, {Streamdown}] = await Promise.all([import('react'), import('@testing-library/react'), import('streamdown')])
+    const view = render(createElement(Streamdown, {mode: 'static', parseIncompleteMarkdown: false}, text))
+    expect(view.container.textContent).toContain('@ops! review')
+    view.unmount()
+    const room = await loadRoom({turn: () => '(pass)'})
+    expect(room.rounds.sendToGroupChat('Punctuation', MEMBERS, text)).toBeTruthy()
+    await settle(room, 'Punctuation')
+    expect([...new Set(room.gateway.calls.map(call => call.profile))]).toEqual(['ops'])
+  })
+
   it('keeps quoted friendly names and mixed Bot/human addresses while rejecting manufactured handle prefixes', async () => {
     const room = await loadRoom({turn: () => '(pass)'})
     expect([...room.rounds.parseGroupChatMentions('@"The Ops" check this @user', MEMBERS).mentioned]).toEqual(['ops'])
