@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { paneMirror } from '@/app/chat/pane-mirror'
 import * as model from '@/components/pane-shell/tree/model'
 import * as tree from '@/components/pane-shell/tree/store'
+import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { registry } from '@/contrib/registry'
 import { applyDesktopOverlay } from '@/store/profile-share'
 import * as session from '@/store/session'
@@ -117,6 +118,28 @@ describe('focusing a saved Bot Chat requires a visible pane', () => {
     expect($focusedStoredSessionId.get()).toBeNull()
     tree.activateTreePane('main', paneId)
     expect($focusedStoredSessionId.get()).toBe('canonical-chat')
+  })
+
+  it('keeps an explicitly focused split group ahead of the retained main Bot Chat', () => {
+    const previousMode = $workspaceMode.get()
+    const groupPane = 'plugin-workspace:hermes-bots:group:split-room'
+
+    try {
+      $workspaceMode.set('bots')
+      tree.$layoutTree.set(
+        model.split('row', [
+          model.group(['workspace', paneId], { active: paneId, id: 'main' }),
+          model.group([groupPane], { active: groupPane, id: 'group-side' })
+        ])
+      )
+      session.$selectedStoredSessionId.set('canonical-chat')
+      tree.$activeTreeGroup.set('group-side')
+      expect($focusedStoredSessionId.get()).toBeNull()
+      tree.$activeTreeGroup.set('main')
+      expect($focusedStoredSessionId.get()).toBe('canonical-chat')
+    } finally {
+      $workspaceMode.set(previousMode)
+    }
   })
 
   it('reports a miss through both helpers if the layout cannot place the saved tab', () => {

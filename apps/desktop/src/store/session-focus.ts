@@ -57,7 +57,7 @@ export const $focusedTreePaneId = computed(
           : findGroupOfPane(tree, 'workspace')?.active
     }
 
-    if (active?.startsWith(TILE_PANE_PREFIX)) {
+    if (active?.startsWith(TILE_PANE_PREFIX) || active?.startsWith('plugin-workspace:')) {
       return active
     }
 
