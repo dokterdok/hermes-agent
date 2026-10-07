@@ -785,6 +785,17 @@ function rightSideShown(group: GroupNode): boolean {
   return !group.minimized && !(side && $collapsedTreeSides.get().has(side)) && shownPanesInGroup(group).length > 0
 }
 
+/** The right button reads the same positional column that its action toggles.
+ * The semantic Files preference may belong to the other side after a drag. */
+export const $rightSideOpen: ReadableAtom<boolean> = computed(
+  [$layoutTree, $collapsedTreeSides, $hiddenTreePanes, $fileBrowserOpen, $narrowViewport, $registryVersion],
+  () => {
+    const group = rightSideGroup()
+
+    return group ? rightSideShown(group) : $fileBrowserOpen.get()
+  }
+)
+
 // Is `paneId` a main surface (the workspace or a session/route tile)? Those
 // mark THE main column; preview tiles share `placement: 'main'` with them but
 // are docked side surfaces, which is exactly why the positional walk exists.
