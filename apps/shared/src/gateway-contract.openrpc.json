@@ -1088,7 +1088,7 @@
     },
     {
       "name": "groups.attachment.list",
-      "summary": "List authorized published room-file versions with stable paging, search and producer filtering.",
+      "summary": "List authorized published room-file references with stable paging, search and producer filtering. available=false retains a historical reference whose bytes are unavailable here; omitted means locally available.",
       "params": [
         {
           "name": "params",
@@ -29887,6 +29887,11 @@
       "RoomFileItem": {
         "additionalProperties": false,
         "properties": {
+          "available": {
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
           "attachment_id": {
             "title": "Attachment Id",
             "type": "string"
