@@ -275,7 +275,7 @@ it('preserves newer image settings and allows ordinary legacy transcript updates
   expect($groupChats.get()['Modern renamed'].image).toBe('new-picture.png')
 
   view.rerender(<GroupChatSettingsDialog group="Legacy" onClose={onClose} open />)
-  const message = { from: { kind: 'user' as const }, text: 'A new message while settings are open', at: 1 }
+  const message = { from: { kind: 'user' as const, name: 'You' }, text: 'A new message while settings are open', at: 1 }
   act(() => $groupChats.set({ ...$groupChats.get(), Legacy: { ...$groupChats.get().Legacy, log: [message] } }))
   fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), { target: { value: 'Legacy renamed' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
