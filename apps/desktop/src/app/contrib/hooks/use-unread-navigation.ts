@@ -19,8 +19,8 @@ import {
   requestSessionResume
 } from '@/store/session'
 import { $unreadSessionTargets, type UnreadSessionTarget } from '@/store/session-dot-state'
-import type { SessionProfileRoute } from '@/store/session-request-router'
 import { $focusedStoredSessionId } from '@/store/session-focus'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 import { $sessionTiles } from '@/store/session-states'
 import {
   $openNextUnreadRequest,

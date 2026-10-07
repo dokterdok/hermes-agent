@@ -1,10 +1,11 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'
 import { $hiddenStripTabs, $layoutTree } from '@/components/pane-shell/tree/store'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
+import { registry } from '@/contrib/registry'
 import { $panesFlipped, setFileBrowserOpen, setSidebarOpen } from '@/store/layout'
 
 import { TitlebarControls } from './titlebar-controls'
@@ -21,6 +22,14 @@ const renderControls = () =>
       <TitlebarControls onOpenSettings={vi.fn()} />
     </MemoryRouter>
   )
+
+beforeAll(() => {
+  const disposers = Object.entries({ sessions: 'left', bots: 'left', terminal: 'left', workspace: 'main' }).map(
+    ([id, placement]) => registry.register({ id, area: 'panes', title: id, data: { placement }, render: () => null })
+  )
+
+  return () => disposers.forEach(dispose => dispose())
+})
 
 beforeEach(() => {
   $workspaceMode.set('sessions')

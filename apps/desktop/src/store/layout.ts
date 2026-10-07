@@ -7,6 +7,7 @@ import {
   $collapsedTreeSides,
   $hiddenTreePanes,
   $layoutTree,
+  $narrowViewport,
   layoutHasRootSide,
   paneRootSide,
   restoreHiddenTreeSideTabs,
@@ -18,6 +19,7 @@ import {
   shownPanesInGroup,
   type TreeSide
 } from '@/components/pane-shell/tree/store'
+import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { connectionScopedAtom } from '@/lib/connection-scoped'
 import { LAYOUT_KEYS } from '@/lib/layout-persistence'
@@ -757,7 +759,7 @@ function leftSideShown(group: GroupNode): boolean {
 // to the semantic sidebar flag whenever no leaf column lives left of main
 // (nested split, main leftmost) — the same fallback toggleLeftSide presses.
 export const $leftSideOpen: ReadableAtom<boolean> = computed(
-  [$layoutTree, $collapsedTreeSides, $hiddenTreePanes, $sidebarOpen],
+  [$layoutTree, $collapsedTreeSides, $hiddenTreePanes, $sidebarOpen, $narrowViewport, $registryVersion],
   () => {
     const group = leftSideGroup()
 
