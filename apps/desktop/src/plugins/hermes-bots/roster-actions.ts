@@ -88,21 +88,27 @@ export function trackInboundActivity(roster: RosterRow[]) {
       continue
     }
 
+    // Straight into core's unread store, keyed by the same canonical id the
+    // row's SessionStatusDot reads — a parallel map here would be a second
+    // badge that drifts from the dot.
+    // Visible live turns already stream to the exact Bot chat. A pending
+    // cold open has not shown that transcript yet, even if it is busy.
+    if (!$groupChatWorkspace.get() && $pendingBotOpen.get()?.key !== botRosterKey(bot) && busyFocusedBot(bot)) {
+      continue
+    }
+
+    const canonicalSessionId = botCanonicalSessionId(bot)
+
+    if (canonicalSessionId) {
+      markSessionUnreadFinished(canonicalSessionId, bot.name)
+    }
+
     // Roster selection survives a group switch and a retained Bot Chat tab.
     // Only the visible chat consumes this activity; the group hides it.
     if ($selectedBot.get() === key && !$groupChatWorkspace.get()) {
       refreshOpenBotChat(bot)
 
       continue
-    }
-
-    // Straight into core's unread store, keyed by the same canonical id the
-    // row's SessionStatusDot reads — a parallel map here would be a second
-    // badge that drifts from the dot.
-    const canonicalSessionId = botCanonicalSessionId(bot)
-
-    if (canonicalSessionId) {
-      markSessionUnreadFinished(canonicalSessionId, bot.name)
     }
 
     // Roster-hidden bots stay quiet: the mark above accumulates silently
@@ -136,6 +142,20 @@ export function trackInboundActivity(roster: RosterRow[]) {
       })
     }
   }
+}
+
+/** Busy belongs to the focused owner, not whichever roster row is selected. */
+function busyFocusedBot(bot: RosterRow): boolean {
+  const owner = host.state.focusedSessionOwner?.get?.()
+  const focused = host.state.focusedStoredSessionId?.get?.()
+
+  return Boolean(
+    owner &&
+    focused &&
+    botRosterKey(bot) === `${owner.connectionId}::${owner.profile}` &&
+    [bot.canonical_session?.id, bot.canonical_session?.resolved_id].includes(focused) &&
+    host.state.busy?.get?.()
+  )
 }
 
 // Focus epochs distinguish leaving and returning to the same cached tab. A
@@ -468,7 +488,6 @@ function finishColdBotRead(
   settlePendingBotOpen(generation)
 
   if (openingActivity !== rosterWatermarks.get(botSelectionKey(bot))) {
-    markSessionUnreadFinished(opened.openedId, bot.name)
     void refreshOpenBotChat(bot, { allowWhileBusy: true })
 
     return

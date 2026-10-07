@@ -22,7 +22,13 @@ const { hostMock, markUnreadMock, storageMock } = vi.hoisted(() => ({
   hostMock: {
     notify: vi.fn(),
     request: vi.fn(),
-    state: { connectionId: { get: () => 'local' }, focusedSessionOwner: null, profile: { get: () => 'default' } }
+    state: {
+      connectionId: { get: () => 'local' },
+      focusedSessionOwner: { get: vi.fn<() => null | { connectionId: string; profile: string }>(() => null) },
+      focusedStoredSessionId: { get: vi.fn<() => null | string>(() => null) },
+      busy: { get: vi.fn(() => false) },
+      profile: { get: () => 'default' }
+    }
   },
   markUnreadMock: vi.fn(),
   storageMock: { get: vi.fn(), set: vi.fn() }
@@ -74,7 +80,11 @@ vi.mock('./group-panes', () => ({ closeGroupChatMainTab: vi.fn() }))
 /** A bot whose canonical Bot Chat carries the activity — the only shape that
  *  can be marked unread, since the marker is keyed by canonical session id. */
 const chatting = (name: string, lastActive: number, preview = 'hello'): RosterRow =>
-  ({ canonical_session: { id: `${name}-chat`, last_active: lastActive, preview }, name }) as RosterRow
+  ({
+    canonical_session: { id: `${name}-chat`, last_active: lastActive, preview },
+    connectionId: 'local',
+    name
+  }) as RosterRow
 
 const scopedChatting = (connectionId: string, lastActive: number, preview = 'hello'): RosterRow =>
   ({
@@ -99,6 +109,9 @@ async function loadActions() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  hostMock.state.focusedSessionOwner.get.mockReturnValue(null)
+  hostMock.state.focusedStoredSessionId.get.mockReturnValue(null)
+  hostMock.state.busy.get.mockReturnValue(false)
 })
 
 describe('the first poll only seeds watermarks', () => {
@@ -160,14 +173,24 @@ describe('new activity after the seed', () => {
     expect(hostMock.notify.mock.calls[1][0].title).toMatch(/has new activity/)
   })
 
-  it('never badges the bot the user is currently looking at', async () => {
+  it.each([true, false])('only suppresses live activity for the exact focused busy Bot (same=%s)', async same => {
     const { $selectedBot, trackInboundActivity } = await loadActions()
 
     trackInboundActivity([chatting('researcher', 5000)])
     $selectedBot.set('researcher')
+    hostMock.state.focusedSessionOwner.get.mockReturnValue({
+      connectionId: 'local',
+      profile: same ? 'researcher' : 'other'
+    })
+    hostMock.state.focusedStoredSessionId.get.mockReturnValue(same ? 'researcher-chat' : 'ordinary-chat')
+    hostMock.state.busy.get.mockReturnValue(true)
     trackInboundActivity([chatting('researcher', 6000)])
 
-    expect(markUnreadMock).not.toHaveBeenCalled()
+    if (same) {
+      expect(markUnreadMock).not.toHaveBeenCalled()
+    } else {
+      expect(markUnreadMock).toHaveBeenCalledExactlyOnceWith('researcher-chat', 'researcher')
+    }
   })
 
   it('badges a selected bot whose retained tab is hidden by a group room', async () => {
