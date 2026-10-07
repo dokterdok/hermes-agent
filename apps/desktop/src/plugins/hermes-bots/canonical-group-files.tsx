@@ -143,8 +143,8 @@ function rowProblem(failure: FilesFailure, labels: Labels) {
       : labels.fileDownloadFailed
 }
 
-function FileRow({ binding, file, labels, active, preciseTime, onFocus }: {
-  binding: CanonicalGroupBinding; file: CanonicalFile; labels: Labels; active: boolean; preciseTime: boolean
+function FileRow({ binding, file, labels, active, onFocus }: {
+  binding: CanonicalGroupBinding; file: CanonicalFile; labels: Labels; active: boolean
   onFocus: () => void
 }) {
   const [saving, setSaving] = useState<{ pending: boolean; failure: FilesFailure | null }>({ pending: false, failure: null })
@@ -172,10 +172,10 @@ function FileRow({ binding, file, labels, active, preciseTime, onFocus }: {
   const date = new Date(file.sharedAt * 1000)
   const sameDay = date.toDateString() === new Date().toDateString()
 
-  // Same-name versions on one page are told apart by sharer, size and time to the second.
+  // Keep precision across pages as well: two versions can share a name, size and minute.
   const time = new Intl.DateTimeFormat(labels.locale, {
     ...(sameDay ? {} : { year: 'numeric', month: 'short', day: 'numeric' } as const),
-    hour: 'numeric', minute: '2-digit', ...(preciseTime ? { second: '2-digit' } as const : {})
+    hour: 'numeric', minute: '2-digit', second: '2-digit'
   }).format(date)
 
   const sharer = file.sharer.kind === 'user' && file.sharer.label === 'You' ? labels.filesYou : file.sharer.label
@@ -224,8 +224,7 @@ function FileRows({ binding, items, labels, loading }: {
     }
   }} role="list">
     {items.map((file, index) => <FileRow active={active === index} binding={binding} file={file}
-      key={`${file.eventId}:${file.attachmentId}`} labels={labels} onFocus={() => setActive(index)}
-      preciseTime={items.some(other => other !== file && other.name === file.name)} />)}
+      key={`${file.eventId}:${file.attachmentId}`} labels={labels} onFocus={() => setActive(index)} />)}
   </div>
 }
 
