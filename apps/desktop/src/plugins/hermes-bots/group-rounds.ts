@@ -28,7 +28,7 @@ import {
   hasThreadScopedGroupSession
 } from './group-membership'
 import { groupDirectiveSurface, groupMentionSurface } from './group-mention-surface'
-import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
+import { type GroupRoundMemberContext, runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
 import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
 import { botsText } from './i18n'
@@ -140,7 +140,9 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     explicit = true
     const end = (match.index ?? 0) + match[0].length
 
-    if (surface.continuedHandleAt.has(end)) {continue}
+    if (surface.continuedHandleAt.has(end)) {
+      continue
+    }
     const handle = (match[1] ?? match[2]).toLowerCase()
 
     if (handle === 'everyone' || handle === 'all') {
@@ -163,7 +165,9 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
   }
 
   return {
-    everyone, explicit, human,
+    everyone,
+    explicit,
+    human,
     mentioned
   }
 }
@@ -644,8 +648,33 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string, failedMembers = new Set<string>()) {
-  if (group.startsWith('canonical:')) {throw new Error('Canonical rooms are driven by the gateway')}
+/** Harvest every member before selecting responders, stopping at the current room's lifetime boundary. */
+async function harvestRoundReplies(context: GroupRoundMemberContext): Promise<boolean> {
+  for (const member of context.members) {
+    if (!context.isCurrent()) {
+      recordGroupActivity(context.group, { kind: 'cancelled', member: null, thread: context.thread })
+      return false
+    }
+
+    await harvestStrandedGroupReply(context.group, member)
+
+    if (!context.binding.isLive()) {
+      return false
+    }
+  }
+
+  return true
+}
+
+export async function runGroupChatRounds(
+  group: string,
+  members: GroupMember[],
+  thread: string,
+  failedMembers = new Set<string>()
+) {
+  if (group.startsWith('canonical:')) {
+    throw new Error('Canonical rooms are driven by the gateway')
+  }
 
   const binding = followGroupChat(group, name => {
     group = name
@@ -656,9 +685,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 
   // #129443: the driving send's explicit addresses, frozen for the whole
   // drive — mid-drive member handoffs stay the #94478 continuation's job.
-  const startLog = (($groupChats.get()[group] || {}).log || []).filter(
-    (e: GroupMessage) => groupThreadOf(e) === thread
-  )
+  const startLog = (($groupChats.get()[group] || {}).log || []).filter((e: GroupMessage) => groupThreadOf(e) === thread)
 
   const addressedKeys = explicitlyAddressedMemberKeys(startLog, members)
 
@@ -684,25 +711,9 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
-      // Deliver any replies that finished after their turn timed out —
-      // every member, not just this round's responders, so long work is
-      // late, never lost.
-      for (const member of members) {
-        if (!isCurrent()) {
-          recordGroupActivity(group, {
-            kind: 'cancelled',
-            member: null,
-            thread
-          })
-
-          return
-        }
-
-        await harvestStrandedGroupReply(group, member)
-
-        if (!binding.isLive()) {
-          return
-        }
+      // Deliver late replies before selecting this round's responders.
+      if (!(await harvestRoundReplies(context))) {
+        return
       }
 
       const roomLog = (($groupChats.get()[group] || {}).log || []).filter(
@@ -849,7 +860,12 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
       await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))
       const room = $groupChats.get()[group]
 
-      if (!binding.isLive() || !room || room.running || groupChatDrives.get(groupChatRoomKey(group, room))?.pending.size) {
+      if (
+        !binding.isLive() ||
+        !room ||
+        room.running ||
+        groupChatDrives.get(groupChatRoomKey(group, room))?.pending.size
+      ) {
         return
       }
 
@@ -900,7 +916,9 @@ export function sendToGroupChat(
   thread?: null | string,
   images?: Attachment[]
 ): null | string {
-  if (group.startsWith('canonical:')) {throw new Error('Canonical rooms are driven by the gateway')}
+  if (group.startsWith('canonical:')) {
+    throw new Error('Canonical rooms are driven by the gateway')
+  }
   const trimmed = String(text || '').trim()
 
   if (rejectGroupSlashCommand(trimmed)) {
@@ -929,7 +947,7 @@ export function sendToGroupChat(
   const address = parseGroupChatMentions(trimmed, members)
 
   if (address.explicit && !address.everyone && !address.human && address.mentioned.size === 0) {
-    host.notify({kind: 'error', message: botsText().group.chooseBotFromGroup})
+    host.notify({ kind: 'error', message: botsText().group.chooseBotFromGroup })
 
     return null
   }

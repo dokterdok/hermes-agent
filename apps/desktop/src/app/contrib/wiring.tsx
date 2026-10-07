@@ -193,6 +193,24 @@ export { WiredPane } from './context'
 // Only the RPCs issued by session creation follow the handoff's profile pin.
 const HANDOFF_CREATE_LEG_METHODS = new Set(['config.set', 'session.close', 'session.create'])
 
+/** Route recovery intents share the mounted shell's navigator. */
+function useRouteNavigation(navigate: ReturnType<typeof useNavigate>) {
+  const routeRequestSeenRef = useRef(0)
+  const routeRequest = useStore($routeRequest)
+
+  // Generic in-app route intents raised by toast recovery buttons (Open Keys,
+  // Open Gateways, Maintenance …) fired from stores with no router context.
+  // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
+  useEffect(() => {
+    if (!routeRequest || routeRequest.seq === routeRequestSeenRef.current) {
+      return
+    }
+
+    routeRequestSeenRef.current = routeRequest.seq
+    navigate(routeRequest.path)
+  }, [navigate, routeRequest])
+}
+
 export function ContribWiring({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const location = useLocation()
@@ -206,7 +224,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // context (the sticky toast). The shell owns `navigate`, so it consumes the
   // intent counter here; the ref skips the initial mount value.
   const billingSettingsSeenRef = useRef(0)
-  const routeRequestSeenRef = useRef(0)
   const backendRestartSeenRef = useRef(0)
   const cronReviewSeenRef = useRef(0)
   const activeTranscriptSignatureRef = useRef(new Map<string, string>())
@@ -218,22 +235,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
   const billingSettingsRequest = useStore($billingSettingsRequest)
-  const routeRequest = useStore($routeRequest)
+  useRouteNavigation(navigate)
   const backendRestartRequest = useStore($backendRestartRequest)
   const cronReviewRequest = useStore($cronReviewRequest)
   const currentCwd = useStore($currentCwd)
-
-  // Generic in-app route intents raised by toast recovery buttons (Open Keys,
-  // Open Gateways, Maintenance …) fired from stores with no router context.
-  // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
-  useEffect(() => {
-    if (!routeRequest || routeRequest.seq === routeRequestSeenRef.current) {
-      return
-    }
-
-    routeRequestSeenRef.current = routeRequest.seq
-    navigate(routeRequest.path)
-  }, [navigate, routeRequest])
 
   // "Restart Hermes" from a toast: recycle the local backend the user is
   // looking at (same IPC the Models page uses), then let the boot hook re-dial.

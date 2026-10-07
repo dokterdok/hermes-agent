@@ -4,6 +4,8 @@ import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 
+import { $selectedStoredSessionId } from './session'
+
 // Content: the primary chat, a session tile, or a contributed workspace such
 // as a group chat. Files, Terminal, previews and the sessions list are chrome.
 export const TILE_PANE_PREFIX = 'session-tile:'
@@ -72,3 +74,24 @@ export const $focusedTreePaneId = computed(
     return active
   }
 )
+
+/** Session identity belongs to the same content-focus derivation; legacy callers re-export it. */
+export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
+  Boolean(active?.startsWith(TILE_PANE_PREFIX))
+)
+
+export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) => {
+  if (active?.startsWith(TILE_PANE_PREFIX)) {
+    return active.slice(TILE_PANE_PREFIX.length)
+  }
+
+  // A contributed workspace tab is not the route-driven primary chat. The
+  // primary selection remains cached behind it, but must not hold session
+  // focus: returning to a retained Bot Chat tile needs a fresh focus edge
+  // (and a transcript refresh before acknowledging its unread marker).
+  if (active?.startsWith('plugin-workspace:')) {
+    return null
+  }
+
+  return selected
+})

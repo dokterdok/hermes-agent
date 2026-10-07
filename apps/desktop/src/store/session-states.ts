@@ -68,7 +68,8 @@ import {
   setTileSessionFocusStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
-import { $focusedTreePaneId } from './session-focus'
+import { $focusedStoredSessionId } from './session-focus'
+export { $focusedSessionIsTile, $focusedStoredSessionId } from './session-focus'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -2701,36 +2702,6 @@ export function reopenLastClosedTile(): void {
     }
   }
 }
-
-// ---------------------------------------------------------------------------
-// The FOCUSED session — one derivation, not another hand-maintained
-// "$activeSession" sibling. session-focus resolves the interacted content zone,
-// retaining it while the Sessions sidebar owns keyboard focus. Its active
-// pane names the session: a `session-tile:<storedId>` pane IS that session,
-// anything else falls back to the route-driven primary. Chrome that should
-// follow the user between tiles (titlebar session title, statusbar context /
-// timer / model) reads these instead of the primary-only atoms.
-// ---------------------------------------------------------------------------
-
-export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
-  Boolean(active?.startsWith(TILE_PANE_PREFIX))
-)
-
-export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) => {
-  if (active?.startsWith(TILE_PANE_PREFIX)) {
-    return active.slice(TILE_PANE_PREFIX.length)
-  }
-
-  // A contributed workspace tab is not the route-driven primary chat. The
-  // primary selection remains cached behind it, but must not hold session
-  // focus: returning to a retained Bot Chat tile needs a fresh focus edge
-  // (and a transcript refresh before acknowledging its unread marker).
-  if (active?.startsWith('plugin-workspace:')) {
-    return null
-  }
-
-  return selected
-})
 
 /** Every session currently OPEN as a surface: the primary's selection plus
  *  every tile's stored id. The sidebar highlights all of them (the focused one

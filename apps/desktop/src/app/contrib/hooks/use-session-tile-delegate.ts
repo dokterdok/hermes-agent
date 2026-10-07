@@ -10,6 +10,7 @@ import {
   getLatestSessionMessages,
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
 } from '@/hermes'
+import type { ClientSessionState } from '@/app/types'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
@@ -56,6 +57,14 @@ function requireTranscriptPage(
   if (refresh && !page) {
     throw new Error('Could not refresh the stored transcript')
   }
+}
+
+/** A cached binding can be reused or refreshed only while it still owns this transcript. */
+function hasCachedTileTranscript(
+  cached: ClientSessionState | undefined,
+  storedSessionId: string
+): cached is ClientSessionState {
+  return cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)
 }
 
 function mergeTileTranscript(
@@ -313,8 +322,7 @@ export function useSessionTileDelegate({
         // as realtime events (#96183).
         if (
           existing &&
-          cached?.storedSessionId === storedSessionId &&
-          (cached.busy || cached.messages.length > 0) &&
+          hasCachedTileTranscript(cached, storedSessionId) &&
           !refreshTranscript &&
           !authoritativeSnapshot
         ) {
@@ -339,12 +347,7 @@ export function useSessionTileDelegate({
           ? Promise.resolve(null)
           : getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
 
-        if (
-          !authoritativeSnapshot &&
-          existing &&
-          cached?.storedSessionId === storedSessionId &&
-          (cached.busy || cached.messages.length > 0)
-        ) {
+        if (!authoritativeSnapshot && existing && hasCachedTileTranscript(cached, storedSessionId)) {
           const prefetch = await prefetchPromise
 
           // A failed REST read is not a refreshed transcript. In particular a
@@ -489,8 +492,7 @@ export function useSessionTileDelegate({
 
             const busyChangedWhileResuming = cached
               ? Boolean(
-                  state.busy &&
-                    (state.turnStartedAt !== cached.turnStartedAt || (state.turnLive && !cached.turnLive))
+                  state.busy && (state.turnStartedAt !== cached.turnStartedAt || (state.turnLive && !cached.turnLive))
                 )
               : state.busy
 
