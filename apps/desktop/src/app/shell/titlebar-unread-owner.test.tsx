@@ -111,7 +111,7 @@ it.each(['dragged', 'flipped'])('tracks actual right Sessions visibility through
   expect(screen.queryByRole('button', { name: /3 unread sessions/ })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: /Hide right sidebar/i }))
   expect(findGroupOfPane($layoutTree.get()!, 'sessions')?.minimized).toBe(true)
-  fireEvent.click(screen.getByRole('button', { name: /Show right sidebar.*3 unread sessions/i }))
+  fireEvent.click(screen.getByRole('button', { name: /Show right sidebar/i }))
   expect(findGroupOfPane($layoutTree.get()!, 'sessions')?.minimized).toBeFalsy()
   expect(screen.queryByRole('button', { name: /3 unread sessions/ })).toBeNull()
 })

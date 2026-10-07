@@ -4,10 +4,18 @@ import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useSta
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
-import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
-import { isPaneActiveInLayoutGroup } from '@/components/pane-shell/tree/model'
+import { $layoutEditMode, $layoutEditRevealsHidden, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
+import { findGroupOfPane, isPaneActiveInLayoutGroup, type LayoutNode } from '@/components/pane-shell/tree/model'
 import { $narrowOverlayChrome } from '@/components/pane-shell/tree/renderer/narrow-overlay-state'
-import { $hiddenStripTabs, $layoutTree, $narrowViewport, resetLayoutTree } from '@/components/pane-shell/tree/store'
+import {
+  $collapsedTreeSides,
+  $hiddenStripTabs,
+  $hiddenTreePanes,
+  $layoutTree,
+  $narrowViewport,
+  paneRootSide,
+  resetLayoutTree
+} from '@/components/pane-shell/tree/store'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -153,6 +161,26 @@ function useModifierHeld(): boolean {
   return held
 }
 
+/** A minimized Sessions pane still has a visible tab/count on its restore
+ * strip. Only a completely hidden column transfers that count to an edge. */
+function useSessionsRestoreRail(tree: LayoutNode | null, narrow: boolean): boolean {
+  const hidden = useStore($hiddenTreePanes)
+  const collapsed = useStore($collapsedTreeSides)
+  const editing = useStore($layoutEditMode)
+  const revealsHidden = useStore($layoutEditRevealsHidden)
+  const panes = useContributions('panes')
+  const group = tree && findGroupOfPane(tree, 'sessions')
+  const side = paneRootSide('sessions')
+
+  return (
+    !narrow &&
+    Boolean(group?.minimized) &&
+    panes.some(pane => pane.id === 'sessions') &&
+    (revealsHidden || !hidden.has('sessions')) &&
+    (editing || !side || !collapsed.has(side))
+  )
+}
+
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -172,6 +200,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const visibleTool = (tool: TitlebarTool) => !tool.hidden && shown(tool)
   const workspaceMode = useStore($workspaceMode)
   const sessionsPaneActive = isPaneActiveInLayoutGroup(layoutTree, hiddenStripTabs, 'sessions')
+  const sessionsRestoreRail = useSessionsRestoreRail(layoutTree, narrow)
 
   const sessionsEdge =
     narrow || sideToggleTargetsPane('left', 'sessions')
@@ -208,7 +237,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     narrow ? !!narrowOverlay?.tabIds.includes('sessions') : leftEdge.open,
     unreadCount,
     workspaceMode === 'sessions',
-    sessionsPaneActive
+    sessionsPaneActive && !sessionsRestoreRail
   )
 
   const rightUnreadBadge = unreadBadgeForEdge(
@@ -217,7 +246,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     narrow ? !!narrowOverlay?.tabIds.includes('sessions') : rightEdge.open,
     unreadCount,
     workspaceMode === 'sessions',
-    sessionsPaneActive
+    sessionsPaneActive && !sessionsRestoreRail
   )
 
   const unreadHint = (count: number | undefined) => (count ? ` · ${t.titlebar.unreadSessions(count)}` : '')
