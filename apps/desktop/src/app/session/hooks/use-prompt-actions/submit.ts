@@ -167,7 +167,8 @@ function isPreAdmissionRefusal(error: unknown): boolean {
   if (!error || typeof error !== 'object' || !('code' in error)) { return false }
   const { code, message } = error as { code?: unknown; message?: unknown }
 
-  return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
+  return code === 4094 || (code === 4000 && typeof message === 'string' &&
+    message.startsWith('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'))
 }
 
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
