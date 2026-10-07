@@ -50,3 +50,15 @@ export async function readSshRosterInventory(options: {
 
   return { kind: 'canonical' as const, profiles, profileMetadata: rosterProfileMetadata(body.profiles), installId, isCurrent }
 }
+
+/** Keep the pinned SSH inventory result and its authority identity together through presentation. */
+export function sshRosterSourceResult<T extends {id: string}>(connection: T,
+  inventory: Awaited<ReturnType<typeof readSshRosterInventory>>, rememberedInstallId?: string) {
+  if (inventory.kind === 'canonical') {
+    if (!inventory.isCurrent()) {throw new Error('SSH inventory source changed during enumeration')}
+
+    return {connection, profiles: inventory.profiles, installId: inventory.installId, profileMetadata: inventory.profileMetadata}
+  }
+
+  return {connection, profiles: null, error: 'connect-on-demand', installId: rememberedInstallId}
+}

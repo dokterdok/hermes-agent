@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 
 import { buildAgentRoster } from './connection-registry'
+import { createSshRosterInspector } from './ssh-roster-inspector'
 import { readSshRosterInventory } from './ssh-roster-inventory'
 
 const endpoint = { profile_id: '/synthetic/selected-home', instance_id: 'selected-owner', authority_epoch: 1,
@@ -43,7 +44,10 @@ test('attached canonical SSH inventory carries friendly profile metadata from it
   const paths: string[] = []
   const ui_meta = { 'hermes-bots': { title: 'Mira Bot', shape: 'squircle' } }
 
-  const inventory = await readSshRosterInventory({ connectionId: 'peer', states, request: async (descriptor, path) => {
+  const connection = {id: 'peer', kind: 'ssh', label: 'Peer Gateway', host: 'fixture'}
+  const cache = new Map<string, string[]>(), installIds = new Map<string, {id: string; ts: number}>()
+
+  const inspect = createSshRosterInspector({cache, installIds, attemptedAt: new Map(), retryMs: 30_000, states, currentConnection: () => connection, rememberLog: () => undefined, request: async (descriptor, path) => {
     expect(descriptor.gatewayEndpoint).toBe(endpoint)
     expect(descriptor.baseUrl).toBe(current.baseUrl)
     expect(descriptor.authMode).toBe('native')
@@ -53,6 +57,10 @@ test('attached canonical SSH inventory carries friendly profile metadata from it
     return path === '/api/profiles' ? { profiles: [{ name: 'default', display_name: ' Mira Bot ', title: ' Reviewer ',
       ui_meta, has_avatar: false, private_grant: 'not-roster-metadata' }] } : { install_id: 'selected-install' }
   } })
+
+  const inventory = await inspect(connection)
+  expect(cache.get('peer')).toEqual(['default'])
+  expect(installIds.get('peer')?.id).toBe('selected-install')
 
   expect(inventory.kind).toBe('canonical')
 

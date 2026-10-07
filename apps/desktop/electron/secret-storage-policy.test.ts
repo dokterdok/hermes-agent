@@ -24,6 +24,7 @@ import { roomSetupStore } from './room-setup-store'
 import type { SetupRecord } from './room-setup-store'
 import {
   classifyStoredSecret,
+  probeSecureTokenStorageForPolicy,
   readSecretStoragePolicy,
   requireRoomSetupEncryption,
   type SecretStoragePolicyIo,
@@ -115,22 +116,35 @@ test('room puts and ON rotation reject basic_text even when encryption reports a
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'room-storage-policy-'))
   const policy = { on: false, migrated: true }
   let backend = 'basic_text', backendReads = 0, encrypted = 0
+
   // Storage capability injection, not pretending this test runs on another OS.
   const api = { isEncryptionAvailable: () => true, encryptString: (value: string) => {
-    encrypted++; return Buffer.from(value)
+    encrypted++;
+
+ return Buffer.from(value)
   } }
+
   const encode = (value: string) => {
-    requireRoomSetupEncryption(policy, () => {backendReads++; return backend})
+    requireRoomSetupEncryption(policy, () => {backendReads++;
+
+ return backend})
+
     return policy.on ? encryptDesktopSecret(value, api) : { encoding: 'plain', value }
   }
+
   const decode = (value: string) => {
     const secret = JSON.parse(value)
+
     return secret.encoding === 'plain' ? secret.value : Buffer.from(secret.value, 'base64').toString()
   }
+
   const store = roomSetupStore({ directory, encrypt: value => JSON.stringify(encode(value)), decrypt: decode })
+
   const record: SetupRecord = { id: crypto.randomUUID(), setupId: crypto.randomUUID(), kind: 'peer',
     roomId: 'room', installationId: 'original', route: { connectionId: 'peer', profile: 'default' }, grant: 'pending-grant' }
+
   const destination = path.join(directory, record.id + '.json')
+
   const rotate = async () => {
     const original = decode(await fs.readFile(destination, 'utf8'))
     const next = encode(original)
@@ -138,6 +152,7 @@ test('room puts and ON rotation reject basic_text even when encryption reports a
       verify: bytes => assert.equal(decode(bytes.toString()), original)
     } })
   }
+
   try {
     await store.put(record)
     assert.equal(backendReads, 0)
@@ -157,4 +172,14 @@ test('room puts and ON rotation reject basic_text even when encryption reports a
     await store.put({ ...record, grant: 'fresh-grant' })
     assert.equal((await store.get(record.id)).grant, 'fresh-grant')
   } finally {await fs.rm(directory, { recursive: true, force: true })}
+})
+
+test('renderer keychain availability honors OFF without a probe and exposes ON failures', () => {
+  let calls = 0
+
+  const denied = () => {calls++; throw new Error('keychain dialog must not run when OFF')}
+  assert.equal(probeSecureTokenStorageForPolicy({on: false, migrated: true}, denied), true)
+  assert.equal(calls, 0)
+  assert.equal(probeSecureTokenStorageForPolicy({on: true, migrated: true}, denied), false)
+  assert.equal(calls, 1)
 })
