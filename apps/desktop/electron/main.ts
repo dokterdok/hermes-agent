@@ -471,14 +471,16 @@ import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
-import { roomSetupCoordinator } from './room-setup'
-import { RoomSetupError, roomSetupStore } from './room-setup-store'
+import { registerRoomSetupIpc } from './room-setup-ipc'
+import { rewriteRoomSetupSecrets } from './room-setup-secret-rewrite'
+import { RoomSetupError } from './room-setup-store'
 import { rosterProfileMetadata } from './roster-profile-metadata'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import { rosterSourceStatus } from './roster-source-status'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
+  probeSecureTokenStorageForPolicy,
   requireRoomSetupEncryption,
   SECRET_STORAGE_POLICY_FILE,
   type SecretStoragePolicy,
@@ -502,9 +504,11 @@ import { resolveSourcePython } from './source-python'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
-import { attachSshGateway, inspectSshGatewayCommands } from './ssh-gateway'
+import { inspectSshGatewayCommands } from './ssh-gateway'
+import { connectPreferredSshGateway, sshConnectionDescriptor, sshConnectionKind } from './ssh-gateway-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
-import { readSshRosterInventory } from './ssh-roster-inventory'
+import { sshRosterSourceResult } from './ssh-roster-inventory'
+import { createSshRosterInspector } from './ssh-roster-inspector'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
@@ -8308,23 +8312,8 @@ function setSecretStoragePolicy(next: SecretStoragePolicy) {
   _secretStoragePolicy = normalized
 }
 
-/**
- * Keychain availability as the renderer should see it. With encryption
- * opted out this must NOT probe safeStorage — isEncryptionAvailable() is
- * itself a keychain touch that raises the macOS dialog this feature exists
- * to avoid. We report `true` so no plain-text warning banners fire: storing
- * plaintext is the user's chosen (default) mode, not a degraded state.
- */
 function probeSecureTokenStorage(): boolean {
-  if (!secretStoragePolicy().on) {
-    return true
-  }
-
-  try {
-    return Boolean(safeStorage.isEncryptionAvailable())
-  } catch {
-    return false
-  }
+  return probeSecureTokenStorageForPolicy(secretStoragePolicy(), () => safeStorage.isEncryptionAvailable())
 }
 
 /**
@@ -8392,36 +8381,9 @@ function rewriteAllStoredSecrets(shouldRewrite: (secret: any) => boolean, reenco
     // Missing/corrupt native token store: nothing to rewrite.
   }
 
-  // Setup obligations are per-record native secrets too. Corruption remains
-  // unknown and refuses a policy-change ACK; never drop the recovery journal.
-  const roomDirectory = path.join(app.getPath('userData'), 'room-setup')
-  if (fs.existsSync(roomDirectory)) {
-    const directory = fs.lstatSync(roomDirectory)
-    if (!directory.isDirectory() || directory.isSymbolicLink() ||
-        (process.getuid && (directory.uid !== process.getuid() || (directory.mode & 0o077) !== 0))) {
-      throw new RoomSetupError('setup_journal_unreadable')
-    }
-    for (const name of fs.readdirSync(roomDirectory).filter(name => /^[0-9a-f-]{36}\.json$/.test(name))) {
-      const file = path.join(roomDirectory, name)
-      const stat = fs.lstatSync(file)
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) {throw new RoomSetupError('setup_journal_unreadable')}
-      const secret = JSON.parse(fs.readFileSync(file, 'utf8'))
-      if (shouldRewrite(secret)) {
-        const original = decryptDesktopSecret(secret)
-        if (!original) {throw new RoomSetupError('setup_journal_unreadable')}
-        const next = secretStoragePolicy().on ? encryptRoomSetupSecret(original) : reencode(secret)
-        if (next === secret) {throw new RoomSetupError('setup_journal_unreadable')}
-        writeSecretFileAtomic(file, JSON.stringify(next), { encoding: 'utf8', durable: {
-          verify: bytes => {
-            if (decryptDesktopSecret(JSON.parse(bytes.toString('utf8'))) !== original) {
-              throw new RoomSetupError('setup_journal_write_failed')
-            }
-          }
-        } })
-        touched = true
-      }
-    }
-  }
+  touched = rewriteRoomSetupSecrets({directory: path.join(app.getPath('userData'), 'room-setup'),
+    shouldRewrite, reencode, decrypt: decryptDesktopSecret, encryptionOn: () => secretStoragePolicy().on,
+    encrypt: encryptRoomSetupSecret}) || touched
 
   return touched
 }
@@ -10151,14 +10113,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     }
 
     const platform = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
-    const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
-    result = platform.os === 'Windows' ? null : await attachSshGateway({
-      ssh, profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
-      remoteHermesPath: sshConfig.remoteHermesPath || '', pickLocalPort: async () => Number(await pickLocalPort()), signal: lease.signal,
-      profileAlias: metadata.requestedProfile || resolveRemoteSshDashboardProfile('', profile) || 'default'
-    })
-    if (result) {result.platform = platform}
-    result ??= await lifecycle({
+    result = await connectPreferredSshGateway({requestedProfile: metadata.requestedProfile, localProfile: profile, lifecycle: {
       ssh,
       platform,
       profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
@@ -10174,7 +10129,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       rememberLog: sshRememberLog,
       guestOnboarding: GUEST_ONBOARDING,
       signal: lease.signal
-    })
+    }})
   } catch (error: any) {
     if (created) {
       try {
@@ -10266,14 +10221,11 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   })
 
   sshRememberLog(
-    `[ssh] connection ${result.canonical ? 'attached canonical gateway' : result.reused ? 'REUSED dashboard' : 'spawned dashboard'}: ` +
+    `[ssh] connection ${sshConnectionKind(result)}: ` +
       `${result.hermesVersion || 'hermes (version unknown)'} at ${result.hermesPath || '?'}`
   )
 
-  const connection = result.canonical ? {
-    baseUrl: result.baseUrl, wsUrl: result.wsUrl, gatewayEndpoint: result.gatewayEndpoint,
-    authMode: 'native', token: '', mode: 'remote', source, remoteHost: hostLabel, remoteKind: 'ssh'
-  } : await buildRemoteConnection(
+  const connection = await sshConnectionDescriptor(result, source, hostLabel, () => buildRemoteConnection(
     result.baseUrl,
     'token',
     result.token,
@@ -10281,7 +10233,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     hostLabel,
     'ssh',
     result.ownershipId
-  )
+  ))
 
   return {
     ...connection,
@@ -10432,7 +10384,7 @@ async function resolveRemoteBackend(
       route.source,
       undefined,
       {
-        requestedProfile: profile || 'default',
+        requestedProfile: profileKey,
         managedScope: options.primary ? 'primary' : options.poolKey ? 'pool' : 'transient',
         poolKey: options.poolKey || '',
         primaryRegistryScope: options.primary === true && Boolean(route.connectionId),
@@ -14458,55 +14410,13 @@ ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
 // shortcuts and the View menu. Reads and writes target the asking window.
 registerPreparedSubmissions()
 
-// Grants never cross this bridge. Both commands share one trusted document gate.
-const nativeRoomSetup = roomSetupCoordinator({
-  beforeOperation: () => {
-    try {recoverSecretStorageBeforeUse()} catch {throw new RoomSetupError('setup_journal_unreadable')}
-  },
-  store: roomSetupStore({
-    directory: path.join(app.getPath('userData'), 'room-setup'),
-    // Follow the existing explicit native storage policy. OFF deliberately uses
-    // private plain files with zero keychain calls; ON never downgrades on error.
-    encrypt: text => JSON.stringify(encryptRoomSetupSecret(text)),
-    decrypt: text => {
-      const sealed = JSON.parse(text)
-      if (!['plain', 'safeStorage'].includes(sealed.encoding) || typeof sealed.value !== 'string') {
-        throw new RoomSetupError('setup_journal_unreadable')
-      }
-      const value = decryptDesktopSecret(sealed)
-      if (!value) {throw new RoomSetupError('setup_journal_unreadable')}
-      return value
-    }
-  }),
+const nativeRoomSetup = registerRoomSetupIpc({
+  directory: path.join(app.getPath('userData'), 'room-setup'), ipc: ipcMain,
+  rendererUrl: () => DEV_SERVER || pathToFileURL(resolveRendererIndex()).href,
+  windowFor: contents => BrowserWindow.fromWebContents(contents), recoverStorage: recoverSecretStorageBeforeUse,
+  encrypt: encryptRoomSetupSecret, decrypt: decryptDesktopSecret,
   connect: async route => nativeRoomClient(await ensureRegistryBackend(route.connectionId, route.profile), route.profile)
 })
-for (const operation of ['create', 'recover', 'addBackup'] as const) {
-  ipcMain.handle(`hermes:room-setup:${operation}`, async (event, input) => {
-    const frame = event.senderFrame
-    const expected = new URL(DEV_SERVER || pathToFileURL(resolveRendererIndex()).href)
-    const sender = new URL(frame?.url || 'about:blank')
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (!win || win.isDestroyed() || frame !== event.sender.mainFrame ||
-        sender.protocol !== expected.protocol || sender.host !== expected.host || sender.pathname !== expected.pathname) {
-      return { ok: false, reason: 'untrusted_setup_sender' }
-    }
-    let retired = false
-    const navigating = (_event, _url, sameDocument, mainFrame) => {if (mainFrame && !sameDocument) {retired = true}}
-    event.sender.on('did-start-navigation', navigating)
-    const assertCurrent = () => {
-      if (retired || event.sender.isDestroyed() || event.sender.mainFrame !== frame) {throw new RoomSetupError('setup_document_retired')}
-    }
-    try {
-      assertCurrent()
-      const result = operation === 'create' ? await nativeRoomSetup.create(input, assertCurrent)
-        : operation === 'addBackup' ? await nativeRoomSetup.addBackup(input, assertCurrent) : await nativeRoomSetup.recover()
-      assertCurrent()
-      return { ok: true, ...result }
-    } catch (error) {
-      return { ok: false, reason: error instanceof RoomSetupError ? error.reason : 'setup_failed' }
-    } finally {event.sender.removeListener('did-start-navigation', navigating)}
-  })
-}
 
 ipcMain.handle('hermes:zoom:get', event => {
   const window = BrowserWindow.fromWebContents(event.sender)
@@ -14985,88 +14895,12 @@ async function probeConnectionInstallId(connectionId: string, descriptor: any): 
   }
 }
 
-async function probeSshProfileInventory(connection, isCurrent: () => boolean, knownClassic: boolean) {
-  if (
-    !shouldRetrySshInventory(
-      sshRosterCache.has(connection.id),
-      sshInventoryAttemptedAt.get(connection.id),
-      Date.now(),
-      SSH_INVENTORY_RETRY_MS
-    )
-  ) {
-    return
-  }
-
-  sshInventoryAttemptedAt.set(connection.id, Date.now())
-
-  const sshConfig = normalizeSshConfig({
-    mode: 'ssh',
-    host: connection.host,
-    user: connection.user,
-    port: connection.port,
-    keyPath: connection.keyPath,
-    remoteHermesPath: connection.remoteHermesPath
-  })
-
-  if (!sshConfig) {
-    return
-  }
-
-  const ssh = createSshProbeConnection(
-    { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-    { rememberLog: sshRememberLog }
-  )
-
-  try {
-    await ssh.open()
-    if (!knownClassic) {
-      const commands = await inspectSshGatewayCommands(ssh, connection.remoteHermesPath || '')
-      if (!isCurrent() || commands.canonical) {return}
-    }
-    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
-
-    if (!isCurrent()) {return}
-    if (profiles.length > 0) {
-      sshRosterCache.set(connection.id, profiles)
-    }
-
-    // Backend identity, on the session we already have open: without it an ssh connection has no
-    // install id at all, so two addresses for one machine never collapse into one roster row
-    // (#88828 wired this for remote/local only, through /api/status).
-    const id = await remoteLifecycle.readRemoteInstallId(ssh)
-    if (isCurrent()) {connectionInstallIds.set(connection.id, { id, ts: Date.now() })}
-  } catch (error: any) {
-    sshRememberLog(`[ssh] profile inventory failed for ${connection.id}: ${error?.message || error}`)
-  } finally {
-    try {
-      await ssh.close()
-    } catch {
-      void 0
-    }
-  }
-}
-
-async function refreshSshProfileInventory(connection) {
-  const fingerprint = sshConfigFingerprint(connection.id, connection)
-  const inventory = await readSshRosterInventory({
-    connectionId: connection.id, states: sshConnections,
-    request: (descriptor, requestPath) => getJsonForBackend(descriptor, requestPath, { timeoutMs: 8_000 })
-  })
-  const isCurrent = () => {
-    const current = readDesktopConnectionsRegistry().connections.find(entry => entry.id === connection.id)
-    return inventory.isCurrent() && current?.kind === 'ssh' && sshConfigFingerprint(current.id, current) === fingerprint
-  }
-  if (!isCurrent()) {throw new Error('SSH inventory source changed during enumeration')}
-  if (inventory.kind !== 'canonical') {
-    await probeSshProfileInventory(connection, isCurrent, inventory.kind === 'classic')
-  }
-  if (!isCurrent()) {throw new Error('SSH inventory source changed during enumeration')}
-  if (inventory.kind === 'canonical') {
-    sshRosterCache.set(connection.id, inventory.profiles)
-    connectionInstallIds.set(connection.id, { id: inventory.installId, ts: Date.now() })
-  }
-  return { ...inventory, isCurrent }
-}
+const refreshSshProfileInventory = createSshRosterInspector({
+  cache: sshRosterCache, attemptedAt: sshInventoryAttemptedAt, retryMs: SSH_INVENTORY_RETRY_MS,
+  installIds: connectionInstallIds, states: sshConnections, rememberLog: sshRememberLog,
+  currentConnection: id => readDesktopConnectionsRegistry().connections.find(entry => entry.id === id),
+  request: (descriptor, requestPath) => getJsonForBackend(descriptor, requestPath, {timeoutMs: 8_000})
+})
 
 async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRegistry()) {
   // One dead source must not wedge the whole roster: ensureRegistryBackend on
@@ -15113,18 +14947,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
         if (connection.kind === 'ssh') {
           const inventory = await withEnumerationDeadline(
             refreshSshProfileInventory(connection), rosterSourceEnumerationTimeoutMs(connection))
-          if (inventory.kind === 'canonical') {
-            // The native catalog and install identity came from the same pinned
-            // descriptor. A raw SSH home probe is never a fallback for its failure.
-            if (!inventory.isCurrent()) {throw new Error('SSH inventory source changed during enumeration')}
-            raw = { connection, profiles: inventory.profiles, installId: inventory.installId,
-              profileMetadata: inventory.profileMetadata }
-          } else {
-            // Confirmed classic runtimes keep their existing cold inventory.
-            // Canonical undialed sources retain the connect-on-demand/default seed.
-            raw = { connection, profiles: null, error: 'connect-on-demand',
-              installId: connectionInstallIds.get(connection.id)?.id }
-          }
+          raw = sshRosterSourceResult(connection, inventory, connectionInstallIds.get(connection.id)?.id)
         } else {
           // Same connect-on-demand courtesy for the forced-local path: when
           // the primary route is remote, enumerating "This device" would

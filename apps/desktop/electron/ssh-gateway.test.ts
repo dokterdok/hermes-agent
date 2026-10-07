@@ -2,30 +2,44 @@ import { expect, test, vi } from 'vitest'
 
 import { mintLocalGatewayTicket, nativeGatewayHttpHeaders, routedGatewayEndpoint } from './local-gateway'
 import { attachSshGateway } from './ssh-gateway'
+import { connectPreferredSshGateway, sshConnectionDescriptor } from './ssh-gateway-connection'
 
 const endpoint = { profile_id: '/home/remote/.hermes', instance_id: 'daemon', authority_epoch: 1,
   runtime_protocol: 1, api_origin: 'http://127.0.0.1:4321', capabilities: ['session-authority-v1'], supervisor: 'external' }
 
 test('SSH attachment pins native credentials to its tunnel and retires no gateway', async () => {
   const commands: string[] = [], requests: any[] = [], forwards: any[] = []
+
   const ssh = {
     async exec(command: string, options?: { stdinData?: string }) {
       commands.push(command)
+
       if (options?.stdinData) {
         const request = JSON.parse(options.stdinData)
         requests.push(request)
+
         return JSON.stringify({ ...request, ticket: 'a'.repeat(40), runtime_protocol: 1 })
       }
+
       if (command.includes('[ -x')) {return 'OK'}
+
       if (command.endsWith('gateway --help')) {return '  ensure  Attach\n  ticket  Mint'}
+
       if (command.endsWith('gateway ensure --json')) {return JSON.stringify({ state: 'ready', endpoint })}
+
       return 'Hermes test'
     },
     async forward(...args: any[]) {forwards.push(args)},
     async cancelForward() {throw new Error('not closed yet')}
   }
-  const connection = await attachSshGateway({ ssh, profile: 'remote-name', profileAlias: 'default', remoteHermesPath: '/usr/bin/hermes', pickLocalPort: async () => 8765 })
+
+  const connection = await connectPreferredSshGateway({requestedProfile: 'default', localProfile: 'conn:mini::default', lifecycle: {ssh, platform: {os: 'Linux'}, profile: 'remote-name', remoteHermesPath: '/usr/bin/hermes', pickLocalPort: async () => 8765}})
   expect(connection).not.toBeNull()
+  expect(connection.platform.os).toBe('Linux')
+  const classic = vi.fn()
+  const descriptor = await sshConnectionDescriptor(connection, 'registry:mini', 'Mini', classic)
+  expect(descriptor).toMatchObject({authMode: 'native', token: '', source: 'registry:mini', remoteHost: 'Mini'})
+  expect(classic).not.toHaveBeenCalled()
   expect(forwards).toEqual([[8765, 4321, '127.0.0.1']])
   expect(routedGatewayEndpoint(connection!.gatewayEndpoint, 'default', '/local/wrong')).toBe(connection!.gatewayEndpoint)
   const secondary = routedGatewayEndpoint(connection!.gatewayEndpoint, 'work', '/local/wrong')
@@ -45,26 +59,32 @@ test('SSH attachment pins native credentials to its tunnel and retires no gatewa
 test('only confirmed older command capabilities permit classic SSH fallback', async () => {
   const ssh = { async exec(command: string): Promise<string> {
     if (command.includes('[ -x')) {return 'OK'}
+
     return 'usage: hermes gateway [-h] {run,start,stop,status} ...\n  start Start\n  stop Stop\n  status Status'
   }, async forward() {throw new Error('must not forward')}, async cancelForward() {} }
+
   const options = { ssh, profile: '', remoteHermesPath: '/usr/bin/hermes', pickLocalPort: async () => 8765 }
   expect(await attachSshGateway(options)).toBeNull()
   ssh.exec = async command => command.includes('[ -x') ? 'OK' : '  ensure Attach'
   await expect(attachSshGateway(options)).rejects.toThrow('Update Hermes')
+
   ssh.exec = async command => {
     if (command.includes('[ -x')) {return 'OK'}
     throw new Error('SSH unavailable')
   }
+
   await expect(attachSshGateway(options)).rejects.toThrow('SSH unavailable')
 })
 
 test('ambiguous successful help output never starts a classic owner or tunnel', async () => {
   const forward = vi.fn()
+
   const ssh = {
     exec: vi.fn(async (command: string) => (command.includes('[ -x') ? 'OK' : 'Welcome to the server')),
     forward,
     async cancelForward() {}
   }
+
   await expect(
     attachSshGateway({ ssh, profile: '', remoteHermesPath: '/usr/bin/hermes', pickLocalPort: async () => 8765 })
   ).rejects.toThrow(/capabilities/)

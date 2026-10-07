@@ -111,3 +111,10 @@ export function requireRoomSetupEncryption(
     throw new Error('secure_storage_required')
   }
 }
+
+/** Renderer availability follows the explicit storage choice; OFF never touches the keychain. */
+export function probeSecureTokenStorageForPolicy(policy: SecretStoragePolicy, available: () => boolean): boolean {
+  if (!policy.on) {return true}
+
+  try {return Boolean(available())} catch {return false}
+}
