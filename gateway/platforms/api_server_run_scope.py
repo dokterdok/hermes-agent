@@ -35,3 +35,13 @@ def validate_room_run_scope(identity: Any) -> dict[str, Any]:
                 raise ValueError(f"{field} must be an exact identifier string")
             result[field] = _identifier(value, field=field)
     return result
+
+
+def cancellation_record_sql(alias: str) -> str:
+    """Internal SQL predicate: a control-only barrier has no accepting fingerprint or executor."""
+    return f"""{alias}.stop_requested=1 AND {alias}.fingerprint=''
+        AND {alias}.owner_pid=0 AND {alias}.owner_started=0 AND CASE WHEN json_valid({alias}.status_json)
+            THEN COALESCE(json_extract({alias}.status_json,'$.run_id')={alias}.run_id
+                AND json_extract({alias}.status_json,'$.status') IN
+                    ('queued','running','waiting_for_approval','stopping','completed','failed','cancelled','interrupted'), 0)
+            ELSE 0 END"""

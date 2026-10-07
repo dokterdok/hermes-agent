@@ -260,3 +260,57 @@ def test_unreadable_core_ownership_never_authorizes_http_control(tmp_path, peer)
                     assert result['result']['status'] == 'terminal' and result['result']['outcome'] == 'interrupted'
             asyncio.run(native())
             assert _row(p)['status'] == 'terminal'
+
+
+def test_typed_peer_stop_settles_execution_while_output_cleanup_stays_visible(tmp_path):
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+
+    with pair(tmp_path, '') as p, daemon(p.root, p.home, p.he, barrier=False) as (_, hd):
+        with daemon(p.root, p.peer, p.pe, barrier=False) as (_, pd):
+            invitation = asyncio.run(_start(p, hd, pd, True))
+            original = _row(p)
+            dispatch = json.loads(original['payload_json'])['api_turn_v1']['settings']['room_dispatch']
+            assert _private_artifacts(p)[0]
+            corrupt = json.loads(original['payload_json'])
+            corrupt['api_turn_v1']['settings']['room_dispatch'] = 'unreadable optional output'
+            _payload(p, corrupt)
+
+            async def stop_and_observe():
+                async with websocket(p.home, hd) as hw:
+                    stopped = await rpc(hw, 'groups.stop', room_id='linked', cancel_id='stop-corrupt-output')
+                    assert 'result' in stopped, stopped
+                    p.pm.release.set()
+                    p.pm.active_release.set()
+                    async with asyncio.timeout(30):
+                        while True:
+                            with sqlite3.connect(p.home / 'state.db') as db:
+                                row = db.execute("SELECT status FROM hosted_room_driver_tasks WHERE task_id=?",
+                                                 (dispatch['task_id'],)).fetchone()
+                            if row and row[0] == 'cancelled':
+                                break
+                            await asyncio.sleep(.05)
+                    assert _row(p)['status'] == 'terminal'
+                    ended = await rpc(hw, 'groups.disband', room_id='linked')
+                    assert 'error' in ended, ended
+                    assert any(room['room_id'] == 'linked' for room in (await rpc(hw, 'groups.list'))['result']['rooms'])
+            asyncio.run(stop_and_observe())
+            # The producer may retire its own unpublished output when interrupted;
+            # control reconciliation must not perform an unproven disposition.
+            artifacts = _private_artifacts(p)
+
+            client = PeerRunsHTTPClient(base_url=p.proxy.target, api_key='',
+                proof_install_id=invitation['catalog']['installation_id'], receipt_db_path=p.home / 'state.db')
+            stopped = client.cancel_dispatch(dispatch=dispatch, grant=invitation['grant'])
+            assert stopped['status'] == 'cancelled' and stopped['admission_id'] == original['admission_id']
+            assert stopped['peer_output_unresolved']
+            receipt = client._receipt(dispatch['task_id'], dispatch['execution_generation'])
+            coordinates = dict(room_id=dispatch['room_id'], profile=dispatch['target_profile'],
+                session_id=receipt['session_id'], task_id=dispatch['task_id'],
+                execution_generation=dispatch['execution_generation'], grant=invitation['grant'])
+            status = client.status(**coordinates)
+            assert status['status'] == 'cancelled' and status['active'] is False
+            assert client.history(**coordinates) == []
+            assert not any(key in stopped for key in (
+                'peer_output_dispatch_digest', 'artifacts', 'artifact_scope', 'peer_output_empty',
+                'canonical_admission_absent'))
+            assert _private_artifacts(p) == artifacts
