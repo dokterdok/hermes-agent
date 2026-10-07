@@ -446,18 +446,32 @@ export function GroupChatSettingsDialog({
   const savingRef = useRef(false)
   const [saving, setSaving] = useState(false)
   const saveScope = useRef(0)
+  const settingsBinding = useRef<null | ReturnType<typeof followGroupChat>>(null)
+
   // A rename can update this prop while its profile writes are still pending.
   // Keep that operation attached to the same chat across the name change.
-  const scopeIdentity = useMemo(() => $groupChats.get()[group]?.roomId || group, [group])
+  const openedSettings = useMemo(() => {
+    const room = $groupChats.get()[group]
+
+    return { roomId: room?.roomId, image: room?.image || null, holdDetection: room?.holdDetection !== false }
+  }, [group, open])
+
+  const scopeIdentity = openedSettings.roomId || group
   // eslint-disable-next-line no-restricted-syntax -- Operation lifetime and singleflight refs, not a mirrored atom value.
   useEffect(() => {
     saveScope.current += 1
     savingRef.current = false
     setSaving(false)
+    const binding = followGroupChat(group, () => undefined)
+    settingsBinding.current = binding
 
     return () => {
       saveScope.current += 1
+      binding.dispose()
     }
+    // The binding follows renames; a display-name change must not replace
+    // its pending operation or forget a witnessed deletion.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeIdentity, open])
 
   const save = async () => {
@@ -465,8 +479,17 @@ export function GroupChatSettingsDialog({
       return
     }
 
-    if (($groupChats.get()[group]?.roomId || group) !== scopeIdentity) {
+    if (!settingsBinding.current?.isLive() || ($groupChats.get()[group]?.roomId || group) !== scopeIdentity) {
       host.notify({ kind: 'error', message: b.group.settingsUnavailable })
+
+      return
+    }
+
+    if (
+      !openedSettings.roomId &&
+      (current !== openedSettings.image || currentHoldDetection !== openedSettings.holdDetection)
+    ) {
+      host.notify({ kind: 'error', message: b.group.settingsChanged })
 
       return
     }
@@ -476,11 +499,11 @@ export function GroupChatSettingsDialog({
     const scope = saveScope.current
     const settings: GroupSettingsPatch = {}
 
-    if (image !== current) {
+    if (image !== openedSettings.image) {
       settings.image = image
     }
 
-    if (holdDetection !== currentHoldDetection) {
+    if (holdDetection !== openedSettings.holdDetection) {
       settings.holdDetection = holdDetection
     }
 
