@@ -13,7 +13,8 @@ standby must take over within the bound (the ~20 s lease, 10 s grace, then promi
 with a certified, automatic move; its history holds the protected message and the turn's admission,
 and the other standby follows it. H then restarts: it refuses work, rejoins as a copy of the new
 host, and never serves. H's turn runs once, never again there or anywhere else. With H still down, both
-available Bots answer fresh addressed messages under the new authority, each exactly once.
+available Bots answer fresh addressed messages under the new authority, each exactly once. Finally
+the owner moves the live group to the other standby and a member replies through that new epoch.
 
 Real timing: about 80 s of wall clock per case, like the other daemon tests' grant renewal waits.
 """
@@ -205,6 +206,9 @@ def test_a_killed_host_is_replaced_by_a_majority_within_the_bound_and_never_by_t
         finally:
             stop.set()
             await watching
+        # Planned handover has explicit causal checks below; the continuous sampler covers the
+        # host-loss/rejoin phase, avoiding cross-time snapshots across an intentional live move.
+        await planned_handover()
 
     async def setup():
         links = {}
@@ -331,14 +335,38 @@ def test_a_killed_host_is_replaced_by_a_majority_within_the_bound_and_never_by_t
         await asyncio.sleep(3 * POLL_SECONDS)
         assert await observer.admitting() == {(report['new_host'], report['epoch'])}, observer.rounds[-3:]
 
+    async def planned_handover():
+        old_name = report['new_host']
+        target_name = 't' if old_name == 's' else 's'
+        old, target = computers[old_name], computers[target_name]
+        moved = await old.result('groups.succession.move', room_id=ROOM,
+                                 target_install_id=report['ids'][target_name])
+        assert moved['state'] in {'moving', 'moved_away'}, moved
+        await _until(lambda: target.result('groups.succession.status', room_id=ROOM),
+                     lambda c: c['this_install']['role'] == 'host' and c['state'] == 'ok',
+                     90, 'the planned successor to serve')
+        new_room = (await target.result('groups.state', room_id=ROOM))['room']
+        assert new_room['authority_epoch'] > report['epoch'], new_room
+        refused = await old.call('groups.send', room_id=ROOM, event_id='after-planned-stale',
+                                 payload={'text': 'MUST_NOT_RUN_ON_OLD_SUCCESSOR', 'thread_id': 'thread'})
+        assert 'error' in refused, refused
+        await target.result('groups.send', room_id=ROOM, event_id='after-planned',
+                            payload={'text': f'@{old_name} AFTER_PLANNED_HANDOVER', 'thread_id': 'thread'})
+        await _until(lambda: _events(target), lambda history: sum(
+            event['kind'] == 'message.member' and event['payload'].get('member_id') == old_name
+            for event in history) == 2, 90, 'a member reply after the planned handover')
+        report['planned_handover'] = {'host': target_name, 'epoch': new_room['authority_epoch'],
+                                      'reply_member': old_name}
+
     try:
         asyncio.run(scenario())
         assert not observer.violations, observer.violations
         # H's turn ran once, on H, and never again: neither when H came back nor on another computer.
         assert [message in _last_user_text(r) for r in models['h'].requests] == [True], models['h'].requests
         for name in ('s', 't'):
-            assert len(models[name].requests) == 1, (name, models[name].requests)
+            assert len(models[name].requests) == (2 if name == report['new_host'] else 1), (name, models[name].requests)
             assert f'AVAILABLE_{name.upper()}_AFTER_KILL' in _last_user_text(models[name].requests[0])
+        assert 'AFTER_PLANNED_HANDOVER' in _last_user_text(models[report['new_host']].requests[-1])
         print('takeover', json.dumps({k: report[k] for k in ('turn', 'new_host', 'epoch', 'took_s')}))
     except BaseException as exc:
         details = {'report': report, 'violations': observer.violations, 'changes': observer.changes,
