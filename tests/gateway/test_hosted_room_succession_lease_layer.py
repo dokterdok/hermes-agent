@@ -83,5 +83,6 @@ def test_the_upkeep_keeps_trying_to_install_the_lease_layer(tmp_path):
         contexts.append(type("Context", (), {"db_path": tmp_path / "state.db", "runs_store": None})())
         assert upkeep._ensure_installed() is True
         assert automatic.instance_for(tmp_path / "state.db") is upkeep.automatic
+        assert upkeep.automatic.fence_path() is None  # this service never had a participant Runs store
     finally:
         upkeep.stop()
