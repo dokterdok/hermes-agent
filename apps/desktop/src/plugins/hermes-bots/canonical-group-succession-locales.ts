@@ -62,6 +62,7 @@ export type SuccessionMessages = {
   errorPreviewStale: string
   errorTargetNotReady: (target: string | null) => string
   errorUnreachable: (target: string | null) => string
+  errorHandoverPending: string
   errorGeneric: string
   continuingOn: (target: string | null) => string
   stepFencing: (host: string | null) => string
@@ -286,6 +287,7 @@ const en: SuccessionMessages = {
   errorPreviewStale: 'This group changed. Check the details again.',
   errorTargetNotReady: target => `${target ?? 'That computer'} isn’t ready to continue this group yet.`,
   errorUnreachable: target => `${target ?? 'That computer'} couldn’t be reached.`,
+  errorHandoverPending: "The move is not confirmed. The group stays paused here while it checks the other computer.",
   errorGeneric: 'The move wasn’t confirmed.',
   continuingOn: target => `Continuing on ${target ?? 'another computer'}…`,
   stepFencing: host => `Stopping work from ${host ?? 'the host'}`,
@@ -448,6 +450,7 @@ const ja: SuccessionMessages = {
   errorPreviewStale: 'このグループは変更されました。詳細をもう一度確認してください。',
   errorTargetNotReady: target => `${target ?? 'そのコンピューター'}はまだこのグループを続ける準備ができていません。`,
   errorUnreachable: target => `${target ?? 'そのコンピューター'}に接続できませんでした。`,
+  errorHandoverPending: "移行はまだ確認されていません。別のコンピューターを確認する間、グループはここで一時停止します。",
   errorGeneric: '移行が確認されませんでした。',
   continuingOn: target => `${target ?? '別のコンピューター'}で続行しています…`,
   stepFencing: host => `${host ?? 'ホスト'}からの作業を停止しています`,
@@ -609,6 +612,7 @@ const zh: SuccessionMessages = {
   errorPreviewStale: '此群聊已发生变化。请重新检查详情。',
   errorTargetNotReady: target => `${target ?? '那台电脑'}尚未准备好继续此群聊。`,
   errorUnreachable: target => `无法连接${target ?? '那台电脑'}。`,
+  errorHandoverPending: "迁移尚未确认。群聊在此保持暂停，同时检查另一台电脑。",
   errorGeneric: '迁移未得到确认。',
   continuingOn: target => `正在${target ?? '另一台电脑'}上继续…`,
   stepFencing: host => `正在停止来自${host ?? '主机'}的工作`,
@@ -770,6 +774,7 @@ const zhHant: SuccessionMessages = {
   errorPreviewStale: '此群聊已變更。請重新檢查詳細資料。',
   errorTargetNotReady: target => `${target ?? '那台電腦'}尚未準備好繼續此群聊。`,
   errorUnreachable: target => `無法連線至${target ?? '那台電腦'}。`,
+  errorHandoverPending: "移轉尚未確認。群聊在此保持暫停，同時檢查另一台電腦。",
   errorGeneric: '移轉未獲確認。',
   continuingOn: target => `正在${target ?? '另一台電腦'}上繼續…`,
   stepFencing: host => `正在停止來自${host ?? '主機'}的工作`,
@@ -933,6 +938,7 @@ const arabic: SuccessionMessages = {
   errorPreviewStale: 'تغيّرت هذه المجموعة. راجع التفاصيل مرة أخرى.',
   errorTargetNotReady: target => `${target ?? 'ذلك الجهاز'} ليس جاهزًا لمتابعة هذه المجموعة بعد.`,
   errorUnreachable: target => `تعذّر الوصول إلى ${target ?? 'ذلك الجهاز'}.`,
+  errorHandoverPending: "لم يتم تأكيد النقل. تظل المجموعة متوقفة هنا أثناء التحقق من الكمبيوتر الآخر.",
   errorGeneric: 'لم يتم تأكيد النقل.',
   continuingOn: target => `جارٍ المتابعة على ${target ?? 'جهاز كمبيوتر آخر'}…`,
   stepFencing: host => `جارٍ إيقاف العمل القادم من ${host ?? 'المضيف'}`,
@@ -1094,6 +1100,7 @@ const russian: SuccessionMessages = {
   errorPreviewStale: 'Группа изменилась. Проверьте подробности ещё раз.',
   errorTargetNotReady: target => `${target ? `Компьютер ${target}` : 'Этот компьютер'} пока не готов продолжить эту группу.`,
   errorUnreachable: target => `Не удалось связаться с ${target ? `компьютером ${target}` : 'этим компьютером'}.`,
+  errorHandoverPending: "Перенос не подтверждён. Группа остаётся на паузе здесь, пока проверяет другой компьютер.",
   errorGeneric: 'Перенос не был подтверждён.',
   continuingOn: target => `Продолжение на ${target ? `компьютере ${target}` : 'другом компьютере'}…`,
   stepFencing: host => `Остановка работы от ${host ? `компьютера ${host}` : 'хоста'}`,
@@ -1256,6 +1263,7 @@ const french: SuccessionMessages = {
   errorPreviewStale: 'Ce groupe a changé. Vérifiez à nouveau les détails.',
   errorTargetNotReady: target => `${target ?? 'Cet ordinateur'} n’est pas encore prêt à continuer ce groupe.`,
   errorUnreachable: target => `${target ?? 'Cet ordinateur'} est injoignable.`,
+  errorHandoverPending: "Le déplacement n’est pas confirmé. Le groupe reste en pause ici pendant qu’il vérifie l’autre ordinateur.",
   errorGeneric: 'Le déplacement n’a pas été confirmé.',
   continuingOn: target => `Poursuite sur ${target ?? 'un autre ordinateur'}…`,
   stepFencing: host => `Arrêt du travail venant de ${host ?? 'l’hôte'}`,
@@ -1417,6 +1425,7 @@ const german: SuccessionMessages = {
   errorPreviewStale: 'Diese Gruppe hat sich geändert. Prüfe die Details noch einmal.',
   errorTargetNotReady: target => `${target ?? 'Dieser Computer'} ist noch nicht bereit, diese Gruppe fortzusetzen.`,
   errorUnreachable: target => `${target ?? 'Dieser Computer'} ist nicht erreichbar.`,
+  errorHandoverPending: "Der Umzug ist nicht bestätigt. Die Gruppe bleibt hier pausiert, während sie den anderen Computer prüft.",
   errorGeneric: 'Der Umzug wurde nicht bestätigt.',
   continuingOn: target => `Wird auf ${target ?? 'einem anderen Computer'} fortgesetzt…`,
   stepFencing: host => `Arbeit ${host ? `von ${host}` : 'vom Host'} wird gestoppt`,
@@ -1578,6 +1587,7 @@ const spanish: SuccessionMessages = {
   errorPreviewStale: 'Este grupo ha cambiado. Revisa los detalles de nuevo.',
   errorTargetNotReady: target => `${target ?? 'Ese equipo'} aún no está listo para continuar este grupo.`,
   errorUnreachable: target => `No se pudo contactar con ${target ?? 'ese equipo'}.`,
+  errorHandoverPending: "El traslado no está confirmado. El grupo permanece en pausa aquí mientras comprueba el otro ordenador.",
   errorGeneric: 'No se confirmó el traslado.',
   continuingOn: target => `Continuando en ${target ?? 'otro equipo'}…`,
   stepFencing: host => `Deteniendo el trabajo ${host ? `de ${host}` : 'del anfitrión'}`,

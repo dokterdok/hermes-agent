@@ -4,11 +4,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { AutomaticMoveSetting, twoHostAutomatic } from './canonical-group-automatic-setting'
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { confirmComputer, desktopComputers, learnSuccession, offeredTargets, offers, readSuccessionStatus, successionAdvertised }
+import { confirmComputer, desktopComputers, learnSuccession, offeredTargets, offers, readSuccessionStatus, successionAdvertised, successionFailure }
   from './canonical-group-succession'
 import type { SuccessionComputer, SuccessionStatus } from './canonical-group-succession'
 import type { SuccessionController } from './canonical-group-succession-state'
-import { computerName, readinessItem } from './canonical-group-succession-view'
+import { computerName, failureText, readinessItem } from './canonical-group-succession-view'
 import { canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoomMember } from './canonical-groups'
 import { useBots } from './i18n'
@@ -64,7 +64,11 @@ function MoveConfirm({ controller, group, host, target, onClose }: {
       if (!target || inFlight.current) {return}
       inFlight.current = true
 
-      try {await controller.move(target.install_id)} catch {throw new Error(words.continueFailed(name, words.errorGeneric))}
+      try {await controller.move(target.install_id)} catch (error) {
+        controller.recordFailure(target, error)
+        controller.refresh()
+        throw new Error(words.continueFailed(name, failureText(words, {target, reason: successionFailure(error)?.reason ?? 'handover_pending', other: null}, controller.status, controller)))
+      }
       finally {inFlight.current = false}
     }} open={!!target} title={words.moveTitle(group, name)} />
 }
