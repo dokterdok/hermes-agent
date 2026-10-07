@@ -46,8 +46,7 @@ import {
   setSessionOwnerHint
 } from '@/store/session'
 import { $unreadSessionCount } from '@/store/session-dot-state'
-import { $focusedStoredSessionId } from '@/store/session-focus'
-import { $sessionTiles, clearAllSessionStates } from '@/store/session-states'
+import { $focusedStoredSessionId, $sessionTiles, clearAllSessionStates } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 import { $openNextUnreadRequest, requestOpenNextUnread } from '@/store/session-unread-navigation'
 import { $unreadWriteGuard } from '@/store/session-unread-remote'
