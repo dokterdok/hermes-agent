@@ -133,9 +133,9 @@ describe('focusing a saved Bot Chat requires a visible pane', () => {
       )
       session.$selectedStoredSessionId.set('canonical-chat')
       tree.$activeTreeGroup.set('group-side')
-      expect($focusedStoredSessionId.get()).toBeNull()
+      expect(ctx.states.$focusedStoredSessionId.get()).toBeNull()
       tree.$activeTreeGroup.set('main')
-      expect($focusedStoredSessionId.get()).toBe('canonical-chat')
+      expect(ctx.states.$focusedStoredSessionId.get()).toBe('canonical-chat')
     } finally {
       $workspaceMode.set(previousMode)
     }

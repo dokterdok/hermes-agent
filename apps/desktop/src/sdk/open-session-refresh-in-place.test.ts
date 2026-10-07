@@ -29,7 +29,13 @@ vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 vi.mock('@/components/pane-shell/tree/store', async () => {
   const { atom } = await import('nanostores')
 
-  return { $narrowViewport: atom(false) }
+  return {
+    $activeTreeGroup: atom(null),
+    $collapsedTreeSides: atom(new Set()),
+    $hiddenTreePanes: atom(new Set()),
+    $layoutTree: atom(null),
+    $narrowViewport: atom(false)
+  }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
@@ -194,15 +200,22 @@ describe('host.openSession refreshInPlace — background re-resume never navigat
     vi.mocked(sessionTileDelegate).mockReturnValue({ resumeTile } as never)
     setMockAtom($selectedStoredSessionId, 'bot-chat-ops')
 
-    await expect(host.openSession('bot-chat-ops', { profile: 'ops', refreshInPlace: true }))
-      .rejects.toThrow('stored read failed')
+    await expect(host.openSession('bot-chat-ops', { profile: 'ops', refreshInPlace: true })).rejects.toThrow(
+      'stored read failed'
+    )
 
     let complete!: (runtime: string) => void
-    resumeTile.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    resumeTile.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          complete = resolve
+        })
+    )
     let settled = false
 
-    const refresh = host.openSession('bot-chat-ops', { profile: 'ops', refreshInPlace: true })
-      .then(() => { settled = true })
+    const refresh = host.openSession('bot-chat-ops', { profile: 'ops', refreshInPlace: true }).then(() => {
+      settled = true
+    })
 
     await vi.waitFor(() => expect(resumeTile).toHaveBeenCalledTimes(2))
     expect(settled).toBe(false)

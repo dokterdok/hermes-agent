@@ -20,7 +20,6 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type * as CanonicalChat from './canonical-chat'
 import type { RosterRow } from './types'
 
 const { ackStoredSessionId, openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
@@ -38,7 +37,6 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 vi.mock('./canonical-chat', async () => ({
   CANONICAL_CHAT_TITLE: 'Bot Chat',
   ensureBotMetadata: vi.fn(async () => ({})),
-  isStaleBotChatTile: (await vi.importActual<typeof CanonicalChat>('./canonical-chat')).isStaleBotChatTile,
   notifyBotOpenFailure: vi.fn(),
   openBotCanonicalChat,
   prepareBotSource,
