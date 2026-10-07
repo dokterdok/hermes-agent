@@ -125,7 +125,7 @@ it('compressGroupMemberHistory resumes each stored session for the member and co
   expect(methods).not.toContain('session.create')
 })
 
-it('the room settings dialog offers Compress history per member and reports the result', async () => {
+it('the room settings dialog offers Summarize history per member and reports the result', async () => {
   Element.prototype.scrollIntoView = vi.fn()
   const { $groupChats } = await import('./group-chat')
   const { GroupChatWorkspace } = await import('./group-chat-view')
@@ -137,11 +137,40 @@ it('the room settings dialog offers Compress history per member and reports the 
   // The room paints once the async group-driver gate resolves to the legacy workspace.
   await waitFor(() => expect(getByLabelText('Group settings for Build')).toBeTruthy())
   fireEvent.click(getByLabelText('Group settings for Build'))
-  fireEvent.click(getByLabelText('Compress history: mason'))
+  fireEvent.click(getByLabelText('Summarize history: mason'))
 
   await waitFor(() => expect(state.gateway!.rpcFor('session.compress')).toHaveLength(1))
   const notify = state.gateway!.host.notify as ReturnType<typeof vi.fn>
   await waitFor(() => expect(notify).toHaveBeenCalled())
   // Only mason's session was touched — critic never had one and none was created.
   expect(state.gateway!.rpcFor('session.create')).toHaveLength(0)
+})
+
+it('does not announce a summary as complete while the gateway is still working', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { $groupChats } = await import('./group-chat')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+  const mason = await seedMemberSession('mason', 'Group: room-pending · t1')
+  const inner = state.gateway!.host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+
+  state.gateway!.host.request = async (method: string, params: Record<string, unknown> = {}) => {
+    if (method === 'session.compress') {
+      return { status: 'pending' }
+    }
+
+    return inner(method, params)
+  }
+
+  Object.assign(host, state.gateway!.host)
+  $groupChats.set({
+    Build: { log: [], roomId: 'room-pending', sessions: { 'thread:t1::mason': mason }, watermarks: {} }
+  })
+  const { getByLabelText } = render(<GroupChatWorkspace group="Build" members={[{ name: 'mason' }] as never} />)
+  fireEvent.click(getByLabelText('Group settings for Build'))
+  fireEvent.click(getByLabelText('Summarize history: mason'))
+  const notify = state.gateway!.host.notify as ReturnType<typeof vi.fn>
+  await waitFor(() => expect(notify).toHaveBeenCalledTimes(2))
+  expect(
+    notify.mock.calls.every(([message]) => message.kind === 'info' && message.message.includes('Summarizing'))
+  ).toBe(true)
 })
