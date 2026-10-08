@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+import logging
 import os
 from pathlib import Path
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 
 
 def _native():
@@ -109,6 +112,25 @@ def _complete(ov, deadline):
         ov.cancel()
         ov.GetOverlappedResult(True)
         raise
+
+
+def _accept(handle, budget) -> bool:
+    """Wait up to ``budget`` seconds for a client; True once one is connected.
+
+    A client can connect between the wait timing out and the cancel reaching the kernel; the
+    reaped result then reports success and that client is served. ERROR_OPERATION_ABORTED (995)
+    is the only idle outcome. A client that is already connected completes the accept at once.
+    """
+    win = _native()
+    ov = win.ConnectNamedPipe(handle, overlapped=True)
+    if win.WaitForSingleObject(ov.event, max(1, int(budget * 1000))) != win.WAIT_OBJECT_0:
+        ov.cancel()
+    _, error = ov.GetOverlappedResult(True)
+    if error == 995:
+        return False
+    if error:
+        raise OSError(None, 'runtime pipe accept failed', None, error)
+    return True
 
 
 def _read_line(handle, deadline, maximum):
@@ -219,8 +241,16 @@ class NativeControlServer:
             self._ready.set()
             while not self._stop.is_set():
                 try:
-                    ov = win.ConnectNamedPipe(handle, overlapped=True)
-                    _complete(ov, time.monotonic() + 0.5)
+                    connected = _accept(handle, 0.5)
+                except OSError:
+                    # e.g. ERROR_NO_DATA: a client came and went. Fall through so the serve path
+                    # fails fast and the instance is recycled by DisconnectNamedPipe below.
+                    connected = True
+                if not connected:
+                    # Idle: the instance is still listening and a client may have opened it after
+                    # the cancel. DisconnectNamedPipe here dropped that client mid-request (233).
+                    continue
+                try:
                     subject = _peer_subject(handle, server=False)
                     deadline = time.monotonic() + 2
                     raw = _read_line(handle, deadline, 64 * 1024)
@@ -234,9 +264,11 @@ class NativeControlServer:
                     try:
                         _disconnect_pipe(handle)
                     except OSError as exc:
-                        if exc.winerror != 233:  # ERROR_PIPE_NOT_CONNECTED after a cancelled accept
+                        if exc.winerror != 233:  # ERROR_PIPE_NOT_CONNECTED: the client already left
                             raise
         except BaseException as exc:
+            # Hand-off to the owning thread: start() re-raises the stored error.
+            logger.debug('runtime control pipe stopped', exc_info=True)
             self._error = exc
             self._ready.set()
         finally:

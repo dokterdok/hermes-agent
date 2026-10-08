@@ -2,6 +2,7 @@
 import asyncio
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import shlex
 import os
 from pathlib import Path
 import socket
@@ -27,8 +28,9 @@ class PromptPeer(BaseHTTPRequestHandler):
         if last.get('role') != 'tool' and ('ASK_APPROVAL' in text or 'ASK_CLARIFY' in text):
             approval = 'ASK_APPROVAL' in text
             name = 'terminal' if approval else 'clarify'
-            args = {'command': 'rm -rf ' + str(self.server.target)} if approval else {
-                'question': 'Choose the answer', 'choices': ['BLUE', 'GREEN']}
+            # Git Bash eats unquoted backslashes: a bare C:\\... path removes nothing on Windows.
+            args = {'command': 'rm -rf ' + shlex.quote(self.server.target.as_posix())} if approval else {
+                'questions': [{'question': 'Choose the answer', 'choices': ['BLUE', 'GREEN']}]}
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'id': 'call_control', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}]}
         finish = 'tool_calls' if 'tool_calls' in message else 'stop'
@@ -63,7 +65,8 @@ def test_api_and_ws_pending_controls_share_identity(tmp_path):
            'auxiliary': {'title_generation': {'enabled': False}}, 'terminal': {'cwd': str(home)},
            'platform_toolsets': {'api_server': ['terminal', 'clarify']}, 'approvals': {'mode': 'manual'}}
     (home / 'config.yaml').write_text(json.dumps(cfg))
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
+    from tests.gateway.fixtures.local_recovery_probe import child_env
+    env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED',) if k in os.environ}}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=base, API_SERVER_KEY='ordinary-daemon-owned-secret',
                API_SERVER_ENABLED='true', API_SERVER_PORT=str(port), PYTHONUNBUFFERED='1')

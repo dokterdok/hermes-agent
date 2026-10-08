@@ -2,6 +2,7 @@ import http from 'node:http'
 import https from 'node:https'
 
 import { downloadAgentFor, withRetry } from './api-transport'
+import { destroyStalledBody } from './gateway-file-download'
 import { DEFAULT_FETCH_TIMEOUT_MS, resolveTimeoutMs } from './hardening'
 import { nativeGatewayHttpHeaders } from './local-gateway'
 
@@ -40,6 +41,8 @@ export async function downloadViaTokenToFile(url, token, ctx, finalizeGatewayDow
     res.destroy()
     throw new Error(`Unexpected download redirect (${res.statusCode})`)
   }
+
+  destroyStalledBody(res, resolveTimeoutMs(options.bodyIdleTimeoutMs, DEFAULT_FETCH_TIMEOUT_MS))
 
   return finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
     ...ctx, abort: () => res.destroy()

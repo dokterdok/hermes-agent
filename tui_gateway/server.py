@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint
 import atexit
 import concurrent.futures
 import contextlib
@@ -10,12 +11,13 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone  # noqa: F401  (timezone: split modules)
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
 
@@ -29,12 +31,16 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
+from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
+from agent.voice_turn_route import session_runtime_view
 from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
 from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
 from tui_gateway import git_probe
+from tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
+                                     resolve_checkpoints_enabled as _resolve_checkpoints_enabled)  # noqa: F401
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
@@ -100,6 +106,12 @@ _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run un
 _cfg_cache: dict | None = None
 _cfg_sig: tuple | None = None
 _cfg_path = None
+
+# Idempotency registry for session.create: maps client-supplied key → sid so a
+# retried create (e.g. response lost in transit) returns the same session
+# instead of spawning a duplicate child. Entries expire with the session.
+_idempotency_keys: dict[str, tuple[str, float]] = {}
+_IDEMPOTENCY_KEY_TTL = 300.0  # 5 min: longer than any realistic retry window
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
 
@@ -162,7 +174,10 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.* / session.active_list =
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
-# git subprocess probes on an arbitrary (maybe slow) mount.
+# git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
+# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.* setup profile =
+# create_profile skill copy + state.db writes + the first import of the setup scanner; session.start_chat =
+# session creation + a prompt.submit.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
@@ -176,8 +191,11 @@ _LONG_HANDLERS = frozenset({
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
-    "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "onboarding.ensure_setup_profile", "onboarding.ensure_setup_session", "onboarding.reset_setup_profile",
+    "session.start_chat",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
+    "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
 
 _rpc_pool_workers = max(2, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))
@@ -218,14 +236,19 @@ _detached_ws_transport = _DropTransport()
 
 
 def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
-    """Prepend managed bin (first: managed-first policy for the Browser Use CLI), venv bin and
-    ~/.local/bin to PATH so slash_worker children resolve Hermes-managed CLIs under the Desktop's minimal PATH."""
+    """Prepend managed bin (managed-first policy for the Browser Use CLI), venv bin and
+    ~/.local/bin to PATH so slash_worker children resolve Hermes-managed CLIs under the Desktop's minimal PATH.
+    The PM store dirs go in front of all of them: a user's node/uv in ~/.local/bin never wins."""
     managed_bin = ""
     with contextlib.suppress(Exception):
         managed_bin = str(Path(get_hermes_home()) / "bin")
     venv_bin = str(Path(sys.executable).parent)  # <venv>/bin (POSIX) or <venv>/Scripts (Windows)
     parts = [p for p in (managed_bin, venv_bin, str(Path.home() / ".local" / "bin"), env.get("PATH") or "") if p]
     env["PATH"] = os.pathsep.join(parts)
+    with contextlib.suppress(Exception):
+        import pm
+
+        env["PATH"] = pm.store_first_path(env["PATH"])
     return env
 
 
@@ -241,7 +264,8 @@ class _SlashWorker:
         # ``--provider`` pins the child to the parent agent's virtual provider: without it the
         # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
         # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key,
+                "--parent-pid", str(os.getpid())] \
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else [])
         self._closed = False
@@ -292,6 +316,12 @@ class _SlashWorker:
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
     def run(self, command: str) -> str:
+        """Run one command; return its output text.
+
+        A command like /prompt may also have parked a next-turn prompt (a "seed")
+        on the worker CLI; it rides back on the reply's ``seed`` field and is
+        retrieved separately via ``pop_seed()``.
+        """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
         with self._lock:
@@ -310,9 +340,15 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
+                self._last_seed = str(msg.get("seed", "") or "")
                 return str(msg.get("output", "")).rstrip()
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
+
+    def pop_seed(self) -> str:
+        """Return and clear the seed from the last ``run()`` (empty when none)."""
+        seed, self._last_seed = getattr(self, "_last_seed", ""), ""
+        return seed
 
     def close(self):
         if getattr(self, "_closed", False):
@@ -603,8 +639,10 @@ def _profile_scoped(handler):
             home = _profile_home(p.get("profile"))
             profile_home = str(home) if home else None
         else:
+            # Sessionless: the authority ticket's profile (WS legacy fallback), else the launch one.
+            from tui_gateway.ws_legacy_fallback import connection_profile_home
             session = _sessions.get(str(p.get("session_id") or ""))
-            profile_home = session.get("profile_home") if isinstance(session, dict) else None
+            profile_home = session.get("profile_home") if isinstance(session, dict) else connection_profile_home()
         with _session_profile_runtime_scope({"profile_home": profile_home or None}):
             return handler(rid, params)
     return wrapper
@@ -693,7 +731,8 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
-                            lambda sid: _session_client_answers_requests(sid))
+                            lambda sid: _session_client_answers_requests(sid),
+                            lambda sid: _session_answering_clients(sid))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -795,7 +834,7 @@ def _pending_approval_request_payload(session_key: str) -> dict | None:
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
-    """Send an ``approval`` server request with the command redacted: a credential-shaped value Tirith flagged
+    """Send an ``approval`` server request with the command redacted: a credential-shaped value
     would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
     See #48456, #50767.
 
@@ -988,9 +1027,9 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from hermes_cli.config import atomic_config_write
+    from hermes_cli.config import atomic_config_replace
     path = _active_config_path()
-    atomic_config_write(path, cfg)
+    atomic_config_replace(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
@@ -1071,24 +1110,16 @@ def _clarify_timeout_seconds() -> float | None:
     return 300
 
 
-def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
-    """Bridge the clarify tool callback onto a ``clarify`` server request. Single question: the response is
-    ``{"answer"}`` ("" = skip). Batch: one request with only the wire fields (tool-side entries carry
-    result-assembly keys too); answers lock one at a time through ``clarify.lock`` and the tool gets
-    ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
+def _clarify_block(sid: str, questions: list[dict]) -> dict:
+    """Bridge the clarify tool callback onto one ``clarify`` server request carrying only the wire fields
+    (tool-side entries carry result-assembly keys too). Answers lock one at a time through ``clarify.lock``
+    (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it."""
     from tui_gateway import server_requests
-    if questions:
-        wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
-                for e in questions]
-        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                                      qids=[e["qid"] for e in questions])
-        if not result or "answers" not in result:
-            return ""
-        return json.dumps(result, ensure_ascii=False)
-    params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
-    answer = (result or {}).get("answer", "")
-    return answer if isinstance(answer, str) else ""
+    wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
+            for e in questions]
+    result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+                                  qids=[e["qid"] for e in questions])
+    return result or {"answers": {}, "outcome": "undelivered"}
 
 
 # A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
@@ -1129,6 +1160,70 @@ def _tour_request(sid: str, payload: dict) -> str:
     elif state != "answered":
         session["tour_bridge"] = "unanswered"
     return answer or _TOUR_BRIDGE_UNAVAILABLE
+
+
+_PREVIEW_ACTION_TIMEOUT_S = 45
+# Until a session's client has proven it answers preview.act at all, hold it to a
+# deadline a working renderer cannot miss (same ladder as the tour probe).
+_PREVIEW_ACTION_PROBE_TIMEOUT_S = 10
+# An unanswered probe condemns the bridge only until the cooldown expires: the
+# renderer may attach late (app launched after the turn started). One caller at
+# a time re-probes; concurrent siblings fail fast instead of stacking waits.
+_PREVIEW_ACTION_REPROBE_COOLDOWN_S = 30
+
+_PREVIEW_ACTION_BRIDGE_UNAVAILABLE = json.dumps({
+    "success": False,
+    "error": ("No Hermes Desktop window answered the preview action request. The drive_preview / "
+              "annotate_preview bridge is served by the desktop app's renderer, which updates "
+              "separately from this backend, so an app build older than the tool has nothing "
+              "listening. Update the Hermes Desktop app, open a page with open_preview, and try "
+              "again in this session after a short cooldown.")})
+
+# One in-flight cooldown-expiry reprobe per session: concurrent callers fail fast.
+_preview_action_reprobe: dict[str, object] = {}
+_preview_action_reprobe_lock = threading.Lock()
+
+
+def _preview_action_request(sid: str, payload: dict) -> str:
+    """Bridge the drive_preview / annotate_preview callback onto a ``preview.act`` server request
+    without paying for a client that cannot answer: against an older app (or a session no window
+    hosts, #94272 / #119333) nobody answers ``preview.act`` and each action would block the full
+    deadline, stacking per turn exactly like the tour timeouts (#89620). First action per session
+    gets the short probe deadline; unanswered → bridge marked unavailable for that session with a
+    cooldown-gated reprobe; once answered, the full deadline. The verdict lives on the session
+    record, so a new session re-probes. Interrupt ≠ timeout: a cancelled wait (Stop, session close)
+    returns without poisoning the state, because ``send()``'s None conflates the two and only the
+    cooldown-reprobe token distinguishes an in-flight probe — so state flips only through it.
+    """
+    with _sessions_lock:
+        session = _sessions.get(sid)
+        if session is None:
+            # detached caller: throwaway record, plain bridge, unprobed ({} is falsy but a REAL record)
+            session = {}
+        state = session.get("preview_action_bridge")
+        now = time.monotonic()
+        if state == "unanswered" and now < session.get("preview_action_bridge_retry_at", 0):
+            return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
+        if state == "unanswered":
+            with _preview_action_reprobe_lock:
+                if _preview_action_reprobe.get(sid) is not None:
+                    return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
+                _preview_action_reprobe[sid] = object()
+                session["preview_action_bridge_retry_at"] = now + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+    try:
+        answer = _ask("preview.act", sid, dict(payload),
+                      timeout=_PREVIEW_ACTION_TIMEOUT_S if state == "answered" else _PREVIEW_ACTION_PROBE_TIMEOUT_S)
+    finally:
+        if state == "unanswered":
+            with _preview_action_reprobe_lock:
+                _preview_action_reprobe.pop(sid, None)
+    with _sessions_lock:
+        if answer:
+            session["preview_action_bridge"] = "answered"
+        elif session.get("preview_action_bridge") != "answered":
+            session["preview_action_bridge"] = "unanswered"
+            session["preview_action_bridge_retry_at"] = time.monotonic() + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+    return answer or _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -1224,11 +1319,24 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
                 from agent.context_compressor import _DB_PERSISTED_MARKER
+                # Same stale-key hazard as the submit row: this durable pivot must land in the session the
+                # live agent writes to, or a model switch between turns on a rotated session files the notice
+                # under a parent the conversation no longer reads from (#123545).
+                target = _submit_row_target_key(session)
+                # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
+                # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
+                db.deactivate_messages_by_display_kind(target, "model_switch")
+                from agent.message_metadata import stamp_message_uid
                 entry["_row_id"] = db.append_message(
-                    session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                    session_id=target, role="user", content=marker, display_kind="model_switch",
+                    message_uid=stamp_message_uid(entry))
                 entry[_DB_PERSISTED_MARKER] = True
     except Exception:
-        logger.debug("failed to persist model switch marker", exc_info=True)
+        # warning, not debug: filing the pivot in the LIVE session (#123545) means this write can now hit
+        # CompressionSessionClosedError on a closed parent, which the old session_key target could not.
+        # Swallowed at debug, a model switch silently loses its durable notice — the next resume replays
+        # without it and nothing lands in errors.log. Matches _persist_live_session_system_prompt above.
+        logger.warning("failed to persist model switch marker", exc_info=True)
 
 
 def _write_config_key(key_path: str, value):
@@ -1411,16 +1519,17 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     carries. The profile default is the LAST resort, never the answer for a chat that made its own pick."""
     pending = session.get("pending_model_switch") or {}
     mirror = _metadata_mirror(session)
-    agent = session.get("agent")
+    agent = session_runtime_view(session.get("agent"))
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
-             or getattr(agent, "model", "") or override.get("model") or _session_default_model(session))
+             or getattr(agent, "model", "") or override.get("model"))
     provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
-                or getattr(agent, "provider", "") or override.get("provider") or "")
-    return str(model), str(provider or "")
+                or getattr(agent, "provider", "") or override.get("provider"))
+    default = ("", "") if model else _session_default_route(session)
+    return str(model or default[0]), str(provider or default[1])
 
 
-def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -> bool:
+def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, tier: str | None = None) -> bool:
     """Whether a priority tier reaches this session's route. Every request builder asks the same gate, so a
     profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
     report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
@@ -1432,7 +1541,7 @@ def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -
             base_url = getattr(agent, "_anthropic_base_url", None)
         base_url = base_url or getattr(agent, "base_url", None)
     try:
-        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url) is not None
+        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url, tier=tier) is not None
     except Exception:
         return False
 
@@ -1440,6 +1549,7 @@ def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
+    agent = session_runtime_view(agent)
     sess = session or {}
     mirror = _metadata_mirror(session)
     cwd = _display_session_cwd(session)
@@ -1477,14 +1587,15 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # Hermes-internal step (#61634) as a wire level the route does not have.
     reasoning_effort_wire = ""
     if reasoning_effort and reasoning_effort != "none":
-        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
+        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
+            pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
         "service_tier": service_tier,
-        "fast": service_tier == "priority" and _fast_tier_applies(agent, model, pending_provider or provider,
-                                                                  route_known=not pending_provider),
+        "fast": service_tier in STATIC_TIERS and _fast_tier_applies(agent, model, pending_provider or provider,
+                                                                    route_known=not pending_provider, tier=service_tier),
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
@@ -1600,7 +1711,7 @@ class _RuntimeFallbackResolution(NamedTuple):
 
 
 def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None) -> None:
-    """Adopt the stored row's cwd, or persist the fresh session's cwd (+ schedule git meta) when the row has none."""
+    """Adopt the stored row's cwd and fill missing Git metadata, or persist a fresh cwd."""
     owns_db, db = False, session_db
     if db is None and not profile_home:
         db = _get_db()
@@ -1616,7 +1727,7 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
     try:
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
-            if row and row.get("cwd"):
+            if row and _resumable_stored_cwd(row.get("cwd"), profile_home):
                 # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
                 # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
                 remote = _cwd_is_remote(profile_home)
@@ -1625,7 +1736,20 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                         _sessions[sid]["cwd"] = row["cwd"]
                         if remote:
                             _sessions[sid]["explicit_cwd"] = True
-            elif hasattr(db, "update_session_cwd"):
+                # Lazy desktop rows already carry their explicitly chosen cwd, so they never reach the fresh-cwd
+                # branch below. Claim a generation before probing to keep an older probe from overwriting a later
+                # workspace move; complete rows do not need another probe on every resume.
+                if (not row.get("git_branch") or not row.get("git_repo_root")) and hasattr(
+                    db, "update_session_cwd"
+                ):
+                    try:
+                        _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row["cwd"], db=db)
+                    except Exception:
+                        logger.debug("failed to enrich resumed session git metadata", exc_info=True)
+            elif not (row and row.get("cwd")) and hasattr(db, "update_session_cwd") and not _is_remote_launch_cwd(
+                _sessions.get(sid)
+            ):
+                # A stored cwd that was set aside (Hermes's own host tree) stays as stored: only an empty row is filled.
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
                 except Exception:
@@ -1978,7 +2102,7 @@ def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
 # slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
     "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
-    "init", "compress", "compact",
+    "init", "compress", "compact", "initiate-setup", "initiate_setup",
 })
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
@@ -2042,7 +2166,8 @@ from . import (  # noqa: E402
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
     methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
     methods_display as _methods_display, methods_display_watch as _methods_display_watch,
-    methods_onboarding as _methods_onboarding)
+    methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n,
+    methods_shared_metrics as _methods_shared_metrics, methods_start_chat as _methods_start_chat)
 
 for _m in (
     _session_registry, _agent_factory,
@@ -2054,6 +2179,7 @@ for _m in (
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
-    _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding):
+    _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
+    _methods_i18n, _methods_shared_metrics, _methods_start_chat):
     _m.register(sys.modules[__name__])
 del _m
