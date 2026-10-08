@@ -44,7 +44,7 @@ class TelegramPromptsMixin:
                 text += "\n\n" + "\n".join(f"{i + 1}. {facade._html.escape(str(c))}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
                 rows = [[facade.InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                rows.append([facade.InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
+                rows.append([facade.InlineKeyboardButton(facade.t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
                 keyboard = facade.InlineKeyboardMarkup(rows)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
         return await self._send_prompt(
@@ -55,7 +55,7 @@ class TelegramPromptsMixin:
         gateway finds the notice by its token, rechecks who may choose, and the message is edited
         in place into what comes next."""
         from plugins.platforms.telegram import adapter as facade
-        if not await self._callback_authorized(query, cb, facade._UNAUTHORIZED):
+        if not await self._callback_authorized(query, cb, facade._unauthorized()):
             return
         act = getattr(self.gateway_runner, "_group_chat_action", None)
         result = None
@@ -67,7 +67,7 @@ class TelegramPromptsMixin:
                 logger.warning("[%s] Group Chat notice choice failed", self.name, exc_info=True)
         if result is None:
             with contextlib.suppress(Exception):
-                await query.answer(text=facade._UNAUTHORIZED)
+                await query.answer(text=facade._unauthorized())
             return
         with contextlib.suppress(Exception):
             await query.edit_message_text(text=facade._html.escape(result["text"]), parse_mode=facade.ParseMode.HTML,

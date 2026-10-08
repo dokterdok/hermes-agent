@@ -102,6 +102,9 @@ async def test_discord_sends_buttons_without_a_timeout_and_routes_clicks_by_cust
     other.data, other.channel_id = {'custom_id': f'hg:go:{TOKEN}'}, 555
     await adapter._on_group_action_interaction(other)
     assert other.response.send_message.call_args.kwargs['ephemeral'] is True and len(runner.taps) == 1
+    adapter._component_live_auth = lambda interaction: False
+    await adapter._on_group_action_interaction(interaction)
+    assert len(runner.taps) == 1  # A stale connect-time allowlist cannot authorize the tap.
     unrelated = _make_interaction(user_id='42')
     unrelated.data = {'custom_id': 'clarify:1:0'}
     await adapter._on_group_action_interaction(unrelated)

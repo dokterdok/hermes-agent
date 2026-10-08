@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 _PROFILE_RESCAN_INTERVAL_SECS = 30.0
 _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
+# Bound for one own-gateway liveness probe (``live_gateway_pid_for_home``): the control-socket
+# read it can end in has no timeout of its own — on Windows the named pipe stalls there until
+# its peer answers — so the await needs one. A healthy identify answers in milliseconds.
+_OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
 
 
 def profile_serve_signature(home: "Path") -> tuple:
@@ -49,6 +53,7 @@ class GatewayProfileReconcileMixin:
     _served_profile_signatures: Optional[Dict[str, tuple]] = None
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
     _profile_own_gateway_warned: Optional[set[str]] = None
+    _profile_probe_timeout_warned: Optional[set[str]] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -113,17 +118,40 @@ class GatewayProfileReconcileMixin:
             from gateway.status import live_gateway_pid_for_home
 
             blocked = set()
+            timed_out = set()
             warned = self._profile_own_gateway_warned or set()
+            timeout_warned = self._profile_probe_timeout_warned or set()
             for name in list(live):
                 if name == active or name in known:
                     continue
-                if live_gateway_pid_for_home(live[name]) is not None:
+                # The probe can end in a control-socket read that has no timeout of its own
+                # (a Windows named pipe stalls there until its peer answers). Inline on the
+                # loop thread it parked shutdown_watchdog liveness probes and the multiplexer
+                # was hard-killed with exit 75 (#132547). Probe off the loop, bounded: a
+                # stalled probe only wedges one bounded housekeeping worker for this cycle
+                # (wait_for cancels the still-queued await), never the event loop.
+                try:
+                    pid = await asyncio.wait_for(
+                        self._run_housekeeping_in_executor(live_gateway_pid_for_home, live[name]),
+                        timeout=_OWN_GATEWAY_PROBE_TIMEOUT_SECS)
+                except asyncio.TimeoutError:
+                    # Unprovable is not "own gateway running": skip it this cycle without
+                    # warning about (or remembering) a gateway that may not exist. Warn once
+                    # per stall; a peer that stays wedged repeats at DEBUG every cycle.
+                    timed_out.add(name)
+                    log = logger.debug if name in timeout_warned else logger.warning
+                    log("[MULTIPLEX] Own-gateway probe for profile '%s' timed out; "
+                        "not serving it this cycle", name)
+                    del live[name]
+                    continue
+                if pid is not None:
                     blocked.add(name)
                     if name not in warned:
                         logger.warning("[MULTIPLEX] Profile '%s' still runs its own gateway; "
                                        "stop it before the host can serve this profile", name)
                     del live[name]
             self._profile_own_gateway_warned = blocked
+            self._profile_probe_timeout_warned = timed_out
             sigs = self._served_profile_signatures or {}
             from gateway.run_runtime import unpark_profile
             for name in [n for n in self._parked_profile_names() if n not in live]:
@@ -169,6 +197,7 @@ class GatewayProfileReconcileMixin:
             current[name] = live[name]
         claimed = self._live_resource_claims(active)
         transient_failed = set()
+        config_parked = set()
         for name in added + changed:
             # Only acknowledge the configuration observed before connecting;
             # a setup save during an awaited handshake needs another scan.
@@ -176,10 +205,16 @@ class GatewayProfileReconcileMixin:
             try:
                 connected = await self._start_one_profile_adapters(name, current[name], claimed)
             except MultiplexConfigError as exc:
-                # Boot refuses to run with such a profile; at runtime we park just this profile.
+                # Runtime config refusal is a real park, not an adapter-less served profile:
+                # withdraw the authority/tickets, release the reservation and publish the
+                # terminal parked verdict.  A control-socket rescan can explicitly retry it.
                 logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
-                connected = 0
-                sigs[name] = scan_signature
+                home = current.pop(name)
+                await self._unserve_profile(name, home)
+                park_profile(self, name, str(exc))
+                result["parked"].append(name)
+                config_parked.add(name)
+                continue
             except Exception:
                 logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
                 connected = 0
@@ -194,6 +229,8 @@ class GatewayProfileReconcileMixin:
             else:
                 logger.info("[MULTIPLEX] Re-scanned profile '%s' after config/.env change (%s adapter(s) connected)", name, connected)
                 result["rescanned"].append(name)
+        if config_parked:
+            added = [name for name in added if name not in config_parked]
         self._served_profile_signatures = sigs
         # A profile deleted while an adapter above was still connecting must not be recorded back
         # (the deleter's signal timed out against this lock and rmtree already ran).
@@ -242,7 +279,7 @@ class GatewayProfileReconcileMixin:
             await serve_profile_runtime(self, name, home)
         except Exception as exc:
             logger.error("[MULTIPLEX] Profile '%s' not served: its session store is unusable (%s): %s",
-                         name, home, exc)
+                         name, home, exc, exc_info=True)
             release_profile_home(self, home)
             return f"session store unusable: {exc}"
         return None
@@ -279,6 +316,9 @@ class GatewayProfileReconcileMixin:
     async def _unserve_profile(self, name: str, home: "Path") -> None:
         """Stop and unroute one profile: cancel its reconnects, tear down its adapters, drop its
         bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds.
+        The releasing process is not always the deleter (#130244): under multiplexing THIS gateway
+        process routes the profile's logs and owns its scoped MCP servers, so both must be released
+        here too or the deleter's rmtree still fails on ``logs/.__agent.lock`` / ``mcp-stderr.log``.
 
         The whole teardown runs inside the removed profile's own runtime scope: adapter disconnect
         hooks, the agent-cache eviction (provider/memory shutdown) and the state/memory handle
@@ -328,6 +368,23 @@ class GatewayProfileReconcileMixin:
             with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
                 from plugins.memory.holographic.store import MemoryStore
                 MemoryStore.release_all_under(home)
+            # The gateway process is a second holder the CLI-side delete cannot reach: its routed
+            # log files (logs/.__agent.lock, logs/.__errors.lock) and its scoped MCP servers'
+            # mcp-stderr.log handle live HERE, so unserve must release them in this process too
+            # (#130244) — the same two calls ``delete_profile`` makes for the deleting process.
+            # Both calls BLOCK (the log release stops/joins the QueueListener, which can be inside
+            # a ConcurrentRotatingFileHandler emit waiting on another process's rotation lock; the
+            # MCP shutdown waits on future.result for the MCP loop), so they run off the loop in a
+            # worker thread — otherwise every other served profile's events stall behind them.
+            # ``asyncio.to_thread`` copies the context, so the surrounding
+            # ``_profile_runtime_scope`` home/secret override stays visible in the worker.
+            with _log_suppressed(logging.DEBUG, "scoped MCP shutdown failed", exc_info=True):
+                from hermes_constants import hermes_home_key
+                from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+                await asyncio.to_thread(shutdown_mcp_servers, scope=hermes_home_key(home))
+            with _log_suppressed(logging.DEBUG, "profile log handler release failed", exc_info=True):
+                from hermes_logging import release_profile_log_handlers
+                await asyncio.to_thread(release_profile_log_handlers, home)
             logger.info("[MULTIPLEX] Profile '%s' unserved — %d adapter(s) stopped and unrouted", name, len(adapters))
 
 
