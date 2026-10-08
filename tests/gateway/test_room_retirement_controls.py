@@ -20,7 +20,7 @@ async def test_ended_owner_can_settle_expired_peer_authority_without_restoring_r
             **{key: claims[key] for key in ('room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch', 'member_id')})
         refused = await call(gateway.owner, 'groups.peer.register', room_id='linked', member_id='reviewer',
             target_url=url, target_profile='default', grant=narrow['grant'], catalog=catalog)
-        assert refused == 'peer_target_unsupported'
+        assert refused == 'room_retirement_not_granted'
         assert gateway.service.peer_routes[('linked', 'reviewer')].grant == grant
         future = claims['status_expires_at'] + 3600
         monkeypatch.setattr(time, 'time', lambda: future)

@@ -7,9 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.gateway.test_session_hosted_rpc import hosted_owner as hosted_owner  # noqa: F401
-
-
 def _server(home):
     from gateway.control_socket import GatewayControlServer
     descriptor = {'runtime_protocol': 1, 'state': 'ready', 'instance_id': 'test',
