@@ -1339,7 +1339,9 @@ def _successor_run_scope(self, request, run_id: str, permission: Optional[str]) 
     lookup = getattr(self._run_idempotency_store, "successor_run_scope", None)
     if identity is None or not callable(lookup):
         return None
-    scope = lookup(run_id, successor=identity)
+    # Canonical projections bypass the transport status reader. Persist the
+    # successor's verified horizon while resolving the inherited receipt itself.
+    scope = lookup(run_id, successor=identity, retention_until=_room_retention_until(request))
     owner = self._run_owners.get(run_id)
     return scope if scope is not None and owner in (None, scope) else None
 

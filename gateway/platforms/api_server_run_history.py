@@ -28,10 +28,14 @@ def _lineage_key(conn, identity):
     return canonical(conn, room_authority(identity))[0]
 
 
+def is_non_admission(status, fingerprint, owner_pid, owner_started):
+    return (status.get('admission_cancelled') is True and status.get('status') == 'cancelled'
+            and fingerprint == '' and not owner_pid and not owner_started)
+
+
 def remember(conn, scope, authority_key, status, fingerprint, owner_pid, owner_started, indexed):
     """Deletion may forget a key, never whether that lineage lost possible execution evidence."""
-    if (status.get('admission_cancelled') is True and status.get('status') == 'cancelled'
-            and fingerprint == '' and not owner_pid and not owner_started):
+    if is_non_admission(status, fingerprint, owner_pid, owner_started):
         return
     from gateway.platforms.api_server_run_scope import stored_room_scope
     identity = stored_room_scope(conn, scope)

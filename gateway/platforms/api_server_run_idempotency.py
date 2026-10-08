@@ -127,6 +127,14 @@ def _outcome(row, fingerprint):
     return ("reused" if matches else "conflict"), record
 
 
+def terminal_observation_expired(updated_at, retention_until, acknowledged_at, now):
+    """A settled receipt outlives both its recovery window and verified Status grant."""
+    if acknowledged_at is not None and acknowledged_at >= updated_at:
+        if acknowledged_at + RunIdempotencyStore.ACKNOWLEDGED_RETENTION_SECONDS <= now:
+            return True
+    return max(retention_until, updated_at + RunIdempotencyStore.RETENTION_SECONDS) <= now
+
+
 class RunIdempotencyStore:
     """Durable, tenant-scoped reservations for ``POST /v1/runs``: a unique ``(scope, key)`` row
     inserted inside ``BEGIN IMMEDIATE`` so separate workers cannot both admit one request. Only
@@ -833,7 +841,10 @@ class RunIdempotencyStore:
             (now - self.ACKNOWLEDGED_RETENTION_SECONDS, now, now - self.RETENTION_SECONDS),
         ).fetchall()
         pruned = False
+        retired_keys = set()
         for stale_scope, stale_key, stale_status, stop_requested, authority_key, fingerprint, owner_pid, owner_started, indexed in stale:
+            if authority_key:
+                retired_keys.add(authority_key)
             try:
                 status = json.loads(stale_status)
                 # A renewed grant may still carry the same generation after normal replay TTL.
@@ -848,12 +859,15 @@ class RunIdempotencyStore:
                 self._conn.execute(
                     "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (stale_scope, stale_key))
                 pruned = True
+        from gateway.platforms.api_server_run_authority import compact
+        for authority_key in retired_keys:
+            pruned = compact(self._conn, authority_key, now=now) or pruned
         if pruned:
             # Without a run record or a freeze, a scope can no longer be stopped or listed.
             self._conn.execute(f"""DELETE FROM {_SCOPES} WHERE scope NOT IN (SELECT scope FROM run_idempotency)
                 AND scope NOT IN (SELECT scope FROM {_FREEZES})""")
 
-    def successor_run_scope(self, run_id: str, *, successor: dict) -> str | None:
+    def successor_run_scope(self, run_id: str, *, successor: dict, retention_until: float = 0) -> str | None:
         """The scope of one existing room run whose Status and Stop passed to ``successor``.
 
         ``successor`` is the caller's verified room scope. It must name the same room, member and
@@ -863,10 +877,14 @@ class RunIdempotencyStore:
         successor = validate_room_run_scope(successor)
         if not self.durable:
             return None
-        with self._lock:
+        with self._immediate_txn():
             row = self._conn.execute("SELECT scope FROM run_idempotency WHERE run_id=?", (run_id,)).fetchone()
             identity = self._scope_identity_locked(row[0]) if row is not None else None
-            return row[0] if identity is not None and self._successor_controls_identity_locked(identity, successor) else None
+            scope = row[0] if identity is not None and self._successor_controls_identity_locked(identity, successor) else None
+            if scope is not None and retention_until:
+                self._conn.execute(_EXTEND_RETENTION_BY_RUN, (max(0.0, float(retention_until)), scope, run_id))
+            self._conn.commit()
+            return scope
 
     def room_run_evidence(self, room_id: str, *, through_epoch: int, limit: int = 256) -> dict[str, Any]:
         """The room runs this store admitted at or below an authority epoch, newest first.
