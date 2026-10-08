@@ -109,7 +109,7 @@ class Home:
 
 
 @contextmanager
-def gateway(tmp_path):
+def gateway(tmp_path, *, journal_mode=None):
     """The Telegram Bot's gateway (profile default) and the second member's standalone gateway."""
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -128,6 +128,8 @@ def gateway(tmp_path):
               'auxiliary': {'title_generation': {'enabled': False}}, 'terminal': {'cwd': str(home)},
               'platforms': {'telegram': {'enabled': True, 'token': 'fixture-token', 'extra': {
                   'allow_admin_from': ['alice'], 'group_allow_admin_from': ['bob']}}}}
+    if journal_mode is not None:
+        config['database'] = {'journal_mode': journal_mode}
     (home / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
     (two / 'config.yaml').write_text(json.dumps({**config, 'platforms': {}, 'gateway': {'standalone': True}}),
                                      encoding='utf-8')
