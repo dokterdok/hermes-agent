@@ -626,7 +626,7 @@ class CanonicalHostedOutput:
                     self._output_write(lambda conn: conn.execute(
                         f"DELETE FROM {OBLIGATIONS} WHERE room_id=? AND state='completed'", (room_id,)))
         if remaining:
-            raise RuntimeError("room file cleanup is still pending; retry deletion after it completes")
+            raise RuntimeStoreError("room_retiring")
 
     def _force_obligation(self, identity, scope, manifest, operation, action, *, reason="room_disbanded"):
         """Disband: settle one obligation now, overriding its backoff or block."""
