@@ -176,3 +176,32 @@ def test_uncommitted_output_exception_does_not_weaken_input_evidence(tmp_path):
         removed = False
     assert not removed
     assert path.read_bytes() == b'Owned output bytes'
+
+
+def test_process_death_reclaims_only_its_journaled_uncommitted_blob(tmp_path):
+    import subprocess
+    import sys
+    from tests.gateway.fixtures.local_recovery_probe import child_env
+
+    database = tmp_path / 'state.db'
+    child = subprocess.run([sys.executable, '-c', '''
+import os, sys
+from gateway.hosted_room_artifacts import RoomArtifactOutbox
+from gateway.hosted_room_output_cleanup import staged_blob
+outbox = RoomArtifactOutbox(sys.argv[1])
+with staged_blob(outbox, 'blob_' + 'c' * 32) as (source, parent):
+    source.write(b'Interrupted producer bytes')
+    source.flush()
+    os.fsync(source.fileno())
+    os._exit(23)
+''', str(database)], env=child_env(), capture_output=True, text=True, timeout=30)
+    assert child.returncode == 23, child.stderr
+    with sqlite3.connect(database) as conn:
+        name, encoded = conn.execute('SELECT * FROM hosted_room_output_blob_cleanup').fetchone()
+    assert json.loads(encoded)['size'] is None
+    path = tmp_path / 'hosted-room-artifact-outbox' / 'blobs' / name
+    assert path.read_bytes() == b'Interrupted producer bytes'
+    recovered = RoomArtifactOutbox(database)
+    assert records(recovered) == [] and not path.exists()
+    with recovered._connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM hosted_room_output_blob_cleanup').fetchone()[0] == 0
