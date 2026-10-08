@@ -182,3 +182,75 @@ async def test_peer_dm_waiter_follows_the_retry_admission_to_its_answer(bot):
         finite.execute_finite_admission = execute
     assert (receipt['status'], receipt['reply']) == ('settled', 'pong'), receipt
     assert receipt['retry_admission_id']
+
+
+@pytest.mark.asyncio
+async def test_receipt_file_stays_pending_while_a_draining_owner_leaves_the_retry_to_its_successor(bot):
+    """Senders wait on the published receipt file, not an authority RPC. An original that failed
+    transiently while the owner drains is interim there (``claimed``), never the final ``failed``:
+    the restarted owner's recovery admits the one retry and the same wait gets its answer."""
+    from gateway.session_bot import deliver, recover_bot_deliveries
+    from tools.bot_live_delivery import await_delivery_async
+    import gateway.session_finite as finite
+    started, gate = asyncio.Event(), asyncio.Event()
+    execute = finite.execute_finite_admission
+
+    async def held(authority, ref, row):
+        if not row['request_id'].endswith(':retry'):
+            started.set()
+            await gate.wait()
+        return await execute(authority, ref, row)
+
+    finite.execute_finite_admission = held
+    try:
+        bot.errors[:] = ['Error code: 429 - rate limit exceeded']
+        await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
+        await asyncio.wait_for(started.wait(), 5)
+        bot.authority.runner._draining = True  # shutdown starts while the original runs
+        gate.set()
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if _admissions(bot)[0]['status'] == 'terminal':
+                break
+        await asyncio.sleep(0.1)
+        interim = await await_delivery_async(bot.home, KEY, 0.2)
+        assert interim['status'] == 'claimed' and len(_admissions(bot)) == 1, interim
+        waiting = asyncio.create_task(await_delivery_async(bot.home, KEY, 10))
+        bot.authority.runner._draining = False  # the successor owner's startup recovery
+        await recover_bot_deliveries(bot.authority)
+        receipt = await asyncio.wait_for(waiting, 10)
+    finally:
+        finite.execute_finite_admission = execute
+    assert (receipt['status'], receipt['reply']) == ('settled', 'pong'), receipt
+    assert [r['request_id'] for r in _admissions(bot)] == ['bot:' + KEY, 'bot:' + KEY + ':retry']
+
+
+@pytest.mark.asyncio
+async def test_mailbox_file_lock_held_elsewhere_never_stalls_the_owner_loop(bot):
+    """The cross-process mailbox lock guards one receipt write, taken off the event loop: a DM
+    runner (another process) holding it delays only that write, never every other session, socket
+    and delivery on the owner's loop, and never across an admission await."""
+    import threading
+    import time
+    from gateway.session_bot import deliver
+    from hermes_cli.active_sessions import _FileLock
+    from tools.bot_live_delivery import _locked, _root
+    with _locked(bot.home):
+        pass
+    held, release = threading.Event(), threading.Event()
+
+    def foreign_holder():
+        with _FileLock(_root(bot.home) / '.lock'):
+            held.set()
+            release.wait(1.0)
+    threading.Thread(target=foreign_holder, daemon=True).start()
+    assert held.wait(5)
+    delivering = asyncio.create_task(deliver(bot.connection, dict(id=KEY, profile='default', message='ping')))
+    started = time.monotonic()
+    for _ in range(5):
+        await asyncio.sleep(0.02)
+    loop_stall = time.monotonic() - started
+    release.set()
+    receipt = await asyncio.wait_for(delivering, 5)
+    assert loop_stall < 0.5, f'event loop blocked {loop_stall:.2f}s behind a foreign mailbox lock holder'
+    assert receipt['status'] in {'queued', 'claimed', 'settled'}, receipt

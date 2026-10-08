@@ -229,6 +229,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         options?.destination ?? captureSubmissionDestination(initialStoredId ?? initialRuntimeId, ambientRequestGateway)
 
       const requestGateway = destination.requestGateway
+
       // `hidden` (the first-run `/initiate-setup`) types the saved user row hidden: no bubble, live
       // or after a reload. It rides retryOptions so a prepared-submission retry stays hidden too.
       const retryOptions = {

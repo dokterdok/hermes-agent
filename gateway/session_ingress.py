@@ -1,5 +1,6 @@
 """Trusted messaging admission and the existing TurnRunner invocation boundary."""
 import asyncio
+import logging
 from contextvars import ContextVar
 from contextlib import nullcontext
 from dataclasses import replace
@@ -8,17 +9,25 @@ from gateway.platforms.event import MessageEvent
 from gateway.session_envelope import restore_native
 from hermes_state_runtime import RuntimeStoreError
 
+logger = logging.getLogger(__name__)
+
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
+# Set by a busy-path caller that must be released once its input is durably queued.
+busy_acceptance = ContextVar('busy_acceptance', default=None)
 
 
 async def admit_message(authority, event):
+    accepted = busy_acceptance.get()
+    busy_acceptance.set(None)  # the drain task this schedules must not inherit the busy caller's future
     receipt = await authority.admit_native(event)
     if receipt.status == 'terminal':
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
     authority.native_waiters.add(receipt.admission_id)
     waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
+    if accepted is not None and not accepted.done():
+        accepted.set_result(None)
     try:
         return await asyncio.shield(waiter)
     except RuntimeStoreError as exc:
@@ -36,6 +45,9 @@ def pause_notice(authority, ref, reason):
     if reason == 'runtime_draining':
         # Transient: the row runs when the restarted owner drains it, so /reset would be wrong advice.
         return '⏳ Hermes is restarting — your message is saved and will be answered when it is back.'
+    if reason == 'session_busy':
+        # Transient: queued behind work already running on this conversation (a worker execution).
+        return '⏳ Your message is saved and will be answered when the work running in this conversation finishes.'
     if reason == 'unknown_execution':
         cause = 'a previous turn did not finish when Hermes restarted, so nothing queued after it will run'
     else:
@@ -117,9 +129,11 @@ async def execute_admission(authority, ref, row):
             response = await authority.runner._handle_message(event)
             result = captured.get('result')
             if result is None:
-                # No TurnRunner result means the handler answered without executing the turn
-                # (agent initialization failure, refusal notice). An API caller asked for work,
-                # so its receipt is a failure, never a completed turn with an apology as output.
+                # No TurnRunner result means the handler answered without executing the turn.
+                # A turn that never ran because it failed (agent initialization raised, history
+                # unreadable) recorded its own failure via ``record_unexecuted_failure`` on every
+                # surface; any other reply here is a deliberate notice. An API caller asked for
+                # work, so its receipt is a failure either way, never a completed apology.
                 result = {'final_response': response or '', 'messages': []}
                 if is_api:
                     result = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
@@ -155,6 +169,33 @@ async def deliver_response(adapter, event, session_key, response):
 
 
 async def dispatch_shared_busy(adapter, event, session_key):
+    """Serial receive loops (IRC, Signal) await this before reading their next frame, so return
+    once the follow-up is committed to the FIFO; a tracked observer delivers its one reply."""
     delivery_event = replace(event, source=replace(event.source))
-    response = await adapter._message_handler(event)
-    await deliver_response(adapter, delivery_event, session_key, response)
+    accepted = asyncio.get_running_loop().create_future()
+
+    async def observe():
+        try:
+            response = await adapter._message_handler(event)
+            await deliver_response(adapter, delivery_event, session_key, response)
+        except Exception as exc:
+            if not accepted.done():
+                raise  # nothing was queued: the receive loop sees the failure as before
+            logger.error('[%s] Queued busy follow-up failed: %s', adapter.name, exc, exc_info=True)
+            await adapter._notify_turn_error(delivery_event, exc)
+
+    token = busy_acceptance.set(accepted)
+    try:
+        task = asyncio.create_task(observe())
+    finally:
+        busy_acceptance.reset(token)
+    adapter._background_tasks.add(task)
+    task.add_done_callback(adapter._background_tasks.discard)
+    try:
+        await asyncio.wait({accepted, task}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        if not accepted.done():
+            task.cancel()  # cancelled before commit: the input was never ACKed
+        raise
+    if task.done():
+        task.result()  # refused, consumed or answered inline before any durable acceptance
