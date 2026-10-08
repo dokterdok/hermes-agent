@@ -16,13 +16,14 @@ def _verified_source(source, copy):
     saved = os.fstat(source.fileno())
     if (not stat.S_ISREG(saved.st_mode) or saved.st_nlink != 1
             or (str(saved.st_dev), str(saved.st_ino)) != (copy['device'], copy['inode'])
-            or saved.st_size != copy['size']
-            or hashlib.file_digest(source, 'sha256').hexdigest() != copy['digest']):
+            or copy['size'] is not None and saved.st_size != copy['size']
+            or copy['digest'] is not None and hashlib.file_digest(source, 'sha256').hexdigest() != copy['digest']):
         raise ValueError('sealed input object changed')
 
 
 def remove_sealed_copy(path, copy):
     """True only after deletion/absence is confirmed and its directory is synced."""
+    copy = dict(copy)
     if (not path.is_absolute() or not re.fullmatch(r'[0-9a-f]{32}', copy['copy_id'])
             or type(copy['generation']) is not int or copy['generation'] < 1):
         raise ValueError('invalid sealed input identity')
@@ -61,6 +62,8 @@ def _remove_windows(path, copy):
                         None, win32con.OPEN_EXISTING, flags, None)
                 except pywintypes.error as exc:
                     if exc.winerror == 2:
+                        if copy.get('parent_inode') is not None:
+                            raise ValueError('sealed file directory is unavailable') from exc
                         if container is not None:
                             win32file.FlushFileBuffers(container)
                         return True
@@ -72,6 +75,7 @@ def _remove_windows(path, copy):
                     raise ValueError('sealed input directory changed')
                 if native and component == path.parent.parent:
                     container = directory
+            _verify_parent(_windows_handle_stat(directory), copy)
             _remove_windows_leaf(path, copy)
             win32file.FlushFileBuffers(directory)
             if native:
@@ -183,13 +187,18 @@ def _remove_posix(path, copy):
         try:
             container = held.enter_context(_parent_fd(path.parent.parent))
         except FileNotFoundError:
+            if copy.get('parent_inode') is not None:
+                raise ValueError('sealed file directory is unavailable') from None
             return True
         try:
             directory = os.open(path.parent.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=container)
         except FileNotFoundError:
+            if copy.get('parent_inode') is not None:
+                raise ValueError('sealed file directory is unavailable') from None
             os.fsync(container)
             return True
         held.callback(os.close, directory)
+        _verify_parent(os.fstat(directory), copy)
         removed = _quarantine_posix(directory, path.name, copy)
         if removed and copy['namespace'] == 'native':
             try:
@@ -203,6 +212,11 @@ def _remove_posix(path, copy):
 
 
 def _quarantine_posix(directory, name, copy):
+    with _output_removal_lock(directory, name, copy):
+        return _quarantine_locked_posix(directory, name, copy)
+
+
+def _quarantine_locked_posix(directory, name, copy):
     slot = _quarantine_name(copy)
     try:
         os.mkdir(slot, mode=0o700, dir_fd=directory)
@@ -226,3 +240,49 @@ def _quarantine_posix(directory, name, copy):
         os.rmdir(slot, dir_fd=directory)
         os.fsync(directory)
     return removed
+
+
+def _verify_parent(saved, copy):
+    expected = copy.get('parent_device'), copy.get('parent_inode')
+    if expected != (None, None) and expected != (str(saved.st_dev), str(saved.st_ino)):
+        raise ValueError('sealed file directory changed')
+
+
+def _windows_handle_stat(handle):
+    import msvcrt
+    import win32api
+    import win32con
+
+    process = win32api.GetCurrentProcess()
+    duplicate = win32api.DuplicateHandle(process, handle, process, 0, False, win32con.DUPLICATE_SAME_ACCESS)
+    descriptor = msvcrt.open_osfhandle(duplicate.Detach(), os.O_RDONLY | os.O_BINARY)
+    try:
+        return os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _output_removal_lock(directory, name, copy):
+    if copy['namespace'] != 'output':
+        yield
+        return
+    import fcntl
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    except FileNotFoundError:
+        # An interrupted cleanup may already own the object in its private slot.
+        try:
+            slot = os.open(_quarantine_name(copy), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            try:
+                descriptor = os.open('copy', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=slot)
+            finally:
+                os.close(slot)
+        except FileNotFoundError:
+            yield
+            return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(descriptor)

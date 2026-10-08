@@ -19,7 +19,7 @@ import sqlite3
 import stat
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ContextManager, Iterator, Mapping, Sequence
@@ -300,11 +300,8 @@ class RoomArtifactOutbox:
         self.root = Path(root or self.db_path.parent / "hosted-room-artifact-outbox")
         self.blob_root = self.root / "blobs"
         self._lock = threading.RLock()
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.blob_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for path in (self.root, self.blob_root):
-            with suppress(OSError):
-                os.chmod(path, 0o700)
+        from gateway.hosted_room_output_cleanup import ensure_directory
+        ensure_directory(self.blob_root)
         now = time.time()
         with self._connect() as conn:
             self._initialize(conn)
@@ -313,26 +310,8 @@ class RoomArtifactOutbox:
         self.prune_acknowledged_receipts(now=now)
         self.prune_unacknowledged_artifacts(now=now)
         self.prune_generation_fences(now=now)
-        cutoff = now - 3600
-        with self._connect() as conn:
-            referenced = {
-                str(row["blob_name"])
-                for row in conn.execute(
-                    """SELECT blob_name FROM hosted_room_output_artifacts
-                       WHERE acknowledged_at IS NULL OR cleanup_required_at IS NOT NULL
-                          OR blob_reclaimed_at IS NULL"""
-                ).fetchall()
-            }
-        for path in self.blob_root.iterdir():
-            try:
-                if (
-                    path.is_file()
-                    and path.name not in referenced
-                    and path.stat().st_mtime < cutoff
-                ):
-                    path.unlink(missing_ok=True)
-            except OSError:
-                continue
+        from gateway.hosted_room_output_cleanup import reclaim_pending
+        reclaim_pending(self)
 
     def _connect(self) -> ContextManager[sqlite3.Connection]:
         from hermes_cli.sqlite_util import open_db, transaction
@@ -348,11 +327,11 @@ class RoomArtifactOutbox:
         best_effort: bool,
     ) -> int:
         reclaimed_ids: list[str] = []
-        first_error: OSError | None = None
+        first_error: OSError | ValueError | None = None
         for row in rows:
             try:
-                (self.blob_root / str(row["blob_name"])).unlink(missing_ok=True)
-            except OSError as exc:
+                self._remove_blob(row)
+            except (OSError, ValueError) as exc:
                 if first_error is None:
                     first_error = exc
             else:
@@ -376,7 +355,7 @@ class RoomArtifactOutbox:
     def _reclaim_pending_acknowledged_blobs(self, *, now: float) -> int:
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT artifact_id, blob_name
+                """SELECT *
                      FROM hosted_room_output_artifacts
                     WHERE acknowledged_at IS NOT NULL
                       AND cleanup_required_at IS NULL
@@ -392,6 +371,7 @@ class RoomArtifactOutbox:
 
         current = time.time() if now is None else float(now)
         cutoff = current - ACKNOWLEDGED_ARTIFACT_RETENTION_SECONDS
+        self._reclaim_pending_acknowledged_blobs(now=current)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
@@ -399,6 +379,7 @@ class RoomArtifactOutbox:
                      FROM hosted_room_output_artifacts
                     WHERE acknowledged_at IS NOT NULL
                       AND cleanup_required_at IS NULL
+                      AND blob_reclaimed_at IS NOT NULL
                       AND (
                           (receipt_expires_at IS NOT NULL AND receipt_expires_at<=?)
                           OR (receipt_expires_at IS NULL AND acknowledged_at<=?)
@@ -413,10 +394,6 @@ class RoomArtifactOutbox:
                     ((str(row["artifact_id"]),) for row in rows),
                 )
                 conn.commit()
-        for row in rows:
-            if row["blob_reclaimed_at"] is None:
-                with suppress(OSError):
-                    (self.blob_root / str(row["blob_name"])).unlink(missing_ok=True)
         return len(rows)
 
     def prune_unacknowledged_artifacts(self, *, now: float | None = None) -> int:
@@ -513,9 +490,12 @@ class RoomArtifactOutbox:
         # Old stores may already have a cleanup trigger naming the absent column; add it first,
         # before any index, trigger or cleanup pass needs the newer receipt fields.
         for column, kind in (("cleanup_required_at", "REAL"), ("ack_message_event_id", "TEXT"),
-                             ("receipt_expires_at", "REAL"), ("blob_reclaimed_at", "REAL")):
+                             ("receipt_expires_at", "REAL"), ("blob_reclaimed_at", "REAL"),
+                             ("blob_identity", "TEXT")):
             if column not in columns:
                 conn.execute(f"ALTER TABLE hosted_room_output_artifacts ADD COLUMN {column} {kind}")
+        from gateway.hosted_room_output_cleanup import initialize
+        initialize(conn)
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_hosted_room_output_scope
                ON hosted_room_output_artifacts(scope_key, created_at)"""
@@ -811,54 +791,50 @@ class RoomArtifactOutbox:
         digest = hashlib.sha256(data).hexdigest()
         artifact_id = f"rart_{hashlib.sha256((scope.key + digest + safe_name).encode()).hexdigest()[:32]}"
         blob_name = f"blob_{secrets.token_hex(16)}"
-        target = self.blob_root / blob_name
 
-        with self._lock, self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            self._admit_generation(conn, scope)
-            existing = conn.execute(
-                """SELECT * FROM hosted_room_output_artifacts
-                   WHERE scope_key=? AND sha256=? AND name=?""",
-                (scope.key, digest, safe_name),
-            ).fetchone()
-            if self.authorize_write is not None:
-                self.authorize_write(conn, scope)
-            if existing is not None:
-                return self._manifest(existing)
-            totals = conn.execute(
-                """SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
-                   FROM hosted_room_output_artifacts
-                   WHERE scope_key=? AND acknowledged_at IS NULL""",
-                (scope.key,),
-            ).fetchone()
-            if (
-                int(totals["count"]) >= MAX_ATTACHMENTS_PER_MESSAGE
-                or int(totals["bytes"]) + len(data) > MAX_MESSAGE_ATTACHMENT_BYTES
-            ):
-                raise RoomArtifactError("room turn artifact quota exceeded")
-            gateway_bytes = int(conn.execute(
-                """SELECT COALESCE(SUM(size), 0)
-                   FROM hosted_room_output_artifacts
-                   WHERE acknowledged_at IS NULL"""
-            ).fetchone()[0])
-            if gateway_bytes + len(data) > MAX_GATEWAY_BLOB_BYTES:
-                raise RoomArtifactError("gateway room artifact quota exceeded")
-            temp = self.blob_root / f".tmp-{secrets.token_hex(16)}"
-            file_descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                with os.fdopen(file_descriptor, "wb") as handle:
-                    handle.write(data)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temp, target)
-                os.chmod(target, 0o600)
+        from gateway.hosted_room_output_cleanup import promote, staged_blob
+        with self._lock, staged_blob(self, blob_name) as (handle, parent):
+            with self._lock, self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._admit_generation(conn, scope)
+                existing = conn.execute(
+                    """SELECT * FROM hosted_room_output_artifacts
+                       WHERE scope_key=? AND sha256=? AND name=?""",
+                    (scope.key, digest, safe_name),
+                ).fetchone()
+                if self.authorize_write is not None:
+                    self.authorize_write(conn, scope)
+                if existing is not None:
+                    return self._manifest(existing)
+                totals = conn.execute(
+                    """SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
+                       FROM hosted_room_output_artifacts
+                       WHERE scope_key=? AND acknowledged_at IS NULL""",
+                    (scope.key,),
+                ).fetchone()
+                if (
+                    int(totals["count"]) >= MAX_ATTACHMENTS_PER_MESSAGE
+                    or int(totals["bytes"]) + len(data) > MAX_MESSAGE_ATTACHMENT_BYTES
+                ):
+                    raise RoomArtifactError("room turn artifact quota exceeded")
+                gateway_bytes = int(conn.execute(
+                    """SELECT COALESCE(SUM(size), 0)
+                       FROM hosted_room_output_artifacts
+                       WHERE acknowledged_at IS NULL"""
+                ).fetchone()[0])
+                if gateway_bytes + len(data) > MAX_GATEWAY_BLOB_BYTES:
+                    raise RoomArtifactError("gateway room artifact quota exceeded")
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+                blob_identity = promote(conn, handle, parent, blob_name)
                 if self.authorize_write is not None:
                     self.authorize_write(conn, scope)
                 conn.execute(
                     """INSERT INTO hosted_room_output_artifacts
                        (artifact_id, scope_key, scope_json, name, kind, mime, size,
-                        sha256, blob_name, created_at, acknowledged_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+                        sha256, blob_name, created_at, acknowledged_at, blob_identity)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
                     (
                         artifact_id,
                         scope.key,
@@ -870,20 +846,17 @@ class RoomArtifactOutbox:
                         digest,
                         blob_name,
                         time.time(),
+                        blob_identity,
                     ),
                 )
                 conn.commit()
-            except Exception:
-                temp.unlink(missing_ok=True)
-                target.unlink(missing_ok=True)
-                raise
-            row = conn.execute(
-                "SELECT * FROM hosted_room_output_artifacts WHERE artifact_id=?",
-                (artifact_id,),
-            ).fetchone()
-            if row is None:
-                raise RuntimeError("stored room artifact could not be reloaded")
-            return self._manifest(row)
+                row = conn.execute(
+                    "SELECT * FROM hosted_room_output_artifacts WHERE artifact_id=?",
+                    (artifact_id,),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("stored room artifact could not be reloaded")
+                return self._manifest(row)
 
     def list(self, scope: RoomArtifactScope) -> list[dict[str, Any]]:
         """Return the open (unacknowledged, not discarded) output of one attempt.
@@ -1006,8 +979,7 @@ class RoomArtifactOutbox:
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
-                f"""SELECT artifact_id, blob_name, acknowledged_at,
-                           ack_message_event_id, blob_reclaimed_at, cleanup_required_at
+                f"""SELECT *
                     FROM hosted_room_output_artifacts
                     WHERE scope_key=? AND artifact_id IN ({placeholders})""",
                 (scope.key, *ids),
@@ -1089,24 +1061,30 @@ class RoomArtifactOutbox:
                 continue
         return removed
 
-    def discard(self, scope: RoomArtifactScope) -> int:
-        """Purge every unacknowledged private blob for one retired attempt."""
+    def _remove_blob(self, row):
+        from gateway.hosted_room_output_cleanup import remove_artifact
+        try:
+            remove_artifact(self, row)
+        except ValueError as exc:
+            raise RoomArtifactError(str(exc)) from exc
 
+    def discard(self, scope: RoomArtifactScope) -> int:
+        """Retire first, then purge only verified objects and keep failed obligations."""
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._retire_generation(conn, scope)
-            rows = conn.execute(
-                """SELECT artifact_id, blob_name FROM hosted_room_output_artifacts
-                   WHERE scope_key=? AND acknowledged_at IS NULL""",
-                (scope.key,),
-            ).fetchall()
-            for row in rows:
-                (self.blob_root / str(row["blob_name"])).unlink(missing_ok=True)
-            conn.execute(
-                "DELETE FROM hosted_room_output_artifacts WHERE scope_key=? AND acknowledged_at IS NULL",
-                (scope.key,),
-            )
+            conn.execute("""UPDATE hosted_room_output_artifacts
+                SET cleanup_required_at=COALESCE(cleanup_required_at, ?)
+                WHERE scope_key=? AND acknowledged_at IS NULL""", (time.time(), scope.key))
+            rows = conn.execute("""SELECT * FROM hosted_room_output_artifacts
+                WHERE scope_key=? AND acknowledged_at IS NULL""", (scope.key,)).fetchall()
             conn.commit()
+        for row in rows:
+            self._remove_blob(row)
+            with self._lock, self._connect() as conn:
+                conn.execute("DELETE FROM hosted_room_output_artifacts WHERE artifact_id=? AND acknowledged_at IS NULL",
+                             (row["artifact_id"],))
+                conn.commit()
         return len(rows)
 
     def discard_superseded(self, scope: RoomArtifactScope) -> int:
