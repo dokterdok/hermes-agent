@@ -609,7 +609,7 @@ class RunIdempotencyStore:
                 raise RunCancellationUnknown() from None
             if room_run_scope_key(previous) != scope:
                 raise RunCancellationUnknown()
-            if previous['authority_epoch'] >= identity['authority_epoch'] or any(
+            if scope == room_run_scope_key(identity) or previous['authority_epoch'] > identity['authority_epoch'] or any(
                     previous[field] != identity[field] for field in (
                         'room_id', 'member_id', 'target_install_id', 'target_profile')):
                 continue
@@ -643,9 +643,30 @@ class RunIdempotencyStore:
             return False
         room_id = previous['room_id']
         if previous['authority_epoch'] > fence.fenced_epoch_locked(self._conn, room_id):
-            return False
+            if not self._learned_same_epoch_successor_locked(previous, successor):
+                return False
         return fence.successor_controls_locked(self._conn, room_id,
             candidate_install_id=successor['authority_gateway_id'], epoch=successor['authority_epoch'])
+
+    def _learned_same_epoch_successor_locked(self, previous, successor):
+        """Only the target-bound promised loser passes controls to its immutable learned winner."""
+        from gateway.platforms.api_server_room_origins import retained, target_key
+        from gateway.platforms.api_server_run_authority import canonical, room_authority, superseded
+        epoch = previous['authority_epoch']
+        state = fence.fence_state_locked(self._conn, previous['room_id'])
+        promise = state['promise']
+        if (successor['authority_epoch'] != epoch or promise is None or promise['epoch'] != epoch
+                or promise['candidate_install_id'] != previous['authority_gateway_id']
+                or previous['authority_gateway_id'] == successor['authority_gateway_id']
+                or state['authority'] != {'epoch': epoch, 'install_id': successor['authority_gateway_id']}):
+            return False
+        current = room_authority(successor)
+        origin = retained(self._conn, successor)
+        return (origin is not None and origin[1:] == (successor['home_install_id'], epoch, successor['authority_gateway_id'])
+                and canonical(self._conn, room_authority(previous))[0] == canonical(self._conn, current)[0]
+                and not superseded(self._conn, current)
+                and self._conn.execute('SELECT 1 FROM run_room_origin_homes WHERE target_key=? AND home_install_id=?',
+                    (target_key(previous), previous['home_install_id'])).fetchone() is not None)
 
     def _require_epoch_holder_locked(self, identity: dict) -> None:
         """Work of a succeeded room's epoch comes only from the computer this store fenced it for."""
@@ -663,26 +684,31 @@ class RunIdempotencyStore:
 
     def _inherited_run_locked(self, identity: dict, key: str) -> dict[str, Any] | None:
         """``room_task_inherited``: the run this store already admitted for the same room task under an
-        earlier epoch of the room, to the same member here. A later host re-dispatching the task
+        predecessor authority of the room, to the same member here. A later host re-dispatching the task
         re-attaches to it instead of running it twice. A new generation runs only after every
         earlier attempt ended without success, as a Retry would."""
         prefix, _, generation = key.rpartition(":")
         if not prefix.startswith("room:") or not generation.isdigit():
             return None
         rows = self._conn.execute(f"""SELECT r.idempotency_key, r.run_id, r.status_json, r.owner_pid, r.owner_started,
-                r.updated_at, {_STATUS_SQL} FROM run_idempotency AS r JOIN {_SCOPES} AS s ON s.scope=r.scope
+                r.updated_at, {_STATUS_SQL}, s.scope, json_extract(s.identity_json,'$.authority_epoch')
+            FROM run_idempotency AS r JOIN {_SCOPES} AS s ON s.scope=r.scope
             WHERE json_valid(s.identity_json) AND json_extract(s.identity_json,'$.room_id')=?
               AND json_extract(s.identity_json,'$.member_id')=?
               AND json_extract(s.identity_json,'$.target_install_id')=?
               AND json_extract(s.identity_json,'$.target_profile')=?
-              AND json_extract(s.identity_json,'$.authority_epoch')<?
+              AND json_extract(s.identity_json,'$.authority_epoch')<=? AND s.scope!=?
             ORDER BY r.created_at DESC, r.run_id""", (
             identity["room_id"], identity["member_id"], identity["target_install_id"], identity["target_profile"],
-            identity["authority_epoch"])).fetchall()
-        for stored_key, run_id, status_json, owner_pid, owner_started, updated_at, status in rows:
+            identity["authority_epoch"], room_run_scope_key(identity))).fetchall()
+        for stored_key, run_id, status_json, owner_pid, owner_started, updated_at, status, scope, epoch in rows:
             stored_prefix, _, stored_generation = str(stored_key).rpartition(":")
             if stored_prefix != prefix:
                 continue
+            if epoch == identity['authority_epoch']:
+                previous = self._scope_identity_locked(scope)
+                if previous is None or not self._successor_controls_identity_locked(previous, identity):
+                    raise RunCancellationUnknown()
             if stored_generation == generation or status not in {"failed", "cancelled", "interrupted"}:
                 return {**_record(run_id, status_json, owner_pid, owner_started, updated_at), "inherited": True}
         return None
@@ -871,8 +897,8 @@ class RunIdempotencyStore:
         """The scope of one existing room run whose Status and Stop passed to ``successor``.
 
         ``successor`` is the caller's verified room scope. It must name the same room, member and
-        local target as the run, and be the live promise here: the promised candidate at the
-        promised epoch, above the fence that covers the run's own epoch. Anything else is ``None``.
+        local target as the run, and be its verified successor: a live promise above the run's
+        fence, or the learned winner replacing the target-bound loser at that same epoch.
         """
         successor = validate_room_run_scope(successor)
         if not self.durable:
