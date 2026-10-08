@@ -39,8 +39,7 @@ def issue(authority, subject, params, mint, publish):
                 raise RuntimeStoreError('idempotency_conflict')
             response = json.loads(row['response_json'])
             if row['publication_pending'] and publish(conn, response):
-                conn.execute('UPDATE hosted_room_setup_invitations SET publication_pending=0 WHERE request_id=?',
-                             (request_id,))
+                _published(conn, request_id, subject, frozen, row['response_json'])
             return response, False
         now = time.time()
         if not now - 300 <= requested_at <= now + 30:
@@ -54,5 +53,12 @@ def issue(authority, subject, params, mint, publish):
                 VALUES (?,?,?,?,?,1)""", (request_id, subject, frozen,
                     json.dumps(response, separators=(',', ':')), response['status_expires_at']))
         response = mint(conn, save_receipt)
-        conn.execute('UPDATE hosted_room_setup_invitations SET publication_pending=0 WHERE request_id=?', (request_id,))
+        _published(conn, request_id, subject, frozen, json.dumps(response, separators=(',', ':')))
         return response, True
+
+
+def _published(conn, request_id, subject, request_json, response_json):
+    """Never mark a replacement receipt if its id was pruned/reused after commit."""
+    conn.execute("""UPDATE hosted_room_setup_invitations SET publication_pending=0
+        WHERE request_id=? AND subject=? AND request_json=? AND response_json=?""",
+        (request_id, subject, request_json, response_json))

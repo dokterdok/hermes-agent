@@ -160,16 +160,16 @@ def _previous_authority(claims, body):
     return room_authority({**claims, **previous})
 
 
-def _record_invitation(self, claims, body, *, db_path=None, conn=None, before_commit=None):
+def _record_invitation(self, claims, body, *, db_path=None, conn=None, write_extra=None, commit_receipt=None):
     from gateway import hosted_rooms
     from gateway.platforms.api_server_run_authority import room_authority
-    if conn is not None and before_commit is None:
+    if conn is not None and commit_receipt is None:
         raise ValueError("a borrowed invitation writer requires its durable receipt callback")
     if _retirement_only(claims):
         if not self._run_idempotency_store.permits_room_retirement(room_authority(claims)):
             raise RoomGrantReauthorizationRequired("room retirement authority is not retained")
-        if before_commit is not None:
-            before_commit(conn)
+        if commit_receipt is not None:
+            commit_receipt(conn)
             conn.commit()
         return
     previous = _previous_authority(claims, body)
@@ -184,8 +184,10 @@ def _record_invitation(self, claims, body, *, db_path=None, conn=None, before_co
                     (claims["room_id"], claims["target_profile"])).fetchone() is not None:
                 raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
             hosted_rooms.reserve_peer_room(db_path, claims=claims, expires_at=_hard_expiry(claims), conn=writer)
-            if before_commit is not None:
-                before_commit(writer)
+            if write_extra is not None:
+                write_extra(writer)
+            if commit_receipt is not None:
+                commit_receipt(writer)
             writer.commit()
         self._run_idempotency_store.commit_room_invitation(claims, previous, previous_home, commit_reservation)
 
@@ -264,8 +266,8 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None, co
     claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
     invitation = {"grant": token, "target_profile": profile, "catalog": catalog,
                   "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"])}
-    before_commit = (lambda writer: commit_receipt(invitation)) if commit_receipt is not None else None
-    _record_invitation(self, claims, body, conn=conn, before_commit=before_commit)
+    receipt_writer = (lambda writer: commit_receipt(invitation)) if commit_receipt is not None else None
+    _record_invitation(self, claims, body, conn=conn, commit_receipt=receipt_writer)
     return invitation
 
 
