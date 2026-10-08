@@ -46,8 +46,8 @@ def test_unadmitted_files_carry_is_safe_before_followup_flush(tmp_path, monkeypa
         agent.run_conversation('following input', conversation_history=result['messages'])
         rows = db.get_messages('lease')
         record_property('followup_sql', json.dumps(rows, default=lambda b: b.hex()))
-        # Sequence repair merges the following input into the carried user row.
-        assert rows[0]['content'] == safe + '\n\nfollowing input'
+        # The current runtime preserves distinct durable inputs; only the provider view merges them.
+        assert [row['content'] for row in rows if row['role'] == 'user'] == [safe, 'following input']
         assert rows[0]['api_content'] is None
         assert rows[0]['timestamp'] == 1234.5
         assert rows[0]['platform_message_id'] == 'carried-files'
@@ -95,9 +95,9 @@ def test_unadmitted_ordinary_carry_and_hard_stop_unchanged(tmp_path, monkeypatch
         agent.run_conversation = MethodType(run_conversation, agent)
         agent.run_conversation('following ordinary input', conversation_history=result['messages'])
         row = db.get_messages(agent.session_id)[0]
-        # Sequence repair merges the following input into a carried text row.
+        # The carried row retains its own input; the follow-up has a separate durable row.
         assert row['content'] == ('ordinary /private/reference.txt\n[screenshot]' if native
-                                  else 'ordinary caption\n\nfollowing ordinary input')
+                                  else 'ordinary caption')
         assert row['api_content'] == (None if native else content)
         assert row['timestamp'] == 2345.5
         assert row['platform_message_id'] == 'ordinary-message'
