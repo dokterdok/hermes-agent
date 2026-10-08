@@ -1,3 +1,4 @@
+import { zhHantComposer } from './composer/zh-hant'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
 import { zhHantArtifacts } from './zh-hant_artifacts'
@@ -92,14 +93,7 @@ export const zhHantOverrides = {
   artifactCard: zhHantArtifacts.artifactCard,
   artifactPreview: zhHantArtifacts.artifactPreview,
   sidebar: zhHantChrome.sidebar,
-  composer: {
-    ...zhHantChat.composer,
-    redirect: '重新導向目前的執行',
-    queueLostNote: '重新啟動期間該回合已遺失',
-    restoreImageDraft: '還原圖片草稿',
-    queueLostDiscard: '捨棄',
-    queueLostDiscardTip: '閘道在該回合進行中重新啟動，無法完成。捨棄後其後的排隊回合將繼續執行。'
-  },
+  composer: zhHantComposer,
   statusStack: zhHantChat.statusStack,
   updates: zhHantBoot.updates,
   install: zhHantBoot.install,
