@@ -86,7 +86,8 @@ async def test_fenced_epoch_refuses_new_work_while_its_runs_keep_running_and_pas
         assert await asyncio.to_thread(other_stopped.wait, 3)
 
         # The promised successor reads and stops the other run with its own grant.
-        successor = await invite(cli, SUCCESSOR, 2)
+        successor = await invite(cli, SUCCESSOR, 2, previous={
+            'home_install_id': HOME, 'authority_gateway_id': HOME, 'authority_epoch': 1})
         status = await cli.get(f"/v1/runs/{run_id}", headers=bearer(successor))
         observed = await status.json()
         assert status.status == 200, observed
@@ -176,7 +177,8 @@ async def test_a_freeze_outlives_a_verified_move_and_refuses_the_new_hosts_work(
         # The group moves: this participant promised the next epoch to the successor, then learned it took over.
         promise(adapter)
         fence.learn_authority(path, room_id=ROOM, epoch=2, install_id=SUCCESSOR)
-        successor = await invite(cli, SUCCESSOR, 2)
+        successor = await invite(cli, SUCCESSOR, 2, previous={
+            'home_install_id': HOME, 'authority_gateway_id': HOME, 'authority_epoch': 1})
         refused = await submit(cli, successor, scoped(successor, SUCCESSOR, 2, task="task-after-move"))
         body = await refused.json()
         assert refused.status == 403, body
@@ -222,7 +224,8 @@ async def test_canonical_fenced_epoch_refuses_answers_and_passes_status_and_stop
                 assert refused.status == 409, await refused.text()
                 assert (await refused.json())['error']['code'] == 'room_authority_fenced'
             assert not pending.event.is_set()
-            successor = await invite(cli, SUCCESSOR, 2)
+            successor = await invite(cli, SUCCESSOR, 2, previous={
+                'home_install_id': HOME, 'authority_gateway_id': HOME, 'authority_epoch': 1})
             status = await cli.get(f'/v1/runs/{run_id}', headers=bearer(successor))
             assert status.status == 200, await status.text()
             assert (await status.json())['status'] == 'waiting_for_approval'
