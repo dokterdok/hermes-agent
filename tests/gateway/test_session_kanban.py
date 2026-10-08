@@ -20,6 +20,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
     from contextlib import closing
+    kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
         task_id = kb.create_task(conn, title='Owned acceptance', body='Goal criteria', assignee='default',
             workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'], goal_mode=True,
@@ -57,8 +58,9 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     import subprocess
     import sys
     repo = Path(__file__).resolve().parents[2]
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'SYSTEMROOT') if k in os.environ}
-    env.update(HOME=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE=mode)
+    from tests.gateway.fixtures.local_recovery_probe import child_env
+    env = child_env()
+    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE=mode)
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'kanban_owner_probe.py')],
         env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -82,6 +84,7 @@ def test_late_launcher_cannot_stamp_replacement_claim(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
     monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
+    kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
         tid = kb.create_task(conn, title='Owned race', assignee='default')
         old = kb.claim_task(conn, tid)
@@ -110,6 +113,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
+    kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
         task_id = kb.create_task(conn, title='Owned race', assignee='default', workspace_kind='dir', workspace_path=str(workspace))
         kb.recompute_ready(conn)

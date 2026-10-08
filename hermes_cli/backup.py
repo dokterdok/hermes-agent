@@ -24,6 +24,7 @@ from hermes_constants import (
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_state_holders import read_only_db_uri
 
+from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
@@ -35,6 +36,7 @@ from hermes_cli.backup_restore import (
     _detect_prefix,
     _extract_member_atomically,
     _import_db_member,
+    _restore_auth_json,
     _restore_destination_epoch,
     _safe_restore_db,
     _validate_backup_zip,
@@ -101,7 +103,8 @@ _EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
 # the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
 # subdirs) and the grounded-citations evidence ledger. Only these subdirs are archived.
-_KEPT_CACHE_SUBDIRS = {"images", "audio", "videos", "documents", "screenshots", "citations"}
+_KEPT_CACHE_SUBDIRS = {
+    "images", "audio", "videos", "documents", "screenshots", "citations", GENERATED_SUBDIR}
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
@@ -931,6 +934,33 @@ def _import_members(
         return _import_members_exclusive(zf, members, prefix, hermes_root, file_count)
 
 
+def _import_external_member(
+    zf: zipfile.ZipFile, member: str, home_dir: Path, new_file_mode: int, errors: List[str]
+) -> bool:
+    """Publish one ``_external/`` member under the user's home; False (with ``errors`` appended)
+    when it is a traversal or cannot be written."""
+    target = home_dir / member[len(_EXTERNAL_PREFIX):]
+    # Security: the resolved target must stay under the home dir.
+    try:
+        target.resolve().relative_to(home_dir)
+    except ValueError:
+        errors.append(f"  {member}: path traversal blocked")
+        return False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _extract_member_atomically(zf, member, target, new_file_mode)
+        # External provider configs commonly hold credentials.
+        if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
+        return True
+    except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+        errors.append(f"  {member}: {exc}")
+        return False
+
+
 def _import_members_exclusive(
     zf: zipfile.ZipFile, members: List[str], prefix: str, hermes_root: Path, file_count: int
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
@@ -954,29 +984,11 @@ def _import_members_exclusive(
         # ``_external/`` arc prefix restores to its original home-relative
         # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
         if member.startswith(_EXTERNAL_PREFIX):
-            ext_rel = member[len(_EXTERNAL_PREFIX):]
-            if not ext_rel:
+            if not member[len(_EXTERNAL_PREFIX):]:
                 continue
-            target = home_dir / ext_rel
-            # Security: the resolved target must stay under the home dir.
-            try:
-                target.resolve().relative_to(home_dir)
-            except ValueError:
-                errors.append(f"  {member}: path traversal blocked")
-                continue
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _extract_member_atomically(zf, member, target, new_file_mode)
-                # External provider configs commonly hold credentials.
-                if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
-                    try:
-                        os.chmod(target, 0o600)
-                    except OSError:
-                        pass
+            if _import_external_member(zf, member, home_dir, new_file_mode, errors):
                 restored += 1
                 restored_external += 1
-            except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
-                errors.append(f"  {member}: {exc}")
             if restored % 500 == 0:
                 print(f"  {restored}/{file_count} files ...")
             continue
@@ -1077,6 +1089,9 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
             print()
             ensure_gateway_service(context="import")
     except Exception:
+        # Import boundary: the restore already succeeded; any service failure prints the
+        # manual fallback instead of failing the import.
+        logger.debug("gateway revive after import failed", exc_info=True)
         print("\nStart the gateway to activate cron jobs and messaging:\n  hermes gateway run")
 
 
@@ -1121,14 +1136,6 @@ def _newest_first(root: Path, keep_entry) -> List[Path]:
 
 # Kept in sync with ``_QUICK_STATE_FILES`` and ``cron/jobs.py``'s ``JOBS_FILE``.
 _CRON_JOBS_REL = "cron/jobs.json"
-
-
-# Config paths the update flow must never change (#64160): model routing and the MoA section are
-# consumed machine-wide, so an update/repair cycle that rewrites them silently redirects paid
-# inference. Dotted paths into raw config.yaml; a single-element tuple protects a whole section.
-_PROTECTED_CONFIG_PATHS: Tuple[Tuple[str, ...], ...] = (
-    ("model", "provider"), ("model", "default"), ("model", "base_url"), ("model", "api_key"),
-    ("moa",))
 
 
 def _prune_oldest(newest_first: List[Path], keep: int, remove, what: str) -> int:
@@ -1216,36 +1223,6 @@ def create_pre_migration_backup(
     raises."""
     return _create_prefixed_full_backup(
         hermes_home, _PRE_MIGRATION_PREFIX, max(keep, 0), "pre-migration", "pre-migration backup")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def copy_db_and_verify(src: Path, dst: Path) -> bool:
-    """Like :func:`_safe_copy_db` but verifies the destination after copy.
-
-    Returns True only when the copy succeeded AND the destination is valid
-    SQLite (header + integrity check). Verification honours the default
-    size ceiling — a multi-GB destination gets the header + schema probe
-    rather than a full ``PRAGMA integrity_check`` that would page through
-    the whole file.
-    """
-    if not _safe_copy_db(src, dst):
-        return False
-    integrity = verify_sqlite_integrity(dst, run_pragma=True)
-    if not integrity.get("valid"):
-        try:
-            dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        logger.warning("Backup of %s failed integrity verification: %s", src, integrity.get("message"))
-        return False
-    return True
-
-
-# ---- END PLUGIN-COMPAT ----
 
 
 # ---------------------------------------------------------------------------
@@ -1538,6 +1515,21 @@ def list_quick_snapshots(
     return results
 
 
+def _is_trusted_root_auth_alias(path: Path, home: Path) -> bool:
+    """True only for a file symlink resolving to this restore home's default-root auth store."""
+    if not path.is_symlink():
+        return False
+    try:
+        root = get_default_hermes_root(home=home).resolve(strict=False)
+        if home.resolve(strict=False) == root:
+            return False
+        trusted = (root / "auth.json").resolve(strict=False)
+        trusted.relative_to(root)
+        return path.resolve(strict=False) == trusted
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def restore_quick_snapshot(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
@@ -1545,7 +1537,8 @@ def restore_quick_snapshot(
     """Restore the whole snapshot offline, or refuse before changing any file.
 
     Overwrites current state files with the snapshot's copies.
-    Returns True if at least one file was restored.
+    Returns True if at least one file was restored and the listed auth.json
+    was not refused or skipped.
     """
     from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     home = hermes_home or get_hermes_home()
@@ -1554,6 +1547,48 @@ def restore_quick_snapshot(
             return _restore_quick_snapshot_exclusive(snapshot_id, home)
     except OwnershipConflict as exc:
         logger.error("%s", exc)
+        return False
+
+
+def _snapshot_epochs_restorable(files, entry_paths) -> bool:
+    """False (logged) when any listed ``state.db`` destination cannot prove its runtime epoch."""
+    for rel in files:
+        entry = entry_paths(rel)
+        if entry and entry[0].exists() and "state.db" in (entry[1].name, entry[1].resolve().name):
+            try:
+                _restore_destination_epoch(entry[1])
+            except OSError as exc:
+                logger.error("%s", exc)
+                return False
+    return True
+
+
+def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
+    """Publish one quick-snapshot file over ``dst``; False (logged) when refused or failed."""
+    try:
+        if dst.suffix == ".db":
+            # Restore through SQLite backup API so live connections
+            # (gateway, dashboard, another CLI session) see the
+            # restored data instead of continuing to serve stale
+            # cached pages from a replaced inode (issue #65942).
+            if not _safe_restore_db(src, dst):
+                # Refused, failed, or source failed its integrity check:
+                # dst left as it was. Count as a failure, not a restore.
+                logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
+                return False
+        elif rel == "auth.json":
+            # Refresh tokens for these OAuth providers rotate on use. A historical
+            # snapshot can therefore contain a spent pair even though the current
+            # auth.json has the live successor. Restore the historical auth state
+            # while retaining that live single-use grant under the auth-store lock.
+            if not _restore_auth_json(src, dst):
+                logger.error("Failed to restore %s safely", rel)
+                return False
+        else:
+            shutil.copy2(src, dst)
+        return True
+    except (OSError, PermissionError) as exc:
+        logger.error("Failed to restore %s: %s", rel, exc)
         return False
 
 
@@ -1592,8 +1627,14 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
     def _entry_paths(rel: str) -> Optional[Tuple[Path, Path]]:
         # Security: reject absolute paths and traversals in manifest entries
         src, dst = snap_dir / rel, home / rel
-        if not (src.resolve().is_relative_to(snap_res) and dst.resolve().is_relative_to(home_res)):
+        if not src.resolve().is_relative_to(snap_res):
             return None
+        if not dst.resolve().is_relative_to(home_res):
+            # Named profiles may deliberately share the machine-root auth store via an
+            # auth.json symlink. Let only that exact trusted alias reach _restore_auth_json;
+            # every other manifest destination outside the profile remains a traversal.
+            if rel != "auth.json" or not _is_trusted_root_auth_alias(dst, home):
+                return None
         return src, dst
 
     homes = {home}
@@ -1604,46 +1645,33 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
     with exclusive_maintenance(homes):
         # Epoch safety is a whole-profile preflight: copying config first would
         # both partially roll back the profile and report a refused DB as success.
-        for rel in meta.get("files", {}):
-            entry = _entry_paths(rel)
-            if entry and entry[0].exists() and "state.db" in (entry[1].name, entry[1].resolve().name):
-                try:
-                    _restore_destination_epoch(entry[1])
-                except OSError as exc:
-                    logger.error("%s", exc)
-                    return False
+        if not _snapshot_epochs_restorable(meta.get("files", {}), _entry_paths):
+            return False
 
         restored = 0
+        auth_restore_failed = False
         for rel in meta.get("files", {}):
             entry = _entry_paths(rel)
             if entry is None:
                 logger.error("Manifest path traversal blocked: %s", rel)
+                if rel == "auth.json":
+                    auth_restore_failed = True
                 continue
             src, dst = entry
             if not src.exists():
+                if rel == "auth.json":
+                    logger.error("Snapshot auth.json listed in manifest is missing: %s", src)
+                    auth_restore_failed = True
                 continue
 
             dst.parent.mkdir(parents=True, exist_ok=True)
-
-            try:
-                if dst.suffix == ".db":
-                    # Restore through SQLite backup API so live connections
-                    # (gateway, dashboard, another CLI session) see the
-                    # restored data instead of continuing to serve stale
-                    # cached pages from a replaced inode (issue #65942).
-                    if not _safe_restore_db(src, dst):
-                        # Refused, failed, or source failed its integrity check:
-                        # dst left as it was. Count as a failure, not a restore.
-                        logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
-                        continue
-                else:
-                    shutil.copy2(src, dst)
+            if _restore_snapshot_entry(rel, src, dst):
                 restored += 1
-            except (OSError, PermissionError) as exc:
-                logger.error("Failed to restore %s: %s", rel, exc)
+            elif rel == "auth.json":
+                auth_restore_failed = True
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
-    return restored > 0
+    return restored > 0 and not auth_restore_failed
 
 
 def _count_cron_jobs(path: Path) -> Optional[int]:
