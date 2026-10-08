@@ -1163,7 +1163,7 @@ def local_consent(db_path: DbPath, room_id: str) -> bool:
         return local_consent_locked(conn, room_id)
 
 
-def set_local_consent(db_path: DbPath, *, room_id: str, allowed: bool, now: float | None = None) -> dict[str, Any]:
+def set_local_consent(db_path: DbPath, *, room_id: str, allowed: bool, now: float | None = None, conn=None) -> dict[str, Any]:
     """The operator allows (or no longer allows) this installation to continue ``room_id``.
 
     Takes effect here at once. The host learns it from the next acknowledgment or probe;
@@ -1172,7 +1172,8 @@ def set_local_consent(db_path: DbPath, *, room_id: str, allowed: bool, now: floa
     if type(allowed) is not bool:
         raise CustodyError("successor must be a boolean")
     now = time.time() if now is None else float(now)
-    with rooms._transaction(db_path, immediate=True) as conn:
+    from contextlib import nullcontext
+    with nullcontext(conn) if conn is not None else rooms._transaction(db_path, immediate=True) as conn:
         initialize_locked(conn)
         conn.execute(f"""INSERT INTO {CONSENT_TABLE} (room_id, allowed, updated_at) VALUES (?,?,?)
             ON CONFLICT(room_id) DO UPDATE SET allowed=excluded.allowed, updated_at=excluded.updated_at""",

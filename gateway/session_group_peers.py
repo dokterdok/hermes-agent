@@ -110,6 +110,8 @@ def probe_route(client, grant, catalog, scope):
         raise RuntimeStoreError(reason) from exc
     except HostedRoomPeerError as exc:
         raise RuntimeStoreError('peer_target_mismatch') from exc
+    if probe.get('retirement_only') is True:
+        raise RuntimeStoreError('peer_target_unsupported')
     if live != catalog or any(probe.get(k) != v for k, v in scope.items()):
         raise RuntimeStoreError('peer_target_mismatch')
     return probe

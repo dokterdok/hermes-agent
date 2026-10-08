@@ -589,6 +589,17 @@ async def test_disband_keeps_the_source_until_published_files_verify(tmp_path, m
         with pytest.raises(RuntimeStoreError, match="room_retiring") as pending:
             await dispatch_group_control(connection, "groups.disband", {"room_id": "room"})
         assert isinstance(pending.value.__cause__, RoomStopPendingError)
+        from gateway.session_controls import AuthorityConnection
+        public = AuthorityConnection(authority, object(), {'user_id': 'alice', 'provider': 'local',
+            'profile_id': authority.profile_id, 'instance_id': authority.instance_id,
+            'capabilities': ['session:control']})
+        try:
+            response = await public.dispatch({'id': 'pending-files', 'method': 'groups.disband',
+                                              'params': {'room_id': 'room'}})
+        finally:
+            authority.events.pop(public.actor.transport_id, None)
+        assert response == {'jsonrpc': '2.0', 'id': 'pending-files', 'error': {
+            'code': 4001, 'message': 'room_retiring', 'data': {'reason': 'room_retiring'}}}
         remaining, = outbox_rows(service)
         assert remaining["acknowledged_at"] is None and remaining["cleanup_required_at"] is None
         assert RoomArtifactOutbox(service.db_path).read(scope, source["artifact_id"])[1] == path.read_bytes()

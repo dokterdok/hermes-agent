@@ -15,7 +15,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
-from .registry import method
+from .registry import canonical_method, method
 from .server_requests import ApprovalChoice
 
 # ── shared room shapes ────────────────────────────────────────────────────────────────────────
@@ -242,6 +242,7 @@ class RoomDriverStatus(Result):
     pending_actions: list[dict[str, JsonValue]]
     peer_routes: list[PeerRouteStatus]
     peer_cleanup: list[dict[str, JsonValue]] | None = None
+    peer_retirements: list[dict[str, JsonValue]] | None = None
     retiring: bool | None = None
     replication: dict[str, JsonValue] | None = None
     #: Turns waiting for another computer: ``{task_id, member_id, state: "waiting_for_host", resource,
@@ -334,6 +335,7 @@ class RoomTombstone(Result):
 
 class GroupsDisbandResult(Result):
     tombstone: RoomTombstone
+    retirements: list[dict[str, JsonValue]] = []
 
 
 method("groups.disband", params=GroupsDisbandParams, result=GroupsDisbandResult,
@@ -409,7 +411,7 @@ class GroupsDiscardResult(Result):
     task: RoomTaskReceipt
 
 
-method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
+canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
        doc="Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.")
 
 
@@ -434,7 +436,7 @@ class GroupsAttachmentResult(Result):
     event_id: str | None = None
 
 
-method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=GroupsAttachmentResult,
+canonical_method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=GroupsAttachmentResult,
        doc="Upload owner-authorized bytes for a canonical room message.")
 
 
@@ -447,7 +449,7 @@ class GroupsAttachmentDownloadResult(GroupsAttachmentResult):
     data_base64: str
 
 
-method("groups.attachment.download", params=GroupsAttachmentDownloadParams, result=GroupsAttachmentDownloadResult,
+canonical_method("groups.attachment.download", params=GroupsAttachmentDownloadParams, result=GroupsAttachmentDownloadResult,
        doc="Read bytes bound to a canonical room event, subject to current viewer authorization.")
 
 
@@ -465,6 +467,8 @@ class RoomFileProducer(Result):
 
 
 class RoomFileItem(Result):
+    # Omitted by older hosts and for available rows; false never authorizes Download.
+    available: bool = True
     attachment_id: str
     kind: str
     name: str
@@ -486,8 +490,9 @@ class GroupsAttachmentListResult(Result):
     has_more: bool
 
 
-method("groups.attachment.list", params=GroupsAttachmentListParams, result=GroupsAttachmentListResult,
-       doc="List authorized published room-file versions with stable paging, search and producer filtering.")
+canonical_method("groups.attachment.list", params=GroupsAttachmentListParams, result=GroupsAttachmentListResult,
+       doc="List authorized published room-file references with stable paging, search and producer filtering. "
+           "available=false retains a historical reference whose bytes are unavailable here; omitted means locally available.")
 
 
 # ── replication / authority takeover ──────────────────────────────────────────────────────────
@@ -600,6 +605,9 @@ class GroupsPeerInviteParams(ProfileParams):
     custody_only: bool | None = None
     # The same grant is re-issued to a verified successor of the room unless this is ``false``.
     continuation: bool | None = None
+
+    retirement_only: bool | None = None
+    previous_authority: dict[str, JsonValue] | None = None
 
 
 class GroupsPeerInviteResult(Result):
@@ -1343,3 +1351,22 @@ __all__ = [
     "GroupsLogResult", "RelayEnvelope", "Room", "RoomAuthority", "RoomEvent", "RoomLinkCatalog",
     "RoomMember", "RoomMemberInput",
 ]
+
+
+class GroupsPeerRetirementsParams(ProfileParams):
+    room_id: str | None = None
+
+
+class GroupsPeerRetireParams(RoomParams):
+    retirement_id: str
+    grant: str | None = None
+
+
+class GroupsPeerRetireResult(Result):
+    retirements: list[dict[str, JsonValue]]
+
+
+method("groups.peer.retirements", params=GroupsPeerRetirementsParams, result=GroupsPeerRetireResult,
+       doc="List retained peer-authority retirement obligations, including ended rooms.")
+method("groups.peer.retire", params=GroupsPeerRetireParams, result=GroupsPeerRetireResult,
+       doc="Retry authority retirement with an optional fresh exact-scope target grant; never reopen execution.")

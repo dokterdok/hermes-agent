@@ -175,9 +175,9 @@ def _previous_authority(claims, body):
     return room_authority({**claims, **previous})
 
 
-def _record_invitation(self, claims, body, verified_origin=None):
+def _record_invitation(self, claims, body, verified_origin=None, *, db_path=None, write_extra=None):
     from gateway import hosted_rooms
-    from gateway.platforms.api_server_run_authority import room_authority, room_namespace, room_run_scope
+    from gateway.platforms.api_server_run_authority import room_authority
     authority = room_authority(claims)
     if _retirement_only(claims):
         if not self._run_idempotency_store.permits_room_retirement(authority):
@@ -185,31 +185,35 @@ def _record_invitation(self, claims, body, verified_origin=None):
         return
     previous = _previous_authority(claims, body)
     previous_home = body["previous_authority"]["home_install_id"] if previous is not None else None
-    namespace = room_namespace(claims)
+    db_path = db_path or _grant_db(self)
     if verified_origin is not None:
-        target = self._run_idempotency_store.observe_verified_room_authority(
+        self._run_idempotency_store.observe_verified_room_authority(
             claims, body.get("previous_authority"), verified_origin)
-        replaced = target[2:4] if target is not None else previous[1:3] if previous is not None else None
-        if replaced is not None and replaced[0] == authority[1] and replaced[1] != authority[2]:
-            # The learned winner replaces the shared reservation, including members
-            # that did not consent to receiving another continuation grant.
-            with hosted_rooms._transaction(_grant_db(self), immediate=True) as conn:
-                conn.execute("""DELETE FROM hosted_room_peer_reservations WHERE room_id=?
-                    AND target_profile=? AND authority_epoch=? AND authority_gateway_id=?""",
-                    (claims["room_id"], claims["target_profile"], replaced[0], replaced[1]))
-    elif not self._run_idempotency_store.accepts_room_authority(authority, previous, namespace, claims, previous_home):
-        raise RoomGrantReauthorizationRequired("room authority has already advanced")
-    if (verified_origin is None and previous is None and not self._run_idempotency_store.knows_room_authority(authority)
-            and not self._run_idempotency_store.knows_room_target(claims)):
-        with hosted_rooms._transaction(_grant_db(self)) as conn:
-            existing = conn.execute("""SELECT 1 FROM hosted_room_peer_reservations
-                WHERE room_id=? AND target_profile=?""", (claims["room_id"], claims["target_profile"])).fetchone()
-        if existing is not None:
-            raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
-    if verified_origin is None:
-        if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), authority, previous, previous_home, namespace, claims):
-            raise RoomGrantReauthorizationRequired("room authority has already advanced")
-    hosted_rooms.reserve_peer_room(_grant_db(self), claims=claims, expires_at=_hard_expiry(claims))
+        # Verified consensus fences are independent of invitation publication. A
+        # failed grant transaction must never restore the losing epoch's authority.
+        with hosted_rooms._transaction(db_path, immediate=True) as conn:
+            # A prior failed grant transaction can leave the losing reservation
+            # even after the verified floor committed. Retry against that floor.
+            conn.execute("""DELETE FROM hosted_room_peer_reservations WHERE room_id=?
+                AND target_profile=? AND authority_epoch=? AND authority_gateway_id!=?""",
+                (claims["room_id"], claims["target_profile"], authority[1], authority[2]))
+            hosted_rooms.reserve_peer_room(db_path, claims=claims, expires_at=_hard_expiry(claims), conn=conn)
+            if write_extra is not None:
+                write_extra(conn)
+        return
+    # Lock order matches new-run admission: grant writer, then RunStore. Publish
+    # the ordinary floor only after both reservation and consent have committed.
+    with hosted_rooms._transaction(db_path, immediate=True) as conn:
+        def commit_reservation(known):
+            if previous is None and not known and conn.execute(
+                    "SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND target_profile=?",
+                    (claims["room_id"], claims["target_profile"])).fetchone() is not None:
+                raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
+            hosted_rooms.reserve_peer_room(db_path, claims=claims, expires_at=_hard_expiry(claims), conn=conn)
+            if write_extra is not None:
+                write_extra(conn)
+            conn.commit()
+        self._run_idempotency_store.commit_room_invitation(claims, previous, previous_home, commit_reservation)
 
 
 def authorize_room_admission(adapter, request):
@@ -303,22 +307,24 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, _verified_ori
         execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
         ttl_seconds=ttl, status_ttl_seconds=status_ttl)
     claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
-    _record_invitation(self, claims, body, _verified_origin)
     invitation = {"grant": token, "target_profile": profile, "catalog": catalog,
                   "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"]),
                   "passive_replication": passive_capabilities()}
     if _retirement_only(claims):
+        _record_invitation(self, claims, body)
         return invitation
-    if "replicate" in permissions:
-        set_local_consent(_grant_db(self), room_id=claims["room_id"], allowed="successor" in permissions)
     from gateway.hosted_room_succession import record_consent_locked, withdraw_consent_locked
-    with hosted_rooms._transaction(_grant_db(self), immediate=True) as conn:
+    def write_consent(conn):
+        if "replicate" in permissions:
+            set_local_consent(_grant_db(self), room_id=claims["room_id"], allowed="successor" in permissions, conn=conn)
         if continuation:
+            origin = _verified_origin or self._run_idempotency_store._invitation_origin_locked(
+                claims, body.get("previous_authority"))
             record_consent_locked(conn, room_id=claims["room_id"], member_id=claims["member_id"],
                                   target_profile=profile, options={
                                       "authority": {key: claims[key] for key in (
                                           "home_install_id", "authority_gateway_id", "authority_epoch")},
-                                      "origin_install_id": self._run_idempotency_store.room_lineage_origin(claims),
+                                      "origin_install_id": origin,
                                       "replication": body.get("replication", True),
                                       "work_records": body.get("work_records", False),
                                       "passive_only": body.get("passive_only", False),
@@ -327,6 +333,7 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, _verified_ori
         else:
             withdraw_consent_locked(conn, room_id=claims["room_id"], member_id=claims["member_id"],
                                     target_profile=profile)
+    _record_invitation(self, claims, body, _verified_origin, write_extra=write_consent)
     return invitation
 
 

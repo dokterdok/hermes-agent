@@ -489,7 +489,8 @@ class RunIdempotencyStore:
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
                 owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
-                identity: dict | None = None, cancel_if_missing: bool = False, cancellation_snapshot=None, room_authority=None):
+                identity: dict | None = None, cancel_if_missing: bool = False, cancellation_snapshot=None,
+                room_authority=None, _authorize=None):
         """Atomically reserve a key; return ``(outcome, stored_record)``.
 
         ``identity`` is the exact room scope behind ``scope``. A new run records it
@@ -540,6 +541,9 @@ class RunIdempotencyStore:
                 if inherited is not None:
                     self._conn.commit()
                     return "inherited", inherited
+            if _authorize is not None and not _authorize():
+                self._conn.commit()
+                return "authority_retired", None
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
@@ -695,10 +699,14 @@ class RunIdempotencyStore:
         with self._lock:
             return retained(self._conn, claims) is not None
 
-    def room_lineage_origin(self, claims):
+    def _invitation_origin_locked(self, claims, previous):
+        """Read the validated origin inside commit_room_invitation's locked grant callback."""
         from gateway.platforms.api_server_room_origins import retained
-        with self._lock:
-            return retained(self._conn, claims)[0]
+        from gateway.platforms.api_server_run_authority import origin_home, room_authority
+        current = retained(self._conn, claims)
+        predecessor = {**claims, **previous} if previous is not None else claims
+        return current[0] if current is not None else origin_home(
+            self._conn, room_authority(predecessor), predecessor["home_install_id"])
 
     def knows_room_authority(self, authority):
         from gateway.platforms.api_server_run_authority import canonical
@@ -732,6 +740,31 @@ class RunIdempotencyStore:
             current = observe(self._conn, scope, authority, previous, previous_home, namespace, claims)
             self._conn.commit()
         return current
+
+    def commit_room_invitation(self, claims, previous, previous_home, commit_reservation):
+        """Grant writer precedes this lock; keep admissions fenced through both commits.
+
+        The callback validates legacy reservations, writes the grant, and commits its
+        writer before returning. A failed grant commit never changes this store's floor.
+        """
+        from gateway.platforms.api_server_run_authority import (
+            canonical, namespace_matches, observe, room_authority, room_namespace, room_run_scope,
+            successor, superseded)
+        from gateway.platforms.api_server_room_origins import accepts, retained
+        authority, namespace = room_authority(claims), room_namespace(claims)
+        with self._immediate_txn():
+            candidate = successor(self._conn, authority, previous)
+            if (not namespace_matches(self._conn, namespace, candidate) or superseded(self._conn, candidate)
+                    or not accepts(self._conn, claims, previous_home)):
+                raise ValueError("room authority has already advanced")
+            known = retained(self._conn, claims) is not None or self._conn.execute(
+                "SELECT 1 FROM run_room_authorities WHERE authority_key=?",
+                (canonical(self._conn, authority)[0],)).fetchone() is not None
+            commit_reservation(known)
+            if not observe(self._conn, room_run_scope(claims), authority, previous, previous_home, namespace, claims):
+                raise ValueError("room authority has already advanced")
+            self._conn.commit()
+
 
     def retire_room_authority(self, scope, authority):
         from gateway.platforms.api_server_run_authority import retire

@@ -15,8 +15,6 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_o
     """Revocation must fence admission, not merely pause execution afterward."""
     import concurrent.futures
     import json
-    from pathlib import Path
-    import time
 
     from gateway import hosted_room_driver as tasks, hosted_room_input_preparation
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
@@ -95,8 +93,6 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_o
 
 def test_same_home_custody_guard_keeps_shared_room_refusal_and_exact_controls(hosted_owner, monkeypatch):
     """New work honors the shared room fence on its writer; status and exact Stop remain readable."""
-    from pathlib import Path
-    import time
     from gateway import hosted_room_driver as tasks, hosted_rooms
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_state_runtime import RuntimeStoreError
@@ -295,7 +291,7 @@ def test_terminal_callback_follows_canonical_drain_without_polling(hosted_owner,
         return 'canonical reply'
     # This RPC component fixture supplies the service gate explicitly; daemon
     # coverage exercises the real durable member/task authorizer.
-    authority.runner._adapter_for_source = lambda source: authority.runner.adapters[source.platform]
+    authority.runner._adapter_for_source = authority.runner._intake_adapter_for = authority.runner._delivery_adapter_for = lambda source: authority.runner.adapters[source.platform]
     authority.hosted_room_service = SimpleNamespace(
         check_admission=lambda ref, row, **kwargs: (lambda conn, selected: None) if kwargs.get('_for_claim') else True)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
@@ -411,6 +407,35 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(host
         rpc.history(**coords, session_id=sid)
 
 
+def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(hosted_owner, monkeypatch):
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_state_runtime import claim_session_input
+    authority, loop, principal, agent = hosted_owner
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
+                                 principal=principal, authorize=lambda *args: True)
+    coords = dict(profile='default', source='bot_room')
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'),
+               execution_generation=1, on_terminal=lambda receipt: None)
+    original = authority.cancel_queued
+    claimed = []
+
+    async def claim_first(actor, ref, admission_id):
+        claimed.append(claim_session_input(authority.db, epoch=authority.epoch, session_id=sid))
+        return await original(actor, ref, admission_id)
+    monkeypatch.setattr(authority, 'cancel_queued', claim_first)
+    interrupted = []
+
+    async def interrupt(actor, ref, generation):
+        interrupted.append(generation)
+    monkeypatch.setattr(authority, 'interrupt', interrupt)
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1) == {
+        'interrupted': False, 'status': 'running'}
+    assert interrupted == [claimed[0]['generation']]
+    assert rpc.info(**coords, session_id=sid)['status'] == 'started'
+
+
 def _hosted_retry_attempt(hosted_owner, monkeypatch):
     from gateway import hosted_room_driver as tasks, hosted_rooms
     from gateway.session_hosted_service import CanonicalHostedRoomService
@@ -483,30 +508,28 @@ def test_old_producer_stop_does_not_target_a_later_explicit_retry(hosted_owner, 
         assert current['status'] == 'started' and agent.interrupted
 
 
-def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(hosted_owner, monkeypatch):
+def test_room_member_turns_cannot_block_on_an_unanswerable_clarify(hosted_owner, monkeypatch):
+    """A room has no clarification reply and hosted principals lack session:respond, so a
+    member turn that called clarify would block for clarify_timeout with its question never
+    shown. The frozen member policy must exclude the tool even when the profile's toolsets
+    (here the hermes-cli bundle) include it; the member asks in its room reply instead."""
+    from gateway import run
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.hosted_room_driver import TaskIdentity
-    from hermes_state_runtime import claim_session_input
-    authority, loop, principal, agent = hosted_owner
-    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
+    from gateway.session_local_recovery import local_adapter_map
+    from gateway.config import Platform
+    from agent.skill_utils import parse_config_string_list
+    from model_tools import get_tool_definitions
+
+    authority, loop, principal, _ = hosted_owner
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {
+        'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': ['hermes-cli']}})
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='one', profile='default',
                                  principal=principal, authorize=lambda *args: True)
-    coords = dict(profile='default', source='bot_room')
-    sid = rpc.create(**coords, title='Group: room')['session_id']
-    rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'),
-               execution_generation=1, on_terminal=lambda receipt: None)
-    original = authority.cancel_queued
-    claimed = []
-
-    async def claim_first(actor, ref, admission_id):
-        claimed.append(claim_session_input(authority.db, epoch=authority.epoch, session_id=sid))
-        return await original(actor, ref, admission_id)
-    monkeypatch.setattr(authority, 'cancel_queued', claim_first)
-    interrupted = []
-
-    async def interrupt(actor, ref, generation):
-        interrupted.append(generation)
-    monkeypatch.setattr(authority, 'interrupt', interrupt)
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1) == {
-        'interrupted': False, 'status': 'running'}
-    assert interrupted == [claimed[0]['generation']]
-    assert rpc.info(**coords, session_id=sid)['status'] == 'started'
+    sid = rpc.create(profile='default', title='Group: room', source='bot_room')['session_id']
+    policy = local_adapter_map(authority)[Platform.LOCAL].policies[sid]
+    # The same derivation the turn uses: frozen toolsets minus the frozen agent.disabled_toolsets.
+    disabled = parse_config_string_list((policy.config().get('agent') or {}).get('disabled_toolsets'))
+    tools = {t['function']['name'] for t in get_tool_definitions(
+        enabled_toolsets=list(policy.toolsets), disabled_toolsets=disabled or None, quiet_mode=True)}
+    assert 'terminal' in tools
+    assert 'clarify' not in tools
