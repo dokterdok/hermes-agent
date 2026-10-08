@@ -698,7 +698,9 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   }
 
   const preserved = new Set(preserveRooms)
-  const locallyDeleted = new Set(deletedRooms)
+  // A delayed sync read can predate the pending delete job. Runtime tombstones
+  // still prove this exact local room was disbanded; never refill them from that read.
+  const locallyDeleted = new Set([...deletedRooms, ...Object.keys(rooms).filter(name => rooms[name]?.tombstone)])
 
   // deletedRooms names a pending local disband. It must hide the REMOTE copy
   // of that room, but a live local record under the same name is newer than

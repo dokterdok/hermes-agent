@@ -516,39 +516,36 @@ describe('durable projection', () => {
     expect(rooms.Legacy.roomId).toBeNull()
   })
 
-  it('never persists a tombstone that a remote merge forwarded', async () => {
-    const room = await loadRoom()
-    // A drive still mid-turn at disband time leaves a live tombstone.
-    room.chat.$groupChats.set({
-      Live: { epoch: 4, log: [], running: false, tombstone: true, watermarks: {} }
-    } as unknown as Record<string, GroupChat>)
+  it.each([undefined, 'disbanded-room'])(
+    'does not refill or persist a disbanded room from a delayed projection (%s)',
+    async roomId => {
+      const room = await loadRoom()
+      room.chat.$groupChats.set({
+        Live: { epoch: 4, log: [], roomId, running: false, tombstone: true, watermarks: {} }
+      } as unknown as Record<string, GroupChat>)
 
-    // The remote gateway has NOT yet received the delete (plausible now that
-    // sync fans out to every reachable default-profile gateway independently)
-    // — its snapshot still carries a live copy under the same display name.
-    const merged = room.chat.mergeRemoteGroupChatSnapshotIntoRooms(
-      {
-        rooms: {
-          Live: {
-            log: [{ at: 1, from: { kind: 'member', name: 'research' }, text: 'still going' }],
-            members: [{ name: 'research' }]
-          }
+      // A read already in flight can return before the queued delete is visible.
+      // Its old changed-room reservation must not restore the retired room's log.
+      const merged = room.chat.mergeRemoteGroupChatSnapshotIntoRooms(
+        {
+          rooms: {
+            Live: {
+              roomId,
+              log: [{ at: 1, from: { kind: 'member', name: 'research' }, text: 'still going' }],
+              members: [{ name: 'research' }]
+            }
+          },
+          version: 3
         },
-        version: 3
-      },
-      room.chat.$groupChats.get()
-    )
+        room.chat.$groupChats.get(),
+        { preserveRooms: ['Live'] }
+      )
 
-    // The merge spreads `...existing` before its explicit field overrides,
-    // none of which touch `tombstone` — so the flag survives into the merged
-    // room. Without that reachability step durableGroupChatRooms would never
-    // see a tombstoned room from this path at all.
-    expect(merged.Live.tombstone).toBe(true)
-
-    await room.chat.persistGroupChatRooms(merged)
-
-    expect('Live' in durable(room)).toBe(false)
-  })
+      expect(merged.Live).toBeUndefined()
+      await room.chat.persistGroupChatRooms(merged)
+      expect('Live' in durable(room)).toBe(false)
+    }
+  )
 
   it('stranded markers ride the durable map so late replies survive a reload', async () => {
     const room = await loadRoom()
