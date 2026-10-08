@@ -1,17 +1,12 @@
 import { renderHook } from '@testing-library/react'
-import { expect, it, vi } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 
 const active = vi.hoisted(() => ({ locale: 'en' }))
 
 vi.mock('@hermes/plugin-sdk', () => ({
   useI18n: () => ({ t: TRANSLATIONS[active.locale as keyof typeof TRANSLATIONS] }),
-  usePluginI18n: () => (key: string) =>
-    key
-      .split('.')
-      .reduce<unknown>(
-        (node, part) => (node as Record<string, unknown>)?.[part],
-        BOTS_LOCALES[active.locale as keyof typeof TRANSLATIONS]
-      )
+  usePluginI18n: (pluginId: string) => (key: string, ...args: unknown[]) =>
+    translatePlugin(pluginId, active.locale, key, args)
 }))
 vi.mock('../plugins/hermes-bots/shared', () => ({ getPluginCtx: () => null }))
 
@@ -19,8 +14,10 @@ import { useCanonicalGroupLabels } from '../plugins/hermes-bots/canonical-group-
 import { BOTS_LOCALES } from '../plugins/hermes-bots/i18n'
 
 import { TRANSLATIONS } from './catalog'
+import { registerPluginLocales, translatePlugin } from './plugin-i18n'
 
 it('provides translated canonical group controls and recovery copy in every supported locale', () => {
+  onTestFinished(registerPluginLocales('hermes-bots', BOTS_LOCALES))
   const english = BOTS_LOCALES.en?.canonical as Record<string, string> | undefined
   expect(english).toBeDefined()
 
@@ -33,12 +30,19 @@ it('provides translated canonical group controls and recovery copy in every supp
     expect(messages, locale).toBeDefined()
     expect(Object.keys(messages!).sort(), locale).toEqual(Object.keys(english!).sort())
 
-    for (const [key, value] of Object.entries(messages!)) {
-      expect(result.current[key as keyof typeof result.current]).toBe(value)
-      expect(value.trim(), `${locale}.${key}`).not.toBe('')
+    const sharedGroup = BOTS_LOCALES[locale]?.group as Record<string, unknown> | undefined
+    const englishGroup = BOTS_LOCALES.en?.group as Record<string, unknown>
 
-      if (locale !== 'en') {
-        expect(value, `${locale}.${key}`).not.toBe(english![key])
+    for (const [key, value] of Object.entries(messages!)) {
+      const expected = key === 'you' ? sharedGroup?.you ?? englishGroup.you : value
+      expect(result.current[key as keyof typeof result.current], `${locale}.${key}`).toBe(expected)
+      expect(value.trim(), `${locale}.${key}`).not.toBe('')
+    }
+
+    // Shared vocabulary may match English; recovery copy must still use this locale.
+    if (locale !== 'en') {
+      for (const key of ['unconfirmedSend', 'restorePendingSend', 'pendingActionUnconfirmed'] as const) {
+        expect(result.current[key], `${locale}.${key}`).not.toBe(english![key])
       }
     }
 
