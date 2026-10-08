@@ -201,7 +201,7 @@ function rowText(
   member: CanonicalRoomMember | undefined
 ) {
   if (notice) {
-    return { system: true, text: notice }
+    return { system: false, text: notice }
   }
 
   const activity: Record<string, string> = {
@@ -212,7 +212,7 @@ function rowText(
     'room.created': labels.activityCreated,
     'room.disbanded': labels.activityEnded,
     'room.renamed': labels.activityRenamed,
-    'room.stop_requested': labels.stopped
+    'room.stop_requested': labels.classicActivityStopped
   }
 
   const suppliedText = event.payload.text || event.payload.content

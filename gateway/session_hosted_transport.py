@@ -241,6 +241,8 @@ def install_hosted_transport(server, authority, loop, *, attest):
             raise RuntimeStoreError('profile_mismatch')
         binding = {'source_home': envelope['source_home'], 'selector': selector,
                    'target_home': authority.profile_id}
+        # The target compares the requested task/generation with its canonical
+        # admission, then re-attests that full identity before allowing execution.
         attested = _attest(binding, 'info' if operation == 'approve' else operation, params, request=request_source)
         binding['owner'] = attested['owner']
         principal = _principal(authority, binding)

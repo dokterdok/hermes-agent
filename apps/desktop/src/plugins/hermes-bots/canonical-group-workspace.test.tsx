@@ -735,7 +735,7 @@ it('captures exact pending attempts through confirmation and never retargets or 
   })
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'ack-room' }} />)
   fireEvent.click(await screen.findByRole('button', { name: CANONICAL_GROUP_LOCALES.en.skipReply }))
-  expect(screen.getByText(/Side effects may already have occurred/)).toBeTruthy()
+  expect(screen.getByText(labels.discardWarning)).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   action.execution_generation = 8
   fireEvent.click(screen.getByRole('button', { name: 'Confirm discard' }))
@@ -1074,7 +1074,7 @@ it('renames a gateway room with one event id across retries', async () => {
   )
 
   render(<GroupChatWorkspace group={group} members={[]} />)
-  await chooseGroupAction('Rename')
+  await chooseGroupAction(labels.rename)
   fireEvent.change(screen.getByRole('textbox', { name: 'Room name' }), { target: { value: 'New name' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
   expect((await screen.findByRole('alert')).textContent).toContain('socket closed')
@@ -1255,7 +1255,7 @@ it('keeps its frozen send for missing or malformed acknowledgement identity', as
   for (const value of [{ accepted: true }, { accepted: true, client_event_id: 1 }, { client_event_id: 'wrong' }]) {
     receipt = value
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('unconfirmed'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(labels.unconfirmedSend))
     expect(await readCanonicalGroupSend(binding)).toEqual({ ...entry, attempted: true })
     await waitFor(() =>
       expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false)
@@ -1341,7 +1341,7 @@ it('shows the actual approval operation and never allows a missing or descriptio
     <CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'default', roomId: 'approval-preview' }} />
   )
 
-  await screen.findByRole('button', { name: 'Deny' })
+  await screen.findByRole('button', { name: labels.deny })
   expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull()
   action = {
     ...action,
@@ -1733,7 +1733,8 @@ it('disbands a gateway room only after confirmation and keeps it unless the gate
     }
 
     if (method === 'groups.state') {
-      return { room: { name: 'Leaving' }, driver_status: {} }
+      const tombstone = (disbandResult as { tombstone?: {room_id: string; disbanded_at: number} }).tombstone
+      return { room: { name: 'Leaving', room_id: 'leaving', ...tombstone }, driver_status: {peer_cleanup: []} }
     }
 
     if (method === 'groups.log') {
