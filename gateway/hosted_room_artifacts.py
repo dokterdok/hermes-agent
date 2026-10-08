@@ -918,7 +918,7 @@ class RoomArtifactOutbox:
     def _read_blob(self, row: sqlite3.Row, *, offset: int, length: int) -> bytes:
         path = self.blob_root / str(row["blob_name"])
         try:
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
         except FileNotFoundError as exc:
             raise RoomArtifactError("room artifact bytes are missing") from exc
         try:
