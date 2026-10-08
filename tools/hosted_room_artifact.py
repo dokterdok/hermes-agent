@@ -159,12 +159,12 @@ _UNSAFE_PATH = (
 )
 
 
-def _requested_file_path(value: str) -> Path:
+def _requested_file_path(value: str, *, remote: bool = False) -> Path | PurePosixPath:
     candidate = str(value or "").strip()
     if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
         candidate = candidate[1:-1].strip()
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
-    return Path(candidate).expanduser()
+    return PurePosixPath(candidate) if remote else Path(candidate).expanduser()
 
 
 def _canonical_macos_alias_path(path: Path) -> Path:
@@ -173,6 +173,7 @@ def _canonical_macos_alias_path(path: Path) -> Path:
     if sys.platform != "darwin":
         return path
     normalized = os.path.normpath(str(path))
+    # no-tmp: ok — canonical macOS root aliases, not scratch-directory selection.
     for alias, target in (("/tmp", "/private/tmp"), ("/var", "/private/var")):
         if normalized == alias or normalized.startswith(alias + "/"):
             return Path(target + normalized[len(alias):])
@@ -352,12 +353,13 @@ def share_group_file(
         from gateway.session_context import get_session_env
         from tools.file_tools_paths import _terminal_env_type_for_task
 
-        requested = _requested_file_path(path)
+        remote = _terminal_env_type_for_task(task_id) != "local"
+        requested = _requested_file_path(path, remote=remote)
         if not requested.is_absolute():
             raise RoomArtifactError(_UNSAFE_PATH)
         if name is not None:
             _require_publishable_name(str(name))
-        if _terminal_env_type_for_task(task_id) != "local":
+        if remote:
             return _shared(_store_backend_group_file(
                 binding=binding,
                 path=requested,
