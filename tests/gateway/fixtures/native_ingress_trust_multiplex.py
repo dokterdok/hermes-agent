@@ -89,6 +89,7 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
         while adapter._active_sessions:
             await asyncio.sleep(0.01)
     entry = runner.session_store.get_or_create_session(source)
+    assert entry.transport_profile == 'transport'  # admit_native persists the receiving bot.
     committed = rows(entry.session_id)
     assert committed and committed[0]['outcome'] == 'completed', (committed, adapter.deliveries)
     provenance = committed[0]['payload']['native_text_v1']['provenance']
@@ -134,6 +135,9 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
             async with asyncio.timeout(10):
                 while adapter._active_sessions:
                     await asyncio.sleep(0.01)
+            # The busy receive returned at commit; the queued turn finishes on the FIFO drain.
+            if authority.sessions[entry.session_id].task is not None:
+                await asyncio.wait_for(authority.sessions[entry.session_id].task, 10)
         assert all(row['outcome'] == 'completed' for row in rows(entry.session_id))
         assert worker_scopes == [(str(state), 'runtime-fixture-key')] * 2 + [(str(state), 'runtime-fresh-key')], worker_scopes
     if mode == 'capture':

@@ -62,28 +62,9 @@ class AuthorityConnection:
                 return connection
         raise RuntimeStoreError('profile_mismatch')
 
-    async def dispatch(self, request):
-        rid = request.get('id')
-        method = request.get('method')
-        params = request.get('params') or {}
-        if not isinstance(params, dict):
-            # Every handler indexes params as a mapping; refuse the frame before ``.get``.
-            return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
-        profile = params.get('profile')
-        if isinstance(profile, str) and profile:
-            try:
-                routed = self._sibling_for(profile)
-            except RuntimeStoreError as exc:
-                return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                    'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
-            if routed is not None:
-                return await routed.dispatch(request)
-            # Our own home: the scope is implicit for the strict session verbs, which refuse
-            # unknown keys; every other handler validates ``profile`` itself.
-            if method in _PROFILE_IMPLICIT:
-                params = {key: value for key, value in params.items() if key != 'profile'}
-        ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
+    def handlers(self):
+        """Method → handler for every verb ``dispatch`` serves outside the group controls; each
+        name is declared in ``tui_gateway/contracts`` (``METHODS`` or ``CANONICAL_METHODS``)."""
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
                     'commands.catalog': self.command_catalog, 'complete.slash': self.slash_completions,
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
@@ -112,6 +93,38 @@ class AuthorityConnection:
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
+        return handlers
+
+    async def dispatch(self, request):
+        rid = request.get('id')
+        method = request.get('method')
+        params = request.get('params') or {}
+        if not isinstance(params, dict):
+            # Every handler indexes params as a mapping; refuse the frame before ``.get``.
+            return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
+        profile = params.get('profile')
+        if isinstance(profile, str) and profile:
+            try:
+                routed = self._sibling_for(profile)
+            except RuntimeStoreError as exc:
+                return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                    'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+            if routed is not None:
+                return await routed.dispatch(request)
+            # Our own home: the scope is implicit for the strict session verbs, which refuse
+            # unknown keys; every other handler validates ``profile`` itself.
+            if method in _PROFILE_IMPLICIT:
+                params = {key: value for key, value in params.items() if key != 'profile'}
+        ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
+        from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+        contract = CANONICAL_METHODS.get(method)
+        if contract is not None and (problems := canonical_param_problems(contract, params)):
+            # The declared wire contract (``tui_gateway/contracts/canonical.py``) is the closed
+            # key set: an unknown or missing key never reaches the handler.
+            return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
+        handlers = self.handlers()
         try:
             from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
             # Every handler reads config/jobs/policy for the OWNING profile: enter its home so
@@ -220,11 +233,12 @@ class AuthorityConnection:
         # ``-c <title> --create-if-missing``: resolve-or-create is one owner step (no await
         # between lookup and creation), so concurrent programmatic callers converge.
         title = validate_title(params.pop('title')) if 'title' in params else None
-        # Bot Mode's forever-chat mint: born hidden from the sidebar; `follow_profile_config` is
-        # the canonical default (a local session's runtime is built from the profile's current
-        # config on every attach), so the flag is accepted for the legacy contract and implied.
+        # The legacy follow_profile_config option alone retains its existing behavior.
+        # Explicit room plumbing opts into the separately guarded idle-resume contract.
         hidden = params.pop('hidden', False)
-        params.pop('follow_profile_config', None)
+        follow = params.pop('follow_profile_config', None)
+        from gateway.session_local_plumbing import validate_create
+        validate_create(params, hidden=hidden, follow=follow)
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
@@ -250,7 +264,7 @@ class AuthorityConnection:
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
                 'session_create': {'sources': ['cli', 'tui', 'gui', 'acp'],
-                                   'parameters': sorted(CREATE_FIELDS | {'title'})}}
+                                   'parameters': sorted(CREATE_FIELDS | {'title', 'hidden', 'follow_profile_config'})}}
 
     async def info(self, ref, params):
         from gateway.session_local import local_session_info
@@ -319,6 +333,8 @@ class AuthorityConnection:
         # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
         # never re-lights DB-derived liveness with no new activity.
         self.authority.authorize(self.actor, ref, 'session:read')
+        from gateway.session_local_plumbing import refresh_on_resume
+        refresh_on_resume(self.authority, self.actor, ref)
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         # Only local routes have a frozen local launch policy to project.
