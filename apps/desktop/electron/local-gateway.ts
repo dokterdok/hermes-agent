@@ -185,11 +185,15 @@ export async function ensureLocalGateway(
 // update restart) every ticket mint against the stale control socket fails and
 // the renderer's reconnect backoff would loop on the dead descriptor forever.
 // Forget the cached descriptor exactly once and re-run the canonical ensure;
-// a second failure is a real error and surfaces to the caller.
+// a second failure is a real error and surfaces to the caller. Every control-path
+// refusal mintLocalGatewayTicket raises qualifies: a pointer mid-rewrite or left by
+// an earlier owner, and a profile home moved since the descriptor was cached.
+const STALE_CONTROL_ERRORS = new Set(['Invalid gateway ticket response', 'Unsafe gateway control path', 'Invalid gateway control pointer', 'Noncanonical gateway profile'])
+
 export function isStaleLocalGatewayError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
-  return message.startsWith('Gateway ticket') || message === 'Invalid gateway ticket response' || message === 'Unsafe gateway control path'
+  return message.startsWith('Gateway ticket') || STALE_CONTROL_ERRORS.has(message)
 }
 
 export async function redialLocalGateway<TEndpoint, TResult>(deps: {
@@ -254,11 +258,19 @@ export function createLocalGatewayDials() {
   }
 }
 
-async function privateNode(file: string, kind: 'directory' | 'socket' | 'file') {
+// A profile home keeps the operator's mode (Python `home_mode_unsafe`: HERMES_HOME_MODE 0750/0701,
+// a 0755 home): read/search bits grant nothing against the 0600 socket; only write by another user
+// could swap it. Group-write is safe only for a proven-private group without an ACL, which Node
+// cannot establish (no xattrs/NSS): a group-writable home returns true so the caller hands the
+// ticket to the Python bridge, which applies that exact policy. The socket, pointer and fallback
+// directory stay owner-only.
+async function privateNode(file: string, kind: 'directory' | 'socket' | 'file' | 'home'): Promise<boolean> {
   const node = await fs.lstat(file)
-  const valid = { directory: node.isDirectory(), socket: node.isSocket(), file: node.isFile() }[kind]
+  const valid = { directory: node.isDirectory(), home: node.isDirectory(), socket: node.isSocket(), file: node.isFile() }[kind]
 
-  if (!valid || node.uid !== process.getuid?.() || (node.mode & 0o077)) {throw new Error('Unsafe gateway control path')}
+  if (!valid || node.uid !== process.getuid?.() || (node.mode & (kind === 'home' ? 0o002 : 0o077))) {throw new Error('Unsafe gateway control path')}
+
+  return kind === 'home' && Boolean(node.mode & 0o020)
 }
 
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
@@ -295,10 +307,25 @@ export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: Ga
   return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, url, launchHome), 'native-http') }
 }
 
-let windowsTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http') => Promise<string>) | undefined
+// The installed runtime's own ticket client: every Windows mint (SID-validated pipe), and a POSIX
+// home whose group-write only Python can prove private.
+let pythonTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http') => Promise<string>) | undefined
 
-export function configureWindowsGatewayTicketClient(client: NonNullable<typeof windowsTicketClient>) {
-  windowsTicketClient = client
+export function configurePythonGatewayTicketClient(client: NonNullable<typeof pythonTicketClient>) {
+  pythonTicketClient = client
+}
+
+async function mintGroupWritableHome(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http', homes: string[]) {
+  if (!pythonTicketClient) {throw new Error('Unsafe gateway control path')}
+
+  try {
+    return await pythonTicketClient(endpoint, purpose)
+  } catch (error) {
+    if ((error as { reason?: string })?.reason !== 'unsafe_control_permissions') {throw error}
+    const quoted = homes.map(home => `'${home.replace(/'/g, `'\\''`)}'`).join(' ')
+
+    throw new Error(`Profile home is writable by a group other accounts share: run chmod g-w ${quoted}`)
+  }
 }
 
 function isMissingNodeError(error: unknown): boolean {
@@ -341,9 +368,9 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
   }
 
   if (process.platform === 'win32') {
-    if (!windowsTicketClient) {throw new Error('Gateway ticket client is not configured')}
+    if (!pythonTicketClient) {throw new Error('Gateway ticket client is not configured')}
 
-    return windowsTicketClient(endpoint, purpose)
+    return pythonTicketClient(endpoint, purpose)
   }
 
   const home = endpoint.profile_id
@@ -352,10 +379,15 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
   // hermes_cli.gateway_runtime.control_home_for.
   const controlHome = endpoint.control_home || home
 
+  const groupWritable: string[] = []
+
   for (const dir of new Set([home, controlHome])) {
     if (await fs.realpath(dir) !== dir) {throw new Error('Noncanonical gateway profile')}
-    await privateNode(dir, 'directory')
+
+    if (await privateNode(dir, 'home')) {groupWritable.push(dir)}
   }
+
+  if (groupWritable.length) {return mintGroupWritableHome(endpoint, purpose, groupWritable)}
 
   let socketPath: string
 

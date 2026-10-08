@@ -695,6 +695,8 @@ def hosted_owner(tmp_path, monkeypatch):
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     principal = Principal('durable-room-owner', 'owned', frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}), 'room-worker')
     yield authority, loop, principal, agent
+    from gateway.session_logical_preparation import stop_logical_preparation
+    asyncio.run_coroutine_threadsafe(stop_logical_preparation(authority), loop).result(timeout=5)
     loop.call_soon_threadsafe(loop.stop)
     thread.join()
     loop.close()

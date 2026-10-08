@@ -15,8 +15,6 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_o
     """Revocation must fence admission, not merely pause execution afterward."""
     import concurrent.futures
     import json
-    from pathlib import Path
-    import time
 
     from gateway import hosted_room_driver as tasks, hosted_room_input_preparation
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
@@ -95,8 +93,6 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_o
 
 def test_same_home_custody_guard_keeps_shared_room_refusal_and_exact_controls(hosted_owner, monkeypatch):
     """New work honors the shared room fence on its writer; status and exact Stop remain readable."""
-    from pathlib import Path
-    import time
     from gateway import hosted_room_driver as tasks, hosted_rooms
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_state_runtime import RuntimeStoreError
@@ -510,3 +506,102 @@ def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(hoste
         'interrupted': False, 'status': 'running'}
     assert interrupted == [claimed[0]['generation']]
     assert rpc.info(**coords, session_id=sid)['status'] == 'started'
+
+
+def _hosted_retry_attempt(hosted_owner, monkeypatch):
+    from gateway import hosted_room_driver as tasks, hosted_rooms
+    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+    authority, loop, _, agent = hosted_owner
+    service = CanonicalHostedRoomService(authority, loop)
+    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
+    service.authorize_room('alice', 'room', create=True)
+    gateway = hosted_rooms.local_authority_gateway_id()
+    hosted_rooms.create_room(authority.db.db_path, room_id='room', name='Room',
+        authority_gateway_id=gateway, members=[{'member_id':'one','profile':'default','handle':'one'}])
+    identity = tasks.TaskIdentity('room','same-task','thread','turn')
+    tasks.admit_task(authority.db.db_path, identity,
+        payload={'target_profile':'default','target_member_id':'one','source_event_seq':1,'prompt':'frozen'}, clock=time.time)
+    lease = tasks.acquire_lease(authority.db.db_path, room_id='room', gateway_id=gateway,
+        authority_epoch=1, process_generation='old-owner', ttl_seconds=1, clock=lambda:100.)
+    attempt = tasks.start_task(authority.db.db_path, identity, lease, expected_cancel_generation=0, clock=lambda:100.)
+    rpc = service._resolve_member_transport(HostedRoomBinding('room',gateway,1), tasks.get_task(authority.db.db_path,identity))
+    coords = {'profile':'default','source':'bot_room'}
+    sid = rpc.create(**coords,title='Group: room')['session_id']
+    coords['session_id'] = sid
+    receipt = rpc.submit(**coords,prompt='frozen',task=identity,execution_generation=attempt.execution_generation,on_terminal=lambda _:None)
+    return authority, service, agent, tasks, identity, attempt, rpc, coords, receipt, gateway
+
+
+@pytest.mark.parametrize('new_state',['queued','started'])
+def test_old_producer_stop_does_not_target_a_later_explicit_retry(hosted_owner, monkeypatch, new_state):
+    from hermes_state_runtime import claim_session_input, settle_session_input, list_session_admissions
+    authority, service, agent, tasks, identity, attempt, rpc, coords, receipt, gateway = _hosted_retry_attempt(hosted_owner,monkeypatch)
+    old = claim_session_input(authority.db,epoch=authority.epoch,session_id=coords['session_id'])
+    observed = rpc.info(**coords)
+    assert (observed['task_id'],observed['execution_generation']) == (identity.task_id,1)
+    old_stop = {**coords,'expected_task_id':observed['task_id'],
+                'expected_execution_generation':observed['execution_generation']}
+    # The canonical turn finishes while its home-side observation was lost.
+    settle_session_input(authority.db,epoch=authority.epoch,admission_id=old['admission_id'],
+        generation=old['generation'],outcome='completed',result={'result':{'final_response':'old complete'},'usage':{}})
+    new_lease = tasks.acquire_lease(authority.db.db_path,room_id='room',gateway_id=gateway,
+        authority_epoch=1,process_generation='replacement-owner',ttl_seconds=100,clock=lambda:102.)
+    tasks.recover_room(authority.db.db_path,new_lease,clock=lambda:102.)
+    tasks.defer_indeterminate_task(authority.db.db_path,identity,new_lease,expected_execution_generation=1,
+        expected_cancel_generation=0,reason='member_unavailable',clock=lambda:102.)
+    # Explicit operator Retry of a deferred turn is supported by the driver.
+    tasks.requeue_deferred_task(authority.db.db_path,identity,new_lease,expected_execution_generation=1,
+        expected_cancel_generation=0,clock=lambda:102.)
+    retry = tasks.start_task(authority.db.db_path,identity,new_lease,expected_cancel_generation=0,clock=lambda:102.)
+    assert retry.execution_generation == 2
+    second = rpc.submit(**coords,prompt='frozen',task=identity,execution_generation=2,on_terminal=lambda _:None)
+    if new_state == 'started':
+        claim_session_input(authority.db,epoch=authority.epoch,session_id=coords['session_id'])
+    from hermes_state_runtime import RuntimeStoreError
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        rpc.interrupt(**old_stop)
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        rpc._call('interrupt', **{key:value for key,value in old_stop.items() if key != 'expected_execution_generation'})
+    for bad in (True, 0):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            rpc.interrupt(**{**old_stop, 'expected_execution_generation':bad})
+    rows = list_session_admissions(authority.db,session_id=coords['session_id'],pending_only=False)
+    current = next(row for row in rows if row['admission_id']==second['admission_id'])
+    assert current['status']==new_state and not agent.interrupted, 'old Stop targeted the later hosted generation'
+    stopped = rpc.interrupt(**{**old_stop, 'expected_execution_generation':2})
+    current = next(row for row in list_session_admissions(authority.db,session_id=coords['session_id'],pending_only=False)
+                   if row['admission_id']==second['admission_id'])
+    if new_state == 'queued':
+        assert stopped == {'interrupted': True, 'status': 'interrupted'}
+        assert (current['status'], current['outcome']) == ('terminal', 'cancelled')
+    else:
+        assert stopped == {'interrupted': False, 'status': 'running'}
+        assert current['status'] == 'started' and agent.interrupted
+
+
+def test_room_member_turns_cannot_block_on_an_unanswerable_clarify(hosted_owner, monkeypatch):
+    """A room has no clarification reply and hosted principals lack session:respond, so a
+    member turn that called clarify would block for clarify_timeout with its question never
+    shown. The frozen member policy must exclude the tool even when the profile's toolsets
+    (here the hermes-cli bundle) include it; the member asks in its room reply instead."""
+    from gateway import run
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.session_local_recovery import local_adapter_map
+    from gateway.config import Platform
+    from agent.skill_utils import parse_config_string_list
+    from model_tools import get_tool_definitions
+
+    authority, loop, principal, _ = hosted_owner
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {
+        'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': ['hermes-cli']}})
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='one', profile='default',
+                                 principal=principal, authorize=lambda *args: True)
+    sid = rpc.create(profile='default', title='Group: room', source='bot_room')['session_id']
+    policy = local_adapter_map(authority)[Platform.LOCAL].policies[sid]
+    # The same derivation the turn uses: frozen toolsets minus the frozen agent.disabled_toolsets.
+    disabled = parse_config_string_list((policy.config().get('agent') or {}).get('disabled_toolsets'))
+    tools = {t['function']['name'] for t in get_tool_definitions(
+        enabled_toolsets=list(policy.toolsets), disabled_toolsets=disabled or None, quiet_mode=True)}
+    assert 'terminal' in tools
+    assert 'clarify' not in tools

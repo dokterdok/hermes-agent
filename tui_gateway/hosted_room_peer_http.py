@@ -659,14 +659,6 @@ class PeerRunsHTTPClient:
                 )
             return result
 
-            if not str(result.get("run_id") or ""):
-                raise PeerRunsHTTPError(
-                    "peer did not return a run id",
-                    retryable=True,
-                    ambiguous=True,
-                )
-            return result
-
         try:
             result = admit()
         except PeerRunsHTTPError as first_error:
@@ -1060,8 +1052,6 @@ class PeerRunsHTTPClient:
         if result.get("revoked") is not True:
             raise PeerRunsHTTPError("peer did not acknowledge the grant revocation", retryable=True)
         return result
-
-
 
     def probe(self, *, grant: str, features: str | None = None) -> Mapping[str, Any]:
         """Verify gateway reachability and the live scoped capability catalog."""

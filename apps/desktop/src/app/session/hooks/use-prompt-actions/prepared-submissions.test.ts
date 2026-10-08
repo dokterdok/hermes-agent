@@ -6,7 +6,7 @@ import type { SubmissionDestination } from './submission-destination'
 
 afterEach(() => { vi.unstubAllGlobals(); localStorage.clear() })
 
-test('image recovery never offers expanded slash intent as an ordinary draft and leaves its exact journal intact', async () => {
+test('draft recovery offers the raw slash invocation while leaving its frozen payload and journal intact', async () => {
   vi.stubGlobal('hermesDesktop', undefined)
   const destination = { scopeKey: 'local::default' } as SubmissionDestination
   const attachments: PreparedSubmission['attachments'] = [{ id: '/cache/a.png', occurrenceId: 'image-occurrence', kind: 'image', label: 'a.png' }]
@@ -18,8 +18,16 @@ test('image recovery never offers expanded slash intent as an ordinary draft and
   }
 
   const before = localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
-  expect((await listPreparedDrafts('stored', destination.scopeKey)).map(entry => entry.key)).toEqual([(await readPreparedSubmission(ordinary))!.journal!.storageKey])
+  const drafts = await listPreparedDrafts('stored', destination.scopeKey)
+  expect(drafts.map(entry => entry.text)).toEqual(['caption', '/skill task'])
+  expect(drafts.map(entry => entry.key)).toEqual([
+    (await readPreparedSubmission(ordinary))!.journal!.storageKey,
+    (await readPreparedSubmission(slash))!.journal!.storageKey
+  ])
+  expect(drafts[1].attachments).toEqual(attachments)
+  expect(JSON.parse(drafts[1].expected).text).toBe('expanded skill instructions')
   expect(await listPreparedDrafts('another', destination.scopeKey)).toEqual([])
+  expect(await listPreparedDrafts('stored', 'another-owner')).toEqual([])
   expect(localStorage.getItem('hermes.desktop.preparedSubmissions.v1')).toBe(before)
   expect((await readPreparedSubmission(slash))?.text).toBe('expanded skill instructions')
 })
@@ -93,4 +101,29 @@ test('long frozen input does not become a native journal address or get truncate
   await writePreparedSubmission(key, entry)
   expect(entry.journal!.storageKey.length).toBeLessThan(100)
   expect((await readPreparedSubmission(key))?.params.text).toBe(text)
+})
+
+
+test('hidden, queued, explicit-id and settled inputs keep their separate recovery semantics', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  const destination = { scopeKey: 'local::default' } as SubmissionDestination
+
+  const inputs = [
+    { id: 'hidden', options: { retryText: '/skill hidden', displayKind: 'hidden' as const }, flags: {} },
+    { id: 'queued', options: { retryText: '/skill queued', fromQueue: true }, flags: {} },
+    { id: 'explicit', options: { submission_id: 'explicit' }, flags: {} },
+    { id: 'legacy', options: { retryText: '/skill legacy' }, flags: { legacyAttempted: true } },
+    { id: 'acknowledged', options: { retryText: '/skill acknowledged' }, flags: { acknowledged: true } }
+  ]
+
+  for (const { id, options, flags } of inputs) {
+    const key = preparedSubmissionKey('stored', destination, `frozen ${id}`, [], options)
+    await writePreparedSubmission(key, {
+      id, owner: undefined, text: `frozen ${id}`, attachments: [], params: { submission_id: id }, ...flags
+    })
+  }
+
+  const before = localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
+  expect(await listPreparedDrafts('stored', destination.scopeKey)).toEqual([])
+  expect(localStorage.getItem('hermes.desktop.preparedSubmissions.v1')).toBe(before)
 })

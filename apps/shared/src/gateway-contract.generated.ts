@@ -1708,91 +1708,6 @@ export interface RoomTaskReceipt {
   execution_generation: number
   cancel_generation: number
 }
-export interface GroupsDiscardParams {
-  profile?: string | null
-  room_id: string
-  member_id: string
-  task_id: string
-  execution_generation: number
-}
-export interface GroupsDiscardResult {
-  discarded: boolean
-  task: RoomTaskReceipt
-}
-export interface GroupsAttachmentUploadParams {
-  profile?: string | null
-  room_id: string
-  upload_id: string
-  kind: string
-  name: string
-  mime: string
-  data_base64: string
-}
-export interface GroupsAttachmentResult {
-  attachment_id: string
-  kind: string
-  name: string
-  size: number
-  mime: string
-  sha256: string
-  state: string
-  created_at: number
-  idempotent: boolean
-  event_id?: string | null
-}
-export interface GroupsAttachmentDownloadParams {
-  profile?: string | null
-  room_id: string
-  event_id: string
-  attachment_id: string
-}
-export interface GroupsAttachmentDownloadResult {
-  attachment_id: string
-  kind: string
-  name: string
-  size: number
-  mime: string
-  sha256: string
-  state: string
-  created_at: number
-  idempotent: boolean
-  event_id?: string | null
-  data_base64: string
-}
-export interface GroupsAttachmentListParams {
-  profile?: string | null
-  room_id: string
-  cursor?: string | null
-  limit?: number | null
-  query?: string | null
-  producer_member_id?: string | null
-}
-export interface GroupsAttachmentListResult {
-  room_id: string
-  authority: RoomAuthority
-  snapshot_seq: number
-  items: RoomFileItem[]
-  next_cursor: string | null
-  has_more: boolean
-}
-export interface RoomFileItem {
-  available?: boolean
-  attachment_id: string
-  kind: string
-  name: string
-  size: number
-  mime: string
-  event_id: string
-  seq: number
-  manifest_index: number
-  producer: RoomFileProducer
-  shared_at: number
-}
-export interface RoomFileProducer {
-  kind: string
-  id: string
-  label: string
-}
 export interface GroupsReplicateParams {
   profile?: string | null
   room_id: string
@@ -1907,401 +1822,6 @@ export interface GroupsPeerRegisterResult {
   transport_security: string
   target_install_id: string
   target_profile: string
-}
-export interface GroupsReplicationPrepareParams {
-  profile?: string | null
-  room_id: string
-  target_install_id: string
-  endpoint: string
-  enrollment_id?: string | null
-  replace_enrollment_id?: string | null
-}
-export interface GroupsReplicationPrepareResult {
-  enrollment: ReplicaRetirementEnrollment
-}
-export interface ReplicaRetirementEnrollment {
-  enrollment_id: string
-  room_id: string
-  authority_gateway_id: string
-  authority_epoch: number
-  target_install_id: string
-  roster_sha256: string
-  commitment: string
-}
-export interface GroupsReplicationEnrollParams {
-  profile?: string | null
-  enrollment: ReplicaRetirementEnrollment
-  expected_enrollment_id?: string | null
-  expected_state?: string | null
-}
-export interface GroupsReplicationEnrollResult {
-  enrollment_id: string
-  room_id: string
-  authority_gateway_id: string
-  authority_epoch: number
-  target_install_id: string
-  roster_sha256: string
-  commitment: string
-  state: string
-}
-export interface GroupsReplicationRevokeParams {
-  profile?: string | null
-  room_id: string
-  enrollment_id: string
-}
-export interface GroupsReplicationRevokeResult {
-  room_id: string
-  enrollment_id: string
-  state: string
-}
-export interface GroupsCustodyStatusParams {
-  profile?: string | null
-  room_id: string
-}
-export interface GroupsCustodyStatusResult {
-  room_id: string
-  role: string
-  custodians: CustodyCustodianStatus[]
-  at_risk_after_seq: number
-  protected_seq: number
-  automatic: boolean
-  voters: string[]
-  voter_sets: string[][]
-  mode: string
-  waiting_for_copies?: CustodyWaiting | null
-  configuration_seq: number
-  configuration: CustodyConfiguration
-  watermark?: CustodyWatermark | null
-  head?: CustodyHead | null
-}
-export interface CustodyCustodianStatus {
-  install_id: string
-  role?: string | null
-  state: string
-  name?: string | null
-  operator_name?: string | null
-  successor: boolean
-  allowed?: boolean | null
-  designated?: boolean | null
-  opted_out: boolean
-  voter: boolean
-  always_on: boolean
-  watermark?: CustodyWatermark | null
-  acknowledged_at?: number | null
-  last_seen?: number | null
-  divergent: boolean
-}
-export interface CustodyWatermark {
-  epoch: number
-  seq: number
-  event_hash: string
-}
-/** A task held back until a majority of voters stores its ``task.admitted``. */
-export interface CustodyWaiting {
-  task_id: string
-  seq: number
-}
-export interface CustodyConfiguration {
-  configuration_seq: number
-  custodians: CustodyCustodian[]
-  owner_name?: string | null
-  automatic?: boolean
-  careful_opt_in?: boolean | null
-  voters?: string[]
-}
-/** One entry of a ``custody.configured`` event. */
-export interface CustodyCustodian {
-  install_id: string
-  public_key: string
-  endpoint?: string | null
-  role: string
-  successor: boolean
-  always_on: boolean
-  voter: boolean
-  name?: string | null
-  operator_name?: string | null
-}
-/** A head the host signs: the chain hash of its room's prefix ``1..seq`` at its ``epoch``. */
-export interface CustodyHead {
-  room_id: string
-  host: string
-  epoch: number
-  seq: number
-  chain_hash: string
-  signature: string
-}
-export interface GroupsCustodyDesignateParams {
-  profile?: string | null
-  room_id: string
-  install_id: string
-  successor: boolean
-}
-export interface GroupsCustodyDesignateResult {
-  room_id: string
-  install_id: string
-  successor: boolean
-  configuration_seq: number
-}
-export interface GroupsCustodyAddParams {
-  profile?: string | null
-  room_id: string
-  target_url: string
-  catalog: Record<string, unknown>
-  grant: string
-  successor?: boolean | null
-}
-export interface GroupsCustodyChangeResult {
-  room_id: string
-  install_id: string
-  configuration_seq: number
-}
-export interface GroupsCustodyRemoveParams {
-  profile?: string | null
-  room_id: string
-  install_id: string
-}
-export interface GroupsCustodyAllowParams {
-  profile?: string | null
-  room_id: string
-  successor: boolean
-}
-export interface GroupsCustodyAllowResult {
-  room_id: string
-  install_id: string
-  allowed: boolean
-  confirmed: boolean
-}
-export interface GroupsCustodyAutomaticParams {
-  profile?: string | null
-  room_id: string
-  enabled: boolean
-  accept_two_host_risk?: boolean
-}
-export interface GroupsCustodyAutomaticResult {
-  room_id: string
-  automatic: boolean
-  careful_opt_in: boolean
-  configuration_seq: number
-  pending: boolean
-}
-export interface GroupsSuccessionStatusParams {
-  profile?: string | null
-  room_id: string
-}
-/** What this computer knows about the group's host. Codes and parameters only. */
-export interface GroupsSuccessionStatusResult {
-  state: string
-  host: SuccessionHost
-  this_install: SuccessionThisInstall
-  owner: SuccessionOwner
-  backups: SuccessionBackup[]
-  at_risk: SuccessionAtRisk
-  moving?: SuccessionMoving | null
-  conflict?: SuccessionConflict | null
-  moved?: SuccessionMoved | null
-  work?: SuccessionWork | null
-  actions: Record<string, unknown>[]
-  unavailable_reason?: string | null
-  previous_host?: SuccessionPreviousHost | null
-  unavailable_bots: SuccessionBot[]
-  last_attempt?: SuccessionAttempt | null
-  automatic: SuccessionAutomatic
-  paused?: SuccessionPaused | null
-  moved_in?: SuccessionMovedIn | null
-}
-export interface SuccessionHost {
-  install_id?: string | null
-  name?: string | null
-  reachable: boolean
-  since?: number | null
-  restarting_until?: number | null
-}
-export interface SuccessionThisInstall {
-  install_id: string
-  name?: string | null
-  role: string
-}
-export interface SuccessionOwner {
-  name?: string | null
-}
-export interface SuccessionBackup {
-  install_id: string
-  name?: string | null
-  successor: boolean
-  readiness: string
-  behind_by?: number | null
-  last_seen?: number | null
-  allowed: boolean
-  designated: boolean
-  kind: string
-  operator_name?: string | null
-  voter: boolean
-  always_on: boolean
-}
-export interface SuccessionAtRisk {
-  count: number
-}
-export interface SuccessionMoving {
-  to: SuccessionComputer
-  step: string
-  started_at?: number | null
-  reason?: string | null
-  running?: number | null
-}
-export interface SuccessionComputer {
-  install_id?: string | null
-  name?: string | null
-}
-export interface SuccessionConflict {
-  hosts: SuccessionConflictHost[]
-  start?: number | null
-  end?: number | null
-  running_on?: SuccessionComputer | null
-}
-export interface SuccessionConflictHost {
-  install_id?: string | null
-  name?: string | null
-  since?: number | null
-}
-export interface SuccessionMoved {
-  to: SuccessionComputer
-  at?: number | null
-  separate_events: number
-  branch_id?: string | null
-}
-export interface SuccessionWork {
-  completed: number
-  elsewhere: number
-  unknown: number
-  waiting_for_host: number
-}
-export interface SuccessionPreviousHost {
-  install_id?: string | null
-  name?: string | null
-  offline_since?: number | null
-}
-export interface SuccessionBot {
-  member_id?: string | null
-  name?: string | null
-  on?: SuccessionBotPlace | null
-}
-export interface SuccessionBotPlace {
-  install_id?: string | null
-  name?: string | null
-  reachable: boolean
-}
-export interface SuccessionAttempt {
-  to?: SuccessionComputer | null
-  error: string
-  at?: number | null
-}
-/** Whether the group moves by itself if its host goes offline. */
-export interface SuccessionAutomatic {
-  mode: string
-  state: string
-  standby?: SuccessionComputer | null
-  voters: SuccessionComputer[]
-  enabled: boolean
-  careful_opt_in?: boolean | null
-  pending?: boolean | null
-  reason?: string | null
-  offline?: SuccessionComputer[] | null
-  needed?: number | null
-}
-/** The host executes and appends nothing, to stay safe. */
-export interface SuccessionPaused {
-  reason: string
-  since?: number | null
-  waiting_for: SuccessionComputer[]
-}
-/** On a new host after an automatic move or a handover, until the old host is a copy again. */
-export interface SuccessionMovedIn {
-  from: SuccessionComputer
-  at?: number | null
-  proof_kind: string
-}
-export interface GroupsSuccessionPrepareParams {
-  profile?: string | null
-  room_id: string
-  target_install_id: string
-}
-export interface GroupsSuccessionPrepareResult {
-  preview_id: string
-  target: SuccessionTarget
-  owner: SuccessionOwner
-  behind_by: number
-  at_risk: SuccessionAtRisk
-  work: SuccessionWork
-  unavailable_bots: SuccessionBot[]
-  cautions: Record<string, unknown>[]
-}
-export interface SuccessionTarget {
-  install_id?: string | null
-  name?: string | null
-  operator_name?: string | null
-}
-export interface GroupsSuccessionPromoteParams {
-  profile?: string | null
-  room_id: string
-  target_install_id: string
-  preview_id: string
-  confirm: boolean
-}
-export interface GroupsSuccessionKeepParams {
-  profile?: string | null
-  room_id: string
-  install_id: string
-}
-export interface GroupsSuccessionBranchLogParams {
-  profile?: string | null
-  room_id: string
-  branch_id: string
-  after_seq?: number | null
-  limit?: number | null
-}
-export interface GroupsSuccessionBranchLogResult {
-  room_id: string
-  branch_id: string
-  events: Record<string, unknown>[]
-  cursor: number
-  latest_seq: number
-  has_more: boolean
-}
-export interface GroupsSuccessionLearnParams {
-  profile?: string | null
-  room_id: string
-  events: Record<string, unknown>[]
-}
-export interface GroupsSuccessionLearnResult {
-  room_id: string
-  learned: boolean
-  reason?: string | null
-  state?: string | null
-}
-export interface GroupsSuccessionMoveParams {
-  profile?: string | null
-  room_id: string
-  target_install_id: string
-}
-export interface GroupsSuccessionMoveNowParams {
-  profile?: string | null
-  room_id: string
-}
-export interface GroupsSuccessionContinueAnywayParams {
-  profile?: string | null
-  room_id: string
-}
-export interface GroupsSuccessionHandoverAllParams {
-  reason: 'sleep' | 'stop' | 'quit'
-}
-export interface GroupsSuccessionHandoverAllResult {
-  moved: string[]
-  skipped: SuccessionSkipped[]
-  reason: string
-}
-export interface SuccessionSkipped {
-  room_id: string
-  reason: string
 }
 export interface BotRelayRosterSyncParams {
   profile?: string | null
@@ -2435,6 +1955,9 @@ export interface PingResult {
 }
 export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
+  classic_output_export_v1?: boolean | null
+  installation?: string | null
+  classic_exact_generation_v1?: boolean | null
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
@@ -3213,6 +2736,7 @@ export interface PetScaleResult {
 export interface PromptSubmitParams {
   session_id: string
   profile?: string | null
+  classic_export?: Record<string, unknown> | null
   text?: unknown
   display_kind?: string | null
   interrupted?: boolean | null
@@ -3866,6 +3390,7 @@ export interface SessionCloseParams {
 }
 export interface SessionCloseResult {
   closed: boolean
+  messages?: string[]
 }
 export interface SessionBranchParams {
   session_id: string
@@ -4963,6 +4488,723 @@ export interface OnboardingCatalogPlugin {
   app_state: CatalogAppState
   sentence: string
 }
+export interface GroupsDiscardParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  task_id: string
+  execution_generation: number
+}
+export interface GroupsDiscardResult {
+  discarded: boolean
+  task: RoomTaskReceipt
+}
+export interface GroupsAttachmentUploadParams {
+  profile?: string | null
+  room_id: string
+  upload_id: string
+  kind: string
+  name: string
+  mime: string
+  data_base64: string
+}
+export interface GroupsAttachmentResult {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+}
+export interface GroupsAttachmentDownloadParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  attachment_id: string
+}
+export interface GroupsAttachmentDownloadResult {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+  data_base64: string
+}
+export interface GroupsAttachmentListParams {
+  profile?: string | null
+  room_id: string
+  cursor?: string | null
+  limit?: number | null
+  query?: string | null
+  producer_member_id?: string | null
+}
+export interface GroupsAttachmentListResult {
+  room_id: string
+  authority: RoomAuthority
+  snapshot_seq: number
+  items: RoomFileItem[]
+  next_cursor: string | null
+  has_more: boolean
+}
+export interface RoomFileItem {
+  available?: boolean
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  event_id: string
+  seq: number
+  manifest_index: number
+  producer: RoomFileProducer
+  shared_at: number
+}
+export interface RoomFileProducer {
+  kind: string
+  id: string
+  label: string
+}
+export interface GroupsReplicationPrepareParams {
+  profile?: string | null
+  room_id: string
+  target_install_id: string
+  endpoint: string
+  enrollment_id?: string | null
+  replace_enrollment_id?: string | null
+}
+export interface GroupsReplicationPrepareResult {
+  enrollment: ReplicaRetirementEnrollment
+}
+export interface ReplicaRetirementEnrollment {
+  enrollment_id: string
+  room_id: string
+  authority_gateway_id: string
+  authority_epoch: number
+  target_install_id: string
+  roster_sha256: string
+  commitment: string
+}
+export interface GroupsReplicationEnrollParams {
+  profile?: string | null
+  enrollment: ReplicaRetirementEnrollment
+  expected_enrollment_id?: string | null
+  expected_state?: string | null
+}
+export interface GroupsReplicationEnrollResult {
+  enrollment_id: string
+  room_id: string
+  authority_gateway_id: string
+  authority_epoch: number
+  target_install_id: string
+  roster_sha256: string
+  commitment: string
+  state: string
+}
+export interface GroupsReplicationRevokeParams {
+  profile?: string | null
+  room_id: string
+  enrollment_id: string
+}
+export interface GroupsReplicationRevokeResult {
+  room_id: string
+  enrollment_id: string
+  state: string
+}
+export interface GroupsCustodyStatusParams {
+  profile?: string | null
+  room_id: string
+}
+export interface GroupsCustodyStatusResult {
+  room_id: string
+  role: string
+  custodians: CustodyCustodianStatus[]
+  at_risk_after_seq: number
+  protected_seq: number
+  automatic: boolean
+  voters: string[]
+  voter_sets: string[][]
+  mode: string
+  waiting_for_copies?: CustodyWaiting | null
+  configuration_seq: number
+  configuration: CustodyConfiguration
+  watermark?: CustodyWatermark | null
+  head?: CustodyHead | null
+}
+export interface CustodyCustodianStatus {
+  install_id: string
+  role?: string | null
+  state: string
+  name?: string | null
+  operator_name?: string | null
+  successor: boolean
+  allowed?: boolean | null
+  designated?: boolean | null
+  opted_out: boolean
+  voter: boolean
+  always_on: boolean
+  watermark?: CustodyWatermark | null
+  acknowledged_at?: number | null
+  last_seen?: number | null
+  divergent: boolean
+}
+export interface CustodyWatermark {
+  epoch: number
+  seq: number
+  event_hash: string
+}
+/** A task held back until a majority of voters stores its ``task.admitted``. */
+export interface CustodyWaiting {
+  task_id: string
+  seq: number
+}
+export interface CustodyConfiguration {
+  configuration_seq: number
+  custodians: CustodyCustodian[]
+  owner_name?: string | null
+  automatic?: boolean
+  careful_opt_in?: boolean | null
+  voters?: string[]
+}
+/** One entry of a ``custody.configured`` event. */
+export interface CustodyCustodian {
+  install_id: string
+  public_key: string
+  endpoint?: string | null
+  role: string
+  successor: boolean
+  always_on: boolean
+  voter: boolean
+  name?: string | null
+  operator_name?: string | null
+}
+/** A head the host signs: the chain hash of its room's prefix ``1..seq`` at its ``epoch``. */
+export interface CustodyHead {
+  room_id: string
+  host: string
+  epoch: number
+  seq: number
+  chain_hash: string
+  signature: string
+}
+export interface GroupsCustodyDesignateParams {
+  profile?: string | null
+  room_id: string
+  install_id: string
+  successor: boolean
+}
+export interface GroupsCustodyDesignateResult {
+  room_id: string
+  install_id: string
+  successor: boolean
+  configuration_seq: number
+}
+export interface GroupsCustodyAddParams {
+  profile?: string | null
+  room_id: string
+  target_url: string
+  catalog: Record<string, unknown>
+  grant: string
+  successor?: boolean | null
+}
+export interface GroupsCustodyChangeResult {
+  room_id: string
+  install_id: string
+  configuration_seq: number
+}
+export interface GroupsCustodyRemoveParams {
+  profile?: string | null
+  room_id: string
+  install_id: string
+}
+export interface GroupsCustodyAllowParams {
+  profile?: string | null
+  room_id: string
+  successor: boolean
+}
+export interface GroupsCustodyAllowResult {
+  room_id: string
+  install_id: string
+  allowed: boolean
+  confirmed: boolean
+}
+export interface GroupsCustodyAutomaticParams {
+  profile?: string | null
+  room_id: string
+  enabled: boolean
+  accept_two_host_risk?: boolean
+}
+export interface GroupsCustodyAutomaticResult {
+  room_id: string
+  automatic: boolean
+  careful_opt_in: boolean
+  configuration_seq: number
+  pending: boolean
+}
+export interface GroupsSuccessionStatusParams {
+  profile?: string | null
+  room_id: string
+}
+/** What this computer knows about the group's host. Codes and parameters only. */
+export interface GroupsSuccessionStatusResult {
+  state: string
+  host: SuccessionHost
+  this_install: SuccessionThisInstall
+  owner: SuccessionOwner
+  backups: SuccessionBackup[]
+  at_risk: SuccessionAtRisk
+  moving?: SuccessionMoving | null
+  conflict?: SuccessionConflict | null
+  moved?: SuccessionMoved | null
+  work?: SuccessionWork | null
+  actions: Record<string, unknown>[]
+  unavailable_reason?: string | null
+  previous_host?: SuccessionPreviousHost | null
+  unavailable_bots: SuccessionBot[]
+  last_attempt?: SuccessionAttempt | null
+  automatic: SuccessionAutomatic
+  paused?: SuccessionPaused | null
+  moved_in?: SuccessionMovedIn | null
+}
+export interface SuccessionHost {
+  install_id?: string | null
+  name?: string | null
+  reachable: boolean
+  since?: number | null
+  restarting_until?: number | null
+}
+export interface SuccessionThisInstall {
+  install_id: string
+  name?: string | null
+  role: string
+}
+export interface SuccessionOwner {
+  name?: string | null
+}
+export interface SuccessionBackup {
+  install_id: string
+  name?: string | null
+  successor: boolean
+  readiness: string
+  behind_by?: number | null
+  last_seen?: number | null
+  allowed: boolean
+  designated: boolean
+  kind: string
+  operator_name?: string | null
+  voter: boolean
+  always_on: boolean
+}
+export interface SuccessionAtRisk {
+  count: number
+}
+export interface SuccessionMoving {
+  to: SuccessionComputer
+  step: string
+  started_at?: number | null
+  reason?: string | null
+  running?: number | null
+}
+export interface SuccessionComputer {
+  install_id?: string | null
+  name?: string | null
+}
+export interface SuccessionConflict {
+  hosts: SuccessionConflictHost[]
+  start?: number | null
+  end?: number | null
+  running_on?: SuccessionComputer | null
+}
+export interface SuccessionConflictHost {
+  install_id?: string | null
+  name?: string | null
+  since?: number | null
+}
+export interface SuccessionMoved {
+  to: SuccessionComputer
+  at?: number | null
+  separate_events: number
+  branch_id?: string | null
+}
+export interface SuccessionWork {
+  completed: number
+  elsewhere: number
+  unknown: number
+  waiting_for_host: number
+}
+export interface SuccessionPreviousHost {
+  install_id?: string | null
+  name?: string | null
+  offline_since?: number | null
+}
+export interface SuccessionBot {
+  member_id?: string | null
+  name?: string | null
+  on?: SuccessionBotPlace | null
+}
+export interface SuccessionBotPlace {
+  install_id?: string | null
+  name?: string | null
+  reachable: boolean
+}
+export interface SuccessionAttempt {
+  to?: SuccessionComputer | null
+  error: string
+  at?: number | null
+}
+/** Whether the group moves by itself if its host goes offline. */
+export interface SuccessionAutomatic {
+  mode: string
+  state: string
+  standby?: SuccessionComputer | null
+  voters: SuccessionComputer[]
+  enabled: boolean
+  careful_opt_in?: boolean | null
+  pending?: boolean | null
+  reason?: string | null
+  offline?: SuccessionComputer[] | null
+  needed?: number | null
+}
+/** The host executes and appends nothing, to stay safe. */
+export interface SuccessionPaused {
+  reason: string
+  since?: number | null
+  waiting_for: SuccessionComputer[]
+}
+/** On a new host after an automatic move or a handover, until the old host is a copy again. */
+export interface SuccessionMovedIn {
+  from: SuccessionComputer
+  at?: number | null
+  proof_kind: string
+}
+export interface GroupsSuccessionPrepareParams {
+  profile?: string | null
+  room_id: string
+  target_install_id: string
+}
+export interface GroupsSuccessionPrepareResult {
+  preview_id: string
+  target: SuccessionTarget
+  owner: SuccessionOwner
+  behind_by: number
+  at_risk: SuccessionAtRisk
+  work: SuccessionWork
+  unavailable_bots: SuccessionBot[]
+  cautions: Record<string, unknown>[]
+}
+export interface SuccessionTarget {
+  install_id?: string | null
+  name?: string | null
+  operator_name?: string | null
+}
+export interface GroupsSuccessionPromoteParams {
+  profile?: string | null
+  room_id: string
+  target_install_id: string
+  preview_id: string
+  confirm: boolean
+}
+export interface GroupsSuccessionKeepParams {
+  profile?: string | null
+  room_id: string
+  install_id: string
+}
+export interface GroupsSuccessionBranchLogParams {
+  profile?: string | null
+  room_id: string
+  branch_id: string
+  after_seq?: number | null
+  limit?: number | null
+}
+export interface GroupsSuccessionBranchLogResult {
+  room_id: string
+  branch_id: string
+  events: Record<string, unknown>[]
+  cursor: number
+  latest_seq: number
+  has_more: boolean
+}
+export interface GroupsSuccessionLearnParams {
+  profile?: string | null
+  room_id: string
+  events: Record<string, unknown>[]
+}
+export interface GroupsSuccessionLearnResult {
+  room_id: string
+  learned: boolean
+  reason?: string | null
+  state?: string | null
+}
+export interface GroupsSuccessionMoveParams {
+  profile?: string | null
+  room_id: string
+  target_install_id: string
+}
+export interface GroupsSuccessionMoveNowParams {
+  profile?: string | null
+  room_id: string
+}
+export interface GroupsSuccessionContinueAnywayParams {
+  profile?: string | null
+  room_id: string
+}
+export interface GroupsSuccessionHandoverAllParams {
+  reason: 'sleep' | 'stop' | 'quit'
+}
+export interface GroupsSuccessionHandoverAllResult {
+  moved: string[]
+  skipped: SuccessionSkipped[]
+  reason: string
+}
+export interface SuccessionSkipped {
+  room_id: string
+  reason: string
+}
+export interface PromptReceiptParams {
+  session_id: string
+  admission_id: string
+  include_result?: boolean | null
+}
+/** ``result`` / ``usage``: the structured turn result committed at settlement, only with ``include_result`` on a terminal admission that saved one. */
+export interface PromptReceiptResult {
+  admission_id: string
+  ref: CanonicalSessionRef
+  sequence: number
+  status: 'queued' | 'started' | 'unknown' | 'terminal'
+  outcome: string | null
+  authority_epoch: number
+  execution_generation: number | null
+  result?: unknown | null
+  usage?: Record<string, unknown> | null
+  classic_export?: Record<string, unknown> | null
+}
+export interface CanonicalSessionRef {
+  profile_id: string
+  session_id: string
+}
+export interface PromptCancelParams {
+  session_id: string
+  admission_id: string
+}
+/** ``gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it. */
+export interface AdmissionStatus {
+  admission_id: string
+  ref: CanonicalSessionRef
+  sequence: number
+  status: 'queued' | 'started' | 'unknown' | 'terminal'
+  outcome: string | null
+  authority_epoch: number
+  execution_generation: number | null
+}
+export interface PromptResolveUnknownParams {
+  session_id: string
+  admission_id: string
+  execution_generation: number
+}
+/** ``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress. */
+export interface SessionMutateParams {
+  session_id: string
+  request_id: string
+  expected_revision: number
+  operation: string
+  payload: Record<string, unknown>
+  expected_generation?: number | null
+}
+/** The committed mutation receipt plus the operation's projection (``title``, ``archived``, ``branched_session_id``, compress ``status``/``lines``, …). ``revision`` is absent only on a read-only compress preview. */
+export interface SessionMutateResult {
+  session_id: string
+  operation: string
+  revision?: number | null
+  [key: string]: unknown
+}
+export interface CanonicalSessionInfoParams {
+  session_id: string
+}
+/** ``gateway/session_local.py::local_session_info``. */
+export interface CanonicalSessionInfo {
+  source: string
+  model?: string | null
+  lazy: boolean
+  profile_id: string
+  desktop_protocol: string
+  profile_name: string
+  cwd?: string | null
+  launch_request?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+export interface SessionDetachParams {
+  session_id: string
+  subscription_id: string
+}
+export interface SessionDetachResult {
+  session_id: string
+  subscription_id: string
+  detached: boolean
+}
+export type RuntimeDescribeParams = Record<string, never>
+export interface RuntimeDescribeResult {
+  instance_id: string
+  profile_id: string
+  authority_epoch: number
+  capabilities: string[]
+  session_create: SessionCreateDescriptor
+}
+export interface SessionCreateDescriptor {
+  sources: string[]
+  parameters: string[]
+}
+export interface ClarifyRespondParams {
+  session_id: string
+  execution_generation: number
+  prompt_id: string
+  answer: string
+}
+export interface PromptResponseResult {
+  status: 'resolved' | 'already_resolved'
+  prompt_id: string
+}
+export interface CronRunParams {
+  job_id: string
+  request_id: string
+  extra_prompt: string | null
+}
+export interface CronSubmitResult {
+  session_id: string
+  admission_id: string
+}
+/** ``result`` is the ``run_job`` tuple once terminal; ``recover`` adds the frozen ``job`` and answers ``status='missing'`` for a firing that was never admitted. */
+export interface CronStatusResult {
+  status: string
+  result: unknown[] | null
+  job_flags?: Record<string, unknown> | null
+  job?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+export interface CronAdmissionParams {
+  session_id: string
+  admission_id: string
+}
+export interface CronCancelResult {
+  ok: boolean
+}
+export interface KanbanRunParams {
+  board: string
+  task_id: string
+  run_id: number
+  claim_lock: string
+  db?: string | null
+}
+export interface KanbanRunResult {
+  session_id: string
+  receipt: AdmissionStatus
+}
+export interface A2aForwardParams {
+  agent: string
+  tenant: string
+  peer: string
+  context_id: string
+  input_id: string
+  text: string
+}
+export interface A2aForwardResult {
+  admission_id: string
+  ref: CanonicalSessionRef
+  sequence: number
+  status: 'queued' | 'started' | 'unknown' | 'terminal'
+  outcome: string | null
+  authority_epoch: number
+  execution_generation: number | null
+  session_id: string
+  result: unknown | null
+}
+export interface WorkerRegisterParams {
+  profile_id: string
+  session_id: string
+  execution_id: string
+  generation: number
+  pid: number
+  birth: number
+  secret: string
+  kind: string
+}
+/** A ``worker_executions`` row without its adoption digest. */
+export interface WorkerExecution {
+  execution_id: string
+  session_id: string
+  kind: string
+  owner_epoch: number
+  generation: number
+  status: string
+  last_sequence: number
+  [key: string]: unknown
+}
+/** The producer claim every worker verb proves (``gateway/session_worker.py::_SCOPE``). */
+export interface WorkerScopeParams {
+  profile_id: string
+  session_id: string
+  execution_id: string
+  generation: number
+  pid: number
+  birth: number
+  secret: string
+}
+export interface WorkerPersistParams {
+  profile_id: string
+  session_id: string
+  execution_id: string
+  generation: number
+  pid: number
+  birth: number
+  secret: string
+  epoch: number
+  sequence: number
+  operation: string
+  payload: Record<string, unknown>
+}
+/** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
+export type WorkerPersistResult = Record<string, unknown>
+export interface ClassicExportReadParams {
+  session_id: string
+  installation: string
+  group_id: string
+  profile?: string | null
+  request_id?: string | null
+  export_id?: string | null
+  artifact_id?: string | null
+  generation?: number | null
+}
+/** Published descriptor/status or exact retained bytes, selected by artifact_id. */
+export interface ClassicExportReadResult {
+  export_id: string
+  generation: number
+  state: string
+  group_id: string
+  recipients: Record<string, unknown>[]
+  thread_id?: string | null
+  text?: string | null
+  items?: Record<string, unknown>[] | null
+  item?: Record<string, unknown> | null
+  content_base64?: string | null
+  [key: string]: unknown
+}
+export interface ClassicExportDiscardParams {
+  session_id: string
+  installation: string
+  group_id: string
+  profile?: string | null
+  export_id?: string | null
+}
+export interface ClassicExportDiscardResult {
+  retired: boolean
+}
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -5663,34 +5905,14 @@ export interface RpcMethods {
   'gateway.capabilities': { params: PingParams; result: GatewayCapabilitiesResult }
   /** Resolve one exact pending approval raised by a local or peer room member. */
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
-  /** Read bytes bound to a canonical room event, subject to current viewer authorization. */
-  'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: GroupsAttachmentDownloadResult }
-  /** List authorized published room-file references with stable paging, search and producer filtering. available=false retains a historical reference whose bytes are unavailable here; omitted means locally available. */
-  'groups.attachment.list': { params: GroupsAttachmentListParams; result: GroupsAttachmentListResult }
-  /** Upload owner-authorized bytes for a canonical room message. */
-  'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: GroupsAttachmentResult }
   /** Describe the hosted-room protocol implemented by this gateway. */
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
-  /** Add an installation that keeps the room's history without a Bot, after a live scoped probe. */
-  'groups.custody.add': { params: GroupsCustodyAddParams; result: GroupsCustodyChangeResult }
-  /** On a member installation: allow (or not) the room owner to continue the group here. */
-  'groups.custody.allow': { params: GroupsCustodyAllowParams; result: GroupsCustodyAllowResult }
-  /** On the host: the room owner (or the operator) lets the group move by itself, or asks first. */
-  'groups.custody.automatic': { params: GroupsCustodyAutomaticParams; result: GroupsCustodyAutomaticResult }
-  /** The room owner designates (or not) one custodian to continue the group; its operator must allow it. */
-  'groups.custody.designate': { params: GroupsCustodyDesignateParams; result: GroupsCustodyDesignateResult }
-  /** Stop keeping a copy on one custodian-only installation. */
-  'groups.custody.remove': { params: GroupsCustodyRemoveParams; result: GroupsCustodyChangeResult }
-  /** Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk. */
-  'groups.custody.status': { params: GroupsCustodyStatusParams; result: GroupsCustodyStatusResult }
   /** Fence this gateway's stale room authority against a proven newer epoch. Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists. */
   'groups.demote': { params: GroupsDemoteParams; result: GroupsDemoteResult }
   /** Permanently tombstone a hosted room id after stopping its work and revoking peer routes. A quarantined room needs confirm_quarantined=true and only ends on this gateway, history kept. */
   'groups.disband': { params: GroupsDisbandParams; result: GroupsDisbandResult }
-  /** Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop. */
-  'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
   /** List rooms hosted by this gateway, most recently changed first. */
   'groups.list': { params: GroupsListParams; result: GroupsListResult }
   /** A monotonic room-log delta after since_seq, bounded by count and page bytes. */
@@ -5713,12 +5935,6 @@ export interface RpcMethods {
   'groups.replica_state': { params: GroupsReplicaStateParams; result: GroupsReplicaStateResult }
   /** Persist one authority-stamped replay page into the local replica store; idempotent. Refused (4116, reason replica_provenance_required) until exclusive-authority recovery exists. */
   'groups.replicate': { params: GroupsReplicateParams; result: GroupsReplicateResult }
-  /** The participant operator enrolls retirement of one exact passive copy. */
-  'groups.replication.enroll': { params: GroupsReplicationEnrollParams; result: GroupsReplicationEnrollResult }
-  /** Prepare public retirement verification material for an opted-in participant copy. */
-  'groups.replication.prepare': { params: GroupsReplicationPrepareParams; result: GroupsReplicationPrepareResult }
-  /** The participant operator withdraws one copy-retirement enrollment. */
-  'groups.replication.revoke': { params: GroupsReplicationRevokeParams; result: GroupsReplicationRevokeResult }
   /** Retry one eligible room task; canonical controls require exact proven nonadmission. */
   'groups.retry': { params: GroupsRetryParams; result: GroupsRetryResult }
   /** Append one inert message.user event idempotently; the actor is server-owned. */
@@ -5727,26 +5943,6 @@ export interface RpcMethods {
   'groups.state': { params: GroupsStateParams; result: GroupsStateResult }
   /** Durably cancel queued or running work for one hosted room. */
   'groups.stop': { params: GroupsStopParams; result: GroupsStopResult }
-  /** Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape). */
-  'groups.succession.branch_log': { params: GroupsSuccessionBranchLogParams; result: GroupsSuccessionBranchLogResult }
-  /** On a host paused to stay safe, for the owner: continue it here anyway. */
-  'groups.succession.continue_anyway': { params: GroupsSuccessionContinueAnywayParams; result: GroupsSuccessionStatusResult }
-  /** Hand every group this computer hosts to its best reachable standby (Desktop's sleep hook). */
-  'groups.succession.handover_all': { params: GroupsSuccessionHandoverAllParams; result: GroupsSuccessionHandoverAllResult }
-  /** Resolve a group continued on two computers, from either one. */
-  'groups.succession.keep': { params: GroupsSuccessionKeepParams; result: GroupsSuccessionStatusResult }
-  /** Hand this computer the chain of later hosts; it verifies it with pinned keys and steps down if replaced. */
-  'groups.succession.learn': { params: GroupsSuccessionLearnParams; result: GroupsSuccessionLearnResult }
-  /** On the host, for the owner: hand the group over to a successor (signed handover), once the replies in progress finish. */
-  'groups.succession.move': { params: GroupsSuccessionMoveParams; result: GroupsSuccessionStatusResult }
-  /** On the host, for the owner: hand over a group waiting for its replies at once; those show as unknown. */
-  'groups.succession.move_now': { params: GroupsSuccessionMoveNowParams; result: GroupsSuccessionStatusResult }
-  /** On the target computer: what continuing the group there would mean. Changes nothing. */
-  'groups.succession.prepare': { params: GroupsSuccessionPrepareParams; result: GroupsSuccessionPrepareResult }
-  /** On the target computer: continue the group there, for its owner; returns the status (poll while moving). */
-  'groups.succession.promote': { params: GroupsSuccessionPromoteParams; result: GroupsSuccessionStatusResult }
-  /** Whether the group's host can be reached from this computer, and what the owner may do. */
-  'groups.succession.status': { params: GroupsSuccessionStatusParams; result: GroupsSuccessionStatusResult }
   /** Fail a not-yet-claimed handoff (client poll timeout); CAS against the watcher. */
   'handoff.fail': { params: HandoffFailParams; result: HandoffFailResult }
   /** Queue a handoff to a messaging platform's home channel; the gateway watcher claims it. */
@@ -6164,20 +6360,10 @@ export const RPC_METHODS = [
   'free_tier.status',
   'gateway.capabilities',
   'groups.approve',
-  'groups.attachment.download',
-  'groups.attachment.list',
-  'groups.attachment.upload',
   'groups.capabilities',
   'groups.create',
-  'groups.custody.add',
-  'groups.custody.allow',
-  'groups.custody.automatic',
-  'groups.custody.designate',
-  'groups.custody.remove',
-  'groups.custody.status',
   'groups.demote',
   'groups.disband',
-  'groups.discard',
   'groups.list',
   'groups.log',
   'groups.peer.invite',
@@ -6189,23 +6375,10 @@ export const RPC_METHODS = [
   'groups.rename',
   'groups.replica_state',
   'groups.replicate',
-  'groups.replication.enroll',
-  'groups.replication.prepare',
-  'groups.replication.revoke',
   'groups.retry',
   'groups.send',
   'groups.state',
   'groups.stop',
-  'groups.succession.branch_log',
-  'groups.succession.continue_anyway',
-  'groups.succession.handover_all',
-  'groups.succession.keep',
-  'groups.succession.learn',
-  'groups.succession.move',
-  'groups.succession.move_now',
-  'groups.succession.prepare',
-  'groups.succession.promote',
-  'groups.succession.status',
   'handoff.fail',
   'handoff.request',
   'handoff.state',
@@ -6385,6 +6558,139 @@ export const RPC_METHODS = [
   'wake.status',
   'wake.stop'
 ] as const satisfies readonly RpcMethod[]
+
+// ── Canonical (hermes-gateway-v1) methods only the session authority serves ──
+export interface CanonicalRpcMethods {
+  /** Forward one A2A input into the conversation its identity tuple names. */
+  'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
+  /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
+  'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
+  /** Cancel a queued cron admission or latch cancellation on a started one. */
+  'cron.cancel': { params: CronAdmissionParams; result: CronCancelResult }
+  /** Re-observe a firing after a scheduler restart (same request identity). */
+  'cron.recover': { params: CronRunParams; result: CronStatusResult }
+  /** Status and, once terminal, the result of one cron admission. */
+  'cron.status': { params: CronAdmissionParams; result: CronStatusResult }
+  /** Admit one cron firing into the owning profile's durable FIFO. */
+  'cron.submit': { params: CronRunParams; result: CronSubmitResult }
+  /** Read bytes bound to a canonical room event, subject to current viewer authorization. */
+  'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: GroupsAttachmentDownloadResult }
+  /** List authorized published room-file references with stable paging, search and producer filtering. available=false retains a historical reference whose bytes are unavailable here; omitted means locally available. */
+  'groups.attachment.list': { params: GroupsAttachmentListParams; result: GroupsAttachmentListResult }
+  /** Upload owner-authorized bytes for a canonical room message. */
+  'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: GroupsAttachmentResult }
+  /** Add an installation that keeps the room's history without a Bot, after a live scoped probe. */
+  'groups.custody.add': { params: GroupsCustodyAddParams; result: GroupsCustodyChangeResult }
+  /** On a member installation: allow (or not) the room owner to continue the group here. */
+  'groups.custody.allow': { params: GroupsCustodyAllowParams; result: GroupsCustodyAllowResult }
+  /** On the host: the room owner (or the operator) lets the group move by itself, or asks first. */
+  'groups.custody.automatic': { params: GroupsCustodyAutomaticParams; result: GroupsCustodyAutomaticResult }
+  /** The room owner designates (or not) one custodian to continue the group; its operator must allow it. */
+  'groups.custody.designate': { params: GroupsCustodyDesignateParams; result: GroupsCustodyDesignateResult }
+  /** Stop keeping a copy on one custodian-only installation. */
+  'groups.custody.remove': { params: GroupsCustodyRemoveParams; result: GroupsCustodyChangeResult }
+  /** Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk. */
+  'groups.custody.status': { params: GroupsCustodyStatusParams; result: GroupsCustodyStatusResult }
+  /** Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop. */
+  'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
+  /** The participant operator enrolls retirement of one exact passive copy. */
+  'groups.replication.enroll': { params: GroupsReplicationEnrollParams; result: GroupsReplicationEnrollResult }
+  /** Prepare public retirement verification material for an opted-in participant copy. */
+  'groups.replication.prepare': { params: GroupsReplicationPrepareParams; result: GroupsReplicationPrepareResult }
+  /** The participant operator withdraws one copy-retirement enrollment. */
+  'groups.replication.revoke': { params: GroupsReplicationRevokeParams; result: GroupsReplicationRevokeResult }
+  /** Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape). */
+  'groups.succession.branch_log': { params: GroupsSuccessionBranchLogParams; result: GroupsSuccessionBranchLogResult }
+  /** On a host paused to stay safe, for the owner: continue it here anyway. */
+  'groups.succession.continue_anyway': { params: GroupsSuccessionContinueAnywayParams; result: GroupsSuccessionStatusResult }
+  /** Hand every group this computer hosts to its best reachable standby (Desktop's sleep hook). */
+  'groups.succession.handover_all': { params: GroupsSuccessionHandoverAllParams; result: GroupsSuccessionHandoverAllResult }
+  /** Resolve a group continued on two computers, from either one. */
+  'groups.succession.keep': { params: GroupsSuccessionKeepParams; result: GroupsSuccessionStatusResult }
+  /** Hand this computer the chain of later hosts; it verifies it with pinned keys and steps down if replaced. */
+  'groups.succession.learn': { params: GroupsSuccessionLearnParams; result: GroupsSuccessionLearnResult }
+  /** On the host, for the owner: hand the group over to a successor (signed handover), once the replies in progress finish. */
+  'groups.succession.move': { params: GroupsSuccessionMoveParams; result: GroupsSuccessionStatusResult }
+  /** On the host, for the owner: hand over a group waiting for its replies at once; those show as unknown. */
+  'groups.succession.move_now': { params: GroupsSuccessionMoveNowParams; result: GroupsSuccessionStatusResult }
+  /** On the target computer: what continuing the group there would mean. Changes nothing. */
+  'groups.succession.prepare': { params: GroupsSuccessionPrepareParams; result: GroupsSuccessionPrepareResult }
+  /** On the target computer: continue the group there, for its owner; returns the status (poll while moving). */
+  'groups.succession.promote': { params: GroupsSuccessionPromoteParams; result: GroupsSuccessionStatusResult }
+  /** Whether the group's host can be reached from this computer, and what the owner may do. */
+  'groups.succession.status': { params: GroupsSuccessionStatusParams; result: GroupsSuccessionStatusResult }
+  /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
+  'kanban.run': { params: KanbanRunParams; result: KanbanRunResult }
+  /** Retire a still-queued admission; a started one is unaffected. */
+  'prompt.cancel': { params: PromptCancelParams; result: AdmissionStatus }
+  /** Current receipt of one admission the caller submitted (or controls). */
+  'prompt.receipt': { params: PromptReceiptParams; result: PromptReceiptResult }
+  /** Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input. */
+  'prompt.resolve_unknown': { params: PromptResolveUnknownParams; result: AdmissionStatus }
+  /** Owner identity and the canonical capabilities a client may rely on. */
+  'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+  /** Drop this connection's subscription; a stale subscription id answers detached=false. */
+  'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
+  /** Retire classic export custody on the current owner, preserving retryable physical cleanup. */
+  'session.export.discard': { params: ClassicExportDiscardParams; result: ClassicExportDiscardResult }
+  /** Read exact retained classic export status or bytes through current owner authorization. */
+  'session.export.read': { params: ClassicExportReadParams; result: ClassicExportReadResult }
+  /** Frozen launch policy projection of one local session. */
+  'session.info': { params: CanonicalSessionInfoParams; result: CanonicalSessionInfo }
+  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, compress, import). */
+  'session.mutate': { params: SessionMutateParams; result: SessionMutateResult }
+  /** Adopt a registered execution after verifying the live producer claim. */
+  'worker.adopt': { params: WorkerScopeParams; result: WorkerExecution }
+  /** Sequence-fenced typed persistence write from an adopted worker. */
+  'worker.persist': { params: WorkerPersistParams; result: WorkerPersistResult }
+  /** Register a compute worker execution on an idle session. */
+  'worker.register': { params: WorkerRegisterParams; result: WorkerExecution }
+}
+export type CanonicalRpcMethod = keyof CanonicalRpcMethods
+export const CANONICAL_RPC_METHODS = [
+  'a2a.forward',
+  'clarify.respond',
+  'cron.cancel',
+  'cron.recover',
+  'cron.status',
+  'cron.submit',
+  'groups.attachment.download',
+  'groups.attachment.list',
+  'groups.attachment.upload',
+  'groups.custody.add',
+  'groups.custody.allow',
+  'groups.custody.automatic',
+  'groups.custody.designate',
+  'groups.custody.remove',
+  'groups.custody.status',
+  'groups.discard',
+  'groups.replication.enroll',
+  'groups.replication.prepare',
+  'groups.replication.revoke',
+  'groups.succession.branch_log',
+  'groups.succession.continue_anyway',
+  'groups.succession.handover_all',
+  'groups.succession.keep',
+  'groups.succession.learn',
+  'groups.succession.move',
+  'groups.succession.move_now',
+  'groups.succession.prepare',
+  'groups.succession.promote',
+  'groups.succession.status',
+  'kanban.run',
+  'prompt.cancel',
+  'prompt.receipt',
+  'prompt.resolve_unknown',
+  'runtime.describe',
+  'session.detach',
+  'session.export.discard',
+  'session.export.read',
+  'session.info',
+  'session.mutate',
+  'worker.adopt',
+  'worker.persist',
+  'worker.register'
+] as const satisfies readonly CanonicalRpcMethod[]
 
 // ── Server→client requests ──
 export interface ServerRequestMap {

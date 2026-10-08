@@ -464,14 +464,14 @@ def _record_invitation(self, claims, body, verified_origin=None, *, db_path=None
                 commit_receipt(writer)
             writer.commit()
         if verified_origin is not None:
-            target = self._run_idempotency_store.observe_verified_room_authority(
+            self._run_idempotency_store.observe_verified_room_authority(
                 claims, body.get("previous_authority"), verified_origin)
-            replaced = target[2:4] if target is not None else previous[1:3] if previous is not None else None
+            # The retained winner was verified above. A failed prior grant commit
+            # may still leave a same-epoch loser's reservation for this target.
             authority = room_authority(claims)
-            if replaced is not None and replaced[0] == authority[1] and replaced[1] != authority[2]:
-                writer.execute("""DELETE FROM hosted_room_peer_reservations WHERE room_id=?
-                    AND target_profile=? AND authority_epoch=? AND authority_gateway_id=?""",
-                    (claims["room_id"], claims["target_profile"], replaced[0], replaced[1]))
+            writer.execute("""DELETE FROM hosted_room_peer_reservations WHERE room_id=?
+                AND target_profile=? AND authority_epoch=? AND authority_gateway_id!=?""",
+                (claims["room_id"], claims["target_profile"], authority[1], authority[2]))
             # Consensus already established this authority; grant/consent failure
             # must not undo its independent, durable learned fence.
             commit_reservation(True)
@@ -505,17 +505,9 @@ def _publish_frozen_invitation(self, body, invitation, conn):
 
 
 def _invitation_consent_writer(self, claims, body, continuation, ttl, status_ttl, verified_origin):
-    """Capture immutable lineage before the nonreentrant RunStore callback takes its lock."""
+    """Write consent with the reservation under the caller's existing authority fence."""
     if _retirement_only(claims):
         return None
-    store = self._run_idempotency_store
-    if verified_origin is not None:
-        origin = verified_origin
-    elif store.knows_room_target(claims):
-        origin = store.room_lineage_origin(claims)
-    else:
-        predecessor = {**claims, **body.get("previous_authority", {})}
-        origin = store.room_origin_home(predecessor)
     permissions = claims["permissions"]
 
     def write(conn):
@@ -524,6 +516,8 @@ def _invitation_consent_writer(self, claims, body, continuation, ttl, status_ttl
         if "replicate" in permissions:
             set_local_consent(_grant_db(self), room_id=claims["room_id"], allowed="successor" in permissions, conn=conn)
         if continuation:
+            origin = verified_origin or self._run_idempotency_store._invitation_origin_locked(
+                claims, body.get("previous_authority"))
             record_consent_locked(conn, room_id=claims["room_id"], member_id=claims["member_id"],
                 target_profile=claims["target_profile"], options={
                     "authority": {key: claims[key] for key in ("home_install_id", "authority_gateway_id", "authority_epoch")},

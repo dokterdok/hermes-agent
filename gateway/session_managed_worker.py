@@ -1,8 +1,8 @@
 """Admission-owned production exec; observers never own the worker lifetime."""
 import asyncio
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 import json
-import os
 import queue
 import threading
 from types import SimpleNamespace
@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent.managed_worker import encode_frame, read_frame
+from agent.managed_worker import accept_result, encode_frame, read_frame
 from gateway.session_worker_reservation import reserve_admission_worker
 from hermes_state_runtime import RuntimeStoreError
 
@@ -51,9 +51,14 @@ def _bootstrap(authority, ref, row, policy, scope):
         for path, value in recover_config_secrets(authority, policy).items():
             if path[0] is None:
                 terminal[path[1]] = value
-    hydrated = replace(policy, config_json=json.dumps(policy.config(authority)),
-                       terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     live = authority.sessions[ref.session_id]
+    # This turn's facts ride the per-turn hydrated request (the bootstrap field set is closed):
+    # the admission's one-shot flags and the route's YOLO as of now, never the frozen launch flag.
+    request = dict(json.loads(policy.request_json), turn_v1={
+        'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
+        'yolo': _session_yolo(authority, live.route, policy)})
+    hydrated = replace(policy, config_json=json.dumps(policy.config(authority)), request_json=json.dumps(request),
+                       terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
             'policy': asdict(hydrated), 'api_key': launch_key(authority, policy),
             'text': row['payload']['text'], 'route': live.route,
@@ -61,6 +66,39 @@ def _bootstrap(authority, ref, row, policy, scope):
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
             'turn_author': row_turn_author(policy, row),
             'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
+
+
+def _session_yolo(authority, route, policy):
+    """The route's bypass as the in-process turn arms it on the owner, the one place a revocation
+    is recorded: a ``--yolo`` launch seeded once per boundary, then the persisted ``/yolo`` copy."""
+    from tools.approval import is_session_yolo_enabled
+    from tools.approval_yolo import apply_launch_yolo, restore_session_yolo
+    if policy.yolo:
+        apply_launch_yolo(route)
+    store = getattr(authority.runner, 'session_store', None)
+    if store is not None:
+        restore_session_yolo(route, getattr(store.lookup_by_session_key(route), 'yolo', False) is True)
+    return is_session_yolo_enabled(route)
+
+
+@contextmanager
+def worker_turn_scope(frame):
+    """Child side of ``turn_v1``: bind what the in-process turn binds on the owner
+    (execute_finite_admission, the route's YOLO), so ``chat -q``/``-z`` never park a prompt and
+    the session's current YOLO governs this child. Frames without it bind nothing."""
+    from gateway.session_finite import finite_turn_scope
+    turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
+    if turn is None:
+        yield
+        return
+    if (not isinstance(turn, dict) or set(turn) != {'finite', 'unattended', 'yolo'}
+            or any(type(v) is not bool for v in turn.values()) or (turn['unattended'] and not turn['finite'])):
+        raise ValueError('invalid_managed_worker_bootstrap')
+    if turn['yolo']:
+        from tools.approval import enable_session_yolo
+        enable_session_yolo(frame['route'])
+    with finite_turn_scope(turn['finite'], turn['unattended']):
+        yield
 
 
 class ManagedWorker:
@@ -113,6 +151,9 @@ class ManagedWorker:
         finally:
             stopper.cancel()
             reader.cancel()
+
+    def interrupt(self):
+        self.control({'type': 'stop'})
 
     def respond(self, kind, prompt_id, value):
         self.control({'type': kind, 'prompt_id': prompt_id, 'value': value})
@@ -209,6 +250,7 @@ def _worker_env(authority):
     secrets over a scrubbed base, never the launch profile's process environment (the same
     rule MCP stdio children and shell hooks follow). Single-profile gateways inherit the
     process env byte-for-byte, exactly as before."""
+    import os
     from pathlib import Path
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import _is_routed_home
@@ -222,7 +264,8 @@ def _worker_env(authority):
         return None
     from agent.secret_scope import build_profile_secret_scope
     from tools.environments.local import _scrub_credentials, build_subprocess_env, strip_launch_profile_env
-    # Strip launch residue before injecting the owning session's current context.
+    # The scrub removes credentials, not settings: the launch profile's TERMINAL_* policy and
+    # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
     base = strip_launch_profile_env(os.environ.copy(), target_home=home)
     env = build_subprocess_env(base=base, scrub_secrets=True)
     if routed:
@@ -235,6 +278,7 @@ def _worker_env(authority):
 
 
 async def execute_managed(authority, ref, row, policy):
+    from gateway.run_turn_progress import publish_worker_tool_event
     env = await asyncio.to_thread(_worker_env, authority)
     cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
     process = await asyncio.to_thread(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
@@ -245,17 +289,24 @@ async def execute_managed(authority, ref, row, policy):
     if workers is None:
         workers = authority._managed_workers = {}
     workers[ref.session_id] = worker
-    accepted = None
+    # A Stop acknowledged during the env/spawn awaits found no worker and was latched for this
+    # generation; consume it in the same step that makes the worker reachable to interrupt_managed.
+    authority.adopt_agent(ref.session_id, row['generation'], worker)
+    accepted = usage = None
     scope = None
     try:
         # The interpreter behind the handle introduces itself first; the owner verifies that
         # identity (alive, same birth, descends from the handle) before reserving for it.
         hello = await worker.next_frame(HELLO_SECONDS, ack=0)
+        if worker.stop.is_set():
+            # Stopped before the child could receive controls: hello raced the latch; never bootstrap.
+            raise RuntimeStoreError('managed_worker_stopped')
         scope = reserve_admission_worker(authority, admission_id=row['admission_id'],
                     process=process, principal_id=row['principal_id'], hello=hello)
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
-        await asyncio.to_thread(worker.send, _bootstrap(authority, ref, row, policy, scope))
+        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope)
+        await asyncio.to_thread(worker.send, frame)
         worker.writer.start()
         while True:
             frame = await worker.next_frame(None, ack=STOP_ACK_SECONDS)
@@ -271,17 +322,13 @@ async def execute_managed(authority, ref, row, policy):
             if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
                 authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
                 continue
-            if (kind in {'tool.start', 'tool.complete'} and set(frame) == {'type', 'tool_call_id', 'name'}
-                    and isinstance(frame['tool_call_id'], str) and isinstance(frame['name'], str)):
-                authority.publish_execution(ref.session_id, row['generation'], kind,
-                    {'tool_call_id': frame['tool_call_id'], 'name': frame['name']})
+            if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
                 continue
             if kind == 'result' and set(frame) == {'type', 'result'} and accepted is None:
-                result = frame['result']
-                if (not isinstance(result, dict) or set(result) - {'final_response', 'failed', 'interrupted'}
-                        or not isinstance(result.get('final_response'), str)):
-                    raise RuntimeStoreError('invalid_worker_result')
-                accepted = result
+                try:
+                    accepted, usage = accept_result(frame['result'])
+                except ValueError as exc:
+                    raise RuntimeStoreError('invalid_worker_result') from exc
                 authority.sessions[ref.session_id].controls.snapshot(ref.session_id, None)
                 await asyncio.to_thread(worker.send, {'type': 'finish'})
                 continue
@@ -291,7 +338,7 @@ async def execute_managed(authority, ref, row, policy):
                     raise RuntimeStoreError('managed_worker_lost')
                 # Like in-process execution, settlement belongs to the drain's stream lock.
                 # The worker must acknowledge its durable finish before that boundary.
-                authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': {}}
+                authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': usage}
                 return accepted['final_response']
             raise RuntimeStoreError('invalid_worker_frame')
     except (Exception, asyncio.CancelledError) as exc:

@@ -39,8 +39,10 @@ Older records lacking authenticated predecessor coordinates remain conservative.
 
 Peer reservations supersede every member of a room on the target profile, so a
 shared room/target/profile origin and epoch record fences all those members too.
-It is committed before the reservation changes. A member without a successor
-invitation still refuses captured work from the old epoch, and its terminal
+The invitation commits its reservation and consent before publishing that floor;
+the committed reservation already refuses old captured requests if floor publication
+is interrupted. A member without a successor invitation still refuses captured
+work from the old epoch, and its terminal
 cancellations can compact. Retirement remains per member: retiring one member
 does not disable another at the same epoch. New members may join the current home;
 their first hidden session keeps that home as its own anchor for future moves.

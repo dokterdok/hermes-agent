@@ -6,8 +6,16 @@ from gateway.session_surface import admit_surface
 
 
 def normalize_submission_payload(authority, actor, request):
+    def admitted():
+        with authority.db._read_ctx() as conn:
+            row = conn.execute('SELECT * FROM session_admissions WHERE principal_id=? AND '
+                               'target_session_id=? AND request_id=?',
+                               (actor.subject, request.ref.session_id, request.request_id)).fetchone()
+        from hermes_state_runtime import _row
+        return _row(row) if row is not None else None
+
     payload = {'text': request.payload['text'], **admit_finite(request.payload),
-               **admit_surface(request.payload), **admit_attachments(request.payload.get('attachments'))}
+               **admit_surface(request.payload), **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
     if 'classic_export_v1' in request.payload:
         from gateway.classic_output_exports import (
             CANONICAL_BINDING_VERSION,

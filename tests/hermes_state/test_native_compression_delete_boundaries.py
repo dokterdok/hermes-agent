@@ -36,7 +36,7 @@ def test_queued_omitted_tip_prevents_delete_and_preserves_all_metadata(tmp_path,
         if topology == 'inherited-fork':
             db.create_session('ancestor', source='telegram')
             cfg = {'_branched_from': 'ancestor'}
-            db.create_session('root', source='telegram', parent_session_id='ancestor', model_config=cfg)
+            db.create_session('root', source='telegram', session_key='fixture:root', parent_session_id='ancestor', model_config=cfg)
             assert db.try_acquire_compression_lock('root', 'review-metadata')
             try:
                 db.publish_compression_child(parent_session_id='root', child_session_id='tip',

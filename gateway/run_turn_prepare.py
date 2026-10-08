@@ -677,13 +677,13 @@ class GatewayTurnPrepareMixin:
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
+        from tools.approval_yolo import restore_session_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
-        self._restore_session_yolo(session_key, session_entry)
+        restore_session_yolo(session_key, session_entry.yolo is True)  # a restarted gateway's set starts empty
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
-        # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
-        # UIs render timeline notices, not user bubbles; role/content untouched.
+        # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
         from gateway.response_filters import display_kind_for_event
         persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
@@ -732,7 +732,8 @@ class GatewayTurnPrepareMixin:
             )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
-            return t("gateway.errors.history_unavailable"), _session_env_tokens
+            from gateway.session_results import record_unexecuted_failure
+            return record_unexecuted_failure(t("gateway.errors.history_unavailable")), _session_env_tokens
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, event.text, internal=event.internal)
 

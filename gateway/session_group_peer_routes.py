@@ -171,26 +171,13 @@ class CanonicalPeerClient:
         value = getattr(self._client, name)
         if not callable(value):
             return value
-        if name == 'recover_dispatch' and callable(getattr(self._client, 'recover_accepted_dispatch', None)):
-            return lambda **kwargs: self._recover_existing(value, kwargs)
+        if name == 'recover_dispatch':
+            return lambda **kwargs: self._recover(value, kwargs)
         if name in _NEW_WORK:
             return lambda **kwargs: self._new_work(name, value, kwargs)
         if name in _OBSERVATION:
             return lambda **kwargs: self._observe(name, value, kwargs)
         return value  # revoke_grant_exact included: exact cleanup never swaps the bearer
-
-    def _recover_existing(self, call, kwargs):
-        # End must still observe accepted work. This helper cannot POST a Run;
-        # a missing receipt retains the ordinary retiring/new-admission fence.
-        observed = {key: kwargs[key] for key in ('dispatch', 'grant')}
-        original_grant = self._grant
-        accepted = self._observe('recover_accepted_dispatch', self._client.recover_accepted_dispatch, observed)
-        if accepted is not None:
-            return accepted
-        if kwargs.get('observation_only'):
-            return self._observe('recover_dispatch', call, {**observed, 'observation_only': True})
-        self._grant = original_grant  # no accepted receipt: never promote an observer grant into new-work authority
-        return self._new_work('recover_dispatch', call, kwargs)
 
     def _status(self, status, grant):
         set_route_status(self._service, self._key, status, grant)
@@ -211,6 +198,19 @@ class CanonicalPeerClient:
     def _same_route(self, current, client):
         return (current is not None and replace(current, grant=self._route.grant) == self._route
                 and getattr(client, 'base_url', None) == getattr(self._client, 'base_url', None))
+
+    def _recover(self, call, kwargs):
+        # Disband fences new effects, not the retained receipt needed to Stop existing work.
+        # A receipt miss must still pass the original route's admission fence below.
+        with before_sending('recover_dispatch'):
+            grant = self._observer_grant(adopt=False)
+            observed = {'dispatch': kwargs['dispatch'], 'grant': grant}
+            accepted = call(**observed, admit_if_missing=False)
+        if accepted is not None:
+            return accepted
+        if kwargs.get('observation_only'):
+            return self._observe('recover_dispatch', call, {**observed, 'observation_only': True})
+        return self._new_work('recover_dispatch', call, kwargs)
 
     def _new_work(self, name, call, kwargs):
         with before_sending(name):
@@ -275,7 +275,7 @@ class CanonicalPeerClient:
             # One read-only retry closes a grant replacement that raced this read.
             return self._report(call, {**kwargs, 'grant': replacement})
 
-    def _observer_grant(self):
+    def _observer_grant(self, *, adopt=True):
         service, binding = self._service, self._binding
         with service._policy_lock:
             room = service._room(binding.room_id)
@@ -286,7 +286,8 @@ class CanonicalPeerClient:
                 raise RuntimeError('peer room observer authority or membership changed')
             if current.grant != self._grant and service._peer_route_status.get(self._key) == 'needs_reauthorization':
                 raise RuntimeError('peer room observer replacement needs reauthorization')
-            self._grant = current.grant
+            if adopt:
+                self._grant = current.grant
             return current.grant
 
     def _refresh_if_due(self, name, grant, kwargs):

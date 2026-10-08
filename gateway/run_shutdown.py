@@ -31,6 +31,8 @@ from gateway.run_common import _UNSET
 from gateway.shutdown_watchdog import _effective_watchdog_leash, arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 from gateway.hosted_room_succession_shutdown import (
     GROUP_HANDOVER_BUDGET_SECONDS as GROUP_HANDOVER_BUDGET_SECONDS, GROUP_RESTART_WINDOW_SECONDS as GROUP_RESTART_WINDOW_SECONDS, _announce_group_restarts, _hand_over_groups)
+from gateway.run_runtime import managed_turn_count, stop_managed_turns
+from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -163,7 +165,7 @@ def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Op
     return _notice_target_key(platform_value, chat_id, thread_id)
 
 
-class GatewayShutdownMixin:
+class GatewayShutdownMixin(GatewaySessionEndMixin):
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
     @dataclasses.dataclass
@@ -187,6 +189,7 @@ class GatewayShutdownMixin:
         """All agent work the gateway must expose and drain as one total."""
         return (
             self._running_agent_count()
+            + managed_turn_count(self)
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
@@ -794,9 +797,9 @@ class GatewayShutdownMixin:
 
     # Drain / interrupt
     def _drain_work_counts(self) -> tuple:
-        """``(agents, cron, api, deferred)`` — the four sources the drain waits on."""
+        """``(agents, cron, api, deferred)`` the drain waits on; a managed-worker turn is a chat turn."""
         return (
-            self._running_agent_count(), self._active_cron_job_count(),
+            self._running_agent_count() + managed_turn_count(self), self._active_cron_job_count(),
             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
         )
 
@@ -817,9 +820,8 @@ class GatewayShutdownMixin:
                 last_counts, last_status_at = counts, now
 
         # Cron/API/deferred work lives outside ``_running_agents``; fold it in or it is killed unwarned.
-        _cron0, _api0, _deferred0 = last_counts[1:]
         _maybe_update_status(force=True)
-        if not self._running_agents and not (_cron0 or _api0 or _deferred0):
+        if not self._running_agents and not any(last_counts):
             return snapshot, False
         # Cron and api_server runs ride the cron floor: a chat turn is announced+resumable, but a killed
         # cron run is a permanent failure and a killed /v1 run fails a caller blocked on its result.
@@ -849,11 +851,11 @@ class GatewayShutdownMixin:
             with _log_suppressed(logging.DEBUG, "Failed interrupting agent during shutdown: %s"):
                 request_hard_interrupt(agent, reason, tool_reason=_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN)
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
-        # API-server / desk turns are adapter-owned and never enter _running_agents, so the loop above
-        # cannot see them even though _drain_active_agents() waited for them.
+        # API-server / desk / managed-worker turns never enter _running_agents: the drain waited on them.
         for count, what in (
             (self._interrupt_api_server_runs(reason), "api_server run(s)"),
             (self._interrupt_deferred_agent_workers(reason), "deferred agent worker(s)"),
+            (stop_managed_turns(self), "managed-worker turn(s)"),
         ):
             if count:
                 logger.debug("Interrupted %d %s during shutdown", count, what)
@@ -1168,10 +1170,14 @@ class GatewayShutdownMixin:
             self._flush_agent_transcript_at_shutdown(agent)
             # Off-loop + bounded: plugin on_session_finalize hooks can do arbitrary synchronous work
             # (e.g. a full-session trace export) — same hang class as the memory provider below.
-            await self._finalize_session_off_loop(
+            messages = await self._finalize_session_off_loop(
                 session_id=getattr(agent, "session_id", None), platform="gateway", reason="shutdown",
                 session_key=session_key,
             )
+            try:  # adapters are still connected here (teardown runs after this loop)
+                await self._deliver_session_end_messages(messages, session_key=session_key)
+            except Exception:
+                logger.debug("Session-end plugin message delivery failed for %s", session_key, exc_info=True)
             # Off-loop + bounded: a wedged memory provider here used to hang the whole shutdown so
             # SIGTERM never completed.
             await self._cleanup_agent_resources_off_loop(agent, context="shutdown finalize", session_key=session_key)
@@ -1218,31 +1224,6 @@ class GatewayShutdownMixin:
         if tasks is None:
             tasks = self._deferred_agent_cleanup_tasks = set()
         self._track_task_in(tasks, asyncio.create_task(_cleanup_when_done()))
-
-    async def _finalize_session_off_loop(
-        self, *, session_id: Any, platform: str, reason: str, session_key: Optional[str] = None, **extra: Any,
-    ) -> None:
-        """Run hermes_cli.lifecycle.finalize_session off-loop, bounded; on timeout the worker is left alone.
-        ``session_key`` lets an unscoped caller (shutdown) enter the owning profile's scope: plugin
-        ``on_session_finalize`` observers and the Relay coordinator (``current_profile_key``) resolve
-        profile state at call time."""
-
-        def _call() -> None:
-            from hermes_cli.lifecycle import finalize_session
-            finalize_session(session_id=session_id, platform=platform, reason=reason, **extra)
-
-        try:
-            await asyncio.wait_for(
-                self._run_housekeeping_in_executor(self._run_release_in_profile_scope, _call, (), session_key),
-                timeout=self._FINALIZE_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Session finalize hooks (%s, reason=%s) exceeded %ss; proceeding without blocking the event loop "
-                "(the worker thread is left to finish on its own).", session_id, reason, self._FINALIZE_TIMEOUT_S,
-            )
-        except Exception as finalize_exc:
-            logger.debug("Session finalize hooks (%s, reason=%s) failed: %s", session_id, reason, finalize_exc)
 
     async def _cleanup_agent_resources_off_loop(
         self, agent: Any, *, context: str = "", session_key: Optional[str] = None,
@@ -1585,6 +1566,7 @@ class GatewayShutdownMixin:
         """
         non_cron = (
             self._running_agent_count()
+            + managed_turn_count(self)
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
         )
@@ -1598,7 +1580,7 @@ class GatewayShutdownMixin:
         (``hermes update``, ``hermes gateway status``) can name it instead of printing a bare count.
 
         ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was
-        handed to a restart-safe scope), ``api`` / ``deferred`` (count only — those sources expose
+        handed to a restart-safe scope), ``managed`` / ``api`` / ``deferred`` (count only — those sources expose
         no identity). Best-effort: a source that can't be read is omitted, never raises.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1628,7 +1610,8 @@ class GatewayShutdownMixin:
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
                               "wedged": job["job_id"] in wedged,
                               "restart_safe": bool(job.get("restart_safe"))})
-        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
+        for kind, count in (("managed", managed_turn_count(self)), ("api", self._active_api_run_count()),
+                            ("deferred", self._active_deferred_agent_worker_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
 
@@ -1948,7 +1931,7 @@ class GatewayShutdownMixin:
         logger.info("Shutdown phase: allowing %.1fs for interrupted agents to unwind", interrupt_grace_timeout)
 
         def _work_live() -> bool:
-            return bool(self._running_agents or self._active_api_run_count() or ctx.deferred_count())
+            return bool(self._running_agents or managed_turn_count(self) or self._active_api_run_count() or ctx.deferred_count())
 
         # Wait on API-server work too, or an API turn's tool subprocesses are killed before it unwinds.
         while _work_live() and loop.time() < interrupt_deadline:

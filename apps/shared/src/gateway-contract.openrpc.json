@@ -1123,60 +1123,6 @@
       }
     },
     {
-      "name": "groups.attachment.download",
-      "summary": "Read bytes bound to a canonical room event, subject to current viewer authorization.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsAttachmentDownloadParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsAttachmentDownloadResult"
-        }
-      }
-    },
-    {
-      "name": "groups.attachment.list",
-      "summary": "List authorized published room-file references with stable paging, search and producer filtering. available=false retains a historical reference whose bytes are unavailable here; omitted means locally available.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsAttachmentListParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsAttachmentListResult"
-        }
-      }
-    },
-    {
-      "name": "groups.attachment.upload",
-      "summary": "Upload owner-authorized bytes for a canonical room message.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsAttachmentUploadParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsAttachmentResult"
-        }
-      }
-    },
-    {
       "name": "groups.capabilities",
       "summary": "Describe the hosted-room protocol implemented by this gateway.",
       "params": [
@@ -1213,114 +1159,6 @@
       }
     },
     {
-      "name": "groups.custody.add",
-      "summary": "Add an installation that keeps the room's history without a Bot, after a live scoped probe.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyAddParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.allow",
-      "summary": "On a member installation: allow (or not) the room owner to continue the group here.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyAllowParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyAllowResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.automatic",
-      "summary": "On the host: the room owner (or the operator) lets the group move by itself, or asks first.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyAutomaticParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyAutomaticResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.designate",
-      "summary": "The room owner designates (or not) one custodian to continue the group; its operator must allow it.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyDesignateParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyDesignateResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.remove",
-      "summary": "Stop keeping a copy on one custodian-only installation.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyRemoveParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.status",
-      "summary": "Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyStatusParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyStatusResult"
-        }
-      }
-    },
-    {
       "name": "groups.demote",
       "summary": "Fence this gateway's stale room authority against a proven newer epoch. Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists.",
       "params": [
@@ -1353,24 +1191,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsDisbandResult"
-        }
-      }
-    },
-    {
-      "name": "groups.discard",
-      "summary": "Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsDiscardParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsDiscardResult"
         }
       }
     },
@@ -1573,60 +1393,6 @@
       }
     },
     {
-      "name": "groups.replication.enroll",
-      "summary": "The participant operator enrolls retirement of one exact passive copy.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsReplicationEnrollParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsReplicationEnrollResult"
-        }
-      }
-    },
-    {
-      "name": "groups.replication.prepare",
-      "summary": "Prepare public retirement verification material for an opted-in participant copy.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsReplicationPrepareParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsReplicationPrepareResult"
-        }
-      }
-    },
-    {
-      "name": "groups.replication.revoke",
-      "summary": "The participant operator withdraws one copy-retirement enrollment.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsReplicationRevokeParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsReplicationRevokeResult"
-        }
-      }
-    },
-    {
       "name": "groups.retry",
       "summary": "Retry one eligible room task; canonical controls require exact proven nonadmission.",
       "params": [
@@ -1695,186 +1461,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsStopResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.branch_log",
-      "summary": "Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionBranchLogParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionBranchLogResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.continue_anyway",
-      "summary": "On a host paused to stay safe, for the owner: continue it here anyway.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionContinueAnywayParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.handover_all",
-      "summary": "Hand every group this computer hosts to its best reachable standby (Desktop's sleep hook).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionHandoverAllParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionHandoverAllResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.keep",
-      "summary": "Resolve a group continued on two computers, from either one.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionKeepParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.learn",
-      "summary": "Hand this computer the chain of later hosts; it verifies it with pinned keys and steps down if replaced.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionLearnParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionLearnResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.move",
-      "summary": "On the host, for the owner: hand the group over to a successor (signed handover), once the replies in progress finish.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionMoveParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.move_now",
-      "summary": "On the host, for the owner: hand over a group waiting for its replies at once; those show as unknown.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionMoveNowParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.prepare",
-      "summary": "On the target computer: what continuing the group there would mean. Changes nothing.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionPrepareParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionPrepareResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.promote",
-      "summary": "On the target computer: continue the group there, for its owner; returns the status (poll while moving).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionPromoteParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.status",
-      "summary": "Whether the group's host can be reached from this computer, and what the owner may do.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionStatusParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
         }
       }
     },
@@ -5085,6 +4671,123 @@
   ],
   "components": {
     "schemas": {
+      "A2aForwardParams": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          },
+          "peer": {
+            "title": "Peer",
+            "type": "string"
+          },
+          "context_id": {
+            "title": "Context Id",
+            "type": "string"
+          },
+          "input_id": {
+            "title": "Input Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "tenant",
+          "peer",
+          "context_id",
+          "input_id",
+          "text"
+        ],
+        "title": "A2aForwardParams",
+        "type": "object"
+      },
+      "A2aForwardResult": {
+        "additionalProperties": false,
+        "properties": {
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/CanonicalSessionRef"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "started",
+              "unknown",
+              "terminal"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Generation"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          }
+        },
+        "required": [
+          "admission_id",
+          "ref",
+          "sequence",
+          "status",
+          "outcome",
+          "authority_epoch",
+          "execution_generation",
+          "session_id",
+          "result"
+        ],
+        "title": "A2aForwardResult",
+        "type": "object"
+      },
       "AccountOwner": {
         "additionalProperties": false,
         "properties": {
@@ -5240,6 +4943,70 @@
           "subagent_id"
         ],
         "title": "ActiveSubagent",
+        "type": "object"
+      },
+      "AdmissionStatus": {
+        "additionalProperties": false,
+        "description": "``gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it.",
+        "properties": {
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/CanonicalSessionRef"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "started",
+              "unknown",
+              "terminal"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Generation"
+          }
+        },
+        "required": [
+          "admission_id",
+          "ref",
+          "sequence",
+          "status",
+          "outcome",
+          "authority_epoch",
+          "execution_generation"
+        ],
+        "title": "AdmissionStatus",
         "type": "object"
       },
       "AgentPluginRow": {
@@ -8093,6 +7860,111 @@
         "title": "BrowserProgressPayload",
         "type": "object"
       },
+      "CanonicalSessionInfo": {
+        "additionalProperties": true,
+        "description": "``gateway/session_local.py::local_session_info``.",
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "lazy": {
+            "title": "Lazy",
+            "type": "boolean"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "desktop_protocol": {
+            "title": "Desktop Protocol",
+            "type": "string"
+          },
+          "profile_name": {
+            "title": "Profile Name",
+            "type": "string"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "launch_request": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Launch Request"
+          }
+        },
+        "required": [
+          "source",
+          "lazy",
+          "profile_id",
+          "desktop_protocol",
+          "profile_name"
+        ],
+        "title": "CanonicalSessionInfo",
+        "type": "object"
+      },
+      "CanonicalSessionInfoParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "CanonicalSessionInfoParams",
+        "type": "object"
+      },
+      "CanonicalSessionRef": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "session_id"
+        ],
+        "title": "CanonicalSessionRef",
+        "type": "object"
+      },
       "CapabilityEntry": {
         "additionalProperties": false,
         "properties": {
@@ -8374,6 +8246,35 @@
         "title": "ClarifyRequestParams",
         "type": "object"
       },
+      "ClarifyRespondParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "execution_generation",
+          "prompt_id",
+          "answer"
+        ],
+        "title": "ClarifyRespondParams",
+        "type": "object"
+      },
       "ClarifyResult": {
         "additionalProperties": false,
         "description": "``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response\nwithout ``answers`` is cancel-all.",
@@ -8402,6 +8303,256 @@
           }
         },
         "title": "ClarifyResult",
+        "type": "object"
+      },
+      "ClassicExportDiscardParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "installation": {
+            "title": "Installation",
+            "type": "string"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "export_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Export Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "installation",
+          "group_id"
+        ],
+        "title": "ClassicExportDiscardParams",
+        "type": "object"
+      },
+      "ClassicExportDiscardResult": {
+        "additionalProperties": false,
+        "properties": {
+          "retired": {
+            "title": "Retired",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "retired"
+        ],
+        "title": "ClassicExportDiscardResult",
+        "type": "object"
+      },
+      "ClassicExportReadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "installation": {
+            "title": "Installation",
+            "type": "string"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          },
+          "export_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Export Id"
+          },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Artifact Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation"
+          }
+        },
+        "required": [
+          "session_id",
+          "installation",
+          "group_id"
+        ],
+        "title": "ClassicExportReadParams",
+        "type": "object"
+      },
+      "ClassicExportReadResult": {
+        "additionalProperties": true,
+        "description": "Published descriptor/status or exact retained bytes, selected by artifact_id.",
+        "properties": {
+          "export_id": {
+            "title": "Export Id",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "recipients": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Recipients",
+            "type": "array"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thread Id"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "items": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Items"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Item"
+          },
+          "content_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content Base64"
+          }
+        },
+        "required": [
+          "export_id",
+          "generation",
+          "state",
+          "group_id",
+          "recipients"
+        ],
+        "title": "ClassicExportReadResult",
         "type": "object"
       },
       "CliExecParams": {
@@ -11954,6 +12105,39 @@
         "title": "CronAction",
         "type": "string"
       },
+      "CronAdmissionParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "CronAdmissionParams",
+        "type": "object"
+      },
+      "CronCancelResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "CronCancelResult",
+        "type": "object"
+      },
       "CronJobRow": {
         "additionalProperties": true,
         "description": "``tools/cronjob_job_args.py::_format_job``.",
@@ -12716,6 +12900,110 @@
           "id"
         ],
         "title": "CronRemovedJob",
+        "type": "object"
+      },
+      "CronRunParams": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "extra_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Prompt"
+          }
+        },
+        "required": [
+          "job_id",
+          "request_id",
+          "extra_prompt"
+        ],
+        "title": "CronRunParams",
+        "type": "object"
+      },
+      "CronStatusResult": {
+        "additionalProperties": true,
+        "description": "``result`` is the ``run_job`` tuple once terminal; ``recover`` adds the frozen ``job`` and\nanswers ``status='missing'`` for a firing that was never admitted.",
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "job_flags": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Job Flags"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Job"
+          }
+        },
+        "required": [
+          "status",
+          "result"
+        ],
+        "title": "CronStatusResult",
+        "type": "object"
+      },
+      "CronSubmitResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "CronSubmitResult",
         "type": "object"
       },
       "CurrentSubscription": {
@@ -15319,6 +15607,42 @@
           "per_session_exclusive_submit": {
             "title": "Per Session Exclusive Submit",
             "type": "boolean"
+          },
+          "classic_output_export_v1": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Classic Output Export V1"
+          },
+          "installation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installation"
+          },
+          "classic_exact_generation_v1": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Classic Exact Generation V1"
           }
         },
         "required": [
@@ -19932,6 +20256,65 @@
         ],
         "title": "InterruptStatus",
         "type": "string"
+      },
+      "KanbanRunParams": {
+        "additionalProperties": false,
+        "properties": {
+          "board": {
+            "title": "Board",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "integer"
+          },
+          "claim_lock": {
+            "title": "Claim Lock",
+            "type": "string"
+          },
+          "db": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Db"
+          }
+        },
+        "required": [
+          "board",
+          "task_id",
+          "run_id",
+          "claim_lock"
+        ],
+        "title": "KanbanRunParams",
+        "type": "object"
+      },
+      "KanbanRunResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/AdmissionStatus"
+          }
+        },
+        "required": [
+          "session_id",
+          "receipt"
+        ],
+        "title": "KanbanRunResult",
+        "type": "object"
       },
       "LanguageOption": {
         "additionalProperties": false,
@@ -29525,6 +29908,203 @@
         "title": "ProjectsUpdateParams",
         "type": "object"
       },
+      "PromptCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "PromptCancelParams",
+        "type": "object"
+      },
+      "PromptReceiptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "include_result": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Include Result"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "PromptReceiptParams",
+        "type": "object"
+      },
+      "PromptReceiptResult": {
+        "additionalProperties": false,
+        "description": "``result`` / ``usage``: the structured turn result committed at settlement, only with\n``include_result`` on a terminal admission that saved one.",
+        "properties": {
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/CanonicalSessionRef"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "started",
+              "unknown",
+              "terminal"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Generation"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Usage"
+          },
+          "classic_export": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Classic Export"
+          }
+        },
+        "required": [
+          "admission_id",
+          "ref",
+          "sequence",
+          "status",
+          "outcome",
+          "authority_epoch",
+          "execution_generation"
+        ],
+        "title": "PromptReceiptResult",
+        "type": "object"
+      },
+      "PromptResolveUnknownParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id",
+          "execution_generation"
+        ],
+        "title": "PromptResolveUnknownParams",
+        "type": "object"
+      },
+      "PromptResponseResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "resolved",
+              "already_resolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "prompt_id"
+        ],
+        "title": "PromptResponseResult",
+        "type": "object"
+      },
       "PromptSubmitParams": {
         "additionalProperties": false,
         "description": "``text`` is normally a string; the relay / hosted paths may hand a structured (parts list)\npayload, and the busy path renders it. Truncation (rewind / edit / regenerate) needs explicit\nconsent: ``confirm_truncate`` plus one durable target (``truncate_before_row_id`` preferred,\n``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``).",
@@ -29544,6 +30124,19 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "classic_export": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Classic Export"
           },
           "text": {
             "default": "",
@@ -31920,6 +32513,48 @@
         "title": "RoomTombstone",
         "type": "object"
       },
+      "RuntimeDescribeParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "RuntimeDescribeParams",
+        "type": "object"
+      },
+      "RuntimeDescribeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "session_create": {
+            "$ref": "#/components/schemas/SessionCreateDescriptor"
+          }
+        },
+        "required": [
+          "instance_id",
+          "profile_id",
+          "authority_epoch",
+          "capabilities",
+          "session_create"
+        ],
+        "title": "RuntimeDescribeResult",
+        "type": "object"
+      },
       "SecretRequestParams": {
         "additionalProperties": false,
         "properties": {
@@ -32787,6 +33422,13 @@
           "closed": {
             "title": "Closed",
             "type": "boolean"
+          },
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Messages",
+            "type": "array"
           }
         },
         "required": [
@@ -33425,6 +34067,31 @@
         "title": "SessionCorrectionResult",
         "type": "object"
       },
+      "SessionCreateDescriptor": {
+        "additionalProperties": false,
+        "properties": {
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "parameters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Parameters",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sources",
+          "parameters"
+        ],
+        "title": "SessionCreateDescriptor",
+        "type": "object"
+      },
       "SessionCreateParams": {
         "additionalProperties": false,
         "properties": {
@@ -33968,6 +34635,49 @@
           "deleted"
         ],
         "title": "SessionDeleteResult",
+        "type": "object"
+      },
+      "SessionDetachParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subscription_id": {
+            "title": "Subscription Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "subscription_id"
+        ],
+        "title": "SessionDetachParams",
+        "type": "object"
+      },
+      "SessionDetachResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subscription_id": {
+            "title": "Subscription Id",
+            "type": "string"
+          },
+          "detached": {
+            "title": "Detached",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "subscription_id",
+          "detached"
+        ],
+        "title": "SessionDetachResult",
         "type": "object"
       },
       "SessionEventsSinceParams": {
@@ -34894,6 +35604,86 @@
           "session_id"
         ],
         "title": "SessionMostRecentResult",
+        "type": "object"
+      },
+      "SessionMutateParams": {
+        "additionalProperties": false,
+        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "expected_revision",
+          "operation",
+          "payload"
+        ],
+        "title": "SessionMutateParams",
+        "type": "object"
+      },
+      "SessionMutateResult": {
+        "additionalProperties": true,
+        "description": "The committed mutation receipt plus the operation's projection (``title``, ``archived``,\n``branched_session_id``, compress ``status``/``lines``, \u2026). ``revision`` is absent only on a\nread-only compress preview.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revision"
+          }
+        },
+        "required": [
+          "session_id",
+          "operation"
+        ],
+        "title": "SessionMutateResult",
         "type": "object"
       },
       "SessionOwner": {
@@ -44137,6 +44927,217 @@
         "title": "WakeStopResult",
         "type": "object"
       },
+      "WorkerExecution": {
+        "additionalProperties": true,
+        "description": "A ``worker_executions`` row without its adoption digest.",
+        "properties": {
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "owner_epoch": {
+            "title": "Owner Epoch",
+            "type": "integer"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "last_sequence": {
+            "title": "Last Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "execution_id",
+          "session_id",
+          "kind",
+          "owner_epoch",
+          "generation",
+          "status",
+          "last_sequence"
+        ],
+        "title": "WorkerExecution",
+        "type": "object"
+      },
+      "WorkerPersistParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "birth": {
+            "title": "Birth",
+            "type": "number"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          },
+          "epoch": {
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "profile_id",
+          "session_id",
+          "execution_id",
+          "generation",
+          "pid",
+          "birth",
+          "secret",
+          "epoch",
+          "sequence",
+          "operation",
+          "payload"
+        ],
+        "title": "WorkerPersistParams",
+        "type": "object"
+      },
+      "WorkerPersistResult": {
+        "additionalProperties": true,
+        "description": "The operation's durable receipt (``message_id`` for an append, delegation results, \u2026).",
+        "properties": {},
+        "title": "WorkerPersistResult",
+        "type": "object"
+      },
+      "WorkerRegisterParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "birth": {
+            "title": "Birth",
+            "type": "number"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "session_id",
+          "execution_id",
+          "generation",
+          "pid",
+          "birth",
+          "secret",
+          "kind"
+        ],
+        "title": "WorkerRegisterParams",
+        "type": "object"
+      },
+      "WorkerScopeParams": {
+        "additionalProperties": false,
+        "description": "The producer claim every worker verb proves (``gateway/session_worker.py::_SCOPE``).",
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "birth": {
+            "title": "Birth",
+            "type": "number"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "session_id",
+          "execution_id",
+          "generation",
+          "pid",
+          "birth",
+          "secret"
+        ],
+        "title": "WorkerScopeParams",
+        "type": "object"
+      },
       "_SessionScoped": {
         "additionalProperties": false,
         "description": "Handlers that look a live session up with ``_sessions.get(params.get(\"session_id\"))``: an\nabsent / unknown id falls back to the launch profile's config, so it is never required.",
@@ -44187,6 +45188,764 @@
       }
     }
   },
+  "x-canonical-methods": [
+    {
+      "name": "a2a.forward",
+      "summary": "Forward one A2A input into the conversation its identity tuple names.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/A2aForwardParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/A2aForwardResult"
+        }
+      }
+    },
+    {
+      "name": "clarify.respond",
+      "summary": "Generation-fenced answer to a pending clarify prompt (empty answer = skipped).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClarifyRespondParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "cron.cancel",
+      "summary": "Cancel a queued cron admission or latch cancellation on a started one.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronAdmissionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronCancelResult"
+        }
+      }
+    },
+    {
+      "name": "cron.recover",
+      "summary": "Re-observe a firing after a scheduler restart (same request identity).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronStatusResult"
+        }
+      }
+    },
+    {
+      "name": "cron.status",
+      "summary": "Status and, once terminal, the result of one cron admission.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronAdmissionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronStatusResult"
+        }
+      }
+    },
+    {
+      "name": "cron.submit",
+      "summary": "Admit one cron firing into the owning profile's durable FIFO.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronSubmitResult"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.download",
+      "summary": "Read bytes bound to a canonical room event, subject to current viewer authorization.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentDownloadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentDownloadResult"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.list",
+      "summary": "List authorized published room-file references with stable paging, search and producer filtering. available=false retains a historical reference whose bytes are unavailable here; omitted means locally available.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentListResult"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.upload",
+      "summary": "Upload owner-authorized bytes for a canonical room message.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentUploadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.add",
+      "summary": "Add an installation that keeps the room's history without a Bot, after a live scoped probe.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyAddParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.allow",
+      "summary": "On a member installation: allow (or not) the room owner to continue the group here.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyAllowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyAllowResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.automatic",
+      "summary": "On the host: the room owner (or the operator) lets the group move by itself, or asks first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyAutomaticParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyAutomaticResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.designate",
+      "summary": "The room owner designates (or not) one custodian to continue the group; its operator must allow it.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyDesignateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyDesignateResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.remove",
+      "summary": "Stop keeping a copy on one custodian-only installation.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyRemoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.status",
+      "summary": "Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.discard",
+      "summary": "Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsDiscardParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsDiscardResult"
+        }
+      }
+    },
+    {
+      "name": "groups.replication.enroll",
+      "summary": "The participant operator enrolls retirement of one exact passive copy.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsReplicationEnrollParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsReplicationEnrollResult"
+        }
+      }
+    },
+    {
+      "name": "groups.replication.prepare",
+      "summary": "Prepare public retirement verification material for an opted-in participant copy.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsReplicationPrepareParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsReplicationPrepareResult"
+        }
+      }
+    },
+    {
+      "name": "groups.replication.revoke",
+      "summary": "The participant operator withdraws one copy-retirement enrollment.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsReplicationRevokeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsReplicationRevokeResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.branch_log",
+      "summary": "Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionBranchLogParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionBranchLogResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.continue_anyway",
+      "summary": "On a host paused to stay safe, for the owner: continue it here anyway.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionContinueAnywayParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.handover_all",
+      "summary": "Hand every group this computer hosts to its best reachable standby (Desktop's sleep hook).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionHandoverAllParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionHandoverAllResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.keep",
+      "summary": "Resolve a group continued on two computers, from either one.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionKeepParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.learn",
+      "summary": "Hand this computer the chain of later hosts; it verifies it with pinned keys and steps down if replaced.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionLearnParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionLearnResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.move",
+      "summary": "On the host, for the owner: hand the group over to a successor (signed handover), once the replies in progress finish.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionMoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.move_now",
+      "summary": "On the host, for the owner: hand over a group waiting for its replies at once; those show as unknown.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionMoveNowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.prepare",
+      "summary": "On the target computer: what continuing the group there would mean. Changes nothing.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionPrepareParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionPrepareResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.promote",
+      "summary": "On the target computer: continue the group there, for its owner; returns the status (poll while moving).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionPromoteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.status",
+      "summary": "Whether the group's host can be reached from this computer, and what the owner may do.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "kanban.run",
+      "summary": "Native-owner only: admit the dispatcher's current claim on a kanban task.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/KanbanRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/KanbanRunResult"
+        }
+      }
+    },
+    {
+      "name": "prompt.cancel",
+      "summary": "Retire a still-queued admission; a started one is unaffected.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PromptCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "prompt.receipt",
+      "summary": "Current receipt of one admission the caller submitted (or controls).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PromptReceiptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PromptReceiptResult"
+        }
+      }
+    },
+    {
+      "name": "prompt.resolve_unknown",
+      "summary": "Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PromptResolveUnknownParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "runtime.describe",
+      "summary": "Owner identity and the canonical capabilities a client may rely on.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RuntimeDescribeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RuntimeDescribeResult"
+        }
+      }
+    },
+    {
+      "name": "session.detach",
+      "summary": "Drop this connection's subscription; a stale subscription id answers detached=false.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionDetachParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionDetachResult"
+        }
+      }
+    },
+    {
+      "name": "session.export.discard",
+      "summary": "Retire classic export custody on the current owner, preserving retryable physical cleanup.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClassicExportDiscardParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClassicExportDiscardResult"
+        }
+      }
+    },
+    {
+      "name": "session.export.read",
+      "summary": "Read exact retained classic export status or bytes through current owner authorization.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClassicExportReadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClassicExportReadResult"
+        }
+      }
+    },
+    {
+      "name": "session.info",
+      "summary": "Frozen launch policy projection of one local session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalSessionInfoParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalSessionInfo"
+        }
+      }
+    },
+    {
+      "name": "session.mutate",
+      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, compress, import).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionMutateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionMutateResult"
+        }
+      }
+    },
+    {
+      "name": "worker.adopt",
+      "summary": "Adopt a registered execution after verifying the live producer claim.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkerScopeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkerExecution"
+        }
+      }
+    },
+    {
+      "name": "worker.persist",
+      "summary": "Sequence-fenced typed persistence write from an adopted worker.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkerPersistParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkerPersistResult"
+        }
+      }
+    },
+    {
+      "name": "worker.register",
+      "summary": "Register a compute worker execution on an idle session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkerRegisterParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkerExecution"
+        }
+      }
+    }
+  ],
   "x-server-requests": [
     {
       "name": "approval",

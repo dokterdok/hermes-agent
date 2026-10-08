@@ -29,6 +29,7 @@ class PromptSubmitParams(SessionParams):
     consent: ``confirm_truncate`` plus one durable target (``truncate_before_row_id`` preferred,
     ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``)."""
 
+    classic_export: dict[str, JsonValue] | None = None
     text: JsonValue = ""
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note

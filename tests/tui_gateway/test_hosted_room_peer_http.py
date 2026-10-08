@@ -273,9 +273,11 @@ def test_failover_transport_stops_retained_run_without_replaying_dispatch(peer_s
         route=route, client=wrapped, task_id=dispatch["task_id"],
         execution_generation=dispatch["execution_generation"])
     coords = dict(profile=route.target_profile, session_id=accepted["session_id"], source="bot_room")
-    assert transport.interrupt(**coords, expected_task_id="another-task", expected_execution_generation=dispatch["execution_generation"]) is None
+    assert transport.interrupt(**coords, expected_task_id="another-task",
+        expected_execution_generation=dispatch["execution_generation"]) is None
     assert FakePeer.runs[accepted["run_id"]]["status"] == "running"
-    stopped = transport.interrupt(**coords, expected_task_id=dispatch["task_id"], expected_execution_generation=dispatch["execution_generation"])
+    stopped = transport.interrupt(**coords, expected_task_id=dispatch["task_id"],
+        expected_execution_generation=dispatch["execution_generation"])
     assert stopped is not None and stopped["status"] == "stopping"
     assert FakePeer.runs[accepted["run_id"]]["status"] == "cancelled"
     assert len(FakePeer.idempotency) == 1
@@ -638,10 +640,10 @@ def test_invalid_room_dispatch_http_403_is_definitively_not_admitted(monkeypatch
 
 
 @pytest.mark.parametrize("status,definite", [
-    (400, True), (401, True), (403, True), (404, True), (408, True), (422, True), (425, True),
-    (429, True), (409, False),
+    (400, True), (401, True), (403, True), (404, True), (408, False), (422, True), (425, False),
+    (429, False), (409, False),
 ])
-def test_only_an_idempotency_conflict_leaves_an_admission_refusal_uncertain(
+def test_conflicts_and_temporary_refusals_leave_admission_uncertain(
         monkeypatch, status, definite):
     def rejected(*args, **kwargs):
         raise urllib.error.HTTPError("https://peer.example.test/v1/runs", status, "refused", {},

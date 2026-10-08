@@ -6,7 +6,8 @@ import re
 import time
 
 from gateway.hosted_room_attachments import default_attachment_root
-from gateway.session_ingress_media import _media_root, _file_identity, _held_media_paths, _held_file_identities, _sync_directory
+from gateway.session_ingress_media import _media_root, _file_identity, _held_media_paths, _held_file_identities
+from gateway.hosted_room_input_cleanup import remove_sealed_copy
 from hermes_state_input_custody import copy_is_held, seal_copy
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
@@ -120,6 +121,12 @@ def _collect(db, *, epoch, limit, namespace):
                 continue  # Uncertain bytes/identity never authorize deletion.
         return selected, len(rows)
     selected, scanned = db._execute_write(seal)  # Seal MUST commit before the first unlink.
+    removed = _remove_selected_copies(db, epoch=epoch, selected=selected)
+    return {'scanned': scanned, 'sealed': len(selected), 'removed': removed}
+
+
+def _remove_selected_copies(db, *, epoch, selected):
+    """Drain only committed seals, rechecking live custody on the accepting writer."""
     removed = 0
     for copy_id, generation in selected:
         def unlink(conn):
@@ -130,18 +137,23 @@ def _collect(db, *, epoch, limit, namespace):
             path = copy_path(db, row)
             if copy_is_held(conn, row, time.time()) or _external_holds(conn, db, row, path, time.time()):
                 return 0
-            if path.exists() or path.is_symlink():
-                if verified_identity(path, row['digest'], row['size']) != (row['device'], row['inode']):
-                    return 0
-                path.unlink()
-                _sync_directory(path.parent)
+            if not remove_sealed_copy(path, row):
+                return 0
             conn.execute("UPDATE input_custody_copies SET state='removed' WHERE copy_id=?", (copy_id,))
+            # A legacy native release uses this row only as a crash journal.
+            # Indexed preparations/receipts keep their generation evidence.
+            if row['namespace'] == 'native':
+                conn.execute('''DELETE FROM input_custody_copies WHERE copy_id=? AND state='removed'
+                    AND NOT EXISTS(SELECT 1 FROM input_custody_items WHERE copy_id=?)
+                    AND NOT EXISTS(SELECT 1 FROM input_custody_native_items WHERE copy_id=?)
+                    AND NOT EXISTS(SELECT 1 FROM input_custody_refs WHERE copy_id=?)
+                    AND NOT EXISTS(SELECT 1 FROM input_custody_branch_refs WHERE copy_id=?)''', (copy_id,) * 5)
             return 1
         try:
             removed += db._execute_write(unlink)
         except (OSError, ValueError):
             continue  # The earlier committed seal survives; a later pass can finish.
-    return {'scanned': scanned, 'sealed': len(selected), 'removed': removed}
+    return removed
 
 
 def collect_working_copies(db, *, epoch, limit=64):

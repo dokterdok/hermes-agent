@@ -1,10 +1,10 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configureWindowsGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
 import { mintGatewayTicketWithPython } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
-configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
+configurePythonGatewayTicketClient(async (endpoint, purpose) => {
   const backend = await ensureRuntime(await resolveHermesBackend([]), () => undefined)
 
   if (backend.kind !== 'python' || backend.shell) {
@@ -16419,29 +16419,23 @@ async function handleHermesApiRequest(request) {
 
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-    if (connection.gatewayEndpoint) {
-      response = await redialLocalGateway({
-        ensure: () => ensureBackend(routeProfile),
-        forget: current => forgetLocalGatewayDescriptor(routeProfile, current.gatewayEndpoint),
-        use: current => fetchJson(`${current.baseUrl}${apiRoute.requestPath}`, current.token, {
-          method: request?.method,
-          body: request?.body,
-          upload: request?.upload,
-          timeoutMs,
-          gatewayDescriptor: current
+    // Main's shared transport for every descriptor: configured headers, a native
+    // gateway grant per attempt, and the OAuth bearer→cookie fallback that
+    // survives refresh failures and login races (requestWithOauthFallback).
+    const send = current => fetchJsonForBackend(current, apiRoute.requestPath, {
+      method: request?.method,
+      body: request?.body,
+      upload: request?.upload,
+      timeoutMs
+    })
+
+    response = connection.gatewayEndpoint
+      ? await redialLocalGateway({
+          ensure: () => ensureBackend(routeProfile),
+          forget: current => forgetLocalGatewayDescriptor(routeProfile, current.gatewayEndpoint),
+          use: send
         })
-      })
-    } else {
-      // Remote URL / cloud / SSH: main's shared transport — configured remote
-      // headers, and the OAuth bearer→cookie fallback that survives refresh
-      // failures and login races (requestWithOauthFallback).
-      response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
-        method: request?.method,
-        body: request?.body,
-        upload: request?.upload,
-        timeoutMs
-      })
-    }
+      : await send(connection)
   } catch (error) {
     // A failed rename PATCH must not strand the app on the temporary primary:
     // restore the original active profile and restart its backend.

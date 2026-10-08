@@ -699,10 +699,14 @@ class RunIdempotencyStore:
         with self._lock:
             return retained(self._conn, claims) is not None
 
-    def room_lineage_origin(self, claims):
+    def _invitation_origin_locked(self, claims, previous):
+        """Read the validated origin inside commit_room_invitation's locked grant callback."""
         from gateway.platforms.api_server_room_origins import retained
-        with self._lock:
-            return retained(self._conn, claims)[0]
+        from gateway.platforms.api_server_run_authority import origin_home, room_authority
+        current = retained(self._conn, claims)
+        predecessor = {**claims, **previous} if previous is not None else claims
+        return current[0] if current is not None else origin_home(
+            self._conn, room_authority(predecessor), predecessor["home_install_id"])
 
     def knows_room_authority(self, authority):
         from gateway.platforms.api_server_run_authority import canonical

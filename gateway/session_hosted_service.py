@@ -203,6 +203,15 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
             from gateway.session_hosted_output_owner import attest_output_action
             result.update(attest_output_action(self, room_id, member, profile, operation, params))
             return result
+        if operation == 'approve':
+            from gateway.hosted_room_approval import require_current_approval
+            task = params.get('task')
+            if not isinstance(task, dict) or task.get('room_id') != room_id:
+                raise RuntimeStoreError('permission_denied')
+            current = require_current_approval(self, room_id, member, task.get('task_id'),
+                                               params.get('execution_generation'))
+            if asdict(current['identity']) != task:
+                raise RuntimeStoreError('permission_denied')
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -309,7 +318,9 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
 
     def status(self, room_id=None):
         from gateway import session_group_peer_cleanup as cleanup
+        from gateway import hosted_room_retirement as retirement
         result = {**super().status(room_id), 'peer_cleanup': cleanup.status(self.db_path, room_id),
+                  'peer_retirements': retirement.status(self.db_path, room_id) if room_id else [],
                   'retiring': self.is_retiring(room_id) if room_id is not None else False,
                   'replication': self.replication.status(room_id)}
         if room_id is not None:

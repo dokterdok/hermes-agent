@@ -17,10 +17,19 @@ it('rebuilds --max-turns from the launcher environment as the integer the sessio
   const options = localCreationOptions({ HERMES_TUI_MAX_TURNS: '5', HERMES_MODEL: 'local-model' } as NodeJS.ProcessEnv)
   expect(options.max_turns).toBe(5)
   expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('max_turns')
+  // The pre-gateway "unlimited" spellings reach session.create as values the policy reads, never NaN/null.
+  const wire = (value: string) => JSON.parse(JSON.stringify(localCreationOptions({ HERMES_TUI_MAX_TURNS: value } as NodeJS.ProcessEnv))).max_turns
+  expect(['0', '-1', 'none', 'unlimited'].map(wire)).toEqual([0, -1, 'none', 'unlimited'])
 })
 
 it('carries `hermes --tui --yolo` (HERMES_YOLO_MODE) onto session.create as the frozen launch flag', () => {
   expect(localCreationOptions({ HERMES_YOLO_MODE: '1' } as NodeJS.ProcessEnv).yolo).toBe(true)
   expect(localCreationOptions({ HERMES_YOLO_MODE: '0' } as NodeJS.ProcessEnv)).not.toHaveProperty('yolo')
   expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('yolo')
+})
+
+it('carries `hermes --tui --ignore-rules` (HERMES_IGNORE_RULES) onto session.create as the frozen launch flag', () => {
+  expect(localCreationOptions({ HERMES_IGNORE_RULES: '1' } as NodeJS.ProcessEnv).ignore_rules).toBe(true)
+  expect(localCreationOptions({ HERMES_IGNORE_RULES: '0' } as NodeJS.ProcessEnv)).not.toHaveProperty('ignore_rules')
+  expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('ignore_rules')
 })

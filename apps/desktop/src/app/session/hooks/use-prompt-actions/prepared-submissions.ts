@@ -20,6 +20,8 @@ export interface PreparedSubmission {
 }
 
 const snapshots = new WeakMap<PreparedSubmission, string>()
+// An admission remains spent in this window even if both durable ACK and cleanup writes fail.
+// A later identical Send must receive a new identity, never reuse that delivered admission.
 const acknowledged = new Set<string>()
 const recoverySelection = new Map<string, string>()
 
@@ -56,11 +58,10 @@ export async function listPreparedDrafts(target: string, scopeKey: string) {
     if (!entry || typeof entry.id !== 'string' || typeof entry.text !== 'string' || !Array.isArray(entry.attachments)) {return []}
     const [scope, session, text, , displayKind, fromQueue, submissionId] = JSON.parse(entry.journal?.lookup ?? key)
 
-    // Restoring an ordinary draft must recreate its exact retry key. Queue and
-    // slash submissions own their recovery. Historical slash keys intentionally
-    // omit submissionId, so the retained invocation must also be excluded.
+    // The lookup stores the original composer input, including raw slash invocations.
+    // The entry keeps its frozen expansion; hidden, queued and explicit-ID inputs
+    // retain their separate recovery paths.
     return scope === scopeKey && session === target && !displayKind && !fromQueue && !submissionId &&
-      !String(text).trimStart().startsWith('/') &&
       !entry.legacyAttempted && !entry.acknowledged && !acknowledged.has(key)
       ? [{ key, text: String(text), attachments: entry.attachments, expected: JSON.stringify(entry) }]
       : []
