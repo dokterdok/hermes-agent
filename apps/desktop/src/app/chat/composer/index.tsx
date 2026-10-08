@@ -16,9 +16,8 @@ import type { GatewayRequester } from '@/app/contrib/types'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
-import { $chatOnboardingSolo, $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
+import { useSetupChatView } from '@/components/onboarding-chat/assembly'
 import { OnboardingSkip } from '@/components/onboarding-chat/skip'
-import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
@@ -28,14 +27,13 @@ import { triggerHaptic } from '@/lib/haptics'
 import { isMacPlatform } from '@/lib/platform'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
-import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
+import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
-import { notifyError } from '@/store/notifications'
+import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -46,9 +44,12 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { deriveBusySubmitState } from './busy-submit-state'
+import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
+  composerInputWidthClass,
   implicitSlashAcceptIndex,
   liveComposerDraft,
   type QueueEditState,
@@ -56,10 +57,9 @@ import {
   slashArgStage
 } from './composer-utils'
 import { ContextMenu } from './context-menu'
-import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
+import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
-import { discardLostPrompt } from './discard-lost-prompt'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
@@ -80,14 +80,16 @@ import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useEmojiCompletions } from './hooks/use-emoji-completions'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
+import { useMiddlewareSubmit } from './hooks/use-middleware-submit'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
+import { LocalSetupCard } from './local-setup-card'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { PreparedImageRecovery } from './prepared-image-recovery'
-import { QueuePanel } from './queue-panel'
+import { renderComposerQueueSlot } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
@@ -122,8 +124,10 @@ export function ChatBar({
   cwd,
   disabled,
   focusKey,
+  freshDraftKey,
   gateway,
   maxRecordingSeconds = 120,
+  profile,
   queueSessionKey,
   sessionId,
   state,
@@ -151,42 +155,8 @@ export function ChatBar({
     workspaceTransfer: hudWindowing?.workspaceTransfer === true
   })
 
-  // Typed stop phrase during an active voice conversation ends it — same
-  // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
-  // end control. Populated after useComposerVoice below (the submit wrapper
-  // is created first); render-time assignment keeps the ref current.
-  const voiceStopRef = useRef<{ active: boolean; end: () => void }>({ active: false, end: () => {} })
-
-  // Every send (typed, queued, voice) passes through the contributed
-  // middleware chain first — rewrite / pass-through / cancel. Empty chain =
-  // exact pass-through, so surfaces without contributions are byte-identical.
-  const onSubmit = useCallback<ChatBarProps['onSubmit']>(
-    async (value, options) => {
-      // Bare stop phrase typed while the voice conversation is live: end the
-      // conversation (mic off, pill dismissed) instead of sending "stop" to
-      // the agent. Spoken transcripts are already stop-checked inside
-      // use-voice-conversation, so this only catches typed/queued sends.
-      // Outside a voice conversation, typed "stop" is a normal message.
-      const voiceStop = voiceStopRef.current
-
-      if (interceptsTypedVoiceStop(voiceStop.active, value, options?.attachments?.length ?? 0)) {
-        voiceStop.end()
-
-        // Consumed (not rejected): report accepted so the submit engine
-        // clears the draft instead of restoring "stop" into the composer.
-        return true
-      }
-
-      const draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
-
-      if (!draft) {
-        return false
-      }
-
-      return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })
-    },
-    [onSubmitProp]
-  )
+  // Voice-stop interception + contributed middleware wrap every send.
+  const { onSubmit, voiceStopRef } = useMiddlewareSubmit(onSubmitProp)
 
   // Which live composer this instance IS (main | tile) — its attachment set,
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
@@ -207,11 +177,8 @@ export function ChatBar({
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
-  // Parked on an approval/sudo/secret prompt: typing can't answer those, so the
-  // busy submit routes text to the queue instead of a steer (which would sit
-  // undelivered behind the blocked tool batch). Drives the button affordance.
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
-  const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
   const codingDrawerId = useId()
@@ -234,10 +201,10 @@ export function ChatBar({
 
   // The guide uses the setup profile's inference route; the model pill and
   // git controls would expose settings unrelated to its conversational steps.
-  // Solo covers startup before the guide's session ids are known.
-  const onboardingThreadIds = useStore($chatOnboardingThreadIds)
+  // Solo covers startup before the guide's session ids are known. Once the intro has ended the setup
+  // chat is a normal chat again.
+  const guidedChat = useSetupChatView()
   const chatOnboardingSolo = useStore($chatOnboardingSolo)
-  const guidedChat = chatOnboardingSolo || (sessionId != null && onboardingThreadIds.includes(sessionId))
   // The git row (branch / worktree / PR / review) is the coding instrument the
   // guide already hides; Simple mode hides it for the same reason, everywhere.
   const showsAdvancedChrome = useStore($showsAdvancedChrome)
@@ -296,6 +263,7 @@ export function ChatBar({
   const slash = useSlashCompletions({
     activeSkin: themeName,
     gateway: gateway ?? null,
+    profile: profile ?? null,
     sessionId: sessionId ?? null,
     skinThemes: availableThemes
   })
@@ -313,6 +281,7 @@ export function ChatBar({
   const {
     activeQueueSessionKeyRef,
     clearDraft,
+    draftScopeRef,
     draftRef,
     editorRef,
     focusInput,
@@ -377,6 +346,7 @@ export function ChatBar({
   // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
   const {
     beginQueuedEdit,
+    deliverQueuedNow,
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
@@ -429,22 +399,16 @@ export function ChatBar({
 
   const hasComposerPayload = hasText || attachments.length > 0
 
-  const canSubmit =
-    (busy || hasComposerPayload) &&
-    !(busy && isSteerableText && attachments.length === 0 && !compacting && !blockingPrompt && busyInputMode === null)
-
-  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
-  // into a tool result) and never for a slash command (those execute inline).
-  // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
-  // is parked on the user, so a steer can't reach the model — text queues.
-  const canSteer = busy && !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
-
-  // Ordinary busy Send follows backend policy; attachments queue and empty stops.
-  const busyAction: 'interrupt' | 'steer' | 'queue' | 'stop' = canSteer
-    ? (busyInputMode ?? 'interrupt')
-    : compacting || hasComposerPayload
-      ? 'queue'
-      : 'stop'
+  const { busyAction, canSteer, canSubmit } = deriveBusySubmitState({
+    attachmentCount: attachments.length,
+    blockingPrompt,
+    busy,
+    busyInputMode,
+    compacting,
+    hasComposerPayload,
+    hasSteerHandler: !!onSteer,
+    isSteerableText
+  })
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
@@ -454,9 +418,9 @@ export function ChatBar({
     activeQueueSessionKeyRef,
     attachments,
     busy,
-    compacting,
     clearDraft,
     disabled,
+    draftScopeRef,
     draftRef,
     drainNextQueued,
     editorRef,
@@ -1038,8 +1002,9 @@ export function ChatBar({
       }
 
       // Empty Enter while busy. With prompts queued this is the double-send:
-      // the first Enter put the words in the queue, a second sends them now
-      // (promote + interrupt + drain on settle), mirroring the idle empty-Enter
+      // the first Enter put the words in the queue, a second delivers them
+      // now — steered into the live turn when a steer can carry them, else
+      // promote + interrupt + drain on settle — mirroring the idle empty-Enter
       // drain above. With nothing queued it stays a no-op — interrupting is
       // explicit (Stop/Esc), never a stray Enter after sending. Gate on the live
       // DOM payload (not the render-lagged composer state) so a message typed
@@ -1049,7 +1014,7 @@ export function ChatBar({
         const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
 
         if (head) {
-          sendQueuedNow(head.id)
+          void deliverQueuedNow(head.id)
         }
 
         return
@@ -1171,7 +1136,7 @@ export function ChatBar({
       foldVoice={foldVoice}
       hasComposerPayload={hasComposerPayload}
       hideModelPill={guidedChat}
-      minimal={minimal}
+      minimal={minimal || chatOnboardingSolo}
       onDictate={dictate}
       onQueue={queueDraft}
       onSteer={canSteer ? () => steerDraft('steer') : undefined}
@@ -1181,8 +1146,10 @@ export function ChatBar({
     />
   )
 
+  const inputWidthClass = composerInputWidthClass(stacked)
+
   const input = (
-    <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
+    <div className={cn('relative', inputWidthClass)}>
       <div
         aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
@@ -1194,7 +1161,7 @@ export function ChatBar({
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           '**:data-ref-text:cursor-default',
           stacked && 'pl-3',
-          stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1',
+          inputWidthClass,
           // Inside the native Wayland HUD drag region: a drag region swallows
           // the page's mouse input whole, so the input must opt back out or it
           // becomes unclickable. Buttons use the global no-drag rule.
@@ -1288,26 +1255,7 @@ export function ChatBar({
 
   return (
     <>
-      {dragging && poppedOut && (
-        <div
-          aria-hidden
-          // `absolute`, not `fixed`: anchor to the chat-column root (the same
-          // `relative isolate` container the docked composer centers in) so the
-          // glow spans the thread area only — never the full viewport / under the
-          // sidebar. The dock target IS the docked position, so they must share
-          // a containing block.
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32"
-          style={{
-            // A bottom-centered radial glow — soft on every side by construction,
-            // so it reads as the dock target without any hard band edges. Its
-            // intensity tracks how close the composer is to the dock (1 = peak).
-            background:
-              'radial-gradient(64% 130% at 50% 100%, color-mix(in srgb, var(--color-primary) 26%, transparent) 0%, transparent 70%)',
-            // Scaled by --dock-glow-scale (lower in light mode — see styles.css).
-            opacity: `calc(${0.1 + dockProximity * 0.57} * var(--dock-glow-scale, 1))`
-          }}
-        />
-      )}
+      {dragging && poppedOut && <ComposerDockGlow dockProximity={dockProximity} />}
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         {/* Dock column: owns the composer's POSITION and stacks, bottom-up,
             [micro actions] · [status stack] · [composer] · [underside].
@@ -1362,41 +1310,21 @@ export function ChatBar({
           <StatusDrawerContent collapsed={statusDrawerCollapsed} id={statusDrawerId}>
             <ComposerStatusStack
               onSubmit={onSubmit}
-              queue={
-                activeQueueSessionKey && queuedPrompts.length > 0 ? (
-                  <QueuePanel
-                    busy={busy}
-                    editingId={queueEdit?.entryId ?? null}
-                    entries={queuedPrompts}
-                    onDelete={id => {
-                      if (removeQueuedPrompt(activeQueueSessionKey, id) && queueEdit?.entryId === id) {
-                        exitQueuedEdit('cancel')
-                      }
-                    }}
-                    onDiscardLost={gateway ? id => {
-                      // Server-owned row: the authority's pending fanout retires it
-                      // from the queue once the acknowledgement commits. Canonical
-                      // local sessions key the queue by their own session id, so the
-                      // stored key stands in when the runtime id is not bound yet.
-                      discardLostPrompt(sessionId, activeQueueSessionKey, id, gateway.request.bind(gateway))
-                        .catch((error: unknown) => notifyError(error, t.composer.queueLostDiscard))
-                    } : undefined}
-                    onEdit={beginQueuedEdit}
-                    onResume={() => {
-                      unparkQueuedPrompts(activeQueueSessionKey)
-
-                      // Idle → kick the head immediately; busy → the settle drain
-                      // takes over now that the park is lifted.
-                      if (!busy) {
-                        void drainNextQueued()
-                      }
-                    }}
-                    onSendNow={id => void sendQueuedNow(id)}
-                    onSteerNow={id => void steerQueuedNow(id)}
-                    parked={queueParked}
-                  />
-                ) : null
-              }
+              queue={renderComposerQueueSlot({
+                activeQueueSessionKey,
+                beginQueuedEdit,
+                busy,
+                drainNextQueued,
+                exitQueuedEdit,
+                gateway,
+                queueEdit,
+                queueParked,
+                queuedPrompts,
+                sendQueuedNow,
+                sessionId,
+                steerQueuedNow,
+                t
+              })}
               sessionId={statusSessionId}
             />
           </StatusDrawerContent>
@@ -1424,7 +1352,32 @@ export function ChatBar({
             onDragOver={handleDragOver}
             onDrop={handleDrop}
             onPointerDown={!hudMode && popoutAllowed ? onComposerGesturePointerDown : undefined}
-            onPointerDownCapture={hudMode ? onHudDragPointerDown : undefined}
+            onPointerDownCapture={event => {
+              if (hudMode) {
+                onHudDragPointerDown(event)
+              }
+
+              // The Send button's `disabled` gate derives from AUI composer
+              // state (`hasComposerPayload` → `canSubmit`), which lags the
+              // contentEditable by the coalesced per-frame flush — the same
+              // seam Enter guards against by reading the live DOM (#39630).
+              // Chromium resolves a click's target from the press's
+              // hit-test, and a disabled button (pointer-events-none) drops
+              // the whole press: no mousedown, no click, no form submit, no
+              // feedback. The button reads dead while Enter still sends, for
+              // exactly as long as the flush is stalled — a frame on a fast
+              // machine, seconds under main-thread pressure (#52950). Sync
+              // the live editor into composer state at the top of the press
+              // (React flushes discrete-event updates before the browser
+              // dispatches mousedown), so the gate is open when the click
+              // hit-tests. Mid-IME-composition the DOM holds uncommitted
+              // preedit — compositionend owns that flush, so skip.
+              if (composingRef.current) {
+                return
+              }
+
+              syncDraftFromEditor()
+            }}
             onSubmit={e => {
               e.preventDefault()
 
@@ -1530,32 +1483,10 @@ export function ChatBar({
                     onUndone={clearDraft}
                     readLiveText={syncDraftFromEditor}
                   />
+                  <LocalSetupCard busy={busy} guidedChat={guidedChat} />
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
-                  {queueEdit && editingQueuedPrompt && (
-                    <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
-                      <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">
-                        {t.composer.editingQueuedInComposer}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <Button
-                          className="h-6 rounded-md px-2 text-[0.68rem]"
-                          onClick={() => exitQueuedEdit('cancel')}
-                          type="button"
-                          variant="ghost"
-                        >
-                          {t.common.cancel}
-                        </Button>
-                        <Button
-                          className="h-6 rounded-md px-2 text-[0.68rem]"
-                          onClick={() => exitQueuedEdit('save')}
-                          type="button"
-                        >
-                          {t.common.save}
-                        </Button>
-                      </div>
-                    </div>
-                  )}
+                  {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
                   <div
                     className={cn(

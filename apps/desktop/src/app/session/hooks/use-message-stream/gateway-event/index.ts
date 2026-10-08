@@ -18,6 +18,7 @@ import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
 import { handleDesktopBridgeEvent } from './desktop-bridge'
+import { handleFreeTierEvent } from './free-tier'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageStreamEvent } from './message-stream'
@@ -82,6 +83,7 @@ const PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES = new Set([
 // whether it did, so dispatch stops at the first taker.
 const HANDLERS: GatewayEventHandler[] = [
   handleLifecycleEvent,
+  handleFreeTierEvent,
   handleSessionInfoEvent,
   handleControlEvent,
   handleMessageStreamEvent,
@@ -90,6 +92,49 @@ const HANDLERS: GatewayEventHandler[] = [
   handleDesktopBridgeEvent,
   handleStatusEvent
 ]
+
+type ExecutionAuthorities = Parameters<typeof acceptExecutionEvent>[0]
+
+/** The event's own timestamp (epoch seconds) when finite, else now. */
+function gatewayEventOccurredAt(payload: GatewayEventPayload | undefined): number {
+  return typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
+    ? payload.timestamp
+    : Date.now() / 1000
+}
+
+/** Fence the event against the session's claimed execution. Returns false
+ *  when a stamped late frame must be dropped; an accepted newer owner
+ *  start/snapshot retires the previous execution's interrupted latch. */
+function admitExecutionEvent(
+  authorities: ExecutionAuthorities,
+  event: GatewayEvent,
+  sessionId: null | string,
+  deps: GatewayEventDeps
+): boolean {
+  const authorityKey = `${registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null)}\u0000${sessionId}`
+
+  const previousAuthority = authorities.get(authorityKey)
+
+  if (sessionId && !acceptExecutionEvent(authorities, authorityKey, event.type, event)) {
+    return false
+  }
+
+  const authority = authorities.get(authorityKey)
+
+  if (
+    sessionId &&
+    previousAuthority &&
+    authority &&
+    !authority.terminal &&
+    (authority.epoch !== previousAuthority.epoch || authority.generation > previousAuthority.generation)
+  ) {
+    // Stop belongs to the cancelled execution, not the shared session.
+    // Only an accepted newer owner start/snapshot may retire its latch.
+    deps.updateSessionState(sessionId, state => (state.interrupted ? { ...state, interrupted: false } : state))
+  }
+
+  return true
+}
 
 /** The gateway-event dispatcher, extracted from useMessageStream. */
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
@@ -150,10 +195,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
           registryBackendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
 
-      const occurredAt =
-        typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
-          ? payload.timestamp
-          : Date.now() / 1000
+      const occurredAt = gatewayEventOccurredAt(payload)
 
       const explicitSid = event.session_id || ''
 
@@ -171,19 +213,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       const sessionId = route.sessionId
-      const authorityKey = `${registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null)}\u0000${sessionId}`
 
-      const previousAuthority = executionAuthorities.current.get(authorityKey)
-
-      if (sessionId && !acceptExecutionEvent(executionAuthorities.current, authorityKey, event.type, event)) {return}
-
-      const authority = executionAuthorities.current.get(authorityKey)
-
-      if (sessionId && previousAuthority && authority && !authority.terminal &&
-          (authority.epoch !== previousAuthority.epoch || authority.generation > previousAuthority.generation)) {
-        // Stop belongs to the cancelled execution, not the shared session.
-        // Only an accepted newer owner start/snapshot may retire its latch.
-        deps.updateSessionState(sessionId, state => state.interrupted ? { ...state, interrupted: false } : state)
+      if (!admitExecutionEvent(executionAuthorities.current, event, sessionId, deps)) {
+        return
       }
 
       // Late stragglers: an unscoped stream event attributed via the
