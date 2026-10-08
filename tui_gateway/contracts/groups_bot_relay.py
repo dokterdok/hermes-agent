@@ -697,11 +697,11 @@ class GroupsReplicationRevokeResult(Result):
     state: str
 
 
-method('groups.replication.prepare', params=GroupsReplicationPrepareParams, result=GroupsReplicationPrepareResult,
+canonical_method('groups.replication.prepare', params=GroupsReplicationPrepareParams, result=GroupsReplicationPrepareResult,
        doc='Prepare public retirement verification material for an opted-in participant copy.')
-method('groups.replication.enroll', params=GroupsReplicationEnrollParams, result=GroupsReplicationEnrollResult,
+canonical_method('groups.replication.enroll', params=GroupsReplicationEnrollParams, result=GroupsReplicationEnrollResult,
        doc='The participant operator enrolls retirement of one exact passive copy.')
-method('groups.replication.revoke', params=GroupsReplicationRevokeParams, result=GroupsReplicationRevokeResult,
+canonical_method('groups.replication.revoke', params=GroupsReplicationRevokeParams, result=GroupsReplicationRevokeResult,
        doc='The participant operator withdraws one copy-retirement enrollment.')
 
 
@@ -868,17 +868,17 @@ class GroupsCustodyAutomaticResult(Result):
     pending: bool
 
 
-method("groups.custody.status", params=GroupsCustodyStatusParams, result=GroupsCustodyStatusResult,
+canonical_method("groups.custody.status", params=GroupsCustodyStatusParams, result=GroupsCustodyStatusResult,
        doc="Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk.")
-method("groups.custody.designate", params=GroupsCustodyDesignateParams, result=GroupsCustodyDesignateResult,
+canonical_method("groups.custody.designate", params=GroupsCustodyDesignateParams, result=GroupsCustodyDesignateResult,
        doc="The room owner designates (or not) one custodian to continue the group; its operator must allow it.")
-method("groups.custody.add", params=GroupsCustodyAddParams, result=GroupsCustodyChangeResult,
+canonical_method("groups.custody.add", params=GroupsCustodyAddParams, result=GroupsCustodyChangeResult,
        doc="Add an installation that keeps the room's history without a Bot, after a live scoped probe.")
-method("groups.custody.remove", params=GroupsCustodyRemoveParams, result=GroupsCustodyChangeResult,
+canonical_method("groups.custody.remove", params=GroupsCustodyRemoveParams, result=GroupsCustodyChangeResult,
        doc="Stop keeping a copy on one custodian-only installation.")
-method("groups.custody.allow", params=GroupsCustodyAllowParams, result=GroupsCustodyAllowResult,
+canonical_method("groups.custody.allow", params=GroupsCustodyAllowParams, result=GroupsCustodyAllowResult,
        doc="On a member installation: allow (or not) the room owner to continue the group here.")
-method("groups.custody.automatic", params=GroupsCustodyAutomaticParams, result=GroupsCustodyAutomaticResult,
+canonical_method("groups.custody.automatic", params=GroupsCustodyAutomaticParams, result=GroupsCustodyAutomaticResult,
        doc="On the host: the room owner (or the operator) lets the group move by itself, or asks first.")
 
 
@@ -1174,27 +1174,27 @@ class GroupsSuccessionHandoverAllResult(Result):
     reason: str
 
 
-method("groups.succession.status", params=GroupsSuccessionStatusParams, result=GroupsSuccessionStatusResult,
+canonical_method("groups.succession.status", params=GroupsSuccessionStatusParams, result=GroupsSuccessionStatusResult,
        doc="Whether the group's host can be reached from this computer, and what the owner may do.")
-method("groups.succession.prepare", params=GroupsSuccessionPrepareParams, result=GroupsSuccessionPrepareResult,
+canonical_method("groups.succession.prepare", params=GroupsSuccessionPrepareParams, result=GroupsSuccessionPrepareResult,
        doc="On the target computer: what continuing the group there would mean. Changes nothing.")
-method("groups.succession.promote", params=GroupsSuccessionPromoteParams, result=GroupsSuccessionStatusResult,
+canonical_method("groups.succession.promote", params=GroupsSuccessionPromoteParams, result=GroupsSuccessionStatusResult,
        doc="On the target computer: continue the group there, for its owner; returns the status (poll while moving).")
-method("groups.succession.keep", params=GroupsSuccessionKeepParams, result=GroupsSuccessionStatusResult,
+canonical_method("groups.succession.keep", params=GroupsSuccessionKeepParams, result=GroupsSuccessionStatusResult,
        doc="Resolve a group continued on two computers, from either one.")
-method("groups.succession.branch_log", params=GroupsSuccessionBranchLogParams, result=GroupsSuccessionBranchLogResult,
+canonical_method("groups.succession.branch_log", params=GroupsSuccessionBranchLogParams, result=GroupsSuccessionBranchLogResult,
        doc="Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape).")
-method("groups.succession.learn", params=GroupsSuccessionLearnParams, result=GroupsSuccessionLearnResult,
+canonical_method("groups.succession.learn", params=GroupsSuccessionLearnParams, result=GroupsSuccessionLearnResult,
        doc="Hand this computer the chain of later hosts; it verifies it with pinned keys and steps down if replaced.")
-method("groups.succession.move", params=GroupsSuccessionMoveParams, result=GroupsSuccessionStatusResult,
+canonical_method("groups.succession.move", params=GroupsSuccessionMoveParams, result=GroupsSuccessionStatusResult,
        doc="On the host, for the owner: hand the group over to a successor (signed handover), once the "
            "replies in progress finish.")
-method("groups.succession.move_now", params=GroupsSuccessionMoveNowParams, result=GroupsSuccessionStatusResult,
+canonical_method("groups.succession.move_now", params=GroupsSuccessionMoveNowParams, result=GroupsSuccessionStatusResult,
        doc="On the host, for the owner: hand over a group waiting for its replies at once; those show as unknown.")
-method("groups.succession.continue_anyway", params=GroupsSuccessionContinueAnywayParams,
+canonical_method("groups.succession.continue_anyway", params=GroupsSuccessionContinueAnywayParams,
        result=GroupsSuccessionStatusResult,
        doc="On a host paused to stay safe, for the owner: continue it here anyway.")
-method("groups.succession.handover_all", params=GroupsSuccessionHandoverAllParams,
+canonical_method("groups.succession.handover_all", params=GroupsSuccessionHandoverAllParams,
        result=GroupsSuccessionHandoverAllResult,
        doc="Hand every group this computer hosts to its best reachable standby (Desktop's sleep hook).")
 

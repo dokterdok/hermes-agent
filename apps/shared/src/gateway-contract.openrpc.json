@@ -1159,114 +1159,6 @@
       }
     },
     {
-      "name": "groups.custody.add",
-      "summary": "Add an installation that keeps the room's history without a Bot, after a live scoped probe.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyAddParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.allow",
-      "summary": "On a member installation: allow (or not) the room owner to continue the group here.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyAllowParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyAllowResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.automatic",
-      "summary": "On the host: the room owner (or the operator) lets the group move by itself, or asks first.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyAutomaticParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyAutomaticResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.designate",
-      "summary": "The room owner designates (or not) one custodian to continue the group; its operator must allow it.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyDesignateParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyDesignateResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.remove",
-      "summary": "Stop keeping a copy on one custodian-only installation.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyRemoveParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
-        }
-      }
-    },
-    {
-      "name": "groups.custody.status",
-      "summary": "Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsCustodyStatusParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsCustodyStatusResult"
-        }
-      }
-    },
-    {
       "name": "groups.demote",
       "summary": "Fence this gateway's stale room authority against a proven newer epoch. Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists.",
       "params": [
@@ -1501,60 +1393,6 @@
       }
     },
     {
-      "name": "groups.replication.enroll",
-      "summary": "The participant operator enrolls retirement of one exact passive copy.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsReplicationEnrollParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsReplicationEnrollResult"
-        }
-      }
-    },
-    {
-      "name": "groups.replication.prepare",
-      "summary": "Prepare public retirement verification material for an opted-in participant copy.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsReplicationPrepareParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsReplicationPrepareResult"
-        }
-      }
-    },
-    {
-      "name": "groups.replication.revoke",
-      "summary": "The participant operator withdraws one copy-retirement enrollment.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsReplicationRevokeParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsReplicationRevokeResult"
-        }
-      }
-    },
-    {
       "name": "groups.retry",
       "summary": "Retry one eligible room task; canonical controls require exact proven nonadmission.",
       "params": [
@@ -1623,186 +1461,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsStopResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.branch_log",
-      "summary": "Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionBranchLogParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionBranchLogResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.continue_anyway",
-      "summary": "On a host paused to stay safe, for the owner: continue it here anyway.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionContinueAnywayParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.handover_all",
-      "summary": "Hand every group this computer hosts to its best reachable standby (Desktop's sleep hook).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionHandoverAllParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionHandoverAllResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.keep",
-      "summary": "Resolve a group continued on two computers, from either one.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionKeepParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.learn",
-      "summary": "Hand this computer the chain of later hosts; it verifies it with pinned keys and steps down if replaced.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionLearnParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionLearnResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.move",
-      "summary": "On the host, for the owner: hand the group over to a successor (signed handover), once the replies in progress finish.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionMoveParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.move_now",
-      "summary": "On the host, for the owner: hand over a group waiting for its replies at once; those show as unknown.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionMoveNowParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.prepare",
-      "summary": "On the target computer: what continuing the group there would mean. Changes nothing.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionPrepareParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionPrepareResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.promote",
-      "summary": "On the target computer: continue the group there, for its owner; returns the status (poll while moving).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionPromoteParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
-        }
-      }
-    },
-    {
-      "name": "groups.succession.status",
-      "summary": "Whether the group's host can be reached from this computer, and what the owner may do.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsSuccessionStatusParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
         }
       }
     },
@@ -45322,6 +44980,114 @@
       }
     },
     {
+      "name": "groups.custody.add",
+      "summary": "Add an installation that keeps the room's history without a Bot, after a live scoped probe.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyAddParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.allow",
+      "summary": "On a member installation: allow (or not) the room owner to continue the group here.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyAllowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyAllowResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.automatic",
+      "summary": "On the host: the room owner (or the operator) lets the group move by itself, or asks first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyAutomaticParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyAutomaticResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.designate",
+      "summary": "The room owner designates (or not) one custodian to continue the group; its operator must allow it.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyDesignateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyDesignateResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.remove",
+      "summary": "Stop keeping a copy on one custodian-only installation.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyRemoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.status",
+      "summary": "Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyStatusResult"
+        }
+      }
+    },
+    {
       "name": "groups.discard",
       "summary": "Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.",
       "params": [
@@ -45336,6 +45102,240 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsDiscardResult"
+        }
+      }
+    },
+    {
+      "name": "groups.replication.enroll",
+      "summary": "The participant operator enrolls retirement of one exact passive copy.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsReplicationEnrollParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsReplicationEnrollResult"
+        }
+      }
+    },
+    {
+      "name": "groups.replication.prepare",
+      "summary": "Prepare public retirement verification material for an opted-in participant copy.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsReplicationPrepareParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsReplicationPrepareResult"
+        }
+      }
+    },
+    {
+      "name": "groups.replication.revoke",
+      "summary": "The participant operator withdraws one copy-retirement enrollment.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsReplicationRevokeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsReplicationRevokeResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.branch_log",
+      "summary": "Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionBranchLogParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionBranchLogResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.continue_anyway",
+      "summary": "On a host paused to stay safe, for the owner: continue it here anyway.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionContinueAnywayParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.handover_all",
+      "summary": "Hand every group this computer hosts to its best reachable standby (Desktop's sleep hook).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionHandoverAllParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionHandoverAllResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.keep",
+      "summary": "Resolve a group continued on two computers, from either one.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionKeepParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.learn",
+      "summary": "Hand this computer the chain of later hosts; it verifies it with pinned keys and steps down if replaced.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionLearnParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionLearnResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.move",
+      "summary": "On the host, for the owner: hand the group over to a successor (signed handover), once the replies in progress finish.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionMoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.move_now",
+      "summary": "On the host, for the owner: hand over a group waiting for its replies at once; those show as unknown.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionMoveNowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.prepare",
+      "summary": "On the target computer: what continuing the group there would mean. Changes nothing.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionPrepareParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionPrepareResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.promote",
+      "summary": "On the target computer: continue the group there, for its owner; returns the status (poll while moving).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionPromoteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.status",
+      "summary": "Whether the group's host can be reached from this computer, and what the owner may do.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
         }
       }
     },
