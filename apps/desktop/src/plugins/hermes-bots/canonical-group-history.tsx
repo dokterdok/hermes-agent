@@ -201,7 +201,7 @@ function rowText(
   member: CanonicalRoomMember | undefined
 ) {
   if (notice) {
-    return { system: false, text: notice }
+    return { system: true, text: notice, notice: true }
   }
 
   const activity: Record<string, string> = {
@@ -220,6 +220,7 @@ function rowText(
 
   return {
     system,
+    notice: false,
     text:
       suppliedText ||
       (system
@@ -286,7 +287,7 @@ export function CanonicalGroupHistory({
       ).map(event => {
         const { isBot, isHuman, member, name } = eventIdentity(event, members, labels)
 
-        const { system, text } = rowText(
+        const { system, text, notice: isNotice } = rowText(
           event,
           localizedNotice(event, labels, words, locale, computerName),
           labels,
@@ -331,7 +332,7 @@ export function CanonicalGroupHistory({
                     <p className={event.kind === 'turn.failed' ? 'text-destructive' : 'text-(--ui-text-tertiary)'}>
                       {text}
                     </p>
-                    <details className="mt-1 text-(--ui-text-quaternary)">
+                    {!isNotice && <details className="mt-1 text-(--ui-text-quaternary)">
                       <summary className="cursor-pointer">{labels.setupDetails}</summary>
                       <p className="mt-1 break-words font-mono text-[length:var(--conversation-tool-font-size)]">
                         {event.kind}
@@ -341,7 +342,7 @@ export function CanonicalGroupHistory({
                           {event.payload.error || event.payload.reason}
                         </p>
                       )}
-                    </details>
+                    </details>}
                   </div>
                 ) : (
                   <div className="select-text break-words text-[length:var(--conversation-text-font-size)] leading-(--conversation-line-height)">

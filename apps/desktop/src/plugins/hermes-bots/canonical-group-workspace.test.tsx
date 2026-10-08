@@ -1,4 +1,3 @@
-import type { ComponentProps } from 'react'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,6 +6,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
+import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const request = vi.hoisted(() => vi.fn())
@@ -106,6 +106,7 @@ it.each(['entire journal', 'read', 'owner', 'compareSend'])(
       compareSend,
       update
     }
+
     const desktop: Record<string, unknown> = { preparedSubmissions: native }
     window.hermesDesktop = desktop as unknown as typeof window.hermesDesktop
     request.mockImplementation(async (_route, method, params) =>
@@ -182,6 +183,7 @@ it.each(
     if (method === 'groups.log') {
       return { events: [] }
     }
+
     attempted.push(params.event_id)
     markers.push((Object.values(journal.read())[0] as { attempted?: boolean })?.attempted)
 
@@ -200,6 +202,7 @@ it.each(
 
     if (mode === 'legacy') {
       originalId = 'legacy-unknown-id'
+
       const entry = {
         binding,
         params: {
@@ -208,6 +211,7 @@ it.each(
           payload: { text: 'Original accepted intent', attachments: [], thread_id: originalId }
         }
       }
+
       journal.update(
         JSON.stringify(['canonical-group-send-v1', binding.connectionId, binding.profile, binding.roomId]),
         entry
@@ -230,6 +234,7 @@ it.each(
       if (mode === 'transfer') {
         bind('new-window')
       }
+
       render(<CanonicalGroupWorkspace binding={binding} />)
 
       if (mode === 'transfer' || mode === 'legacy') {
@@ -528,6 +533,7 @@ it('a queued editor update cannot be cleared by a prior message acknowledgement'
     if (method === 'groups.log') {
       return { events: [] }
     }
+
     await new Promise<void>(resolve => {
       acknowledge = resolve
     })
@@ -738,7 +744,7 @@ it('captures exact pending attempts through confirmation and never retargets or 
   expect(screen.getByText(labels.discardWarning)).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   action.execution_generation = 8
-  fireEvent.click(screen.getByRole('button', { name: 'Confirm discard' }))
+  fireEvent.click(screen.getByRole('button', { name: labels.confirmDiscard }))
   await waitFor(() =>
     expect(screen.getByRole('dialog').textContent).toContain(CANONICAL_GROUP_LOCALES.en.pendingActionUnconfirmed)
   )
@@ -1075,7 +1081,7 @@ it('renames a gateway room with one event id across retries', async () => {
 
   render(<GroupChatWorkspace group={group} members={[]} />)
   await chooseGroupAction(labels.rename)
-  fireEvent.change(screen.getByRole('textbox', { name: 'Room name' }), { target: { value: 'New name' } })
+  fireEvent.change(screen.getByRole('textbox', { name: labels.roomName }), { target: { value: 'New name' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
   expect((await screen.findByRole('alert')).textContent).toContain('socket closed')
   expect(screen.getByText('socket closed').closest('details')?.open).toBe(false)
@@ -1155,9 +1161,11 @@ it.each([
 
 it('shows shared confirmation progress and prevents duplicate End requests while its receipt is pending', async () => {
   let release!: (value: unknown) => void
+
   const held = new Promise(resolve => {
     release = resolve
   })
+
   let retired = false
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.capabilities') {
@@ -1210,6 +1218,7 @@ it('shows ordinary file publication as work while preserving attention for block
     task_id: 'files',
     execution_generation: 1
   }
+
   let driver_status = { running: true, working: false, blocked: true, pending_actions: [output] }
   request.mockImplementation(async (_route, method) =>
     method === 'groups.state'
@@ -1403,9 +1412,11 @@ it('sends one Disband intent for rapid confirmations and retries its exact unkno
 
 it('keeps a late End receipt scoped to the departed view without navigating or removing its room', async () => {
   let complete!: (value: unknown) => void
+
   const held = new Promise(resolve => {
     complete = resolve
   })
+
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.capabilities') {
       return CANONICAL_GROUP_CAPABILITIES
@@ -1734,6 +1745,7 @@ it('disbands a gateway room only after confirmation and keeps it unless the gate
 
     if (method === 'groups.state') {
       const tombstone = (disbandResult as { tombstone?: {room_id: string; disbanded_at: number} }).tombstone
+
       return { room: { name: 'Leaving', room_id: 'leaving', ...tombstone }, driver_status: {peer_cleanup: []} }
     }
 

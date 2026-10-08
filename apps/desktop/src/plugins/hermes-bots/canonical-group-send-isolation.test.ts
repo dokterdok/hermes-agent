@@ -10,14 +10,14 @@ const nativeModule = '../../../electron/prepared-submissions'
 const { preparedJournal } = await import(/* @vite-ignore */ nativeModule)
 import {
   attemptCanonicalGroupSend,
-  listUnsavedCanonicalGroupSends,
-  clearUnsavedCanonicalGroupSends,
-  rehomeCanonicalGroupSends,
-  reofferedCanonicalGroupSend,
   claimCanonicalGroupSend,
+  clearUnsavedCanonicalGroupSends,
   listCanonicalGroupSends,
+  listUnsavedCanonicalGroupSends,
   prepareCanonicalGroupSend,
   readCanonicalGroupSend,
+  rehomeCanonicalGroupSends,
+  reofferedCanonicalGroupSend,
   retireCanonicalGroupSend,
   settleCanonicalGroupSend
 } from './canonical-group-send'
@@ -130,6 +130,7 @@ it('a cold window offers explicit recovery, transfers the original identity, and
 
 it('preserves legacy room-slot input until an explicit exact recovery', async () => {
   const { store, bind } = fixture()
+
   const legacy = {
     binding,
     params: {
@@ -138,6 +139,7 @@ it('preserves legacy room-slot input until an explicit exact recovery', async ()
       payload: { text: 'Legacy pending text', thread_id: 'legacy-frozen-id' }
     }
   }
+
   const key = JSON.stringify(['canonical-group-send-v1', binding.connectionId, binding.profile, binding.roomId])
   store.update(key, legacy)
   bind('new-window')
@@ -187,6 +189,7 @@ it('local acknowledgement failure retains the exact receipt without making anoth
 it('refuses a native bridge missing owner/CAS rather than using its unsafe update or browser storage', async () => {
   const update = vi.fn(),
     browser = vi.fn()
+
   vi.stubGlobal('window', {
     hermesDesktop: { preparedSubmissions: { read: async () => '{}', update } },
     localStorage: { setItem: browser }
@@ -202,6 +205,7 @@ it.each(['entire journal', 'read', 'owner', 'compareSend'])(
     const update = vi.fn(),
       browserRead = vi.fn(() => '{}'),
       browserWrite = vi.fn()
+
     const native: Record<string, unknown> = {
       read: async () => '{}',
       owner: async () => 'window',
@@ -229,18 +233,24 @@ it('publishes uncertainty before dispatch and never restores an attempted record
   const native = window.hermesDesktop!.preparedSubmissions!
   const compare = native.compareSend!
   let release!: () => void
+
   const gate = new Promise<void>(resolve => {
     release = resolve
   })
+
   native.compareSend = vi.fn(async (...args: Parameters<typeof compare>) => {
     await gate
+
     return compare(...args)
   })
   const dispatch = vi.fn(() => expect((Object.values(store.read())[0] as { attempted: boolean }).attempted).toBe(true))
+
   const attempting = attemptCanonicalGroupSend(binding, entry).then(fresh => {
     dispatch()
+
     return fresh
   })
+
   await Promise.resolve()
   expect(dispatch).not.toHaveBeenCalled()
   expect((Object.values(store.read())[0] as { attempted: boolean }).attempted).toBe(false)

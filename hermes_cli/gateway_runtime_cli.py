@@ -77,7 +77,7 @@ def cmd_gateway_ticket(args) -> None:
             ticket = _session_ticket(home, endpoint, purpose=request["purpose"])
         payload = {"ticket": ticket, "profile_id": endpoint.profile_id,
                    "instance_id": endpoint.instance_id, "runtime_protocol": 1, "profile": profile}
-    except Exception:
+    except Exception:  # health: allow BLE001 -- private ticket boundary emits bounded refusal; tracebacks may expose control credentials
         # A caller receives bounded diagnostics, never private control/socket data.
         print('{"error":"native_ticket_unavailable"}')
         raise SystemExit(4) from None

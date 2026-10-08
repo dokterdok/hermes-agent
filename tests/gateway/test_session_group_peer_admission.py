@@ -56,7 +56,7 @@ async def test_api_turn_forwards_participant_fence_to_accepting_writer(gateway, 
     token = (await invite(gateway, room))['grant']
     claims = decode_room_grant(gateway_room_grant_secret(), token, permission='status')
     guard = authorize_room_admission(gateway.adapter, SimpleNamespace(headers={'Authorization': 'HermesRoom ' + token}))
-    gateway.db.create_session(session_id='writer-fence', source='api')
+    gateway.db.create_session(session_id='writer-fence', source='api_server')
     monkeypatch.setattr(session_api_turn, 'bind_api_session', lambda authority, sid, **kwargs: SessionRef(authority.profile_id, sid))
     def revoke_after_preparation(*args):
         hosted_rooms.revoke_room_grant_scope(gateway.db.db_path, claims=claims, expires_at=claims['status_expires_at'])

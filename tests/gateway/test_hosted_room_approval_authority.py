@@ -11,7 +11,6 @@ import pytest
 from gateway import hosted_room_driver as tasks, hosted_rooms as rooms
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state_runtime import RuntimeStoreError, claim_session_input, settle_session_input
-from tests.gateway.test_session_hosted_rpc import owner as owner  # noqa: F401
 from tests.gateway.test_session_group_peer_controls import case as case, rpc, selector  # noqa: F401
 from tui_gateway.hosted_room_driver import HostedRoomBinding
 
@@ -138,8 +137,8 @@ def _approval_after_new_task(authority, service, member_rpc, sid, row, attempt, 
     for choice in ['once', 'deny'] for entry in ['service', 'producer']
 ] + [('writer_stop', 'once', 'producer'), ('quarantine', 'once', 'service'),
      ('quarantine', 'once', 'producer'), ('later_task', 'once', 'service'), ('later_task', 'deny', 'service')])
-def test_local_pending_approval_after_durable_barrier(owner, monkeypatch, tmp_path, barrier, choice, entry):
-    authority, loop, _, _ = owner
+def test_local_pending_approval_after_durable_barrier(hosted_owner, monkeypatch, tmp_path, barrier, choice, entry):
+    authority, loop, _, _ = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)
     monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
     service.authorize_room('alice', 'room', create=True)

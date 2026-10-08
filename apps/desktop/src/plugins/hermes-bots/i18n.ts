@@ -32,8 +32,8 @@
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
-import { SUCCESSION_LOCALES } from './canonical-group-succession-locales'
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import { SUCCESSION_LOCALES } from './canonical-group-succession-locales'
 import { type BotsMessages } from './i18n-messages'
 import { getPluginCtx } from './shared'
 

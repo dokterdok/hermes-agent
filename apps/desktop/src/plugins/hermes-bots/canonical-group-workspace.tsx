@@ -131,11 +131,13 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   const [journalReload, setJournalReload] = useState(0)
   const pendingRecord = useRef<PreparedCanonicalGroupSend | null>(null)
   const [pending, setPendingState] = useState<PreparedCanonicalGroupSend | null>(null)
+
   const setPending = (next: PreparedCanonicalGroupSend | null | ((current: PreparedCanonicalGroupSend | null) => PreparedCanonicalGroupSend | null)) => {
     const value = typeof next === 'function' ? next(pendingRecord.current) : next
     pendingRecord.current = value
     setPendingState(value)
   }
+
   const showPending = setPending
   const [recoveries, setRecoveries] = useState<RecoverableCanonicalGroupSend[]>([])
   const inputRevision = useRef(0)
@@ -152,9 +154,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   const revision = useRef(0)
   // The log is append-only within one authority epoch: read only what is new.
   const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
+
   const moveUnlessEnding = useCallback((route: CanonicalGroupRoute) => {
     if (!retirementIntent.current) {onMoved(route)}
   }, [onMoved])
+
   const continuity = useRoomContinuity({ binding, visible, readError, events, roomName: state?.room.name ?? '', onMoved: moveUnlessEnding, restored, composer: { setDraft, setAttachments, setHint: setSendHint } })
 
   const show = (entry: PreparedCanonicalGroupSend) => {setPending(entry); setDraft(String(entry.params.payload.text ?? '')); setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])}
@@ -287,9 +291,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
 
  if (alive.current && !continuity.paused) {await refresh()} }
     catch (e) {
-      if (propagate) {throw e}
-
       if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
+
+      if (propagate) {throw e}
     }
     finally {
       busyRef.current = false
@@ -437,7 +441,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
         {visible && <CanonicalGroupPendingActions actions={pendingActions} busy={busy || Boolean(retirement)} members={members} onAction={act}
           onDiscard={action => act(action)} onRefresh={refresh} unknownTitle={continuity.unknownTitle} waiting={continuity.waiting(state?.driver_status?.tasks)} />}
       </div>
-      <RoomHints busy={busy} journalError={journalError} journalLoading={journalLoading} onJournalReload={() => setJournalReload(value => value + 1)} error={error} explained={continuity.explained} labels={labels} notice={notice} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
+      <RoomHints busy={busy} error={error} explained={continuity.explained} journalError={journalError} journalLoading={journalLoading} labels={labels} notice={notice} onJournalReload={() => setJournalReload(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
         onRestore={restore} pausedHint={continuity.pausedHint} pending={pending} readError={readError} recoveries={recoveries}
         restoreBlocked={occupied} sendHint={sendHint} state={state} />
       <RoomComposerSlot continuity={continuity}><RoomComposer attachments={attachments} binding={binding} busy={busy} canStop={canStop} draft={draft}

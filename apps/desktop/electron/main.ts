@@ -215,7 +215,6 @@ import {
   setPrimaryConnection,
   type SharedRegistryProfileScope,
   shouldDeferLocalEnumeration,
-  shouldRetrySshInventory,
   updateEligibility,
   upsertConnection
 } from './connection-registry'
@@ -540,11 +539,10 @@ import { rewriteRoomSetupSecrets } from './room-setup-secret-rewrite'
 import { RoomSetupError } from './room-setup-store'
 import { rosterProfileMetadata } from './roster-profile-metadata'
 import { fetchRosterSourceData } from './roster-source-fetch'
-import { rosterSourceStatus } from './roster-source-status'
 import {
   classifyStoredSecret,
-  readSecretStoragePolicy,
   probeSecureTokenStorageForPolicy,
+  readSecretStoragePolicy,
   requireRoomSetupEncryption,
   SECRET_STORAGE_POLICY_FILE,
   type SecretStoragePolicy,
@@ -570,11 +568,10 @@ import { resolveSshBinary } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
-import { inspectSshGatewayCommands } from './ssh-gateway'
 import { connectPreferredSshGateway, sshConnectionDescriptor, sshConnectionKind } from './ssh-gateway-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
-import { sshRosterSourceResult } from './ssh-roster-inventory'
 import { createSshRosterInspector } from './ssh-roster-inspector'
+import { sshRosterSourceResult } from './ssh-roster-inventory'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
@@ -686,7 +683,6 @@ import {
 import { hiddenWindowsChildOptions } from './windows-child-options'
 import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
 import {
-  connectWindowsRemote,
   detectRemotePlatform,
   helper,
   probeWindowsRemote,
@@ -6190,6 +6186,7 @@ async function waitForRemoteHermes(remote) {
 
     return
   }
+
   try {
     await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
   } catch (error) {
@@ -7680,6 +7677,7 @@ function _nativeTokenStorePath() {
 // so it can be tested without an Electron runtime.
 function _nativeTokenStoreIo(): NativeTokenStoreIo {
   recoverSecretStorageBeforeUse()
+
   return {
     encrypt: encryptDesktopSecret,
     decrypt: decryptDesktopSecret,
@@ -8201,6 +8199,7 @@ function recoverSecretStorageBeforeUse() {
 
 function secretStoragePolicy(): SecretStoragePolicy {
   recoverSecretStorageBeforeUse()
+
   if (!_secretStoragePolicy) {
     _secretStoragePolicy = readSecretStoragePolicy(_secretStoragePolicyIo)
   }
@@ -8350,12 +8349,14 @@ function migrateLegacyEncryptedSecretsOnce() {
  */
 function applySecretStorageEncryption(on: boolean) {
   const policy = secretStoragePolicy()
+
   try {
     const next = changeSecretStorageEncryption({
       directory: app.getPath('userData'), policy, on: on === true,
       available: () => {
         requireRoomSetupEncryption({ on: true, migrated: true }, () =>
           process.platform === 'linux' ? safeStorage.getSelectedStorageBackend() : undefined)
+
         try {return Boolean(safeStorage.isEncryptionAvailable())} catch {return false}
       },
       encrypt: value => encryptDesktopSecretStrict(value, safeStorage),
@@ -8364,6 +8365,7 @@ function applySecretStorageEncryption(on: boolean) {
       decrypt: secret => secret.encoding === SAFE_STORAGE_ENCODING
         ? safeStorage.decryptString(Buffer.from(String(secret.value), 'base64')) : String(secret.value || '')
     })
+
     return { on: next.on }
   } finally {
     invalidateSecretStorageCaches()
@@ -8388,12 +8390,14 @@ function encryptRoomSetupSecret(value: string) {
   try {
     requireRoomSetupEncryption(secretStoragePolicy(), () =>
       process.platform === 'linux' ? safeStorage.getSelectedStorageBackend() : undefined)
+
     return encryptDesktopSecret(value)
   } catch {throw new RoomSetupError('secure_storage_required')}
 }
 
 function decryptDesktopSecret(secret) {
   recoverSecretStorageBeforeUse()
+
   if (!secret || typeof secret !== 'object') {
     return ''
   }
@@ -9988,6 +9992,7 @@ async function rollbackSshBootstrapResult(ssh, result, profile, sshConfig, bound
 
     return
   }
+
   const cleanupErrors: string[] = []
   const scope = sshScopeKey(profile)
 
@@ -10162,10 +10167,12 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     },
     publish: () => {
       if (!result.canonical) {persistSshConnectionToken(profile, source, result.token, metadata.registryConnectionId)}
+
       if (result.canonical && metadata.registryConnectionId) {
         // A newly verified owner must not inherit ambient-shell or predecessor inventory.
         evictConnectionCaches(metadata.registryConnectionId)
       }
+
       removeForceCleanup()
       sshConnections.set(scope, {
         ssh,
@@ -10200,6 +10207,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
         // site may label a registry-qualified SSH scope as the primary backend.
         primaryRegistryScope: metadata.primaryRegistryScope === true
       })
+
       if (!result.canonical) {sshIsolatedKeepalives.start(scope, { baseUrl: result.baseUrl, token: result.token })}
     },
     rollback: error => rollbackSshBootstrapResult(ssh, result, profile, sshConfig, error)
@@ -10835,6 +10843,7 @@ async function forgetLocalGatewayDescriptor(profile, expected?: GatewayEndpoint)
   const cached = await (route.backend === 'primary' ? backendConnectionState.getPromise() : backendPool.get(key)?.connectionPromise)?.catch(() => null)
 
   if (expected && cached?.gatewayEndpoint !== expected) {return}
+
   const remoteScope = cached?.gatewayEndpoint?.ssh_transport_id
     ? [...sshConnections.entries()].find(([, state]) => state.gatewayEndpoint === cached.gatewayEndpoint)?.[0] : undefined
 
@@ -10861,17 +10870,21 @@ async function forgetLocalGatewayDescriptor(profile, expected?: GatewayEndpoint)
 async function forgetRegistryLocalGatewayDescriptor(connectionId, profile, expected?: GatewayEndpoint) {
   if (connectionId && connectionId !== 'local') {
     const primary = await backendConnectionState.getPromise()?.catch(() => null)
+
     if (primary?.gatewayEndpoint && primary.gatewayEndpoint === expected) {
       return forgetLocalGatewayDescriptor(primaryProfileKey(), expected)
     }
+
     const key = backendScopeKey(connectionId, profile)
     const cached = await backendPool.get(key)?.connectionPromise?.catch(() => null)
+
     if (expected && cached?.gatewayEndpoint !== expected) {return}
     backendPool.delete(key)
     await teardownSshConnection(key)
 
     return
   }
+
   const profileKey = String(profile ?? '').trim() || 'default'
 
   const localRoute = resolveRegistryLocalRoute(profileKey, {
@@ -15275,6 +15288,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
           if (connection.kind === 'ssh') {
           const inventory = await withEnumerationDeadline(
             refreshSshProfileInventory(connection), rosterSourceEnumerationTimeoutMs(connection))
+
           raw = sshRosterSourceResult(connection, inventory, connectionInstallIds.get(connection.id)?.id)
         } else {
           // Same connect-on-demand courtesy for the forced-local path: when
@@ -15377,6 +15391,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
     )
   )
 }
+
 const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
   ensureBackend: ensureRegistryBackend,
   mintTicket: mintGatewayWsTicket,
@@ -18174,8 +18189,11 @@ app.whenReady().then(async () => {
       detail: 'Check that the Desktop data folder is accessible and the disk has free space, then try again. Your saved files have been kept.',
       buttons: ['Try again', 'Quit'], defaultId: 0, cancelId: 1, noLink: true
     })
+
     return result.response === 0
-  })) {app.quit(); return}
+  })) {app.quit();
+
+ return}
 
   // Keyring-less Linux `--password-store=basic` support. This must run before
   // createWindow() and anything that could touch safeStorage; the narrow

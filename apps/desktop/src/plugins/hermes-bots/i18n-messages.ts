@@ -1,9 +1,8 @@
-import type { SuccessionMessages } from './canonical-group-succession-locales'
+import { type CanonicalGroupMessages } from './canonical-group-locales'
 /**
  * Message SHAPE for Bot Mode's plugin-scoped i18n bundles (see `./i18n.ts`).
  */
-
-import { type CanonicalGroupMessages } from './canonical-group-locales'
+import type { SuccessionMessages } from './canonical-group-succession-locales'
 
 export type BotsMessages = {
   succession: SuccessionMessages

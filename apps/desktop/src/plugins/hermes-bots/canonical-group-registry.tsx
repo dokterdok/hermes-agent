@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { groupCreationSource } from './canonical-group-capabilities'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { captureCanonicalGroupRoute, discoverCanonicalGroups, knownGroupExecutionMode } from './canonical-groups'
+import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
@@ -147,6 +147,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
           removedDuringRead.add(key)
         }
       }
+
       previousBindings = next
     })
 

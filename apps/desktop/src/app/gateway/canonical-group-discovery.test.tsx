@@ -2,6 +2,7 @@ import { gatewayActivationEpoch, host } from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { CANONICAL_GROUP_LOCALES } from '@/plugins/hermes-bots/canonical-group-locales'
 import { $canonicalGroupBindings, $canonicalGroupNames, CanonicalGroupList, forgetCanonicalGroup } from '@/plugins/hermes-bots/canonical-group-registry'
 import { readGroupExecutionMode } from '@/plugins/hermes-bots/canonical-groups'
 import { GroupChatWorkspace } from '@/plugins/hermes-bots/group-chat-view'
@@ -191,16 +192,16 @@ it.each([
   render(<GroupChatWorkspace group="Classic room" members={[
     { name: 'one', connectionId }, { name: 'two', connectionId }
   ]} />)
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(false))
+  await waitFor(() => expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) as HTMLButtonElement).disabled).toBe(false))
   await act(async () => { await ensureGatewayForProfile('default') })
   current = capability
-  fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' }))
+  fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }))
   await waitFor(() => expect(request.mock.calls.filter(call => call[0] === 'groups.capabilities')).toHaveLength(2))
   expect(request.mock.calls.filter(call => call[0] === 'groups.create')).toHaveLength(0)
 
   if (allowed) {
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(false))
-    fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' }))
+    await waitFor(() => expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }))
     await waitFor(() => expect(request.mock.calls.filter(call => call[0] === 'groups.create')).toHaveLength(1))
     expect(Object.values($canonicalGroupBindings.get())).toEqual([{ connectionId, profile: 'default', roomId: 'created' }])
   } else {
@@ -211,22 +212,24 @@ it.each([
   expect(request.mock.calls.filter(call => call[0] === 'groups.capabilities')).toHaveLength(allowed ? 3 : 2)
 })
 
-it('reclassifies a settled classic surface after a batched reconnect reports canonical support', async () => {
+it('reclassifies canonical support after reconnect without losing the existing classic draft', async () => {
   let capability: unknown = STANDALONE_GROUP_CAPABILITIES
   request.mockImplementation(async method => method === 'groups.capabilities' ? capability : {})
   changeSocket('open')
   render(<GroupChatWorkspace group="Classic room" members={[
     { name: 'one', connectionId }, { name: 'two', connectionId }
   ]} />)
-  await screen.findByRole('textbox')
+  const composer = await screen.findByRole('textbox') as HTMLTextAreaElement
+  fireEvent.change(composer, { target: { value: 'Keep this classic draft' } })
   expect(request.mock.calls.filter(call => call[0] === 'groups.capabilities')).toHaveLength(1)
   const epoch = gatewayActivationEpoch()
   capability = CANONICAL_GROUP_CAPABILITIES
   await act(async () => { changeSocket('closed'); changeSocket('open') })
 
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(false))
+  await waitFor(() => expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) as HTMLButtonElement).disabled).toBe(false))
   expect(gatewayActivationEpoch()).toBe(epoch)
-  expect(screen.queryByRole('textbox')).toBeNull()
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep this classic draft')
+  expect(request.mock.calls.some(call => call[0] === 'groups.send')).toBe(false)
   expect(request.mock.calls.filter(call => call[0] === 'groups.capabilities')).toHaveLength(2)
 })
 
@@ -242,8 +245,8 @@ it('does not create from a Start capability reply belonging to the socket that j
   render(<GroupChatWorkspace group="Classic room" members={[
     { name: 'one', connectionId }, { name: 'two', connectionId }
   ]} />)
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(false))
-  fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' }))
+  await waitFor(() => expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }))
   await waitFor(() => expect(reads).toBe(2))
   const epoch = gatewayActivationEpoch()
   await act(async () => {
@@ -269,7 +272,7 @@ it('keeps the new socket classification when an old rendered Start refreshes aft
   render(<GroupChatWorkspace group="Classic room" members={[
     { name: 'one', connectionId }, { name: 'two', connectionId }
   ]} />)
-  const button = await screen.findByRole('button', { name: 'Start gateway group' })
+  const button = await screen.findByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })
   await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
   await act(async () => {
     changeSocket('closed')
@@ -279,7 +282,7 @@ it('keeps the new socket classification when an old rendered Start refreshes aft
   await waitFor(() => expect(reads).toBe(3))
   await act(async () => { releaseProbe(CANONICAL_GROUP_CAPABILITIES) })
 
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(false))
+  await waitFor(() => expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) as HTMLButtonElement).disabled).toBe(false))
   expect(request.mock.calls.filter(call => call[0] === 'groups.create')).toHaveLength(0)
   expect($canonicalGroupBindings.get()).toEqual({})
 })

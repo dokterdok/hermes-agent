@@ -1,6 +1,5 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
@@ -42,6 +41,7 @@ import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const binding = { connectionId: 'original-owner', profile: 'reviewer', roomId: 'room-one' }
+
 const manifest = {
   attachment_id: 'att_00000000000000000000000000000001',
   kind: 'file',
@@ -49,6 +49,7 @@ const manifest = {
   mime: 'text/plain',
   size: 1
 }
+
 const originalDesktop = window.hermesDesktop
 afterEach(() => {
   cleanup()
@@ -120,6 +121,7 @@ it('keeps a committed file downloadable in history after Send clears the compose
     if (method === 'groups.attachment.download') {
       return { ...manifest, event_id: params.event_id, data_base64: 'QQ==' }
     }
+
     throw new Error(`Unexpected method ${method}`)
   })
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
@@ -154,10 +156,12 @@ it('keeps a committed file downloadable in history after Send clears the compose
 it('blocks Send during a chosen file upload, keeps Stop available, and recovers from a failed upload', async () => {
   let rejectUpload!: (error: Error) => void
   let releaseUpload!: (value: unknown) => void
+
   const heldUpload = new Promise((resolve, reject) => {
     releaseUpload = resolve
     rejectUpload = reject
   })
+
   let uploadResult: Promise<unknown> = heldUpload
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.state') {
@@ -497,6 +501,7 @@ it('keeps Layer 7 bookkeeping quiet and words host changes and waiting work from
     if (method === 'groups.log') {
       return { events }
     }
+
     throw new Error(`Unexpected method ${method}`)
   })
   render(<CanonicalGroupWorkspace binding={binding} />)
