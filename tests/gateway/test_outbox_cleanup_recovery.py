@@ -164,3 +164,15 @@ def test_pending_physical_journal_does_not_remove_a_live_artifact(tmp_path):
                      (path.name, row['blob_identity']))
     RoomArtifactOutbox(outbox.db_path)
     assert outbox.read(scope, item['artifact_id'])[1] == b'Owned output bytes'
+
+
+def test_uncommitted_output_exception_does_not_weaken_input_evidence(tmp_path):
+    outbox, _, _, path = stored(tmp_path)
+    identity = json.loads(records(outbox)[0]['blob_identity'])
+    identity.update(namespace='native', size=None, digest=None)
+    try:
+        removed = cleanup.remove_sealed_copy(path, identity)
+    except ValueError:
+        removed = False
+    assert not removed
+    assert path.read_bytes() == b'Owned output bytes'
