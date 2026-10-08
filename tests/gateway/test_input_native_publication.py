@@ -223,7 +223,8 @@ async def test_cold_equal_images_preserve_order_with_one_physical_owner(tmp_path
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mutation', ['replace', 'symlink', 'hardlink', 'missing'])
+@pytest.mark.parametrize('mutation', [
+    'replace', pytest.param('symlink', marks=pytest.mark.require_symlinks), 'hardlink', 'missing'])
 async def test_ready_native_identity_never_becomes_provisional_deletion_authority(tmp_path, monkeypatch, mutation):
     db, owner = owned(tmp_path, monkeypatch)
     try:
