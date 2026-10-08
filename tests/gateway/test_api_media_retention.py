@@ -68,3 +68,64 @@ def test_hosted_batch_total_is_rejected_before_any_capture(tmp_path, monkeypatch
     assert not _media_root().exists()
     monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 4096)
     assert [data for _, data in resolve_inputs(rpc, bound)] == [b'A' * 2048, b'B' * 2048]
+
+
+def _image(data):
+    return [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(data).decode()}}]
+
+
+def _retained(paths):
+    return sorted(p.name for p in _media_root().glob('*/*') if p.is_file()) if _media_root().exists() else []
+
+
+@pytest.mark.asyncio
+async def test_refused_and_deleted_api_images_are_collected_once_nothing_owns_them(api, owner):
+    """Retained API image bytes are owned by accepted admissions (canonical history context).
+    Bytes committed for a refused admission, or held only by a deleted chat, are collected; bytes
+    another live admission still holds are not."""
+    kept = admit_api_turn(api, session_id='kept', request_id='kept', user_message=_image(PNG + b'kept'),
+                          conversation_history=[])[2]['payload']['api_turn_v1']['media'][0]
+    admit_api_turn(api, session_id='chat', request_id='same', user_message=_image(PNG), conversation_history=[])
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        admit_api_turn(api, session_id='chat', request_id='same', user_message=_image(PNG + b'other'),
+                       conversation_history=[])
+    assert len(_retained(None)) == 2  # the refused request's bytes did not stay behind
+    # A request reusing bytes an accepted admission holds is refused without touching them.
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        admit_api_turn(api, session_id='chat', request_id='same', user_message=_image(PNG + b'kept'),
+                       conversation_history=[])
+    assert Path(restore_native_media([kept])[0]).exists()
+    row = claim_session_input(owner.db, epoch=owner.epoch, session_id='chat')
+    settle_session_input(owner.db, epoch=owner.epoch, admission_id=row['admission_id'],
+                         generation=row['generation'], outcome='completed')
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    app = web.Application()
+    app.router.add_delete('/api/sessions/{session_id}', api._handle_delete_session)
+    async with TestClient(TestServer(app)) as client:
+        deleted = await client.delete('/api/sessions/chat')
+        assert deleted.status == 200 and (await deleted.json())['deleted'] is True
+    assert len(_retained(None)) == 1 and Path(restore_native_media([kept])[0]).exists()
+
+
+def test_unheld_api_image_cleanup_resumes_an_interrupted_journal(api, owner, monkeypatch):
+    from gateway import hosted_room_input_cleanup as cleanup
+    from gateway.session_ingress_media import collect_unheld_api_images
+
+    kept = admit_api_turn(api, session_id='kept', request_id='same', user_message=_image(PNG),
+                          conversation_history=[])[2]['payload']['api_turn_v1']['media'][0]
+
+    def interrupted(*args):
+        raise OSError('fixture stops after sealing unheld API image')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cleanup, '_verified_source', interrupted)
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            admit_api_turn(api, session_id='kept', request_id='same', user_message=_image(PNG + b'not-admitted'),
+                           conversation_history=[])
+    with owner.db._read_ctx() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM input_custody_copies WHERE state='sealed'").fetchone()[0] == 1
+    assert collect_unheld_api_images(owner.db) == 1
+    assert collect_unheld_api_images(owner.db) == 0
+    assert _retained(None) == [Path(kept['path']).name]
+    assert Path(restore_native_media([kept])[0]).read_bytes() == PNG
