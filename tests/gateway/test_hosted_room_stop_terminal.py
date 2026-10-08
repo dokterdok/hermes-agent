@@ -11,12 +11,11 @@ from hermes_state_runtime import (
     RuntimeStoreError, begin_runtime_epoch, claim_session_input, get_session_admission,
     recover_session_inputs, settle_session_input,
 )
-from tests.gateway.test_session_hosted_rpc import owner as owner  # noqa: F401
 
 
 @pytest.mark.parametrize('producer_state', ['queued', 'started', 'restart_unknown'])
-def test_acknowledged_room_stop_waits_for_the_producer_terminal(owner, monkeypatch, producer_state):
-    authority, loop, _, agent = owner
+def test_acknowledged_room_stop_waits_for_the_producer_terminal(hosted_owner, monkeypatch, producer_state):
+    authority, loop, _, agent = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)
     monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
     service.authorize_room('alice', 'room', create=True)
