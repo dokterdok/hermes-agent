@@ -67,6 +67,17 @@ boundary after its exact receipt was compacted, `run_history_retired` is an
 ambiguous 409, not a fabricated cancelled/non-admitted task receipt. Consumers
 must not use it as attachment-release or execution evidence.
 
+Receipt compaction and ordinary terminal pruning also retain one history summary
+per room/member lineage. Genuine non-admission cancellations need no ambiguity
+marker. Other forgotten receipts remain unknown unless their immutable canonical
+projection was certified before retirement, under the same index generation and
+session. An empty index after upgrading a source-only gateway cannot certify
+absence for its earlier execution history. Pre-existing authority records without
+this summary migrate conservatively. The summary survives scope-inventory pruning
+and restart; it does not grow per task or disable new Sends and known exact run
+controls. A missing-key Stop remains unknown when the older execution history
+cannot establish non-admission.
+
 New full grants include `retire`; narrower grants do not acquire it from a request
 flag. Older endpoints and grants keep ordinary revocation through a narrowly
 classified fallback, retaining their exact cancellation records. Old persisted

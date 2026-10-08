@@ -105,7 +105,8 @@ _MIGRATIONS = {
     "stop_requested": "INTEGER NOT NULL DEFAULT 0",
     "room_authority_key": "TEXT",
     "room_authority_epoch": "INTEGER",
-    "room_authority_gateway": "TEXT"}
+    "room_authority_gateway": "TEXT",
+    "canonical_history": "TEXT"}
 
 
 def _encode_status(status: Dict[str, Any]) -> str:
@@ -313,12 +314,8 @@ class RunIdempotencyStore:
         return None if row is None or row[0] is None else float(row[0])
 
     def _scope_identity_locked(self, scope: str) -> dict[str, Any] | None:
-        row = self._conn.execute(f"SELECT identity_json FROM {_SCOPES} WHERE scope=?", (scope,)).fetchone()
-        try:
-            identity = validate_room_run_scope(json.loads(row[0])) if row is not None else None
-        except (TypeError, ValueError):
-            return None
-        return identity if identity is not None and room_run_scope_key(identity) == scope else None
+        from gateway.platforms.api_server_run_scope import stored_room_scope
+        return stored_room_scope(self._conn, scope)
 
     def _scope_fenced_locked(self, scope: str) -> bool:
         identity = self._scope_identity_locked(scope)
@@ -508,14 +505,18 @@ class RunIdempotencyStore:
                 self._prune_stale_terminal_locked(now)
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
             if cancel_if_missing and identity is not None:
+                from gateway.platforms.api_server_run_history import history
                 predecessors = self._cancellation_predecessors_locked(identity, key, own_known=row is not None)
-                current_snapshot = self._cancellation_snapshot(row[1] if row else None, predecessors)
+                evidence = history(self._conn, identity)
+                current_snapshot = self._cancellation_snapshot(row[1] if row else None, predecessors, evidence)
                 if cancellation_snapshot is not None and cancellation_snapshot != current_snapshot:
                     raise RunCancellationUnknown()
                 existing = self._cancel_existing_locked(predecessors, key, scope, row)
                 if existing is not None:
                     self._conn.commit()
                     return existing
+                if evidence is not None and cancellation_snapshot is None:
+                    raise RunCancellationUnknown()
             if row is not None:
                 if retention_until:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
@@ -568,15 +569,23 @@ class RunIdempotencyStore:
         """Read exact cancellation evidence without pruning it before the accepting transaction."""
         identity = validate_room_run_scope(identity)
         with self._lock:
+            from gateway.platforms.api_server_run_history import history
             row = self._conn.execute(_SELECT_BY_KEY, (room_run_scope_key(identity), key)).fetchone()
             own = _record(*row[1:]) if row else None
             predecessors = self._cancellation_predecessors_locked(identity, key, own_known=own is not None)
-            return own, predecessors, self._cancellation_snapshot(own['run_id'] if own else None, predecessors)
+            return own, predecessors, self._cancellation_snapshot(
+                own['run_id'] if own else None, predecessors, history(self._conn, identity))
 
     @staticmethod
-    def _cancellation_snapshot(own_id, predecessors):
+    def _cancellation_snapshot(own_id, predecessors, evidence=None):
         return own_id, tuple(sorted((scope, entry['record']['run_id'] if entry['record'] else None)
-                                    for scope, entry in predecessors.items()))
+                                    for scope, entry in predecessors.items())), evidence
+
+    def certify_canonical_history(self, scope, run_id, evidence):
+        with self._immediate_txn():
+            self._conn.execute('UPDATE run_idempotency SET canonical_history=? WHERE scope=? AND run_id=?',
+                               (evidence, scope, run_id))
+            self._conn.commit()
 
     def _cancellation_predecessors_locked(self, identity: dict, key: str, *, own_known=False) -> dict[str, dict]:
         if identity['authority_epoch'] <= 1:
@@ -815,7 +824,8 @@ class RunIdempotencyStore:
         """Prune aged replay records only once their stored run is terminal (caller holds the
         lock + transaction): a long or disconnected room turn may outlive the retention window."""
         stale = self._conn.execute(
-            """SELECT scope, idempotency_key, status_json, stop_requested
+            """SELECT scope, idempotency_key, status_json, stop_requested, room_authority_key,
+                      fingerprint,owner_pid,owner_started,canonical_history
                  FROM run_idempotency
                 WHERE acknowledged_at <= ?
                    OR (retention_until > 0 AND retention_until <= ?)
@@ -823,7 +833,7 @@ class RunIdempotencyStore:
             (now - self.ACKNOWLEDGED_RETENTION_SECONDS, now, now - self.RETENTION_SECONDS),
         ).fetchall()
         pruned = False
-        for stale_scope, stale_key, stale_status, stop_requested in stale:
+        for stale_scope, stale_key, stale_status, stop_requested, authority_key, fingerprint, owner_pid, owner_started, indexed in stale:
             try:
                 status = json.loads(stale_status)
                 # A renewed grant may still carry the same generation after normal replay TTL.
@@ -833,6 +843,8 @@ class RunIdempotencyStore:
             except Exception:
                 terminal = False
             if terminal:
+                from gateway.platforms.api_server_run_history import remember
+                remember(self._conn, stale_scope, authority_key, status, fingerprint, owner_pid, owner_started, indexed)
                 self._conn.execute(
                     "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (stale_scope, stale_key))
                 pruned = True

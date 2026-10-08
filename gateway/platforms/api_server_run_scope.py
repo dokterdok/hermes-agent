@@ -1,6 +1,7 @@
 """Exact participant identity and the existing Runs ownership-key encoding."""
 
 import hashlib
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -35,6 +36,16 @@ def validate_room_run_scope(identity: Any) -> dict[str, Any]:
                 raise ValueError(f"{field} must be an exact identifier string")
             result[field] = _identifier(value, field=field)
     return result
+
+
+def stored_room_scope(conn, scope):
+    """Read only an identity whose persisted fields reproduce its authenticated scope."""
+    row = conn.execute('SELECT identity_json FROM group_run_scopes WHERE scope=?', (scope,)).fetchone()
+    try:
+        identity = validate_room_run_scope(json.loads(row[0])) if row is not None else None
+    except (TypeError, ValueError):
+        return None
+    return identity if identity is not None and room_run_scope_key(identity) == scope else None
 
 def cancellation_record_sql(alias: str) -> str:
     """Internal SQL predicate: a control-only barrier has no accepting fingerprint or executor."""

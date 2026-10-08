@@ -31,6 +31,8 @@ def initialize(conn):
     add_column_if_missing(conn, "run_room_authorities", "target_key", "target_key TEXT")
     from gateway.platforms import api_server_room_origins
     api_server_room_origins.initialize(conn)
+    from gateway.platforms.api_server_run_history import initialize as initialize_history
+    initialize_history(conn)
     conn.execute("UPDATE run_room_authorities SET home_key=authority_key WHERE home_key IS NULL")
     conn.execute("""CREATE TABLE IF NOT EXISTS run_room_authority_aliases (
         home_key TEXT PRIMARY KEY, authority_key TEXT NOT NULL, origin_home TEXT NOT NULL)""")
@@ -163,11 +165,12 @@ def compact(conn, authority_key):
     current = effective(conn, authority_key)
     if current is None:
         return
-    rows = conn.execute("""SELECT scope,idempotency_key,status_json,stop_requested
+    rows = conn.execute("""SELECT scope,idempotency_key,status_json,stop_requested,
+        fingerprint,owner_pid,owner_started,canonical_history
         FROM run_idempotency WHERE room_authority_key=? AND (room_authority_epoch<? OR room_authority_epoch<=?
         OR (room_authority_epoch=? AND room_authority_gateway!=?))""",
         (authority_key, current[0], current[2], current[0], current[1])).fetchall()
-    for scope, key, encoded, stopped in rows:
+    for scope, key, encoded, stopped, fingerprint, owner_pid, owner_started, indexed in rows:
         try:
             status = json.loads(encoded)
         except (ValueError, TypeError):
@@ -176,4 +179,6 @@ def compact(conn, authority_key):
             continue
         if (status.get("status") in {"completed", "failed", "cancelled", "interrupted"}
                 and (stopped or status.get("admission_cancelled"))):
+            from gateway.platforms.api_server_run_history import remember
+            remember(conn, scope, authority_key, status, fingerprint, owner_pid, owner_started, indexed)
             conn.execute("DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key))
