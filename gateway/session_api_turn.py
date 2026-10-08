@@ -146,7 +146,10 @@ def admit_api_turn(adapter, **kwargs):
         check_api_settings(adapter, settings)
         from gateway.session_contract import SessionRef
         return authority, SessionRef(authority.profile_id, sid), row
-    ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
+    dispatch = kwargs.get("room_dispatch")
+    origin_home = adapter._run_idempotency_store.room_origin_home(dispatch) if dispatch is not None else None
+    ref = bind_api_session(authority, sid, hosted_dispatch=dispatch, hosted_origin_home=origin_home,
+                           declared_key=declared_key)
     check_api_turn(authority, ref, payload)
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
                               session_id=sid, request_id=request_id, payload=payload,

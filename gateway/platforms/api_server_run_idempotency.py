@@ -104,7 +104,8 @@ _MIGRATIONS = {
     "acknowledged_at": "REAL",
     "stop_requested": "INTEGER NOT NULL DEFAULT 0",
     "room_authority_key": "TEXT",
-    "room_authority_epoch": "INTEGER"}
+    "room_authority_epoch": "INTEGER",
+    "room_authority_gateway": "TEXT"}
 
 
 def _encode_status(status: Dict[str, Any]) -> str:
@@ -552,8 +553,10 @@ class RunIdempotencyStore:
                         VALUES (?,?,?,?) ON CONFLICT(scope) DO UPDATE SET last_admitted_at=excluded.last_admitted_at""",
                     (scope, json.dumps(identity, sort_keys=True, separators=(",", ":")), now, now))
             if room_authority is not None:
-                self._conn.execute("UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=? WHERE run_id=?",
-                                   (*room_authority[:2], run_id))
+                from gateway.platforms.api_server_run_authority import canonical
+                room_authority = canonical(self._conn, room_authority)
+                self._conn.execute("""UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=?,
+                    room_authority_gateway=? WHERE run_id=?""", (*room_authority, run_id))
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 
@@ -679,21 +682,54 @@ class RunIdempotencyStore:
             return "authority_retired", None
         return ("missing", None) if row is None else _outcome(row, fingerprint)
 
-    def accepts_room_authority(self, authority):
-        from gateway.platforms.api_server_run_authority import superseded
+    def accepts_room_authority(self, authority, previous=None, namespace=None, claims=None, previous_home=None):
+        from gateway.platforms.api_server_run_authority import namespace_matches, successor, superseded
+        from gateway.platforms.api_server_room_origins import accepts
         with self._lock:
-            return not superseded(self._conn, authority)
+            candidate = successor(self._conn, authority, previous)
+            return (namespace_matches(self._conn, namespace, candidate) and not superseded(self._conn, candidate)
+                    and (claims is None or accepts(self._conn, claims, previous_home)))
+
+    def knows_room_target(self, claims):
+        from gateway.platforms.api_server_room_origins import retained
+        with self._lock:
+            return retained(self._conn, claims) is not None
+
+    def room_lineage_origin(self, claims):
+        from gateway.platforms.api_server_room_origins import retained
+        with self._lock:
+            return retained(self._conn, claims)[0]
+
+    def knows_room_authority(self, authority):
+        from gateway.platforms.api_server_run_authority import canonical
+        with self._lock:
+            return self._conn.execute("SELECT 1 FROM run_room_authorities WHERE authority_key=?",
+                                      (canonical(self._conn, authority)[0],)).fetchone() is not None
+
+    def permits_room_retirement(self, authority):
+        from gateway.platforms.api_server_run_authority import retirement_allowed
+        with self._lock:
+            return retirement_allowed(self._conn, authority)
 
     def room_authority_retired(self, authority):
+        from gateway.platforms.api_server_run_authority import canonical, retirement_allowed
         with self._lock:
+            if not retirement_allowed(self._conn, authority):
+                return False
+            authority = canonical(self._conn, authority)
             row = self._conn.execute(
                 "SELECT retired_through FROM run_room_authorities WHERE authority_key=?", (authority[0],)).fetchone()
         return row is not None and authority[1] <= row[0]
 
-    def observe_room_authority(self, scope, authority):
+    def room_origin_home(self, claims):
+        from gateway.platforms.api_server_run_authority import origin_home, room_authority
+        with self._lock:
+            return origin_home(self._conn, room_authority(claims), claims["home_install_id"])
+
+    def observe_room_authority(self, scope, authority, previous=None, previous_home=None, namespace=None, claims=None):
         from gateway.platforms.api_server_run_authority import observe
         with self._immediate_txn():
-            current = observe(self._conn, scope, authority)
+            current = observe(self._conn, scope, authority, previous, previous_home, namespace, claims)
             self._conn.commit()
         return current
 
@@ -702,6 +738,45 @@ class RunIdempotencyStore:
         with self._immediate_txn():
             retire(self._conn, scope, authority)
             self._conn.commit()
+
+    def retained_room_authority(self, claims):
+        """Recover legacy coordinates only for an exact authenticated home known to this target."""
+        from gateway.platforms.api_server_run_authority import canonical, room_authority
+        authority = room_authority(claims)
+        with self._lock:
+            row = self._conn.execute("""SELECT authority_epoch,gateway_id,home_key FROM run_room_authorities
+                WHERE authority_key=?""", (canonical(self._conn, authority)[0],)).fetchone()
+        if row is None or row[2] != authority[0]:
+            return None
+        return {"home_install_id": claims["home_install_id"], "authority_gateway_id": row[1], "authority_epoch": row[0]}
+
+    def observe_verified_room_authority(self, claims, previous, verified_origin):
+        """Only a promised successor or the learned winner may bind a verified continuation.
+
+        The retained learned winner is immutable at its epoch: a former promised host
+        cannot regain the same epoch after its cancellations have compacted.
+        """
+        from gateway.platforms.api_server_run_authority import observe, room_authority, room_namespace, room_run_scope
+        from gateway.platforms.api_server_room_origins import retained
+        with self._immediate_txn():
+            previous_target = retained(self._conn, claims)
+            if not fence.successor_controls_locked(self._conn, claims["room_id"],
+                    candidate_install_id=claims["authority_gateway_id"], epoch=claims["authority_epoch"]):
+                raise ValueError("room successor is not the retained epoch holder")
+            predecessor = {**claims, **previous} if previous is not None else None
+            learned = fence.fence_state_locked(self._conn, claims["room_id"])["authority"]
+            verified_winner = learned == {"install_id": claims["authority_gateway_id"], "epoch": claims["authority_epoch"]}
+            if predecessor is not None:
+                observe(self._conn, room_run_scope(predecessor), room_authority(predecessor))
+            current = observe(self._conn, room_run_scope(claims), room_authority(claims),
+                room_authority(predecessor) if predecessor is not None else None,
+                predecessor["home_install_id"] if predecessor is not None else None,
+                namespace=room_namespace(claims), claims=claims,
+                replace_promised=verified_winner, verified_origin=verified_origin)
+            if not current:
+                raise ValueError("room authority has already advanced")
+            self._conn.commit()
+            return previous_target
 
     def _prune_stale_terminal_locked(self, now: float) -> None:
         """Prune aged replay records only once their stored run is terminal (caller holds the

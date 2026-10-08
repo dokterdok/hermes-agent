@@ -36,7 +36,7 @@ def _pin_api_identity(runner, source, *, transport_profile=None):
     return identity.transport_profile if identity is not None else None
 
 
-def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None):
+def bind_api_session(authority, session_id, *, hosted_dispatch=None, hosted_origin_home=None, declared_key=None):
     """Only the authenticated API edge may reserve an API source; never public RPC."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
@@ -48,7 +48,7 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
         # A verified successor of the room keeps the member session its original home opened.
         from gateway.hosted_room_succession import member_session_home
         home = member_session_home(authority.db.db_path, room_id=dispatch.room_id,
-                                   home_install_id=dispatch.home_install_id)
+                                   home_install_id=hosted_origin_home or dispatch.home_install_id)
         room_identity = [home, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
         expected = 'room_' + hashlib.sha256('\0'.join(room_identity).encode()).hexdigest()[:32]
         if expected != session_id:

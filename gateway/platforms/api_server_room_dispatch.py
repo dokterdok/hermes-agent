@@ -24,8 +24,9 @@ async def _ensure_hosted_member_session(self, dispatch: Any, *, create=True) -> 
     title = f"Group: {dispatch.room_id}"
     from gateway.hosted_room_succession import member_session_id
     from gateway.platforms.api_server_room_grants import _grant_db
+    home = self._run_idempotency_store.room_origin_home(dispatch.as_mapping())
     session_id = member_session_id(
-        _grant_db(self), home_install_id=dispatch.home_install_id, room_id=dispatch.room_id,
+        _grant_db(self), home_install_id=home, room_id=dispatch.room_id,
         member_id=dispatch.member_id, target_profile=dispatch.target_profile)
     if not create:
         return session_id
@@ -35,7 +36,8 @@ async def _ensure_hosted_member_session(self, dispatch: Any, *, create=True) -> 
         from gateway.session_api import bind_api_session
         if db is not authority.db:
             raise RuntimeError('profile_mismatch')
-        return bind_api_session(authority, session_id, hosted_dispatch=dispatch.as_mapping()).session_id
+        return bind_api_session(authority, session_id, hosted_dispatch=dispatch.as_mapping(),
+                                hosted_origin_home=home).session_id
 
     def atomic(conn):
         row = conn.execute("SELECT id, title, source FROM sessions WHERE id=?", (session_id,)).fetchone()
