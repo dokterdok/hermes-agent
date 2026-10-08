@@ -210,7 +210,7 @@ def test_terminal_callback_follows_canonical_drain_without_polling(hosted_owner,
         return 'canonical reply'
     # This RPC component fixture supplies the service gate explicitly; daemon
     # coverage exercises the real durable member/task authorizer.
-    authority.runner._adapter_for_source = lambda source: authority.runner.adapters[source.platform]
+    authority.runner._intake_adapter_for = authority.runner._delivery_adapter_for = lambda source: authority.runner.adapters[source.platform]
     authority.hosted_room_service = SimpleNamespace(
         check_admission=lambda ref, row, **kwargs: (lambda conn, selected: None) if kwargs.get('_for_claim') else True)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
@@ -396,3 +396,30 @@ def test_old_producer_stop_does_not_target_a_later_explicit_retry(hosted_owner, 
     else:
         assert stopped == {'interrupted': False, 'status': 'running'}
         assert current['status'] == 'started' and agent.interrupted
+
+
+def test_room_member_turns_cannot_block_on_an_unanswerable_clarify(hosted_owner, monkeypatch):
+    """A room has no clarification reply and hosted principals lack session:respond, so a
+    member turn that called clarify would block for clarify_timeout with its question never
+    shown. The frozen member policy must exclude the tool even when the profile's toolsets
+    (here the hermes-cli bundle) include it; the member asks in its room reply instead."""
+    from gateway import run
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.session_local_recovery import local_adapter_map
+    from gateway.config import Platform
+    from agent.skill_utils import parse_config_string_list
+    from model_tools import get_tool_definitions
+
+    authority, loop, principal, _ = hosted_owner
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {
+        'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': ['hermes-cli']}})
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='one', profile='default',
+                                 principal=principal, authorize=lambda *args: True)
+    sid = rpc.create(profile='default', title='Group: room', source='bot_room')['session_id']
+    policy = local_adapter_map(authority)[Platform.LOCAL].policies[sid]
+    # The same derivation the turn uses: frozen toolsets minus the frozen agent.disabled_toolsets.
+    disabled = parse_config_string_list((policy.config().get('agent') or {}).get('disabled_toolsets'))
+    tools = {t['function']['name'] for t in get_tool_definitions(
+        enabled_toolsets=list(policy.toolsets), disabled_toolsets=disabled or None, quiet_mode=True)}
+    assert 'terminal' in tools
+    assert 'clarify' not in tools

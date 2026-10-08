@@ -7,6 +7,8 @@ transport queue. Callers supply the database path (production handlers use the g
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import hashlib
 import json
 import re
@@ -816,7 +818,7 @@ def _reservation_superseded(row: sqlite3.Row, gateway_id: str, epoch: int) -> bo
 
 
 def reserve_peer_room(
-    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None,
+    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None, conn=None,
     _authorize: Callable[[sqlite3.Connection], None] | None = None) -> None:
     """Fence direct Desktop prompts before the first peer run is admitted."""
     timestamp = _now(now)
@@ -825,7 +827,7 @@ def reserve_peer_room(
         raise HostedRoomError("peer room reservation must expire in the future")
     values = _reservation_claims(claims)
     room_id, _, target_profile, gateway_id, epoch = values
-    with _transaction(db_path, immediate=True) as conn:
+    with nullcontext(conn) if conn is not None else _transaction(db_path, immediate=True) as conn:
         if _authorize is not None:
             _authorize(conn)
         conn.execute("DELETE FROM hosted_room_peer_reservations WHERE expires_at<=?", (timestamp,))

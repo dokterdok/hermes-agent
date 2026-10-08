@@ -103,3 +103,89 @@ def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tm
         peer.shutdown()
         peer.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, monkeypatch):
+    """A drain that runs while the model receipt commits off-loop sees the new stored policy beside
+    the old live one and pauses; publishing the policy must wake it, or the input stays queued
+    until another submit or a restart."""
+    import time
+    from types import SimpleNamespace
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import Submission
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_local import create_local_session
+    import hermes_cli.model_switch as model_switch
+    import hermes_state_runtime as rt
+    monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model='switched', target_provider='custom', base_url='http://127.0.0.1:9/v1'))
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    executed = []
+
+    async def handle(event):
+        executed.append(event.text)
+        return 'ok'
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None, _handle_message=handle,
+                             _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
+                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    ref = create_local_session(authority, owner.actor, dict(request_id='m', source='cli', cwd=str(tmp_path),
+                                                            model='frozen', toolsets=[]))
+    # A contended receipt transaction: the commit thread holds it open while the loop runs.
+    entered = threading.Event()
+    db._conn.create_function('hold_receipt', 1, lambda s: (entered.set(), time.sleep(s))[1] or 0)
+    db._execute_write(lambda c: c.execute("CREATE TRIGGER hold_receipt AFTER INSERT ON state_meta "
+                                          "WHEN NEW.key LIKE 'gateway.mutation.v1.%' BEGIN SELECT hold_receipt(0.4); END"))
+    snap = db.get_session(ref.session_id)
+    try:
+        mutation = asyncio.create_task(owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': 'switch', 'expected_revision': snap['runtime_revision'],
+            'expected_generation': snap['runtime_generation'], 'operation': 'model', 'payload': {'model': 'switched'}}}))
+        await asyncio.to_thread(entered.wait, 5)
+        queued = await authority.submit(owner.actor, Submission('during-switch', ref, {'text': 'FOLLOWER'}, 'queue'))
+        assert (await mutation)['result']['model'] == 'switched'
+        async with asyncio.timeout(10):
+            while rt.get_session_admission(db, admission_id=queued.admission_id)['status'] != 'terminal':
+                await asyncio.sleep(0.05)
+        assert executed == ['FOLLOWER']
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_provider_change_drops_the_launch_key_and_keeps_config_secrets(tmp_path, monkeypatch):
+    """A session created with an explicit --api-key AND secret-bearing config can change provider:
+    the launch key must not cross providers, the frozen config secrets stay bound."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import bind_launch_key, build_policy, restore_policy
+    from hermes_state import SessionDB
+    import hermes_cli.model_switch as model_switch
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model='b', target_provider='anthropic', provider_changed=True,
+        base_url='https://api.anthropic.com'))
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db, runner=SimpleNamespace(
+            _resolve_session_agent_runtime=lambda **k: (None, {'api_key': 'sk-launch'})))
+        private = {}
+        config = {'model': {'provider': 'openrouter', 'default': 'a'},
+                  'providers': {'mine': {'api_key': 'sk-config-secret', 'base_url': 'http://127.0.0.1:9/v1'}}}
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'a', 'api_key': 'sk-launch'}, config, private_secrets=private)
+        policy = bind_launch_key(authority, 'sid', policy, 'sk-launch', config_secrets=private)
+        assert policy.credential_ref and policy.config_secret_ref
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+        switched = restore_policy((await prepare_model(authority, SimpleNamespace(source=None, route='r'),
+                                                       {'model': 'b', 'provider': 'anthropic'}, prepared))['policy'])
+        assert switched.credential_ref is None, 'the launch key crossed into another provider'
+        assert switched.config(authority)['providers']['mine']['api_key'] == 'sk-config-secret'

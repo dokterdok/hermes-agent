@@ -6,6 +6,8 @@ import socket
 import sqlite3
 import time
 
+import pytest
+
 from tests.gateway.fixtures.local_recovery_probe import daemon
 from tests.gateway.test_api_room_admission_cancellation import _signed
 from tests.gateway.test_session_group_peer_composition import _http
@@ -25,7 +27,8 @@ def dispatch_body(invitation, home, epoch, task, prompt):
         'execution_policy_digest': catalog['execution_policy']['policy_digest']}}
 
 
-def test_changed_home_refuses_paused_canonical_writer_and_accepts_successor_after_restart(tmp_path):
+@pytest.mark.parametrize('advancing_member', ['reviewer', 'other-member'])
+def test_changed_home_refuses_paused_canonical_writer_and_accepts_successor_after_restart(tmp_path, advancing_member):
     root = Path(__file__).resolve().parents[2]
     model = _model('SUCCESSOR_REPLY')
     with socket.socket() as sock:
@@ -39,6 +42,8 @@ def test_changed_home_refuses_paused_canonical_writer_and_accepts_successor_afte
             invite = {'room_id': 'lineage-room', 'home_install_id': 'original',
                       'authority_gateway_id': 'original', 'authority_epoch': 1, 'member_id': 'reviewer'}
             original = _http(url, '/v1/room-members/invitations', body=invite)
+            if advancing_member != 'reviewer':
+                _http(url, '/v1/room-members/invitations', body={**invite, 'member_id': advancing_member})
             old_body = dispatch_body(original, 'original', 1, 'old', 'CANCEL_BEFORE_CANONICAL_WRITE')
             pending = worker.submit(_signed, url, original, '/v1/runs', old_body)
             deadline = time.monotonic() + 30
@@ -46,6 +51,7 @@ def test_changed_home_refuses_paused_canonical_writer_and_accepts_successor_afte
                 time.sleep(.02)
             assert (home / 'pre-admission-entered').exists()
             successor = _http(url, '/v1/room-members/invitations', body={**invite,
+                'member_id': advancing_member,
                 'home_install_id': 'successor', 'authority_gateway_id': 'successor', 'authority_epoch': 2,
                 'previous_authority': {key: invite[key] for key in (
                     'home_install_id', 'authority_gateway_id', 'authority_epoch')}})
@@ -55,6 +61,11 @@ def test_changed_home_refuses_paused_canonical_writer_and_accepts_successor_afte
             assert not model.requests
             with sqlite3.connect(home / 'state.db') as db:
                 assert db.execute("SELECT COUNT(*) FROM session_admissions WHERE principal_id='api'").fetchone()[0] == 0
+            if advancing_member != 'reviewer':
+                successor = _http(url, '/v1/room-members/invitations', body={**invite,
+                    'home_install_id': 'successor', 'authority_gateway_id': 'successor', 'authority_epoch': 2,
+                    'previous_authority': {key: invite[key] for key in (
+                        'home_install_id', 'authority_gateway_id', 'authority_epoch')}})
         with daemon(root, home, env, barrier=True, fixture=fixture):
             assert _signed(url, original, '/v1/runs', old_body)[0] in {401, 403, 409}
             winner = dispatch_body(successor, 'successor', 2, 'winner', 'SUCCESSOR_NEW_SEND')

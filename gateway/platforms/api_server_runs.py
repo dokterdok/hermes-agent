@@ -233,6 +233,8 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._stopping_run_ids: set[str] = set()
     self._shutdown_interrupted_run_ids: set[str] = set()
     self._run_shutdown_requested_at: Optional[float] = None
+    # Streaming run id -> its canonical admission id, held while that request observes the turn.
+    self._run_admission_aliases: dict[str, str] = {}
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
@@ -382,14 +384,14 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
     if self._room_grant_token(request):
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
-        from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+        from gateway.platforms.api_server_run_authority import room_authority, room_namespace, room_run_scope
         authority = room_authority(claims)
         try:
             request[_ROOM_AUTHORITY_REQUEST_KEY] = authority
         except (AttributeError, TypeError):
             setattr(request, "_hermes_room_run_authority", authority)
         scope = room_run_scope(claims)
-        self._run_idempotency_store.observe_room_authority(scope, authority)
+        self._run_idempotency_store.observe_room_authority(scope, authority, namespace=room_namespace(claims), claims=claims)
         return scope
     else:
         parts = (_api_server._api_request_profile.get() or "default",
@@ -405,6 +407,26 @@ def _check_run_auth(self, request: "web.Request", *, permission: str, _api_serve
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_api_server._openai_error)
     return None
+
+
+def _reserve_room_run(self, request, *args, **kwargs):
+    """Recheck a captured peer only for a new row, under the grant accepting writer.
+
+    This guard also survives a RunStore publication failure after a successful
+    grant commit. Existing run controls retain their original replay authority.
+    """
+    if not self._room_grant_token(request):
+        return self._run_idempotency_store.reserve(*args, **kwargs)
+    from gateway import hosted_rooms
+    from gateway.platforms.api_server_room_grants import _grant_db, _room_grant_claims
+    with hosted_rooms._transaction(_grant_db(self), immediate=True) as conn:
+        def authorized():
+            try:
+                _room_grant_claims(self, request, permission=_room_permission_for(request), conn=conn)
+                return True
+            except ValueError:
+                return False
+        return self._run_idempotency_store.reserve(*args, **kwargs, _authorize=authorized)
 
 
 def _owner_alive(owner_pid: int, owner_started: int) -> bool:
@@ -781,7 +803,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     initial_status = self._set_run_status(
         run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
     if idempotency_key:
-        outcome, record = self._run_idempotency_store.reserve(
+        outcome, record = _reserve_room_run(self, request,
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
             owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
             retention_until=_room_retention_until(request),
@@ -1467,7 +1489,7 @@ async def _handle_stop_run_admission(self, request: "web.Request", *, _api_serve
     cancelled = {
         "object": "hermes.run", "run_id": run_id, "status": "cancelled",
         "admission_cancelled": True, "created_at": now, "updated_at": now}
-    outcome, record = self._run_idempotency_store.reserve(
+    outcome, record = _reserve_room_run(self, request,
         scope, request.headers["Idempotency-Key"].strip(), "", run_id, cancelled,
         retention_until=_room_retention_until(request), cancel_if_missing=True,
         room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))

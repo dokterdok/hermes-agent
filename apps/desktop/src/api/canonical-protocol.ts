@@ -42,6 +42,11 @@ function mutationSummary(operation: string, value: Record<string, unknown>): str
 // stored parent id; the authority has ONE branch, a `branch` mutation on the parent, whose child
 // is a local route the authority can restore (a legacy-minted child has no local policy and every
 // resume on it answers not_found).
+// The socket is bound to a profile already; only a sibling the host multiplexes rides as `profile`.
+export function siblingRoute(profile: unknown): string | null {
+  return typeof profile === 'string' && profile && profile !== 'default' ? profile : null
+}
+
 const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
 const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', ...BRANCH_METHODS])
 
@@ -162,14 +167,13 @@ export class CanonicalDesktopProtocol {
   }
 
   private prepareCreate(params: Record<string, unknown>): Record<string, unknown> {
-    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config'])
+    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config', 'room_plumbing'])
     const unsupported = Object.keys(params).filter(key => !allowed.has(key) && !(key === 'fast' && params[key] === false))
 
     if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
 
-    // The socket is bound to a profile already; only a sibling the host multiplexes rides as `profile`.
     const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-      ['request_id', 'cwd', 'model', 'toolsets', 'title', 'hidden'].includes(key) || (key === 'profile' && value && value !== 'default')))
+      ['request_id', 'cwd', 'model', 'toolsets', 'title', 'hidden', 'room_plumbing', 'follow_profile_config'].includes(key) || (key === 'profile' && siblingRoute(value))))
 
     const key = JSON.stringify(result)
     const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
