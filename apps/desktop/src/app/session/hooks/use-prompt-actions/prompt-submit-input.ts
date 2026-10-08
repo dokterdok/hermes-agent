@@ -1,3 +1,4 @@
+import { translateNow } from '@/i18n'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import {
@@ -6,9 +7,10 @@ import {
   stopVoicePlayback,
   takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
-import { terminalContextBlocksFromDraft } from '@/store/composer'
+import { freezeComposerTransportPayload } from '@/store/composer'
 import type { ComposerAttachment } from '@/store/composer'
 import { serverOwnsComposerQueue } from '@/store/composer-queue'
+import { notify } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import { $sessionStates } from '@/store/session-states'
 
@@ -21,7 +23,6 @@ export function captureComposerSubmitInput(
   options: SubmitTextOptions | undefined,
   scope: { readAttachments: () => ComposerAttachment[] }
 ) {
-  const visibleText = sanitizeComposerInput(rawText).trim()
   const usingComposerAttachments = !options?.attachments
 
   // Drop undefined/null holes a session switch or draft restore can leave in
@@ -35,7 +36,31 @@ export function captureComposerSubmitInput(
 
   const titlePreview = attachments.find(a => typeof a.titlePreview === 'string' && a.titlePreview.trim())?.titlePreview
 
-  const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
+  // Queue drains already carry the frozen transport, independent of later terminal selections.
+  let transportRaw = rawText
+  let bubbleOverride = options?.displayText
+
+  if (!options?.fromQueue) {
+    const frozen = freezeComposerTransportPayload(rawText)
+
+    if (frozen.missingLabels.length > 0) {
+      notify({
+        kind: 'warning',
+        title: translateNow('composer.terminalSelectionMissingTitle'),
+        message: translateNow('composer.terminalSelectionMissingBody')
+      })
+
+      return null
+    }
+
+    transportRaw = frozen.transportText
+
+    if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
+      bubbleOverride = frozen.displayText
+    }
+  }
+
+  const visibleText = sanitizeComposerInput(transportRaw).trim()
   const hasImage = attachments.some(a => a.kind === 'image')
 
   // Refs are recomputed after sync (file.attach rewrites @file: refs to
@@ -56,7 +81,7 @@ export function captureComposerSubmitInput(
       .join('\n')
 
     return (
-      [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+      [contextRefs, visibleText].filter(Boolean).join('\n\n') ||
       (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
     )
   }
@@ -66,7 +91,7 @@ export function captureComposerSubmitInput(
     usingComposerAttachments,
     attachments,
     titlePreview,
-    terminalContextBlocks,
+    bubbleOverride,
     hasImage,
     attachmentRefs,
     buildContextText
@@ -75,12 +100,12 @@ export function captureComposerSubmitInput(
 
 /** Admission preflight keeps target busy/queue policy, voice barge-in and deferred provider warning in their original order. */
 export function beginComposerSubmission(
-  input: ReturnType<typeof captureComposerSubmitInput>,
+  input: NonNullable<ReturnType<typeof captureComposerSubmitInput>>,
   options: SubmitTextOptions | undefined,
   activeSessionId: string | null,
   busy: boolean
 ) {
-  const { visibleText, terminalContextBlocks, attachments, hasImage } = input
+  const { visibleText, attachments, hasImage } = input
   // Queue drains fire on the busy→false settle edge, where busyRef (synced
   // from $busy by a separate effect) may still read true — honoring it would
   // bounce the drained send. The drain lock serializes them; the user path
@@ -90,7 +115,7 @@ export function beginComposerSubmission(
   // not the foreground flag: an explicit target (tile, queue drain) is
   // frequently not the session on screen, so the foreground flag would gate
   // one session's send on another session's turn.
-  const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
+  const hasSendable = Boolean(visibleText || attachments.length || hasImage)
 
   const guardSessionId = options?.sessionId ?? activeSessionId
   const serverQueue = serverOwnsComposerQueue(options?.storedSessionId ?? guardSessionId)

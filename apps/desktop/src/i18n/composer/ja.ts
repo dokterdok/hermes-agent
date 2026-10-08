@@ -29,6 +29,7 @@ export const jaComposer: NonNullable<TranslationOverrides['composer']> = {
   startVoice: '音声会話を開始',
   openDirective: '開く',
   queueMessage: 'メッセージをキューに入れる',
+  redirect: '現在の実行をリダイレクト',
   stop: '停止',
   send: '送信',
   speaking: '話しています',
@@ -122,7 +123,7 @@ export const jaComposer: NonNullable<TranslationOverrides['composer']> = {
     '/init': 'リポジトリを調べて AGENTS.md の指示を作成または更新',
     '/suggestions': '提案された自動化を確認し、採用または却下',
     '/blueprint': 'ブループリントから自動化を設定',
-    '/browser': 'ローカルブラウザー接続を管理',
+    '/browser': 'エージェントのブラウザーを管理 [connect|disconnect|status|use]',
     '/palette': 'コマンドパレットを開く',
     '/usage': 'このセッションのトークン使用量を表示',
     '/subscription': 'Nous のプランを確認し、ブラウザーで変更',
@@ -156,7 +157,14 @@ export const jaComposer: NonNullable<TranslationOverrides['composer']> = {
   editingQueuedInComposer: 'コンポーザーでキュー済みターンを編集中',
   restoredDraftNotice: '未送信のメッセージを復元しました',
   restoredDraftUndo: '元に戻す',
+  localSetup: {
+    title: 'このコンピューターで実行できます',
+    text: (model: string) => `${model} はこのマシンで動きます。無料で、チャットはこのコンピューターから出ません。`,
+    action: '見てみる'
+  },
   queueEdit: '編集',
+  queueExpand: '展開',
+  queueCollapse: '折りたたむ',
   queueSendNext: '次に送信',
   queueSteer: 'ステア — 現在のターンを今すぐ修正',
   queueSend: '送信',
@@ -174,6 +182,11 @@ export const jaComposer: NonNullable<TranslationOverrides['composer']> = {
   queueDroppedTitle: 'キューのエントリを破棄しました',
   queueDroppedBody:
     'このバックグラウンドのエントリは、セッションを繰り返し再開できなかったため破棄されました。キューの他のエントリには影響しません。',
+  terminalSelectionMissingTitle: 'ターミナル選択を利用できません',
+  terminalSelectionMissingBody:
+    '送信前にターミナル行を再選択（Ctrl/Cmd+L）してください — チップに元のテキストがありません。',
+  queuedTerminalSelectionExpiredBody:
+    'キュー内のターミナル選択はもう利用できません。行を再選択（Ctrl/Cmd+L）して、もう一度キューに入れてください。',
   previewUnavailable: 'プレビューは利用できません',
   previewLabel: label => `${label} のプレビュー`,
   couldNotPreview: label => `${label} をプレビューできませんでした`,

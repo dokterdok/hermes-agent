@@ -67,7 +67,11 @@ export interface ComposerMessages {
   editingQueuedInComposer: string
   restoredDraftNotice: string
   restoredDraftUndo: string
+  /** The local-setup offer above the input after the first finished task. */
+  localSetup: { title: string; text: (model: string) => string; action: string }
   queueEdit: string
+  queueExpand: string
+  queueCollapse: string
   queueSendNext: string
   queueSend: string
   queueSteer: string
@@ -82,6 +86,9 @@ export interface ComposerMessages {
   queueStuckBody: string
   queueDroppedTitle: string
   queueDroppedBody: string
+  terminalSelectionMissingTitle: string
+  terminalSelectionMissingBody: string
+  queuedTerminalSelectionExpiredBody: string
   previewUnavailable: string
   previewLabel: (label: string) => string
   couldNotPreview: (label: string) => string

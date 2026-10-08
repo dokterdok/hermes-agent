@@ -132,7 +132,7 @@ export const enComposer: ComposerMessages = {
     '/init': 'Generate or update AGENTS.md project instructions from a repo scan',
     '/suggestions': 'Review suggested automations (accept/dismiss)',
     '/blueprint': 'Set up an automation from a blueprint template',
-    '/browser': 'Manage browser CDP connection [connect|disconnect|status] (local gateway only)',
+    '/browser': 'Manage the agent browser [connect|disconnect|status|use]',
     '/palette': 'Open the fuzzy command palette (also Ctrl+P)',
     '/usage': 'Show token usage and rate limits; `reset` redeems a banked Codex limit reset',
     '/subscription': 'View your Nous plan and change it in the browser',
@@ -167,7 +167,14 @@ export const enComposer: ComposerMessages = {
   editingQueuedInComposer: 'Editing queued turn in composer',
   restoredDraftNotice: 'Restored your unsent message',
   restoredDraftUndo: 'Undo',
+  localSetup: {
+    title: 'This could run on your computer',
+    text: (model: string) => `${model} fits this machine. Free, and chats stay on your computer.`,
+    action: 'Show me'
+  },
   queueEdit: 'Edit',
+  queueExpand: 'Expand',
+  queueCollapse: 'Collapse',
   queueSendNext: 'Next',
   queueSteer: 'Steer — redirect the live turn now',
   queueSend: 'Send',
@@ -184,6 +191,11 @@ export const enComposer: ComposerMessages = {
   queueDroppedTitle: 'Queued prompt dropped',
   queueDroppedBody:
     'This background queue entry was dropped because its session could not be resumed after repeated attempts. Nothing else in the queue was affected.',
+  terminalSelectionMissingTitle: 'Terminal selection unavailable',
+  terminalSelectionMissingBody:
+    'Re-select the terminal lines (Ctrl/Cmd+L) before sending — this chip has no original text.',
+  queuedTerminalSelectionExpiredBody:
+    'This queued terminal selection is no longer available. Re-select the lines (Ctrl/Cmd+L) and queue the message again.',
   previewUnavailable: 'Preview unavailable',
   previewLabel: label => `Preview ${label}`,
   couldNotPreview: label => `Could not preview ${label}`,
