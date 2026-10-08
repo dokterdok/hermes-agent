@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import tempfile
 
@@ -42,8 +43,11 @@ def sniff_image_mime(data):
     return None
 
 
-def admit_attachments(attachments):
-    """Wire ``attachments: [{path, mime}]`` -> committed payload fields (``{}`` when absent)."""
+def admit_attachments(attachments, *, admitted=None):
+    """Wire ``attachments: [{path, mime}]`` -> committed payload fields (``{}`` when absent).
+
+    ``admitted()`` returns the durable admission already holding this request's identity (or
+    ``None``): a lost-ACK retry whose disposable staging file is gone reconciles against it."""
     if attachments is None:
         return {}
     if (not isinstance(attachments, list) or not attachments or len(attachments) > _ATTACHMENT_LIMIT
@@ -56,14 +60,36 @@ def admit_attachments(attachments):
     paths = [Path(item['path']) for item in attachments]
     if any(not path.is_absolute() or path.resolve().parent != staging for path in paths):
         raise RuntimeStoreError('invalid_params')
+    mimes = [item['mime'] for item in attachments]
+    row = admitted() if admitted is not None else None
+    committed = row['payload'].get('attachments_v1') if row is not None else None
     # A hardlink placed in staging is a second name for a file outside it (~/.ssh/id_rsa).
     try:
         if any(path.lstat().st_nlink != 1 for path in paths):
             raise RuntimeStoreError('invalid_params')
-    except OSError as exc:
+        # Retry identity is the committed bytes, not the disposable staging name: a client that
+        # re-staged the same image under a new name is retrying, not sending different work.
+        retry = (committed is not None and committed['media_types'] == mimes
+                 and [r['sha256'] for r in committed['media']] == [_sha256(path) for path in paths])
+    except FileNotFoundError as exc:
+        if (committed is None or [Path(r['path']).name for r in committed['media']] != [p.name for p in paths]
+                or committed['media_types'] != mimes):
+            raise RuntimeStoreError('invalid_params') from exc
+        retry = True
+    except (OSError, ValueError) as exc:
         raise RuntimeStoreError('invalid_params') from exc
-    return {'attachments_v1': {'media': capture_native_media(paths),
-                               'media_types': [item['mime'] for item in attachments]}}
+    if retry:
+        # A live row still executes these bytes, so they must verify; a terminal row is
+        # exact-retry evidence by digest only. ``admit_session_input`` still checks the digest.
+        if row['status'] != 'terminal':
+            restore_native_media(committed['media'])
+        return {'attachments_v1': committed}
+    return {'attachments_v1': {'media': capture_native_media(paths), 'media_types': mimes}}
+
+
+def _sha256(path):
+    with _open_regular(path) as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
 def restore_attachments(payload):
@@ -221,16 +247,34 @@ def release_admission_media(db, admission_id):
     replayed. Rows that are not terminal (queued, started, unknown) may still
     execute, so any path they reference stays on disk; API image references stay
     on disk in every status because they remain history context after settlement,
-    and are holders only, never deletion candidates. Different regular files can
-    collect independently; physical aliases and uncertain stat results retain
-    conservatively. A shared hardlink can consequently retain an extra old alias.
+    and are holders only (see ``collect_unheld_api_images``). Different regular
+    files can collect independently; physical aliases and uncertain stat results
+    retain conservatively. A shared hardlink can consequently retain an extra old alias.
     """
     from hermes_state_runtime import get_session_admission
     row = get_session_admission(db, admission_id=admission_id)
     if row is None or row['status'] != 'terminal':
         return 0
-    mine = admission_media_references(row['payload'])
-    if not mine:
+    return release_unheld_media(db, admission_media_references(row['payload']))
+
+
+_API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
+
+
+def collect_unheld_api_images(db):
+    """Collect retained API images no admission holds any more: deleting a chat retires its
+    admissions and erases their references, so those bytes have no owner left. Only the exact
+    name ``commit_api_images`` gives (``api_<sha256[:32]><ext>`` under its own digest) is a
+    candidate; retained hosted documents are held by prompt text, never by a media reference."""
+    root = _media_root()
+    return release_unheld_media(db, [
+        {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
+        if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
+
+
+def release_unheld_media(db, references):
+    """Delete each retained reference no admission holds (by path or physical identity)."""
+    if not references:
         return 0
     root = _media_root()
     def collect(conn):
@@ -239,7 +283,7 @@ def release_admission_media(db, admission_id):
         if identities is None:
             return 0
         released = 0
-        for reference in mine:
+        for reference in references:
             path = Path(reference['path'])
             if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
                 continue

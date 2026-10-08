@@ -548,7 +548,7 @@ async def test_forged_scope_and_named_owner_never_gain_classic_sharing(classic_r
         unsupported = await rpc(fixture, "gateway.capabilities")
     finally:
         fixture.authority.profile_id = original_profile
-    assert unsupported["result"] == {"classic_output_export_v1": False}
+    assert unsupported["result"] == {"classic_output_export_v1": False, "per_session_exclusive_submit": True}
 
 
 @pytest.mark.asyncio
@@ -890,6 +890,18 @@ async def test_unknown_resolution_retires_and_replays_failed_physical_cleanup(
         generation=submitted["result"]["classic_export"]["generation"],
     )
     assert before["error"]["message"] == "classic_export_unavailable"
+
+    fixture.db.append_message(fixture.authority.physical_target(ref), "user", "unclosed lost turn")
+    fixture.db._execute_write(lambda conn: conn.execute(
+        "CREATE TRIGGER classic_boundary_failure BEFORE INSERT ON messages "
+        "WHEN NEW.role='assistant' BEGIN SELECT RAISE(ABORT,'boundary unavailable'); END"))
+    refused = await rpc(fixture, "prompt.resolve_unknown", session_id=fixture.session_id,
+        admission_id=claimed["admission_id"], execution_generation=claimed["generation"])
+    assert "error" in refused
+    assert get_session_admission(fixture.db, admission_id=claimed["admission_id"])["status"] == "unknown"
+    assert ClassicExports(fixture.home).status(submitted["result"]["classic_export"]["export_id"])["state"] == "running"
+    assert blob.exists()
+    fixture.db._execute_write(lambda conn: conn.execute("DROP TRIGGER classic_boundary_failure"))
 
     original_discard = RoomArtifactOutbox.discard
     from gateway import session_classic_output

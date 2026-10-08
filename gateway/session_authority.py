@@ -62,6 +62,8 @@ class SessionAuthority:
         # Stops accepted for a running generation whose agent does not exist yet
         # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
         self.pending_stops = {}
+        # Set by profile retirement (unserve): the drain claims no successor after its running turn.
+        self.retiring = False
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -93,7 +95,7 @@ class SessionAuthority:
             raise RuntimeStoreError('permission_denied')
 
     def _require_admission_open(self):
-        if self.runner._draining:
+        if self.runner._draining or self.retiring:
             raise RuntimeStoreError('runtime_draining')
 
     def logical_owner(self, session_id):
@@ -214,6 +216,13 @@ class SessionAuthority:
             live.task = asyncio.create_task(self._drain(ref))
             live.task.add_done_callback(_log_drain_failure)
 
+    def wake_after_worker(self, session_id):
+        """A worker execution on ``session_id`` (a logical owner or its compression continuation)
+        ended: a drain that parked behind it re-runs. A no-op while a drain is running."""
+        for sid in dict.fromkeys((session_id, self.logical_owner(session_id))):
+            if sid in self.sessions:
+                self._schedule(SessionRef(self.profile_id, sid))
+
     def _pause(self, ref, reason):
         """The FIFO stopped without claiming its head. Committed rows stay queued for a later
         drain; only the process-local messaging delivery waiters on this session are released,
@@ -314,8 +323,17 @@ class SessionAuthority:
         from gateway.session_finite import admit_finite
         from gateway.session_surface import admit_surface
         finite = admit_finite(request.payload)
+        def admitted():
+            # The exact durable identity (authenticated principal + target + request id); the
+            # attachment fields it yields still pass the full payload-digest comparison below.
+            with self.db._read_ctx() as conn:
+                row = conn.execute('SELECT * FROM session_admissions WHERE principal_id=? AND '
+                                   'target_session_id=? AND request_id=?', (actor.subject,
+                                   request.ref.session_id, request.request_id)).fetchone()
+            from hermes_state_runtime import _row
+            return _row(row) if row is not None else None
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
-                   **admit_attachments(request.payload.get('attachments'))}
+                   **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
         if 'classic_export_v1' in request.payload:
             from gateway.classic_output_exports import (
                 CANONICAL_BINDING_VERSION,
@@ -402,26 +420,24 @@ class SessionAuthority:
         return self._receipt(row)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):
-        """Operator acknowledgement that a turn lost across an owner restart will not
-        finish; the paused FIFO behind it resumes. Never requeues the lost input."""
+        """Resolve unknown execution with its transcript and classic custody in one write."""
         self.authorize(actor, ref, 'session:control')
         await self.receipt(actor, ref, admission_id)
         admission = get_session_admission(self.db, admission_id=admission_id)
         if admission is None:
             raise RuntimeStoreError('not_found')
         from gateway.session_classic_output import cleanup_terminal, terminal_write
-        row = resolve_unknown_session_input(
-            self.db,
-            epoch=self.epoch,
-            admission_id=admission_id,
-            generation=generation,
-            _terminal_write=terminal_write(self, admission),
-        )
-        cleanup_terminal(self, admission, row)
-        # Before the follower is scheduled: its request must not carry the discarded text merged in.
-        from gateway.session_local_recovery import transcript_target
         from gateway.session_results import close_discarded_turn
-        close_discarded_turn(self.db, transcript_target(self, ref))
+        classic_write = terminal_write(self, admission)
+        def close_and_retire(conn, lost, outcome, result):
+            close_discarded_turn(self.db, conn, lost)
+            if classic_write is not None:
+                classic_write(conn, lost, outcome, result)
+        row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
+                                            generation=generation, _terminal_write=close_and_retire)
+        cleanup_terminal(self, admission, row)
+        from gateway.session_ingress_media import release_admission_media
+        release_admission_media(self.db, admission_id)
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)
@@ -549,9 +565,18 @@ class SessionAuthority:
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                 self._pause(ref, exc.reason)
                 return
+            if row is None and first is not None:
+                # Not empty: a live worker (or a claim this drain does not own) blocks the head.
+                # Release the delivery waiters like any pause; the worker's finish wakes the FIFO
+                # (``wake_after_worker``) and the drain then answers through the adapter.
+                self._pause(ref, 'session_busy')
+                return
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False
             if row is None:
+                # A viewer that left while this work ran could not end the ACP session then.
+                from gateway.session_acp_lifecycle import end_idle_acp_session
+                end_idle_acp_session(self, ref.session_id)
                 return
             admission_id = row['admission_id']
             with live.event_stream.lock:

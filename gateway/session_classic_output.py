@@ -394,11 +394,12 @@ def capabilities(connection, params):
         raise RuntimeStoreError("invalid_params")
     if not connection.actor.capabilities:
         raise RuntimeStoreError("permission_denied")
+    from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
     try:
         installation = _installation(connection.authority)
     except RuntimeStoreError:
-        return {"classic_output_export_v1": False}
-    from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
+        return {"classic_output_export_v1": False,
+                "per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)}
 
     return {
         "per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT),

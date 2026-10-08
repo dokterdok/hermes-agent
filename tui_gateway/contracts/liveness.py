@@ -20,6 +20,9 @@ method("ping", params=PingParams, result=PingResult,
 
 class GatewayCapabilitiesResult(Result):
     per_session_exclusive_submit: bool
+    classic_output_export_v1: bool | None = None
+    installation: str | None = None
+    classic_exact_generation_v1: bool | None = None
 
 
 method("gateway.capabilities", params=PingParams, result=GatewayCapabilitiesResult,
