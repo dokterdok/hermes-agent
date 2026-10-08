@@ -84,6 +84,13 @@ class DaemonProcess(subprocess.Popen):
         self.gateway = gateway  # psutil retains birth identity to reject PID reuse.
 
     def kill(self):
+        if self.gateway == self.launcher:
+            # Popen owns waitpid for its direct child. A psutil.wait here would
+            # reap SIGKILL first, making the later Popen.wait report an invented 0.
+            super().kill()
+            self.wait(timeout=10)
+            assert not self.launcher.is_running()
+            return
         try:
             targets = [self.gateway] if self.gateway is not None else self.launcher.children(recursive=True)
         except psutil.NoSuchProcess:
