@@ -6,7 +6,8 @@ import re
 import time
 
 from gateway.hosted_room_attachments import default_attachment_root
-from gateway.session_ingress_media import _media_root, _file_identity, _held_media_paths, _held_file_identities, _sync_directory
+from gateway.session_ingress_media import _media_root, _file_identity, _held_media_paths, _held_file_identities
+from gateway.hosted_room_input_cleanup import remove_sealed_copy
 from hermes_state_input_custody import copy_is_held, seal_copy
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
@@ -130,11 +131,8 @@ def _collect(db, *, epoch, limit, namespace):
             path = copy_path(db, row)
             if copy_is_held(conn, row, time.time()) or _external_holds(conn, db, row, path, time.time()):
                 return 0
-            if path.exists() or path.is_symlink():
-                if verified_identity(path, row['digest'], row['size']) != (row['device'], row['inode']):
-                    return 0
-                path.unlink()
-                _sync_directory(path.parent)
+            if not remove_sealed_copy(path, row):
+                return 0
             conn.execute("UPDATE input_custody_copies SET state='removed' WHERE copy_id=?", (copy_id,))
             return 1
         try:
