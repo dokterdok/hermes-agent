@@ -106,11 +106,13 @@ vi.mock('../../profiles/rename-profile-dialog', () => ({ RenameProfileDialog: ()
 const { $profiles } = await import('@/store/profile')
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
 const { $unreadFinishedMarkers } = await import('@/store/session-unread')
+const { $profileRemoteOverrides } = await import('@/store/profile-remote-override')
 
 afterEach(() => {
   cleanup()
   profiles.set([{ is_default: true, name: 'default' }])
   $unreadFinishedMarkers.set({})
+  $profileRemoteOverrides.set({})
 })
 
 describe('ProfileRail per-profile status (#91710)', () => {
@@ -128,6 +130,34 @@ describe('ProfileRail per-profile status (#91710)', () => {
     const writerSquare = screen.getByRole('button', { name: 'writer, 1 unread' })
 
     expect(writerSquare.querySelector('[data-slot="profile-status-dot"]')).not.toBeNull()
+  })
+
+  it('keeps remote-host badges legible and separate from unread status', () => {
+    profiles.set([
+      { is_default: true, name: 'default' },
+      { is_default: false, name: 'writer' }
+    ])
+    $profileRemoteOverrides.set({ writer: { host: 'writer.example', url: 'https://writer.example' } })
+    $unreadFinishedMarkers.set({ writer: ['s1'] })
+
+    render(<ProfileRail />)
+
+    const writerSquare = screen.getByRole('button', { name: 'writer — Runs on writer.example, 1 unread' })
+    const remoteBadge = writerSquare.querySelector('[data-slot="profile-remote-badge"]')
+
+    expect(remoteBadge).not.toBeNull()
+    expect(remoteBadge?.getAttribute('aria-hidden')).toBe('true')
+
+    // The glyph needs its own padded, outlined accent surface, independent of
+    // the profile tint and the separate bottom-corner unread indicator.
+    for (const token of ['size-3', 'border', 'border-(--ui-stroke-secondary)', 'text-(--ui-accent)']) {
+      expect(remoteBadge?.classList.contains(token)).toBe(true)
+    }
+
+    expect(writerSquare.querySelector('[data-slot="profile-status-dot"]')).not.toBeNull()
+    expect(
+      screen.getByRole('button', { name: 'Show all profiles' }).querySelector('[data-slot="profile-remote-badge"]')
+    ).toBeNull()
   })
 
   it('keeps the active profile square clean', () => {
