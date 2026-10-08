@@ -41,7 +41,7 @@ def context(authority, actor):
         db_path=db_path, runs_store=store, service=getattr(authority, 'hosted_room_service', None),
         actor_subject=getattr(actor, 'subject', None),
         operator='session:operator' in getattr(actor, 'capabilities', ()),
-        mint_grants=continuation_minter(adapter, db_path, replace_same_epoch=False))
+        mint_grants=continuation_minter(adapter, db_path))
 
 
 def _text(params, key):

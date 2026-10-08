@@ -101,7 +101,7 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
         from gateway.hosted_room_succession_move import MoveContext
         from gateway.platforms.api_server_room_succession import continuation_minter
         return MoveContext(db_path=Path(self.db_path), runs_store=store, service=self, timeout=2.0,
-                           mint_grants=continuation_minter(adapter, Path(self.db_path), replace_same_epoch=False))
+                           mint_grants=continuation_minter(adapter, Path(self.db_path)))
 
     def _load_stored_links(self):
         super()._load_stored_links()
