@@ -121,3 +121,16 @@ def test_live_staging_writer_is_not_an_orphan(tmp_path):
         with outbox._connect() as conn:
             assert conn.execute('SELECT COUNT(*) FROM hosted_room_output_blob_cleanup').fetchone()[0] == 1
     assert not (outbox.blob_root / name).exists()
+
+
+@pytest.mark.platforms('posix')
+def test_reopening_preserves_private_directory_permissions(tmp_path):
+    import os
+    import stat
+
+    outbox = RoomArtifactOutbox(tmp_path / 'state.db')
+    os.chmod(outbox.root, 0o777)
+    os.chmod(outbox.blob_root, 0o777)
+    RoomArtifactOutbox(outbox.db_path)
+    assert stat.S_IMODE(outbox.root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(outbox.blob_root.stat().st_mode) == 0o700
