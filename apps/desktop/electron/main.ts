@@ -1,10 +1,10 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configureWindowsGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
 import { mintGatewayTicketWithPython } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
-configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
+configurePythonGatewayTicketClient(async (endpoint, purpose) => {
   const backend = await ensureRuntime(await resolveHermesBackend([]), () => undefined)
 
   if (backend.kind !== 'python' || backend.shell) {
@@ -638,7 +638,7 @@ import {
   registerUpdateRelaunch,
   type RelaunchRegistration
 } from './updater/relaunch'
-import { relaunchWaiterScript, startRelaunchWaiter } from './updater/relaunch-waiter'
+import { startUpdateRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
@@ -3637,12 +3637,7 @@ function createNativePackagedStrategy(
           // script is staged to a temp dir and resolved absolutely so
           // nothing inherited from the package holds the swap open.
           relaunch: () =>
-            startRelaunchWaiter({
-              processId: process.pid,
-              processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
-              identityName: PRODUCT_IDENTITY.msixAppIdWithOrg,
-              scriptPath: relaunchWaiterScript(process.resourcesPath)
-            })
+            startUpdateRelaunchWaiter(PRODUCT_IDENTITY.msixAppIdWithOrg, process.resourcesPath, rememberLog)
         })
     }
 
@@ -3668,13 +3663,12 @@ function createNativePackagedStrategy(
       registerPendingRelaunch: (fromVersion: string): Promise<RelaunchRegistration> =>
         registerUpdateRelaunch(app, fromVersion, {
           relaunch: () =>
-            startRelaunchWaiter({
-              processId: process.pid,
-              processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
-              identityName: PRODUCT_IDENTITY.storeMsix!.identityName,
-              scriptPath: relaunchWaiterScript(process.resourcesPath),
-              timeoutSeconds: 1860
-            })
+            startUpdateRelaunchWaiter(
+              PRODUCT_IDENTITY.storeMsix!.identityName,
+              process.resourcesPath,
+              rememberLog,
+              1860
+            )
         })
     })
   }
@@ -16458,29 +16452,23 @@ async function handleHermesApiRequest(request) {
 
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-    if (connection.gatewayEndpoint) {
-      response = await redialLocalGateway({
-        ensure: () => ensureBackend(routeProfile),
-        forget: () => forgetLocalGatewayDescriptor(routeProfile),
-        use: current => fetchJson(`${current.baseUrl}${apiRoute.requestPath}`, current.token, {
-          method: request?.method,
-          body: request?.body,
-          upload: request?.upload,
-          timeoutMs,
-          gatewayDescriptor: current
+    // Main's shared transport for every descriptor: configured headers, a native
+    // gateway grant per attempt, and the OAuth bearer→cookie fallback that
+    // survives refresh failures and login races (requestWithOauthFallback).
+    const send = current => fetchJsonForBackend(current, apiRoute.requestPath, {
+      method: request?.method,
+      body: request?.body,
+      upload: request?.upload,
+      timeoutMs
+    })
+
+    response = connection.gatewayEndpoint
+      ? await redialLocalGateway({
+          ensure: () => ensureBackend(routeProfile),
+          forget: () => forgetLocalGatewayDescriptor(routeProfile),
+          use: send
         })
-      })
-    } else {
-      // Remote URL / cloud / SSH: main's shared transport — configured remote
-      // headers, and the OAuth bearer→cookie fallback that survives refresh
-      // failures and login races (requestWithOauthFallback).
-      response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
-        method: request?.method,
-        body: request?.body,
-        upload: request?.upload,
-        timeoutMs
-      })
-    }
+      : await send(connection)
   } catch (error) {
     // A failed rename PATCH must not strand the app on the temporary primary:
     // restore the original active profile and restart its backend.

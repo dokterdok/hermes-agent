@@ -1,3 +1,5 @@
+import path from 'node:path'
+
 import { expect, test, vi } from 'vitest'
 
 import { createLocalGatewayDials, ensureLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
@@ -272,6 +274,62 @@ test.skipIf(process.platform === 'win32')('a stopped gateway that unlinked its c
   }
 })
 
+// The owner rewrites `gateway.sock.path` (O_TRUNC, then write) when it rebinds its fallback socket:
+// a dial landing mid-rewrite, or on a pointer an earlier owner left, must re-ensure like any other
+// stale owner instead of surfacing a raw error the renderer's reconnect backoff repeats forever.
+test.skipIf(process.platform === 'win32')('a corrupt control pointer is a stale owner: the redial re-ensures and attaches to the republished socket', async () => {
+  const crypto = await import('node:crypto')
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const net = await import('node:net')
+  const { isStaleLocalGatewayError, mintLocalGatewayTicket, redialLocalGateway } = await import('./local-gateway')
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-pointer-')))
+  const runtime = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-gw-')))
+  const hash = crypto.createHash('sha256').update(home).digest('hex').slice(0, 16)
+  const socketPath = path.join(runtime, `hermes-gw-${hash}`, 'control.sock')
+  const pointer = path.join(home, 'gateway.sock.path')
+  const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+  await fs.mkdir(path.dirname(socketPath), { mode: 0o700 })
+
+  const server = net.createServer(socket => socket.once('data', () => {
+    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', ticket: 'grant-republished' } }) + '\n')
+  }))
+
+  await new Promise<void>(resolve => server.listen(socketPath, resolve))
+  await fs.chmod(socketPath, 0o600)
+  await fs.writeFile(pointer, '', { mode: 0o600 })
+
+  try {
+    const failure = await mintLocalGatewayTicket(endpoint).catch(error => error)
+    expect(failure.message).toBe('Invalid gateway control pointer')
+    expect(isStaleLocalGatewayError(failure)).toBe(true)
+    expect(isStaleLocalGatewayError(new Error('Noncanonical gateway profile'))).toBe(true)
+
+    let ensures = 0
+    let forgets = 0
+
+    const ticket = await redialLocalGateway({
+      ensure: async () => {
+        ensures += 1
+
+        if (ensures === 2) {await fs.writeFile(pointer, socketPath, { mode: 0o600 })}
+
+        return endpoint
+      },
+      forget: () => { forgets += 1 },
+      use: e => mintLocalGatewayTicket(e)
+    })
+
+    expect(ticket).toBe('grant-republished')
+    expect([ensures, forgets]).toEqual([2, 1])
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await fs.rm(home, { recursive: true, force: true })
+    await fs.rm(runtime, { recursive: true, force: true })
+  }
+})
+
 test.skipIf(process.platform === 'win32')('a group-accessible control socket is refused as unsafe, and unrelated errors are never stale', async () => {
   const fs = await import('node:fs/promises')
   const os = await import('node:os')
@@ -299,10 +357,103 @@ test.skipIf(process.platform === 'win32')('a group-accessible control socket is 
   }
 })
 
+// R7: the profile home keeps the operator's mode (Python `home_mode_unsafe`: HERMES_HOME_MODE
+// 0750/0701, a 0755 home); only write by another user can swap the socket. The socket stays 0600.
+test.skipIf(process.platform === 'win32')('a supported home mode mints its ticket; a home others can write is refused', async () => {
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const net = await import('node:net')
+  const { mintLocalGatewayTicket } = await import('./local-gateway')
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-home-mode-')))
+  const socketPath = path.join(home, 'gateway.sock')
+  const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+
+  const server = net.createServer(socket => socket.once('data', () => {
+    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', ticket: 'grant' } }) + '\n')
+  }))
+
+  await new Promise<void>(resolve => server.listen(socketPath, resolve))
+  await fs.chmod(socketPath, 0o600)
+
+  try {
+    for (const mode of [0o700, 0o755, 0o750, 0o701]) {
+      await fs.chmod(home, mode)
+      expect(await mintLocalGatewayTicket(endpoint)).toBe('grant')
+    }
+
+    for (const mode of [0o757, 0o703, 0o775]) {
+      await fs.chmod(home, mode)
+      // 0775 with no Python client configured: group-write Node cannot prove private is refused.
+      await expect(mintLocalGatewayTicket(endpoint)).rejects.toThrow('Unsafe gateway control path')
+    }
+  } finally {
+    await fs.chmod(home, 0o700)
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await fs.rm(home, { recursive: true, force: true })
+  }
+})
+
 test('a ?profile= request on the shared host descriptor mints for the sibling profile home', () => {
   const endpoint = { profile_id: '/h/.hermes', instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
-  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=p2', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' })
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=p2', '/h/.hermes')).toMatchObject({ profile_id: path.join('/h/.hermes', 'profiles', 'p2'), control_home: '/h/.hermes' })
   expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=default', '/h/.hermes')).toBe(endpoint)
   expect(routedGatewayEndpoint({ ...endpoint, profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' }, 'http://127.0.0.1:1/x?profile=default', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes' })
   expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', '/h/.hermes')).toThrow('Invalid profile route')
+})
+
+// A native gateway grant is minted only by main's shared transport (fetchJsonForBackend), which
+// also carries the descriptor's configured headers; a call site that hands fetchJson a
+// gatewayDescriptor itself silently drops them. Source guard over the one module that issues them.
+test('main issues native-gateway REST calls only through the shared descriptor transport', async () => {
+  const fs = await import('node:fs/promises')
+  const source = await fs.readFile(new URL('./main.ts', import.meta.url), 'utf8')
+  const transport = source.indexOf('async function fetchJsonForBackend(')
+  const transportEnd = source.indexOf('\n}\n', transport)
+  const outside = source.slice(0, transport) + source.slice(transportEnd)
+
+  expect(transport).toBeGreaterThan(0)
+  expect(source.slice(transport, transportEnd)).toContain('headers: descriptor.headers')
+  expect(outside.match(/fetchJson\([^)]*\{[^}]*gatewayDescriptor\b/g) ?? []).toEqual([])
+})
+
+// A group-writable home (umask-002 user-private-group default) is decided by the runtime's own
+// home policy, which Node cannot evaluate: the mint goes through the Python ticket client, and a
+// refusal there names the fix instead of failing as a stale gateway.
+test.skipIf(process.platform === 'win32')('a group-writable home mints through the Python policy; a shared group names the fix', async () => {
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const { configurePythonGatewayTicketClient, isStaleLocalGatewayError, mintLocalGatewayTicket } = await import('./local-gateway')
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-group-home-')))
+  const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+  const calls: string[] = []
+  let verdict: 'grant' | 'shared' = 'grant'
+
+  configurePythonGatewayTicketClient(async (ep, purpose) => {
+    calls.push(`${ep.profile_id}:${purpose}`)
+
+    if (verdict === 'shared') {throw Object.assign(new Error('Gateway ticket bootstrap failed'), { reason: 'unsafe_control_permissions' })}
+
+    return 'python-grant'
+  })
+
+  try {
+    await fs.chmod(home, 0o775)
+    expect(await mintLocalGatewayTicket(endpoint, 'native-http')).toBe('python-grant')
+    expect(calls).toEqual([`${home}:native-http`])
+
+    verdict = 'shared'
+    const failure = await mintLocalGatewayTicket(endpoint).catch(error => error)
+    expect(failure.message).toBe(`Profile home is writable by a group other accounts share: run chmod g-w '${home}'`)
+    expect(isStaleLocalGatewayError(failure)).toBe(false)
+
+    await fs.chmod(home, 0o757)
+    await expect(mintLocalGatewayTicket(endpoint)).rejects.toThrow('Unsafe gateway control path')
+    expect(calls).toHaveLength(2)
+  } finally {
+    configurePythonGatewayTicketClient(undefined as never)
+    await fs.chmod(home, 0o700)
+    await fs.rm(home, { recursive: true, force: true })
+  }
 })

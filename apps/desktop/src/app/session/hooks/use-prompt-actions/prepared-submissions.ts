@@ -20,6 +20,8 @@ export interface PreparedSubmission {
 }
 
 const snapshots = new WeakMap<PreparedSubmission, string>()
+// An admission remains spent in this window even if both durable ACK and cleanup writes fail.
+// A later identical Send must receive a new identity, never reuse that delivered admission.
 const acknowledged = new Set<string>()
 const recoverySelection = new Map<string, string>()
 
