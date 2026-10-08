@@ -1,6 +1,7 @@
 """Compact cancelled attempts only behind a proven newer room authority epoch."""
 import hashlib
 import json
+import time
 
 
 def room_run_scope(claims):
@@ -159,18 +160,22 @@ def retire(conn, scope, authority):
     compact(conn, authority[0])
 
 
-def compact(conn, authority_key):
-    """Drop cancelled terminal receipts; live executors retain their stop bit and status."""
+def compact(conn, authority_key, *, now=None):
+    """Retire absent barriers immediately, settled executions after their observation horizon."""
     from gateway.platforms.api_server_room_origins import effective
+    from gateway.platforms.api_server_run_history import is_non_admission, remember
+    from gateway.platforms.api_server_run_idempotency import terminal_observation_expired
     current = effective(conn, authority_key)
     if current is None:
-        return
+        return False
+    now = time.time() if now is None else now
     rows = conn.execute("""SELECT scope,idempotency_key,status_json,stop_requested,
-        fingerprint,owner_pid,owner_started,canonical_history
+        fingerprint,owner_pid,owner_started,canonical_history,updated_at,retention_until,acknowledged_at
         FROM run_idempotency WHERE room_authority_key=? AND (room_authority_epoch<? OR room_authority_epoch<=?
         OR (room_authority_epoch=? AND room_authority_gateway!=?))""",
         (authority_key, current[0], current[2], current[0], current[1])).fetchall()
-    for scope, key, encoded, stopped, fingerprint, owner_pid, owner_started, indexed in rows:
+    pruned = False
+    for scope, key, encoded, stopped, fingerprint, owner_pid, owner_started, indexed, updated, horizon, acknowledged in rows:
         try:
             status = json.loads(encoded)
         except (ValueError, TypeError):
@@ -179,6 +184,10 @@ def compact(conn, authority_key):
             continue
         if (status.get("status") in {"completed", "failed", "cancelled", "interrupted"}
                 and (stopped or status.get("admission_cancelled"))):
-            from gateway.platforms.api_server_run_history import remember
+            if (not is_non_admission(status, fingerprint, owner_pid, owner_started)
+                    and not terminal_observation_expired(updated, horizon, acknowledged, now)):
+                continue
             remember(conn, scope, authority_key, status, fingerprint, owner_pid, owner_started, indexed)
             conn.execute("DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key))
+            pruned = True
+    return pruned

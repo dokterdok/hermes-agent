@@ -22,10 +22,11 @@ HOME = "install:unavailable-home"
 SUCCESSOR = "install:successor"
 
 
-async def invite(cli, authority=HOME, epoch=1, member_id="writer", *, previous=None):
+async def invite(cli, authority=HOME, epoch=1, member_id="writer", *, previous=None, status_ttl_seconds=None):
     response = await cli.post("/v1/room-members/invitations", headers=OWNER, json={
         "room_id": ROOM, "home_install_id": authority, "authority_gateway_id": authority,
         "authority_epoch": epoch, "member_id": member_id,
+        **({"status_ttl_seconds": status_ttl_seconds} if status_ttl_seconds is not None else {}),
         **({"previous_authority": previous} if previous is not None else {})})
     result = await response.json()
     assert response.status == 201, result
@@ -49,6 +50,25 @@ async def submit(cli, invited, payload):
 def promise(adapter, candidate=SUCCESSOR, epoch=2):
     return fence.fence_and_promise(adapter._run_idempotency_store.path, room_id=ROOM, fence_epoch=epoch - 1,
                                    promise_epoch=epoch, candidate_install_id=candidate)
+
+
+def reopen_runs(adapter):
+    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+    path = adapter._run_idempotency_store.path
+    adapter._run_idempotency_store.close()
+    adapter._run_idempotency_store = RunIdempotencyStore(str(path))
+    adapter._run_statuses.clear()
+    adapter._run_owners.clear()
+    adapter._run_idempotency_ids.clear()
+
+
+def expire_observation(adapter, run_id):
+    store = adapter._run_idempotency_store
+    store._conn.execute('UPDATE run_idempotency SET retention_until=1,updated_at=0 WHERE run_id=?', (run_id,))
+    store._conn.commit()
+    assert store.lookup('unrelated', 'missing', '') == ('missing', None)
+    assert store._conn.execute('SELECT 1 FROM run_idempotency WHERE run_id=?', (run_id,)).fetchone() is None
+    assert store._conn.execute('SELECT 1 FROM run_room_history').fetchone()
 
 
 @pytest.mark.asyncio
@@ -86,12 +106,14 @@ async def test_fenced_epoch_refuses_new_work_while_its_runs_keep_running_and_pas
         assert await asyncio.to_thread(other_stopped.wait, 3)
 
         # The promised successor reads and stops the other run with its own grant.
-        successor = await invite(cli, SUCCESSOR, 2, previous={
+        successor = await invite(cli, SUCCESSOR, 2, status_ttl_seconds=2 * 24 * 60 * 60, previous={
             'home_install_id': HOME, 'authority_gateway_id': HOME, 'authority_epoch': 1})
         status = await cli.get(f"/v1/runs/{run_id}", headers=bearer(successor))
         observed = await status.json()
         assert status.status == 200, observed
         assert observed["run_id"] == run_id and observed["status"] == "running"
+        assert adapter._run_idempotency_store._conn.execute(
+            'SELECT retention_until FROM run_idempotency WHERE run_id=?', (run_id,)).fetchone()[0] == successor['status_expires_at']
         approval = await cli.post(f"/v1/runs/{run_id}/approval", headers=bearer(successor),
                                   json={"choice": "once", "request_id": "approval-1"})
         assert approval.status == 404
@@ -100,13 +122,24 @@ async def test_fenced_epoch_refuses_new_work_while_its_runs_keep_running_and_pas
         assert stopped.status == 200, await stopped.json()
         assert await asyncio.to_thread(kept_stopped.wait, 3)
         await asyncio.wait_for(asyncio.gather(*adapter._active_run_tasks.values(), return_exceptions=True), 3)
+        reopen_runs(adapter)
         final = await cli.get(f"/v1/runs/{run_id}", headers=bearer(successor))
-        assert (await final.json())["status"] in {"cancelled", "interrupted"}
+        final_body = await final.json()
+        assert final.status == 200, {'http_status': final.status, 'body': final_body,
+            'run_rows': adapter._run_idempotency_store._conn.execute(
+                'SELECT run_id,status_json FROM run_idempotency WHERE run_id=?', (run_id,)).fetchall()}
+        assert final_body["status"] in {"cancelled", "interrupted"}
 
-        # A grant from an epoch this gateway never promised controls nothing here.
-        stranger = await invite(cli, "install:stranger", 3)
-        assert (await cli.get(f"/v1/runs/{run_id}", headers=bearer(stranger))).status == 404
-        assert (await cli.post(f"/v1/runs/{run_id}/stop", headers=bearer(stranger))).status == 404
+        # An unrelated origin cannot take the target namespace or inherited controls.
+        stranger = await cli.post('/v1/room-members/invitations', headers=OWNER, json={
+            'room_id': ROOM, 'home_install_id': 'install:stranger', 'authority_gateway_id': 'install:stranger',
+            'authority_epoch': 3, 'member_id': 'writer'})
+        assert stranger.status == 400, await stranger.json()
+        expire_observation(adapter, run_id)
+        assert (await cli.get(f'/v1/runs/{run_id}', headers=bearer(successor))).status == 404
+        late = await submit(cli, old, payload)
+        assert late.status == 403 and (await late.json())['error']['code'] == 'room_reauthorization_required'
+        assert create.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -224,17 +257,28 @@ async def test_canonical_fenced_epoch_refuses_answers_and_passes_status_and_stop
                 assert refused.status == 409, await refused.text()
                 assert (await refused.json())['error']['code'] == 'room_authority_fenced'
             assert not pending.event.is_set()
-            successor = await invite(cli, SUCCESSOR, 2, previous={
+            successor = await invite(cli, SUCCESSOR, 2, status_ttl_seconds=2 * 24 * 60 * 60, previous={
                 'home_install_id': HOME, 'authority_gateway_id': HOME, 'authority_epoch': 1})
             status = await cli.get(f'/v1/runs/{run_id}', headers=bearer(successor))
             assert status.status == 200, await status.text()
             assert (await status.json())['status'] == 'waiting_for_approval'
+            assert adapter._run_idempotency_store._conn.execute(
+                'SELECT retention_until FROM run_idempotency WHERE run_id=?', (run_id,)).fetchone()[0] == successor['status_expires_at']
             stopped = await cli.post(f'/v1/runs/{run_id}/stop', headers=bearer(successor))
             assert stopped.status == 200, await stopped.text()
             assert (await stopped.json())['status'] == 'stopping' and interrupted.is_set()
             await asyncio.wait_for(asyncio.gather(*adapter._active_run_tasks.values()), 3)
+            reopen_runs(adapter)
             final = await cli.get(f'/v1/runs/{run_id}', headers=bearer(successor))
-            assert (await final.json())['status'] == 'cancelled'
+            final_body = await final.json()
+            assert final.status == 200, {'http_status': final.status, 'body': final_body,
+                'run_rows': adapter._run_idempotency_store._conn.execute(
+                    'SELECT run_id,status_json FROM run_idempotency WHERE run_id=?', (run_id,)).fetchall()}
+            assert final_body['status'] == 'cancelled'
             assert pending.result is None
+            expire_observation(adapter, run_id)
+            assert (await cli.get(f'/v1/runs/{run_id}', headers=bearer(successor))).status == 404
+            late = await submit(cli, old, scoped(old))
+            assert late.status == 403 and (await late.json())['error']['code'] == 'room_reauthorization_required'
     finally:
         pending.event.set()

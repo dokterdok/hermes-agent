@@ -122,6 +122,18 @@ def test_only_the_promised_successor_controls_existing_runs(store):
     assert store.successor_run_scope("successor-run", successor=later) == room_run_scope_key(SUCCESSOR)
 
 
+def test_only_the_verified_successor_extends_an_existing_runs_observation(store):
+    reserve(store)
+    promise(store.path)
+    horizon = 10_000_000_000
+    stranger = {**SUCCESSOR, 'home_install_id': 'stranger', 'authority_gateway_id': 'stranger'}
+    assert store.successor_run_scope('run-one', successor=stranger, retention_until=horizon) is None
+    assert store._conn.execute("SELECT retention_until FROM run_idempotency WHERE run_id='run-one'").fetchone() == (0,)
+    assert store.successor_run_scope('run-one', successor=SUCCESSOR, retention_until=horizon) == room_run_scope_key(IDENTITY)
+    with closing(storage.RunIdempotencyStore(str(store.path))) as restarted:
+        assert restarted._conn.execute("SELECT retention_until FROM run_idempotency WHERE run_id='run-one'").fetchone() == (horizon,)
+
+
 def test_a_learned_certified_authority_takes_control_from_a_losing_promise(store):
     reserve(store)
     loser = {**SUCCESSOR, "authority_gateway_id": "install:loser"}

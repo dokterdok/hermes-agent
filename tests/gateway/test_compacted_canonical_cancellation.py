@@ -11,7 +11,7 @@ from tests.gateway.test_api_group_owner_stop import app_for
 from tests.gateway.test_api_group_owner_stop_canonical import canonical as canonical
 from tests.gateway.test_api_group_run_fence import HOME, SUCCESSOR, invite, promise, scoped, submit
 from tests.gateway.test_api_room_inherited_cancellation import _cancel
-from tests.gateway.test_compacted_source_cancellation import prune_inventory
+from tests.gateway.test_compacted_source_cancellation import age_executed_receipts, prune_inventory
 
 
 @pytest.mark.asyncio
@@ -34,6 +34,8 @@ async def test_indexed_history_survives_compaction_and_preserves_certified_absen
         promise(adapter)
         successor = await invite(client, SUCCESSOR, 2, previous={
             'home_install_id': HOME, 'authority_gateway_id': HOME, 'authority_epoch': 1})
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 1
+        age_executed_receipts(store)
         prune_inventory(store)
         assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 0
         assert store._conn.execute('SELECT COUNT(*) FROM group_run_scopes').fetchone()[0] == 0
