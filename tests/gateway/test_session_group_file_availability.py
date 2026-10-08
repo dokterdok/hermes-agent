@@ -114,4 +114,4 @@ def test_historical_references_require_the_exact_valid_public_log(gateway, fault
     else:
         assert rows == []
     assert reason(call(gateway.owner, 'groups.attachment.download', room_id='room',event_id=event,
-                       attachment_id=attachment)) == ('attachment_unavailable' if fault == 'no-store' else 'invalid_params')
+                       attachment_id=attachment)) == ('storage_unavailable' if fault == 'no-store' else 'invalid_params')
