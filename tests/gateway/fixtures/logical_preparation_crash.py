@@ -1,5 +1,6 @@
 """A real owner stopped abruptly after one durable preparation batch."""
 import asyncio
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ async def main(path, ready):
             with db._read_ctx() as conn:
                 row = conn.execute('SELECT live_cursor FROM logical_attempt_coverage').fetchone()
             if row is not None and row[0] == 128:
-                ready.write_text('committed')
+                ready.write_text(str(os.getpid()))
                 await asyncio.Event().wait()
             if authority._logical_preparation_task.done():
                 raise RuntimeError('preparation ended before crash checkpoint')
