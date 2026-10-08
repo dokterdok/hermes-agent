@@ -5,10 +5,12 @@ gateway sends is appended to ``$HERMES_HOME/fake-outbox.jsonl``. The rest is unc
 admission, slash dispatch, the canonical authority, the room driver and the control socket.
 """
 import asyncio
+import faulthandler
 import json
 import os
 from pathlib import Path
 import runpy
+import signal
 import uuid
 
 from gateway.config import Platform
@@ -69,6 +71,9 @@ _instantiate = GatewayAdapterLifecycleMixin._instantiate_adapter
 def _instantiate_adapter(self, platform, config):
     return FileTelegram(config) if platform == Platform.TELEGRAM else _instantiate(self, platform, config)
 
+
+if hasattr(signal, 'SIGUSR2'):
+    faulthandler.register(signal.SIGUSR2, all_threads=True)
 
 GatewayAdapterLifecycleMixin._instantiate_adapter = _instantiate_adapter
 runpy.run_module('gateway.run', run_name='__main__')

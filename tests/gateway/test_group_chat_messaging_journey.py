@@ -10,10 +10,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import threading
 import time
+
+import psutil
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
 
@@ -136,8 +139,8 @@ def gateway(tmp_path):
                              TELEGRAM_ALLOWED_USERS='alice,bob,carol', TELEGRAM_BOT_TOKEN='fixture-token')
     try:
         with daemon(root, two, env | {'HERMES_HOME': str(two), 'TELEGRAM_BOT_TOKEN': ''}, barrier=False), \
-                daemon(root, home, env, barrier=True, fixture='group_chat_messaging_daemon.py') as (_, desc):
-            yield _Journey(root, Home(home), env, model, desc)
+                daemon(root, home, env, barrier=True, fixture='group_chat_messaging_daemon.py') as (proc, desc):
+            yield _Journey(root, Home(home), env, model, desc, proc)
     finally:
         model.release.set()
         model.shutdown()
@@ -145,9 +148,9 @@ def gateway(tmp_path):
 
 
 class _Journey:
-    def __init__(self, root, home, env, model, desc):
+    def __init__(self, root, home, env, model, desc, proc):
         self.root, self.home, self.env, self.model, self.desc = root, home, env, model, desc
-        self.desktop = None
+        self.desktop, self.proc = None, proc
 
     def chat(self, user, chat, chat_type, chat_name=None):
         return Chat(self.home, user, chat, chat_type, chat_name)
@@ -164,8 +167,21 @@ class _Journey:
     def cli(self, *args):
         done = subprocess.run([sys.executable, '-m', 'hermes_cli.main', 'groups', *args], env=self.env,
                               cwd=self.root, capture_output=True, text=True, timeout=180)
-        assert done.returncode == 0, (done.stdout, done.stderr[-3000:])
+        assert done.returncode == 0, (done.stdout, done.stderr[-3000:], self.cli_diagnostic())
         return done.stdout
+
+    def cli_diagnostic(self):
+        from tests.gateway.test_normal_runtime_boot import control
+        detail = {'gateway_pid': self.desc['pid'], 'gateway_alive': self.proc.gateway.is_running()}
+        try:
+            if hasattr(signal, 'SIGUSR2'):
+                self.proc.gateway.send_signal(signal.SIGUSR2)
+            detail['identify'] = control(self.home.path, 'identify')
+            detail['list'] = control(self.home.path, 'group-chats', {'action': 'list'})
+        except (OSError, ValueError, AssertionError, psutil.Error) as exc:
+            detail['control_error'] = repr(exc)
+        detail['daemon_log'] = (self.home.path / 'first.log').read_text(encoding='utf-8')[-20000:]
+        return detail
 
     async def ask(self, chat, text):
         return await asyncio.to_thread(chat.ask, text)
