@@ -1535,8 +1535,7 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
 
 
 def _codex_app_server_turn(agent: Any, s: Any) -> Optional[Dict[str, Any]]:
-    """The codex app-server's result for this turn, or None when its failure activated a fallback and the
-    generic loop retries the same user turn."""
+    """Return a native result, or None when the configured fallback retries this turn."""
     from agent.files_live_context import native_files_refusal
     refusal = native_files_refusal(agent, s.messages)
     if refusal is not None:
@@ -1549,8 +1548,7 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[Dict[str, Any]]:
     from agent.turn_recovery import activate_codex_app_server_fallback
     if not activate_codex_app_server_fallback(agent, codex_result):
         return codex_result
-    # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
-    # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
+    # Preserve the failed native call in the fallback turn's accounting.
     s.api_call_count = int(codex_result.get("api_calls") or 0)
     s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
     return None
