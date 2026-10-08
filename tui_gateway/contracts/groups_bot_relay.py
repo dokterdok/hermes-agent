@@ -218,6 +218,7 @@ class RoomDriverStatus(Result):
     pending_actions: list[dict[str, JsonValue]]
     peer_routes: list[PeerRouteStatus]
     peer_cleanup: list[dict[str, JsonValue]] | None = None
+    peer_retirements: list[dict[str, JsonValue]] | None = None
     retiring: bool | None = None
 
 
@@ -299,6 +300,7 @@ class RoomTombstone(Result):
 
 class GroupsDisbandResult(Result):
     tombstone: RoomTombstone
+    retirements: list[dict[str, JsonValue]] = []
 
 
 method("groups.disband", params=GroupsDisbandParams, result=GroupsDisbandResult,
@@ -548,6 +550,9 @@ class GroupsPeerInviteParams(ProfileParams):
     # ``ttl_seconds``, so nothing is renewed unless the operator chooses a longer horizon.
     status_ttl_seconds: float | None = None
 
+    retirement_only: bool | None = None
+    previous_authority: dict[str, JsonValue] | None = None
+
 
 class GroupsPeerInviteResult(Result):
     grant: str
@@ -746,3 +751,22 @@ __all__ = [
     "GroupsLogResult", "RelayEnvelope", "Room", "RoomAuthority", "RoomEvent", "RoomLinkCatalog",
     "RoomMember", "RoomMemberInput",
 ]
+
+
+class GroupsPeerRetirementsParams(ProfileParams):
+    room_id: str | None = None
+
+
+class GroupsPeerRetireParams(RoomParams):
+    retirement_id: str
+    grant: str | None = None
+
+
+class GroupsPeerRetireResult(Result):
+    retirements: list[dict[str, JsonValue]]
+
+
+method("groups.peer.retirements", params=GroupsPeerRetirementsParams, result=GroupsPeerRetireResult,
+       doc="List retained peer-authority retirement obligations, including ended rooms.")
+method("groups.peer.retire", params=GroupsPeerRetireParams, result=GroupsPeerRetireResult,
+       doc="Retry authority retirement with an optional fresh exact-scope target grant; never reopen execution.")

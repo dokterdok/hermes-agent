@@ -117,7 +117,6 @@ def drain(service, *, force=False, room_id=None):
     """Retry a bounded batch even when no live room remains, including after restart."""
     from gateway.session_group_peer_routes import _retire
     from tui_gateway.hosted_room_peer_http import room_grant_request_budget, room_grant_request_budget_remaining
-    from tui_gateway.hosted_room_service import _grant_revoke_is_terminal
     now = time.time()
     # This is the same publication lock used by registration/renewal/Disband.
     # Provisional grants cannot be retired while their publication is in flight.
@@ -140,11 +139,10 @@ def drain(service, *, force=False, room_id=None):
                 elif value['mode'] == 'exact':
                     _retire(client, link.grant)
                 else:
-                    try:
-                        client.revoke_grant(grant=link.grant, retire_authority=True)
-                    except PeerRunsHTTPError as exc:
-                        if not _grant_revoke_is_terminal(exc):
-                            raise
+                    from gateway import hosted_room_retirement as retirement
+                    identity = retirement.retain_link(service.db_path, link,
+                                                      proof_install_id=link.catalog.installation_id)
+                    retirement.settle(service.db_path, link.room_id, identity, client=client)
             except (OSError, RuntimeError, sqlite3.Error, ValueError):
                 value['attempts'] += 1
                 value['next_at'] = now + min(120, 2 ** min(value['attempts'], 7))

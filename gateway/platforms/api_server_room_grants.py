@@ -130,9 +130,56 @@ def _room_grant_claims(self, request: "web.Request", *, permission: str, conn=No
     if hosted_rooms.room_grant_is_revoked(
             db_path, claims=claims, token_sha256=room_grant_token_digest(self._room_grant_token(request)), conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is revoked")
-    if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims, conn=conn):
+    if _retirement_only(claims):
+        from gateway.platforms.api_server_run_authority import room_authority
+        if not self._run_idempotency_store.permits_room_retirement(room_authority(claims)):
+            raise RoomGrantReauthorizationRequired("room retirement authority is not retained")
+    elif not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims, conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is no longer current")
     return claims
+
+
+def _retirement_only(claims):
+    return set(claims["permissions"]) == {"status", "retire"}
+
+
+def _previous_authority(claims, body):
+    """An owner explicitly names the current predecessor; room and target stay fixed."""
+    from gateway.platforms.api_server_run_authority import room_authority
+    previous = body.get("previous_authority")
+    if previous is None:
+        return None
+    fields = {"home_install_id", "authority_gateway_id", "authority_epoch"}
+    if not isinstance(previous, dict) or set(previous) != fields:
+        raise ValueError("previous_authority requires exact home, gateway and epoch")
+    if (type(previous["authority_epoch"]) is not int or previous["authority_epoch"] < 1
+            or any(not isinstance(previous[key], str) or not previous[key] for key in fields - {"authority_epoch"})):
+        raise ValueError("previous_authority has invalid coordinates")
+    return room_authority({**claims, **previous})
+
+
+def _record_invitation(self, claims, body, *, db_path=None):
+    from gateway import hosted_rooms
+    from gateway.platforms.api_server_run_authority import room_authority
+    authority = room_authority(claims)
+    if _retirement_only(claims):
+        if not self._run_idempotency_store.permits_room_retirement(authority):
+            raise RoomGrantReauthorizationRequired("room retirement authority is not retained")
+        return
+    previous = _previous_authority(claims, body)
+    previous_home = body["previous_authority"]["home_install_id"] if previous is not None else None
+    db_path = db_path or _grant_db(self)
+    # Every participant takes the grant writer before the RunStore lock. Holding
+    # both through grant commit closes the captured-writer publication window.
+    with hosted_rooms._transaction(db_path, immediate=True) as conn:
+        def commit_reservation(known):
+            if previous is None and not known and conn.execute(
+                    "SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND target_profile=?",
+                    (claims["room_id"], claims["target_profile"])).fetchone() is not None:
+                raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
+            hosted_rooms.reserve_peer_room(db_path, claims=claims, expires_at=_hard_expiry(claims), conn=conn)
+            conn.commit()
+        self._run_idempotency_store.commit_room_invitation(claims, previous, previous_home, commit_reservation)
 
 
 def authorize_room_admission(adapter, request):
@@ -170,7 +217,7 @@ async def _handle_room_member_invitation(
     if error:
         return error
     required = set(_ROOM_IDENTITY_FIELDS)
-    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds"}
+    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "previous_authority", "retirement_only"}
     if set(body) - allowed or not required <= set(body):
         return _json_error(
             _openai_error, "Invitation is missing required room authority fields.",
@@ -187,6 +234,9 @@ def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any
     """Mint and reserve one room grant for *profile*: the API-key route and ``groups.peer.invite``."""
     from gateway import hosted_rooms
     from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+    if (type(body.get("retirement_only", False)) is not bool
+            or (body.get("retirement_only") and "previous_authority" in body)):
+        raise ValueError("retirement_only must be a boolean without previous_authority")
     target_install_id = hosted_rooms.local_authority_gateway_id()
     ttl = float(body.get("ttl_seconds", 3600))
     if not 60 <= ttl <= 24 * 60 * 60:
@@ -201,16 +251,10 @@ def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any
         **_room_identity(body, coerce=True),
         target_install_id=target_install_id, target_profile=profile,
         execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
+        **({"permissions": ("status", "retire")} if body.get("retirement_only") else {}),
         ttl_seconds=ttl, status_ttl_seconds=status_ttl)
     claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
-    from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
-    authority = room_authority(claims)
-    if not self._run_idempotency_store.accepts_room_authority(authority):
-        raise RoomGrantReauthorizationRequired("room authority has already advanced")
-    hosted_rooms.reserve_peer_room(
-        _grant_db(self), claims=claims, expires_at=_hard_expiry(claims))
-    if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), authority):
-        raise RoomGrantReauthorizationRequired("room authority has already advanced")
+    _record_invitation(self, claims, body)
     return {"grant": token, "target_profile": profile, "catalog": catalog,
             "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"])}
 
@@ -229,7 +273,8 @@ async def _handle_room_member_capabilities(
     return web.json_response({
         **({"document_inputs": documents} if documents is not None else {}),
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
-        "target_profile": profile, "catalog": catalog})
+        "target_profile": profile, "catalog": catalog,
+        **({"retirement_only": True} if _retirement_only(claims) else {})})
 
 
 async def _handle_room_member_grant_refresh(

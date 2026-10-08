@@ -22,8 +22,9 @@ async def _ensure_hosted_member_session(self, dispatch: Any, *, create=True) -> 
     if db is None:
         raise RuntimeError("session database unavailable")
     title = f"Group: {dispatch.room_id}"
+    home = self._run_idempotency_store.room_origin_home(dispatch.as_mapping())
     seed = (
-        f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
+        f"{home}\0{dispatch.room_id}\0"
         f"{dispatch.member_id}\0{dispatch.target_profile}")
     session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
     if not create:
@@ -34,7 +35,8 @@ async def _ensure_hosted_member_session(self, dispatch: Any, *, create=True) -> 
         from gateway.session_api import bind_api_session
         if db is not authority.db:
             raise RuntimeError('profile_mismatch')
-        return bind_api_session(authority, session_id, hosted_dispatch=dispatch.as_mapping()).session_id
+        return bind_api_session(authority, session_id, hosted_dispatch=dispatch.as_mapping(),
+                                hosted_origin_home=home).session_id
 
     def atomic(conn):
         row = conn.execute("SELECT id, title, source FROM sessions WHERE id=?", (session_id,)).fetchone()

@@ -115,3 +115,26 @@ def close_discarded_turn(db, conn, row):
         'role': 'assistant', 'content': PARTIAL_FAILED_TURN_NOTICE, 'timestamp': time.time(),
         'display_kind': FAILED_TURN_DISPLAY_KIND}])
     return True
+
+def completion_payload(row, settled, response, captured):
+    """Build the settled turn frame from its committed outcome and captured identity."""
+    # ``status`` is the message.complete contract's TurnStatus: the Desktop
+    # extends a Stopped bubble to the persisted partial only on 'interrupted'.
+    complete = {
+        'text': response, 'content': response, 'admission_id': row['admission_id'],
+        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
+        'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
+            settled['outcome'], 'error')}
+    # Only the agent's reuse site sets this (never inferred from equal text): the
+    # final repeats a reply the viewer already painted, so it settles in place.
+    captured_result = (captured or {}).get('result') or {}
+    if response and captured_result.get('response_reused'):
+        complete['response_reused'] = True
+    # The committed row addresses of the turn: a viewer binds the streamed reply to
+    # its stored row, so a transcript read racing this frame never paints it twice.
+    # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
+    # prompt (``user-<submission_id>``), which the queued admission ack could not name.
+    if isinstance(captured_result.get('persisted_turn'), dict):
+        complete['persisted_turn'] = {**captured_result['persisted_turn'],
+                                      'submission_id': row['request_id']}
+    return complete

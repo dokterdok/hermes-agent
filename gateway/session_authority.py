@@ -304,9 +304,17 @@ class SessionAuthority:
                         check_local_input(
                             self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
-                self.sessions.setdefault(sid, LiveSession(source, route))
-                if any(row['status'] == 'unknown' for row in rows):
+                live = self.sessions.get(sid)
+                if live is None:
+                    live = self.sessions[sid] = LiveSession(source, route)
+                current = list_session_admissions(self.db, session_id=sid)
+                if any(row['status'] == 'unknown' for row in current):
                     raise RuntimeStoreError('unknown_execution')
+                if (any(row['status'] == 'started' for row in current)
+                        or live.task is not None and not live.task.done()):
+                    results[sid] = 'active'
+                    continue
+                live.source, live.route = source, route
                 self._schedule(SessionRef(self.profile_id, sid))
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:
@@ -568,25 +576,8 @@ class SessionAuthority:
                     live.controls.snapshot(ref.session_id, None)
                     from gateway.session_ingress_media import release_admission_media
                     release_admission_media(self.db, admission_id)
-                    # ``status`` is the message.complete contract's TurnStatus: the Desktop
-                    # extends a Stopped bubble to the persisted partial only on 'interrupted'.
-                    complete = {
-                        'text': response, 'content': response, 'admission_id': admission_id,
-                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
-                        'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
-                            settled['outcome'], 'error')}
-                    # Only the agent's reuse site sets this (never inferred from equal text): the
-                    # final repeats a reply the viewer already painted, so it settles in place.
-                    captured_result = (captured or {}).get('result') or {}
-                    if response and captured_result.get('response_reused'):
-                        complete['response_reused'] = True
-                    # The committed row addresses of the turn: a viewer binds the streamed reply to
-                    # its stored row, so a transcript read racing this frame never paints it twice.
-                    # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
-                    # prompt (``user-<submission_id>``), which the queued admission ack could not name.
-                    if isinstance(captured_result.get('persisted_turn'), dict):
-                        complete['persisted_turn'] = {**captured_result['persisted_turn'],
-                                                      'submission_id': row['request_id']}
+                    from gateway.session_results import completion_payload
+                    complete = completion_payload(row, settled, response, captured)
                     live.event_stream.publish(ref.session_id, complete)
                     # The idle snapshot (running=false) follows the completion, as on every other
                     # host: a viewer that read running=false first settled the reply as a turn whose
