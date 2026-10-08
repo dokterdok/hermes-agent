@@ -8,7 +8,7 @@ from aiohttp.test_utils import TestServer
 
 from gateway import hosted_room_proof as proof
 from gateway.platforms.api_server_room_proof import wrap
-from tests.gateway.test_session_group_peers import gateway  # noqa: F401
+from tests.gateway.test_session_group_peers import gateway as gateway
 from tests.gateway.test_session_group_peer_routes import joined, capabilities
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 

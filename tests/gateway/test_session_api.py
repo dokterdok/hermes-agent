@@ -287,6 +287,8 @@ async def test_fork_session_writes_branched_from_marker(adapter, session_db):
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")
+    from tools.environments import local
+    monkeypatch.setattr(local, "_HERMES_BIN_DIR", None)
     observed = {}
 
     class FakeAgent:
