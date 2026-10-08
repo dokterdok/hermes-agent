@@ -186,8 +186,6 @@ from plugins.platforms.telegram.telegram_network import (
 from utils import env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-# Max seconds a send/edit may sleep inline on a flood-control RetryAfter; longer penalties fail
-# closed with ``flood_control:{wait}`` so the caller's retry machinery owns the wait.
 # Longer server penalties fail closed with a ``flood_control:{wait}`` SendResult so the caller's retry
 # machinery (delivery ledger, streaming fallback) owns the wait instead of the coroutine pinning its worker
 # — a 97-minute penalty on the boot path froze inbound on every platform (#91969).
