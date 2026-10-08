@@ -173,7 +173,7 @@ def test_document_versions_execute_from_receiving_custody_and_remain_downloadabl
             for ref, (item, data) in zip(refs, versions):
                 assert Path(ref['path']).is_relative_to(peer)
                 assert Path(ref['path']).read_bytes() == data
-                assert ref['path'] in text
+                assert json.dumps(ref['path'], ensure_ascii=False) in text
                 if lost_status is not None:
                     saved = await rpc(hw, 'groups.attachment.download', room_id='linked', event_id=source_event_id, attachment_id=item['attachment_id'])
                     assert 'result' in saved, saved
