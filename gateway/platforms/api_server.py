@@ -3156,6 +3156,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             store = getattr(runner, "session_store", None)
             if store is not None:
                 await asyncio.to_thread(store.remove_by_session_id, session_id)
+            # Retirement erased the chat's image references; bytes nothing else holds go too. On
+            # the loop, like API image capture + admission, so no fresh capture is collected early.
+            from gateway.session_ingress_media import collect_unheld_api_images
+            collect_unheld_api_images(db)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth
@@ -4132,7 +4136,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock,
                 bind_declared_conversation=bind_declared_conversation, request_id=request_id,
                 history_from_session=history_from_session, session_history_delivery=session_history_delivery,
-                turn_author=turn_author, resume_unanswered_turn=resume_unanswered_turn)
+                turn_author=turn_author, resume_unanswered_turn=resume_unanswered_turn,
+                approval_notify_callback=approval_notify_callback, approval_session_key=approval_session_key)
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()

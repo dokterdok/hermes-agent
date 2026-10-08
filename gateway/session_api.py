@@ -7,8 +7,7 @@ from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
 from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
-_BINDING_PREFIX = 'gateway.api.binding.v1.'
-_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
+from hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
 
 
 def declared_api_session(db, key):
@@ -76,6 +75,9 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
 
     def write(conn):
         _epoch(conn, authority.epoch)
+        from hermes_state_mutation_retirement import RETIRED_PREFIX
+        if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():
+            raise RuntimeStoreError('not_found')
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_BINDING_PREFIX + session_id,)).fetchone()
         if saved is not None:
@@ -158,8 +160,14 @@ def restore_api_session(authority, session_id):
     with store._lock:
         store._ensure_loaded_locked()
         current = store._entries.get(entry.session_key)
-        if current is not None and current.session_id != session_id:
+        if current is None:
+            # Compression (``in_place=false``) advances the physical transcript, never this
+            # binding: the root stays the FIFO identity and the route resumes at the live tip.
+            entry.session_id = authority.db.get_compression_tip(session_id) or session_id
+            store._entries[entry.session_key] = entry
+        elif current.session_id == session_id:
+            store._entries[entry.session_key] = entry
+        elif current.session_id not in authority.db.get_compression_lineage(session_id):
             raise RuntimeStoreError('admission_conflict')
-        store._entries[entry.session_key] = entry
     authority.sessions.setdefault(session_id, LiveSession(source, entry.session_key))
     return SessionRef(authority.profile_id, session_id)
