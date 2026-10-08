@@ -32,7 +32,10 @@ _MIGRATIONS = {
     "owner_pid": "INTEGER NOT NULL DEFAULT 0",
     "owner_started": "INTEGER NOT NULL DEFAULT 0",
     "retention_until": "REAL NOT NULL DEFAULT 0",
-    "acknowledged_at": "REAL"}
+    "acknowledged_at": "REAL",
+    "stop_requested": "INTEGER NOT NULL DEFAULT 0",
+    "room_authority_key": "TEXT",
+    "room_authority_epoch": "INTEGER"}
 
 
 def _encode_status(status: Dict[str, Any]) -> str:
@@ -47,7 +50,10 @@ def _record(run_id, status_json, owner_pid, owner_started, updated_at) -> dict[s
 
 def _outcome(row, fingerprint):
     """Classify a stored ``(scope, key)`` row against the caller's fingerprint."""
-    return ("reused" if hmac.compare_digest(row[0], fingerprint) else "conflict"), _record(*row[1:])
+    record = _record(*row[1:])
+    # A cancellation fences the identity itself, including a delayed, changed payload.
+    matches = record["status"].get("admission_cancelled") or hmac.compare_digest(row[0], fingerprint)
+    return ("reused" if matches else "conflict"), record
 
 
 class RunIdempotencyStore:
@@ -106,6 +112,8 @@ class RunIdempotencyStore:
                 add_column_if_missing(self._conn, "run_idempotency", column, f"{column} {ddl}")
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)")
+        from gateway.platforms.api_server_run_authority import initialize
+        initialize(self._conn)
         self._conn.commit()
         self._lock = threading.Lock()
         self._tighten_permissions()
@@ -131,8 +139,13 @@ class RunIdempotencyStore:
                 raise
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
-                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
-        """Atomically reserve a key; return ``(outcome, stored_record)``."""
+                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
+                cancel_if_missing: bool = False, room_authority=None):
+        """Reserve admission, or atomically fence an absent key and stop its existing run.
+
+        Cancellation addresses the scoped identity, not a payload fingerprint. Its durable
+        intent also covers an owner still between reservation and scheduling.
+        """
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
         encoded = _encode_status(status)
@@ -142,19 +155,30 @@ class RunIdempotencyStore:
             if row is not None:
                 if retention_until:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
+                if cancel_if_missing:
+                    self._conn.execute(
+                        "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND idempotency_key=?",
+                        (scope, key))
                 self._conn.commit()
-                return _outcome(row, fingerprint)
+                return ("reused", _record(*row[1:])) if cancel_if_missing else _outcome(row, fingerprint)
+            from gateway.platforms.api_server_run_authority import superseded
+            if superseded(self._conn, room_authority):
+                self._conn.commit()
+                return "authority_retired", None
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
-                "owner_pid,owner_started,retention_until,created_at,updated_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "owner_pid,owner_started,retention_until,created_at,updated_at,stop_requested"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
-                 retention_until, now, now))
+                 retention_until, now, now, int(cancel_if_missing)))
+            if room_authority is not None:
+                self._conn.execute("UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=? WHERE run_id=?",
+                                   (*room_authority[:2], run_id))
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 
-    def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0):
+    def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0, room_authority=None):
         """Return ``missing``, ``reused`` or ``conflict`` without reserving."""
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
@@ -163,23 +187,55 @@ class RunIdempotencyStore:
                 self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
             self._prune_stale_terminal_locked(now)
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
+            from gateway.platforms.api_server_run_authority import superseded
+            retired = row is None and superseded(self._conn, room_authority)
             self._conn.commit()
+        if retired:
+            return "authority_retired", None
         return ("missing", None) if row is None else _outcome(row, fingerprint)
+
+    def accepts_room_authority(self, authority):
+        from gateway.platforms.api_server_run_authority import superseded
+        with self._lock:
+            return not superseded(self._conn, authority)
+
+    def room_authority_retired(self, authority):
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT retired_through FROM run_room_authorities WHERE authority_key=?", (authority[0],)).fetchone()
+        return row is not None and authority[1] <= row[0]
+
+    def observe_room_authority(self, scope, authority):
+        from gateway.platforms.api_server_run_authority import observe
+        with self._immediate_txn():
+            current = observe(self._conn, scope, authority)
+            self._conn.commit()
+        return current
+
+    def retire_room_authority(self, scope, authority):
+        from gateway.platforms.api_server_run_authority import retire
+        with self._immediate_txn():
+            retire(self._conn, scope, authority)
+            self._conn.commit()
 
     def _prune_stale_terminal_locked(self, now: float) -> None:
         """Prune aged replay records only once their stored run is terminal (caller holds the
         lock + transaction): a long or disconnected room turn may outlive the retention window."""
         stale = self._conn.execute(
-            """SELECT scope, idempotency_key, status_json
+            """SELECT scope, idempotency_key, status_json, stop_requested
                  FROM run_idempotency
                 WHERE acknowledged_at <= ?
                    OR (retention_until > 0 AND retention_until <= ?)
                    OR (retention_until <= 0 AND updated_at < ?)""",
             (now - self.ACKNOWLEDGED_RETENTION_SECONDS, now, now - self.RETENTION_SECONDS),
         ).fetchall()
-        for stale_scope, stale_key, stale_status in stale:
+        for stale_scope, stale_key, stale_status, stop_requested in stale:
             try:
-                terminal = json.loads(stale_status).get("status") in TERMINAL_STATUSES
+                status = json.loads(stale_status)
+                # A renewed grant may still carry the same generation after normal replay TTL.
+                # Never turn proof of non-admission back into an admissible absent key.
+                terminal = (status.get("status") in TERMINAL_STATUSES
+                            and not status.get("admission_cancelled") and not stop_requested)
             except Exception:
                 terminal = False
             if terminal:
@@ -217,17 +273,38 @@ class RunIdempotencyStore:
                 "SELECT 1 FROM run_idempotency WHERE scope=? AND run_id=?", (scope, run_id)).fetchone()
         return row is not None
 
+    def request_stop(self, scope: str, run_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND run_id=?", (scope, run_id))
+            self._conn.commit()
+
+    def stop_requested(self, run_id: str) -> bool:
+        """Read cancellation intent across processes without changing the public run status."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT stop_requested FROM run_idempotency WHERE run_id=?", (run_id,)).fetchone()
+        return bool(row and row[0])
+
     def update_status(self, run_id: str, status: Dict[str, Any]) -> None:
         with self._lock:
             self._conn.execute(
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))
+            row = self._conn.execute("SELECT room_authority_key FROM run_idempotency WHERE run_id=?", (run_id,)).fetchone()
+            if row and row[0]:
+                from gateway.platforms.api_server_run_authority import compact
+                compact(self._conn, row[0])
             self._conn.commit()
 
     def forget(self, scope: str, key: str) -> None:
         """Release a reservation whose run was refused before it existed."""
         with self._lock:
-            self._conn.execute("DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key))
+            self._conn.execute(
+                """DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=? AND stop_requested=0
+                   AND CASE WHEN json_valid(status_json)
+                       THEN COALESCE(json_extract(status_json, '$.admission_cancelled'), 0)=0 ELSE 0 END""",
+                (scope, key))
             self._conn.commit()
 
     def close(self) -> None:

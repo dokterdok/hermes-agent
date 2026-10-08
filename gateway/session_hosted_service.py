@@ -42,6 +42,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         runtime_stopped = super().stop(timeout=max(0.0, deadline - time.monotonic()))
         return self.replication.stop(timeout=max(0.0, deadline - time.monotonic())) and runtime_stopped
 
+
     def _load_stored_links(self):
         super()._load_stored_links()
         for key, client in self.peer_clients.items():

@@ -231,7 +231,7 @@ class HostedRoomService:
             if revoke is None:
                 raise RuntimeError("peer room grant cannot be revoked safely")
             try:
-                revoke(grant=route.grant)
+                revoke(grant=route.grant, retire_authority=True)
             except PeerRunsHTTPError as exc:
                 if not _grant_revoke_is_terminal(exc):
                     raise
@@ -285,7 +285,10 @@ class HostedRoomService:
         self, binding: HostedRoomBinding, task: Mapping[str, Any], route: PeerMemberRoute,
         client: Any) -> None:
         """Rediscover an admitted peer run without advancing its generation."""
-        recover = _hook(client, "recover_dispatch")
+        stopping = task.get("status") == "stopping"
+        recover = _hook(client, "cancel_dispatch" if stopping else "recover_dispatch")
+        if stopping and recover is None:
+            raise RuntimeError("peer cannot cancel an uncertain admission; update the target gateway")
         identity, payload = task.get("identity"), task.get("payload")
         execution_generation = int(task.get("execution_generation") or 0)
         if (
@@ -675,11 +678,3 @@ class _RouteStatusPeerClient:
                 self._on_ready()
             return result
         return tracked
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import hashlib  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

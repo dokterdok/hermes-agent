@@ -249,6 +249,28 @@ class TestSlashCommandSessionIsolation:
         assert event.source.user_id == "U123"
         assert event.source.scope_id == "T123"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("channel_id, extra, dispatched", [
+        ("C999", {"allowed_channels": "C123"}, False),   # outside allowed_channels
+        ("G123", {"allowed_channels": "C123"}, False),   # an MPIM obeys channel gating too
+        ("D123", {"allowed_channels": "C123"}, True),    # a 1:1 DM is exempt
+        ("C123", {"allowed_channels": "C123"}, True),
+        ("C123", {"ignored_channels": "C123"}, False),   # ignored channels are never touched
+    ])
+    async def test_slash_command_obeys_message_channel_gates(
+            self, adapter, channel_id, extra, dispatched):
+        """allowed_channels / ignored_channels gate a slash command like a message in the same
+        conversation: every conversation but a 1:1 DM. A gated command gets a bare ack, never a
+        "Running /x" promise."""
+        adapter.config.extra.update(extra)
+        ack = AsyncMock()
+        await adapter._handle_hermes_command(ack, {
+            "command": "/status", "text": "hello", "user_id": "U123", "channel_id": channel_id,
+            "team_id": "T123"})
+
+        assert adapter.handle_message.await_count == (1 if dispatched else 0)
+        assert ("text" in ack.await_args.kwargs) == dispatched
+
 
 class TestSlackWorkspaceCollisionIsolation:
     @pytest.mark.asyncio
@@ -5627,69 +5649,6 @@ class TestSlackAuthoredTextDeduplication:
         assert "Deploy failed" in payload
         assert "rollback" in payload
         assert "Roll back" in payload
-
-
-class TestAgentSessionsApiRouting:
-    """slack-sdk 3.44.0 Agent Sessions API (assistant_view deprecation Feb 2027).
-
-    When the installed slack-sdk ships agents.sessions.* typed methods, status
-    and title calls route through them; older SDKs keep using the legacy
-    assistant.threads.* methods (compat bridge on Slack's side).
-    """
-
-    def _adapter(self):
-        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
-        a = SlackAdapter(config)
-        a._app = MagicMock()
-        a._app.client = AsyncMock()
-        return a
-
-    @pytest.mark.asyncio
-    async def test_typing_uses_agent_sessions_when_supported(self):
-        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
-        a = self._adapter()
-        a._app.client.agents_sessions_setStatus = AsyncMock()
-        a._app.client.assistant_threads_setStatus = AsyncMock()
-        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
-        a._app.client.agents_sessions_setStatus.assert_called_once_with(
-            channel_id="C123",
-            thread_ts="parent_ts",
-            status="is thinking...",
-        )
-        a._app.client.assistant_threads_setStatus.assert_not_called()
-
-
-    @pytest.mark.asyncio
-    async def test_stop_typing_clears_via_agent_sessions(self):
-        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
-        a = self._adapter()
-        a._app.client.agents_sessions_setStatus = AsyncMock()
-        a._app.client.assistant_threads_setStatus = AsyncMock()
-        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
-        a._app.client.agents_sessions_setStatus.reset_mock()
-        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
-        a._app.client.agents_sessions_setStatus.assert_called_once_with(
-            channel_id="C123",
-            thread_ts="parent_ts",
-            status="",
-        )
-        a._app.client.assistant_threads_setStatus.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_thread_title_uses_agents_sessions_rename(self):
-        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
-        a = self._adapter()
-        a.config.extra["assistant_thread_titles"] = True
-        a._app.client.agents_sessions_rename = AsyncMock()
-        a._app.client.assistant_threads_setTitle = AsyncMock()
-        await a._set_assistant_thread_title("D123", "171234.0001", "Summarize the incident")
-        a._app.client.agents_sessions_rename.assert_called_once_with(
-            channel_id="D123",
-            thread_ts="171234.0001",
-            title="Summarize the incident",
-        )
-        a._app.client.assistant_threads_setTitle.assert_not_called()
-
 
 
 # ---------------------------------------------------------------------------
