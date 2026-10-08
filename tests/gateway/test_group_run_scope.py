@@ -14,15 +14,21 @@ IDENTITY = dict(room_id="room-one", home_install_id="install-home", authority_ga
                 authority_epoch=3, member_id="member-one", target_install_id="participant", target_profile="research")
 
 
-def test_scope_codec_matches_actual_runs_owner_and_not_grant_scope():
+def test_scope_codec_matches_actual_runs_owner_and_not_grant_scope(tmp_path):
     class Request(dict):
         method = "POST"
         path = "/v1/runs"
 
     claims = {**IDENTITY, "status_expires_at": 1234, "grant_id": "not-part-of-run-scope"}
+    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
     adapter = SimpleNamespace(_room_grant_token=lambda request: "synthetic",
-                              _room_grant_claims=lambda request, **kwargs: claims)
-    expected = api_server_runs._run_idempotency_scope(adapter, Request(), _api_server=SimpleNamespace())
+                              _room_grant_claims=lambda request, **kwargs: claims,
+                              _run_idempotency_store=store)
+    try:
+        expected = api_server_runs._run_idempotency_scope(adapter, Request(), _api_server=SimpleNamespace())
+    finally:
+        store.close()
     # Persisted protocol vector stays independent when the API adopts the shared codec.
     assert expected == "47b455fd52d0e02d48e39e8ee2c2dfcf15d3d829d4091ae1ad039c9429f05725"
     assert room_run_scope_key(claims) == expected
