@@ -131,7 +131,7 @@ class HostLease:
         return request
 
     def void(self, room_id: str, before: float) -> None:
-        """Count no grant asked for before ``before`` (this clock): the host signed a handover then,
+        """Count no grant asked for at or before ``before`` (this clock): the host signed a handover then,
         and a voter may give such a grant back for it."""
         with self._lock:
             self._grants.pop(room_id, None)
@@ -146,7 +146,7 @@ class HostLease:
             return False
         until = float(sent_at) + float(granted) * (1.0 - DRIFT) - MARGIN_SECONDS
         with self._lock:
-            if float(sent_at) < self._void_before.get(room_id, -math.inf):
+            if float(sent_at) <= self._void_before.get(room_id, -math.inf):
                 return False
             entry = self._grants.get(room_id)
             if entry is not None and entry["epoch"] > epoch:

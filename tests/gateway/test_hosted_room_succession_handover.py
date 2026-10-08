@@ -275,14 +275,19 @@ def test_a_statement_kept_after_the_host_resumed_never_gives_its_lease_back(gate
     assert not replayed()
 
 
-def test_a_host_counts_no_grant_asked_for_before_it_signed_a_handover():
+@pytest.mark.parametrize("handover_delay", [0.0, 0.01])
+def test_a_host_counts_no_grant_asked_for_before_it_signed_a_handover(monkeypatch, handover_delay):
     from gateway import hosted_room_clock as clock
     from gateway.hosted_room_succession_automatic import HostLease
+    ticks = [100.0]
+    monkeypatch.setattr(clock, "now", lambda: ticks[0])
     lease = HostLease()
     early = lease.request(ROOM, 1)
     assert early["boot"] == clock.boot_id()
+    ticks[0] += handover_delay
     lease.void(ROOM, clock.now())
     assert lease.acknowledged(ROOM, "voter", {"granted_until_s": 20.0, "epoch": 1}, early["sent_at"]) is False
+    ticks[0] += 1.0
     late = lease.request(ROOM, 1)
     assert lease.acknowledged(ROOM, "voter", {"granted_until_s": 20.0, "epoch": 1}, late["sent_at"]) is True
 
