@@ -41,7 +41,8 @@ async def classic_runtime(tmp_path, monkeypatch):
         _session_db=db,
         _cached_agent_for=lambda _route: None,
     )
-    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    runner._intake_adapter_for = runner._delivery_adapter_for = lambda source: runner.adapters.get(source.platform)
+    runner._adapters_for_profile = lambda profile: runner.adapters if profile in (None, "", "default") else {}
     authority = SessionAuthority(
         runner,
         profile_id=str(home),
@@ -573,7 +574,9 @@ async def test_retired_classic_cleanup_replays_after_physical_failure(
     assert fresh
     source = fixture.home / "cleanup.txt"
     source.write_text("cleanup replay bytes", encoding="utf-8")
-    item = store.outbox.put_path(scope=store.scope(row), path=source)
+    from gateway.hosted_room_artifacts import open_room_artifact_path
+    with open_room_artifact_path(source) as (_, descriptor):
+        item = store.outbox.put_open_file(scope=store.scope(row), descriptor=descriptor, source_name=source.name)
     with store.outbox._connect() as conn:
         blob_name = conn.execute(
             "SELECT blob_name FROM hosted_room_output_artifacts WHERE artifact_id=?",
@@ -890,13 +893,13 @@ async def test_unknown_resolution_retires_and_replays_failed_physical_cleanup(
 
     original_discard = RoomArtifactOutbox.discard
     from gateway import session_classic_output
-    original_unlink = session_classic_output.unlink_blob_names
+    original_unlink = session_classic_output.unlink_classic_blobs
 
     def fail_cleanup(_self, _scope):
         raise OSError("injected physical cleanup failure")
 
     monkeypatch.setattr(RoomArtifactOutbox, "discard", fail_cleanup)
-    monkeypatch.setattr(session_classic_output, "unlink_blob_names", fail_cleanup)
+    monkeypatch.setattr(session_classic_output, "unlink_classic_blobs", fail_cleanup)
     resolved = await rpc(
         fixture,
         "prompt.resolve_unknown",
@@ -922,7 +925,7 @@ async def test_unknown_resolution_retires_and_replays_failed_physical_cleanup(
     assert cleanup_required is not None
 
     monkeypatch.setattr(RoomArtifactOutbox, "discard", original_discard)
-    monkeypatch.setattr(session_classic_output, "unlink_blob_names", original_unlink)
+    monkeypatch.setattr(session_classic_output, "unlink_classic_blobs", original_unlink)
     ClassicExports(fixture.home)
     assert not blob.exists()
     with fixture.db._read_ctx() as conn:

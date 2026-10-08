@@ -220,7 +220,8 @@ async def test_fresh_checks_after_byte_read_refuse_changes(exported, monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('kind', ['missing_schema', 'missing_bytes', 'changed_bytes', 'symlink', 'retirement'])
+@pytest.mark.parametrize('kind', ['missing_schema', 'missing_bytes', 'changed_bytes',
+    pytest.param('symlink', marks=pytest.mark.platforms('linux', 'macos')), 'retirement'])
 async def test_unavailable_custody_is_not_repaired(exported, kind):
     row = exported.db._read_one('SELECT blob_name FROM hosted_room_output_artifacts')
     path = exported.home / 'hosted-room-artifact-outbox' / 'blobs' / row['blob_name']
@@ -360,7 +361,7 @@ async def test_fresh_checks_after_async_handoff(exported, monkeypatch, change):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('kind', ['absent', 'symlink', 'malformed'])
+@pytest.mark.parametrize('kind', ['absent', pytest.param('symlink', marks=pytest.mark.platforms('linux', 'macos')), 'malformed'])
 async def test_install_identity_is_never_created_or_followed(exported, kind):
     path = exported.home / 'install_id'
     path.unlink()

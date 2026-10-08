@@ -21,7 +21,7 @@ from gateway.classic_output_exports import (
 from gateway.config import Platform
 from gateway.hosted_room_artifacts import RoomArtifactError, RoomArtifactOutbox
 from gateway.hosted_room_artifacts_classic import ClassicExportScope, identifier
-from gateway.hosted_room_output_discard import OutputCleanupUnavailable, unlink_blob_names
+from gateway.classic_output_cleanup import ClassicCleanupUnavailable, require_live_outbox, unlink_classic_blobs
 from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError, _epoch, get_session_admission
 
@@ -326,7 +326,7 @@ def _cleanup_retired_scopes(authority, scopes, *, authorize=None):
         _epoch(conn, authority.epoch)
         if authorize is not None:
             authorize(conn)
-        outbox = RoomArtifactOutbox.borrow_existing(authority.db, conn)
+        blob_root = require_live_outbox(authority.db, conn)
         for scope in scopes:
             export = conn.execute(
                 "SELECT state FROM classic_output_exports WHERE export_id=? AND generation=?",
@@ -342,9 +342,9 @@ def _cleanup_retired_scopes(authority, scopes, *, authorize=None):
                 raise RoomArtifactError("Classic custody is not retired")
             if any(row["cleanup_required_at"] is None for row in rows):
                 raise RoomArtifactError("Classic cleanup obligation is unavailable")
-            outbox._retire_generation(conn, scope)
+            RoomArtifactOutbox._retire_generation(conn, scope)
             if rows:
-                unlink_blob_names(outbox, [row["blob_name"] for row in rows])
+                unlink_classic_blobs(blob_root, [row["blob_name"] for row in rows])
             conn.execute("DELETE FROM hosted_room_output_artifacts WHERE scope_key=?", (scope.key,))
     authority.db._execute_write(cleanup)
 
@@ -365,7 +365,7 @@ def cleanup_terminal(authority, row: dict, terminal: dict) -> bool:
         if export is not None and export["state"] != "retired":
             return True
         _cleanup_retired_scopes(authority, [ClassicExportScope(marker["export_id"], marker["generation"])])
-    except (RoomArtifactError, OutputCleanupUnavailable, RuntimeStoreError,
+    except (RoomArtifactError, ClassicCleanupUnavailable, RuntimeStoreError,
             OSError, sqlite3.Error, ValueError, TypeError, KeyError):
         return False
     return True
@@ -493,7 +493,15 @@ async def discard(connection, ref: SessionRef, params):
                 raise _unavailable()
         elif not any(row["session_key"] == ref.session_id for row in rows):
             raise _unavailable()
-        outbox = RoomArtifactOutbox.borrow_existing(authority.db, conn)
+        if "session:operator" not in connection.actor.capabilities:
+            for row in rows:
+                binding = json.loads(row["binding"])
+                if not isinstance(binding, dict) or (
+                    (binding.get("binding_version") == CANONICAL_BINDING_VERSION or "principal_id" in binding)
+                    and binding.get("principal_id") != connection.actor.subject
+                ):
+                    raise _unavailable()
+        require_live_outbox(authority.db, conn)
         if "export_id" not in params:
             from gateway.classic_output_exports import MAX_EXPORTS
             existing = conn.execute(
@@ -507,7 +515,7 @@ async def discard(connection, ref: SessionRef, params):
         import time
         for row, scope in zip(rows, scopes):
             conn.execute("UPDATE classic_output_exports SET state='retired' WHERE export_id=?", (row["export_id"],))
-            outbox._retire_generation(conn, scope)
+            RoomArtifactOutbox._retire_generation(conn, scope)
             conn.execute("UPDATE hosted_room_output_artifacts SET cleanup_required_at=? WHERE scope_key=?",
                          (time.time(), scope.key))
         return scopes
@@ -517,7 +525,7 @@ async def discard(connection, ref: SessionRef, params):
         _cleanup_retired_scopes(authority, scopes, authorize=authorize)
     except RuntimeStoreError:
         raise
-    except (RoomArtifactError, OutputCleanupUnavailable, OSError, sqlite3.Error,
+    except (RoomArtifactError, ClassicCleanupUnavailable, OSError, sqlite3.Error,
             ValueError, TypeError, KeyError) as exc:
         raise _unavailable(exc) from exc
     return {"retired": True}

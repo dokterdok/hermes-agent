@@ -162,3 +162,27 @@ async def test_unrelated_group_discard_cannot_run_expiry_housekeeping(classic_ru
                       installation=installation, group_id=request["group_id"])
     assert reply["error"]["message"] == "classic_export_unavailable"
     assert _custody_snapshot(f) == before
+
+
+@pytest.mark.asyncio
+async def test_group_name_does_not_authorize_retiring_another_principals_export(classic_runtime):
+    from gateway.classic_output_exports import ClassicExports
+    f = classic_runtime
+    installation, request, _s, terminal, _item = await _publish_classic_file(f, 'own-export', group_id='shared-name')
+    store = ClassicExports(f.home)
+    foreign, _ = store.admit('foreign-session', {**request, 'request_id': 'foreign-export'},
+                             'other principal', principal_id='other-principal')
+    f.db._execute_write(lambda conn: conn.execute(
+        "UPDATE classic_output_exports SET state='published' WHERE export_id=?", (foreign['export_id'],)))
+    before = _custody_snapshot(f)
+    reply = await rpc(f, 'session.export.discard', session_id=f.session_id,
+                      installation=installation, group_id=request['group_id'])
+    assert reply.get('error', {}).get('message') == 'classic_export_unavailable'
+    assert _custody_snapshot(f) == before
+    # The explicit, owned export remains independently discardable.
+    reply = await rpc(f, 'session.export.discard', session_id=f.session_id,
+        installation=installation, group_id=request['group_id'], export_id=terminal['classic_export']['export_id'])
+    assert reply.get('result') == {'retired': True}
+    with f.db._read_ctx() as conn:
+        assert conn.execute('SELECT state FROM classic_output_exports WHERE export_id=?',
+                            (foreign['export_id'],)).fetchone()[0] == 'published'
