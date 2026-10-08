@@ -8,21 +8,27 @@ import {
 import {
   fetchStoredTranscriptAcrossBackends,
   getLatestSessionMessages,
+  getSession,
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
-import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
+  isStoredTranscriptReadOnly,
   readOnlyRuntimeIdFor,
   resumeWithStoredTranscriptFallback
 } from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
-import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
+import {
+  profileScopeForSessionOwner,
+  requestForSessionProfile,
+  type SessionOwnerScope
+} from '@/store/session-request-router'
 import {
   $sessionTiles,
   publishSessionState,
@@ -31,9 +37,11 @@ import {
 } from '@/store/session-states'
 import type { SessionResumeResult } from '@/types/hermes'
 
+import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
+import type { useSessionActions } from '../../session/hooks/use-session-actions'
 import {
   chatMessageArraysEquivalent,
   overlayConcurrentMessageChanges,
@@ -43,9 +51,36 @@ import {
   resolveSessionOwner
 } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
+import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
 type SessionStateCache = ReturnType<typeof useSessionStateCache>
+
+/** Runtime a stored session is bound to: the primary reverse lookup, else a retained tile. */
+function boundTileRuntimeId(
+  runtimeIdByStoredSessionIdRef: SessionStateCache['runtimeIdByStoredSessionIdRef'],
+  storedSessionId: string
+): string | undefined {
+  return (
+    runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+    $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+  )
+}
+
+/** REST read scope for a tile's resolved owner (connection-scoped owners read their target profile). */
+function tileRestScope(owner: SessionOwnerScope) {
+  return owner && typeof owner === 'object'
+    ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
+    : owner
+}
+
+/** A cached binding still carrying this session's transcript (or mid-turn). */
+function isWarmTileState(
+  cached: ClientSessionState | undefined,
+  storedSessionId: string
+): cached is ClientSessionState {
+  return cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)
+}
 
 function mergeTileTranscript(
   previous: ChatMessage[],
@@ -120,6 +155,7 @@ function mergeTileTranscript(
 
 interface SessionTileDelegateParams {
   archiveSession: (storedSessionId: string) => Promise<unknown>
+  branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession']
   branchStoredSession: (storedSessionId: string) => Promise<unknown>
   executeSlashCommand: ReturnType<typeof usePromptActions>['executeSlashCommand']
   removeSession: (storedSessionId: string) => Promise<unknown>
@@ -138,6 +174,7 @@ interface SessionTileDelegateParams {
  */
 export function useSessionTileDelegate({
   archiveSession,
+  branchLoadedSession,
   branchStoredSession,
   executeSlashCommand,
   removeSession,
@@ -206,11 +243,30 @@ export function useSessionTileDelegate({
       branchSession: async storedSessionId => {
         await branchStoredSession(storedSessionId)
       },
+      branchSessionAtMessage: async (storedSessionId, runtimeId, messageId) => {
+        const state = sessionStateByRuntimeIdRef.current.get(runtimeId)
+
+        // The tile can disappear between render and click. Without its live
+        // state we cannot prove the busy flag or the transcript boundary, so
+        // do not manufacture an empty, apparently-idle branch.
+        if (!state) {
+          return false
+        }
+
+        return await branchLoadedSession({
+          busy: state.busy,
+          cwd: state.cwd,
+          messageId,
+          messages: state.messages,
+          runtimeId,
+          storedSessionId
+        })
+      },
       deleteSession: async storedSessionId => {
         await removeSession(storedSessionId)
       },
-      executeSlash: async (rawCommand, sessionId) => {
-        await executeSlashCommand(rawCommand, { sessionId })
+      executeSlash: async (rawCommand, sessionId, options) => {
+        await executeSlashCommand(rawCommand, { sessionId, ...options })
       },
       // Gateway reconnect (sleep/wake, backend respawn): every stored→runtime
       // binding recorded pre-reconnect points at a runtime id the respawned
@@ -240,7 +296,22 @@ export function useSessionTileDelegate({
           return false
         }
 
-        updateSessionState(runtimeId, state => ({ ...state, awaitingResponse: false, busy: false }))
+        updateSessionState(runtimeId, state => ({
+          ...state,
+          awaitingResponse: false,
+          busy: false,
+          turnLive: false,
+          turnStartedAt: null
+        }))
+
+        return true
+      },
+      updateHeldSession: (runtimeId, updater) => {
+        if (!sessionStateByRuntimeIdRef.current.has(runtimeId)) {
+          return false
+        }
+
+        updateSessionState(runtimeId, updater)
 
         return true
       },
@@ -280,9 +351,7 @@ export function useSessionTileDelegate({
       resumeTile: async (storedSessionId, options) => {
         // A retained tile can still own its runtime after the primary view drops
         // its reverse lookup. Reconnect invalidates both bindings.
-        const existing =
-          runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
-          $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+        const existing = boundTileRuntimeId(runtimeIdByStoredSessionIdRef, storedSessionId)
 
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
         const resumeRequestBaselineMessages = cached?.messages ?? []
@@ -300,13 +369,7 @@ export function useSessionTileDelegate({
         // warm snapshot is whatever the tile last painted, and cron bot-chat
         // deliveries that landed while the panel's WS was down never arrive
         // as realtime events (#96183).
-        if (
-          existing &&
-          cached?.storedSessionId === storedSessionId &&
-          (cached.busy || cached.messages.length > 0) &&
-          !refreshTranscript &&
-          !authoritativeSnapshot
-        ) {
+        if (existing && isWarmTileState(cached, storedSessionId) && !refreshTranscript && !authoritativeSnapshot) {
           publishSessionState(existing, cached)
 
           return existing
@@ -319,21 +382,13 @@ export function useSessionTileDelegate({
         // the same cross-profile bleed the recovery resumes had (#67603).
         const owner = await ownerForStoredSession(storedSessionId)
 
-        const restScope =
-          owner && typeof owner === 'object'
-            ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
-            : owner
+        const restScope = tileRestScope(owner)
 
         const prefetchPromise = authoritativeSnapshot
           ? Promise.resolve(null)
           : getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
 
-        if (
-          !authoritativeSnapshot &&
-          existing &&
-          cached?.storedSessionId === storedSessionId &&
-          (cached.busy || cached.messages.length > 0)
-        ) {
+        if (!authoritativeSnapshot && existing && isWarmTileState(cached, storedSessionId)) {
           const prefetch = await prefetchPromise
 
           // A long turn can push every rendered row off the newest page; read
@@ -432,9 +487,7 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
-        const currentBinding =
-          runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
-          $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+        const currentBinding = boundTileRuntimeId(runtimeIdByStoredSessionIdRef, storedSessionId)
 
         // Another resume/rebind won while this request was in flight. Do not
         // publish the older response into the runtime the tile now owns.
@@ -467,8 +520,7 @@ export function useSessionTileDelegate({
 
             const busyChangedWhileResuming = cached
               ? Boolean(
-                  state.busy &&
-                    (state.turnStartedAt !== cached.turnStartedAt || (state.turnLive && !cached.turnLive))
+                  state.busy && (state.turnStartedAt !== cached.turnStartedAt || (state.turnLive && !cached.turnLive))
                 )
               : state.busy
 
@@ -497,45 +549,25 @@ export function useSessionTileDelegate({
         return runtimeId
       },
       submitToSession: async (runtimeId, text) => {
-        // A read-only stored-transcript tile has no live runtime to submit
-        // into (#94724). Refuse with the explanation instead of minting a
-        // misrouted prompt on a backend that never owned the session.
-        if (isReadOnlyRuntimeId(runtimeId)) {
-          notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
-
-          return
-        }
-
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
 
-        if (storedSessionId) {
-          const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
-          const owner = await ownerForStoredSession(storedSessionId)
+        // A cron run's write gate is re-evaluated against its authoritative
+        // row before the send (#88443) — the same gate as the primary chat's
+        // `submit`, so a verdict never latches and a restored tile is gated.
+        if (storedSessionId && !isReadOnlyRuntimeId(runtimeId)) {
+          await refreshCronRunWriteGate(storedSessionId, id =>
+            ownerForStoredSession(id).then(owner => getSession(id, profileScopeForSessionOwner(owner)))
+          )
+        }
 
-          const refreshed = await refreshIfTranscriptStale(storedSessionId, cached?.messages ?? [], {
-            profile: profileScopeForSessionOwner(owner)
-          })
+        // A read-only stored-transcript tile has no live runtime to submit
+        // into (#94724), and a never-closed cron run the scheduler no longer
+        // owns (#88443) stays closed to writes when it is opened as a tile.
+        // Refuse with the explanation instead of minting a misrouted prompt.
+        if (isReadOnlyRuntimeId(runtimeId) || isStoredTranscriptReadOnly(storedSessionId)) {
+          notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
 
-          if (refreshed) {
-            updateSessionState(
-              runtimeId,
-              state => ({
-                ...state,
-                awaitingResponse: false,
-                busy: false,
-                messages: refreshed,
-                pendingBranchGroup: null
-              }),
-              storedSessionId
-            )
-            notify({
-              kind: 'warning',
-              message: translateNow('desktop.staleSessionBody'),
-              title: translateNow('desktop.staleSessionTitle')
-            })
-
-            return
-          }
+          return { runtimeSessionId: runtimeId, storedSessionId: null }
         }
 
         const routedRequest = storedSessionId
@@ -543,17 +575,34 @@ export function useSessionTileDelegate({
               requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
           : requestGateway
 
+        noteMessageSent($sessionTiles.get().find(tile => tile.runtimeId === runtimeId)?.workspaceMode ?? 'sessions')
+        let acceptedRuntimeId = runtimeId
+
         await withSessionNotFoundResume(
           runtimeId,
           storedSessionId,
           liveId => routedRequest('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
-          { requestGateway: routedRequest, onRecovered: rebindTileRuntime(runtimeId) }
+          {
+            requestGateway: routedRequest,
+            onRecovered: recoveredId => {
+              acceptedRuntimeId = recoveredId
+              rebindTileRuntime(runtimeId)(recoveredId)
+            }
+          }
         )
+
+        return {
+          runtimeSessionId: acceptedRuntimeId,
+          // The durable binding for the accepted runtime — the only proof the
+          // requested stored session is what actually took the prompt.
+          storedSessionId: storedSessionIdForRuntime(acceptedRuntimeId) ?? null
+        }
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
     })
   }, [
     archiveSession,
+    branchLoadedSession,
     branchStoredSession,
     executeSlashCommand,
     removeSession,

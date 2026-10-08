@@ -43,6 +43,8 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
+    # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
+    "post_gateway_admission",
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
@@ -178,6 +180,43 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     return hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
 
 
+_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
+
+
+def resolve_plugin_command_result(result: Any) -> Any:
+    """Resolve a plugin command result, awaiting async handlers: ``asyncio.run`` when no loop is
+    running, else a helper thread with its own loop (30s bound so a hung handler cannot wedge the
+    terminal)."""
+    if not inspect.isawaitable(result):
+        return result
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(result)
+    outcome: Dict[str, Any] = {}
+    failure: Dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            outcome["value"] = asyncio.run(result)
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            failure["exc"] = exc
+        finally:
+            done.set()
+
+    # copy_context: the helper thread must see the caller's profile/secret scope, else an
+    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
+    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
+                     name="hermes-plugin-command-await", daemon=True).start()
+    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
+        raise TimeoutError("Plugin command async handler did not complete within "
+                           f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
+    if "exc" in failure:
+        raise failure["exc"]
+    return outcome.get("value")
+
+
 class PluginDispatchMixin:
     @staticmethod
     def _hook_callback_kwargs(callback: Callable, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -203,7 +242,6 @@ class PluginDispatchMixin:
         are (loop-safe), otherwise the bare coroutine object is appended to the results and the
         plugin's body never runs (#12449).
         """
-        from hermes_cli.plugins import resolve_plugin_command_result
         return resolve_plugin_command_result(callback(**cls._hook_callback_kwargs(callback, payload)))
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
@@ -417,7 +455,6 @@ class PluginDispatchMixin:
 
     def _deliver_event(self, item: _QueuedPluginEvent) -> None:
         """Deliver one queued event on the host-owned worker thread."""
-        from hermes_cli.plugins import resolve_plugin_command_result
         with self._event_lock:
             if item.generation != self._event_generation:
                 return
@@ -608,18 +645,33 @@ class PluginDispatchMixin:
             return False
         return bool(self._middleware.get(kind))
 
-    def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
-        """Call middleware callbacks for *kind* (each isolated); return non-``None`` results."""
+    def invoke_middleware(
+        self, kind: str, *, _payload_key: Optional[str] = None, **kwargs: Any
+    ) -> List[Any]:
+        """Call middleware callbacks for *kind* (each isolated); return non-``None`` results.
+
+        Request middleware passes ``_payload_key``: a dict returned under it becomes the payload the
+        next callback sees, so rewrites compose, and each callback gets its own copy of the payload and
+        of ``original_<key>`` so an in-place edit cannot leak.
+        """
         from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_cli.middleware import _safe_copy
 
         if safe_worker_enabled():
             return []
         results: List[Any] = []
         for cb in self._middleware.get(kind, []):
+            call_kwargs = kwargs
+            if _payload_key:
+                original_key = "original_" + _payload_key
+                call_kwargs = {**kwargs, _payload_key: _safe_copy(kwargs[_payload_key]),
+                               original_key: _safe_copy(kwargs[original_key])}
             try:
-                ret = cb(**kwargs)
+                ret = cb(**call_kwargs)
                 if ret is not None:
                     results.append(ret)
+                    if _payload_key and isinstance(ret, dict) and isinstance(ret.get(_payload_key), dict):
+                        kwargs[_payload_key] = ret[_payload_key]
             except (Exception, SystemExit) as exc:
                 # Runs once per tool call like a hook, so a mis-declared callback floods identically.
                 self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
