@@ -176,15 +176,32 @@ def promote(conn, source, parent, name):
     return json.dumps(identity, sort_keys=True)
 
 
-def _legacy_identity(outbox, row):
+def capture_output_identity(root, row):
+    """Verify a legacy artifact before its caller commits a physical identity seal."""
     name = str(row['blob_name'])
-    with _held_file(outbox.blob_root, name) as (source, parent):
-        identity = _identity(source, parent, name, complete=True)
-        if identity['size'] != row['size'] or identity['digest'] != row['sha256']:
-            raise ValueError('legacy output bytes changed')
-        with outbox._connect() as conn:
-            _save(conn, name, identity)
-            conn.commit()
+    try:
+        with _held_file(root, name) as (source, parent):
+            identity = _identity(source, parent, name, complete=True)
+            if identity['size'] != row['size'] or identity['digest'] != row['sha256']:
+                raise ValueError('legacy output bytes changed')
+            return identity
+    except FileNotFoundError:
+        if os.name == 'nt':
+            with _windows_parent(Path(os.path.abspath(root))) as parent:
+                saved = cleanup._windows_handle_stat(parent)
+        else:
+            with cleanup._parent_fd(Path(os.path.abspath(root))) as parent:
+                saved = os.fstat(parent)
+        return {'copy_id': name.removeprefix('blob_'), 'generation': 1, 'namespace': 'output',
+                'device': 'absent', 'inode': 'absent', 'size': row['size'], 'digest': row['sha256'],
+                'parent_device': str(saved.st_dev), 'parent_inode': str(saved.st_ino)}
+
+
+def _legacy_identity(outbox, row):
+    identity = capture_output_identity(outbox.blob_root, row)
+    with outbox._connect() as conn:
+        _save(conn, str(row['blob_name']), identity)
+        conn.commit()
     return identity
 
 
@@ -195,18 +212,7 @@ def remove_artifact(outbox, row):
         pending = conn.execute('SELECT identity_json FROM hosted_room_output_blob_cleanup WHERE blob_name=?',
                                (name,)).fetchone()
     encoded = row['blob_identity'] or (pending['identity_json'] if pending else None)
-    try:
-        identity = json.loads(encoded) if encoded else _legacy_identity(outbox, row)
-    except FileNotFoundError:
-        if os.name == 'nt':
-            with _windows_parent(Path(os.path.abspath(outbox.blob_root))) as parent:
-                saved = cleanup._windows_handle_stat(parent)
-        else:
-            with cleanup._parent_fd(Path(os.path.abspath(outbox.blob_root))) as parent:
-                saved = os.fstat(parent)
-        identity = {'copy_id': name.removeprefix('blob_'), 'generation': 1, 'namespace': 'output',
-                    'device': 'absent', 'inode': 'absent', 'size': row['size'], 'digest': row['sha256'],
-                    'parent_device': str(saved.st_dev), 'parent_inode': str(saved.st_ino)}
+    identity = json.loads(encoded) if encoded else _legacy_identity(outbox, row)
     if not cleanup.remove_sealed_copy(Path(os.path.abspath(outbox.blob_root / name)), identity):
         raise ValueError('output cleanup could not verify ownership')
     with outbox._connect() as conn:
