@@ -89,7 +89,8 @@ async def test_a_turn_that_failed_before_running_settles_failed_on_every_surface
         return await gateway._hmwa_agent_error_reply(RuntimeError('provider init failed'), event, source, None,
                                                      'k', gateway._PreparedTurn([], '', None, None, None, None))
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
-                             _adapter_for_source=lambda source: None, _handle_message=handle)
+                             _intake_adapter_for=lambda source: None,
+                             _delivery_adapter_for=lambda source: None, _handle_message=handle)
     authority = SessionAuthority(runner, profile_id='p', instance_id='owner', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='owner'))
     authority.sessions['s'] = LiveSession(source, 'route')

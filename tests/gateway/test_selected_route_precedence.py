@@ -52,7 +52,7 @@ def test_local_policy_does_not_enter_api_or_global_auth_fallback(selection, monk
     t.authority.sessions['local'] = SimpleNamespace(source=source)
     adapter.register_source(source)
     adapter.policies['local'] = LocalSessionPolicy(source='cli', platform='cli', cwd=str(t.home),
-        model='local-model', toolsets=(), config_json=json.dumps({'model': {'provider': 'openai-codex'}}),
+        model='local-model', toolsets=(), config_json=json.dumps({'model': {'provider': 'openai-codex', 'openai_runtime': 'codex_app_server'}}),
         request_json='{}', terminal_json='{}')
     def forbidden(*a, **k): pytest.fail('LOCAL branch read ordinary session persistence or API resolver')
     monkeypatch.setattr(t.runner.session_store, 'get_model_override', forbidden)
