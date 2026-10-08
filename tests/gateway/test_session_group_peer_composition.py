@@ -232,6 +232,14 @@ def test_absent_peer_cancellation_never_admits_on_two_canonical_gateways(tmp_pat
                     await asyncio.sleep(.05)
             assert task()[1:] == (1, 'cancelled')
             no_admission()
+            if operation == 'disband':
+                async with asyncio.timeout(30):
+                    while True:
+                        response = await rpc(hw, 'groups.disband', room_id='linked')
+                        if 'result' in response:
+                            break
+                        assert response.get('error', {}).get('message') == 'room_retiring', response
+                        await asyncio.sleep(.05)
             expected = f"room:{retained['task_id']}:1"
             assert set(proxy.admission_keys) == set(proxy.cancellation_keys) == {expected}
             assert len(proxy.cancellation_keys) >= 2
@@ -254,6 +262,10 @@ def test_absent_peer_cancellation_never_admits_on_two_canonical_gateways(tmp_pat
             if response.status == 202:
                 assert proof['status'] == 'cancelled' and proof['replayed'] is True
         no_admission()
+        if operation == 'disband':
+            with sqlite3.connect(target / 'runs_idempotency.db') as db:
+                assert db.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 0
+                assert db.execute('SELECT retired_through FROM run_room_authorities').fetchall() == [(1,)]
 
     try:
         with daemon(root, target, target_env, barrier=True, fixture=fixture) as (_, td):
