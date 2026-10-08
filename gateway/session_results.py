@@ -8,6 +8,17 @@ execution_result: ContextVar[dict | None] = ContextVar("execution_result", defau
 from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX
 
 
+def record_unexecuted_failure(reply):
+    """The admitted turn never ran because it failed (agent initialization raised, history
+    unreadable): commit a failed result for the executing admission, so no surface settles it
+    ``completed`` with the apology as the turn's output. Returns ``reply`` unchanged."""
+    captured = execution_result.get()
+    if captured is not None and 'result' not in captured:
+        captured['result'] = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
+                              'error': str(reply or 'The admitted turn failed.')}
+    return reply
+
+
 def _redacted(value):
     """The stored result is a state.db copy of the model's answer and history: redacted at this
     storage boundary like every transcript row (``security.redact_secrets``). The live viewer
@@ -81,18 +92,49 @@ def admission_result(db, admission_id):
         return json.loads(saved[0]) if saved else None
 
 
-def close_discarded_turn(db, target_id):
-    """Close a discarded ``unknown`` turn the way a failed turn is closed.
+def close_discarded_turn(db, conn, row):
+    """Close a discarded ``unknown`` turn the way a failed turn is closed, on the resolution's
+    own transaction (``resolve_unknown_session_input(_terminal_write=...)``).
 
     The lost input stays in the transcript for the user to resend, but an open ``user`` tail would be
     merged into the follower's provider request by consecutive-user repair, re-sending the discarded
     turn as context. A Hermes-authored boundary (``display_kind=failed_turn``, stripped of its type
-    before the wire) ends it. Its side effects are unknown, so the hedged copy. Idempotent on the
-    durable tail, like the gateway and core failed-turn closers."""
-    if db.latest_conversation_role(target_id) != 'user':
-        return False
+    before the wire) ends it. Its side effects are unknown, so the hedged copy. The boundary lands on
+    the CURRENT physical transcript (local reset/compression lineage tip), resolved on this
+    connection. Idempotent on the durable tail, like the gateway and core failed-turn closers."""
     import time
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
-    db.append_message(target_id, 'assistant', PARTIAL_FAILED_TURN_NOTICE, timestamp=time.time(),
-                      display_kind=FAILED_TURN_DISPLAY_KIND)
+    from hermes_state_local_lineage import local_physical_target
+    from hermes_state_runtime import _canonical_chain
+    target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]
+    tail = conn.execute("SELECT role FROM messages WHERE session_id=? AND active=1 "
+                        "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (target,)).fetchone()
+    if tail is None or tail[0] != 'user':
+        return False
+    db._append_messages_in_transaction(conn, target, [{
+        'role': 'assistant', 'content': PARTIAL_FAILED_TURN_NOTICE, 'timestamp': time.time(),
+        'display_kind': FAILED_TURN_DISPLAY_KIND}])
     return True
+
+def completion_payload(row, settled, response, captured):
+    """Build the settled turn frame from its committed outcome and captured identity."""
+    # ``status`` is the message.complete contract's TurnStatus: the Desktop
+    # extends a Stopped bubble to the persisted partial only on 'interrupted'.
+    complete = {
+        'text': response, 'content': response, 'admission_id': row['admission_id'],
+        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
+        'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
+            settled['outcome'], 'error')}
+    # Only the agent's reuse site sets this (never inferred from equal text): the
+    # final repeats a reply the viewer already painted, so it settles in place.
+    captured_result = (captured or {}).get('result') or {}
+    if response and captured_result.get('response_reused'):
+        complete['response_reused'] = True
+    # The committed row addresses of the turn: a viewer binds the streamed reply to
+    # its stored row, so a transcript read racing this frame never paints it twice.
+    # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
+    # prompt (``user-<submission_id>``), which the queued admission ack could not name.
+    if isinstance(captured_result.get('persisted_turn'), dict):
+        complete['persisted_turn'] = {**captured_result['persisted_turn'],
+                                      'submission_id': row['request_id']}
+    return complete

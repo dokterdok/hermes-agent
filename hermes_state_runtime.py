@@ -146,9 +146,16 @@ def claim_session_input(db, *, epoch: int, session_id: str, _authorize_write=Non
         blocked = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('started','unknown')", (session_id,)).fetchall()
         if any(row[0] == 'unknown' for row in blocked):
             raise RuntimeStoreError('unknown_execution')
-        if conn.execute("SELECT 1 FROM worker_executions WHERE session_id=? AND status='unknown'", (session_id,)).fetchone():
+        # A worker follows its physical transcript (compression publish / local reset target)
+        # while this FIFO stays keyed on the logical owner: scan the whole lineage.
+        from hermes_state_local_lineage import local_physical_target
+        lineage = {*_canonical_chain(conn, session_id), *_canonical_chain(conn, local_physical_target(conn, session_id))}
+        marks = ','.join('?' * len(lineage))
+        workers = {row[0] for row in conn.execute(
+            f"SELECT status FROM worker_executions WHERE session_id IN ({marks}) AND status!='terminal'", tuple(lineage))}
+        if 'unknown' in workers:
             raise RuntimeStoreError('unknown_execution')
-        if blocked or conn.execute("SELECT 1 FROM worker_executions WHERE session_id=? AND status IN ('registered','running')", (session_id,)).fetchone():
+        if blocked or workers:
             return None
         row = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' ORDER BY seq LIMIT 1", (session_id,)).fetchone()
         if row is None:
@@ -379,7 +386,11 @@ def import_legacy_session_admissions(db, *, epoch: int, source_path, principal_i
 
 def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generation: int,
                                   _terminal_write=None) -> dict:
-    """Explicit operator acknowledgement; resolves uncertainty, never requeues it."""
+    """Explicit operator acknowledgement; resolves uncertainty, never requeues it.
+
+    ``_terminal_write(conn, row, outcome, result)`` is the owner's same-transaction effect (the discarded turn's
+    transcript boundary): it must not commit, may run again on SQLite retry, and raising rolls
+    the whole resolution back, so the FIFO can never advance past an unclosed lost turn."""
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
