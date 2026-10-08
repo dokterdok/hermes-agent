@@ -20,7 +20,7 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
-import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -275,6 +275,19 @@ function flattenChildrenToText(node: unknown): string {
   }
 
   return ''
+}
+
+/** Foreign transcript links may navigate only after an explicit click to a web URL.
+ * No preview cards, title fetches, embeds, session refs or foreground filesystem resolution. */
+function PreviewOnlyMarkdownLink({children, className, href, ...props}: ComponentProps<'a'>) {
+  if (!href || !/^https?:\/\//i.test(href.trim())) {return <span>{children}</span>}
+  let target: URL
+
+  try {target = new URL(href)} catch {return <span>{children}</span>}
+
+  if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) {return <span>{children}</span>}
+
+  return <ExternalLink className={cn('wrap-anywhere', className)} href={target.href} {...props}>{children}</ExternalLink>
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
@@ -656,7 +669,7 @@ function MarkdownTextSurface({
               {decorateText ? decorateText(children) : children}
             </MarkdownParagraph>
           ),
-        a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
+        a: previewOnly ? PreviewOnlyMarkdownLink : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
         // mirroring the CSS isolate that already keeps it out of the

@@ -64,8 +64,7 @@ user-activated extensions. If you tighten `desktop-slash-commands.ts`, keep
 
 ## Bot Mode (`src/plugins/hermes-bots/`) — one bot = ONE canonical forever-chat, identified by NAME
 
-Each bot is a Hermes **profile** with a persistent identity. This invariant regressed repeatedly,
-cost users conversation history each time, and is not open for re-litigation in a routine PR.
+Each bot is a Hermes **profile** with one canonical chat.
 
 The chat's only identity is **(profile, session titled exactly "Bot Chat")**; the state DB's
 UNIQUE(title) index makes that pair a registry of at most one row. Clicking a bot row:
@@ -77,10 +76,8 @@ UNIQUE(title) index makes that pair a registry of at most one row. Clicking a bo
    never forked (`set_session_title` silently drops conflicting titles — returns 0 rows — which is how
    the 2026-08 infinite fork loop started).
 
-**There is NO session-id pin.** The old design stored a pointer in `ui_meta['hermes-bots'].chat`;
-five hardening waves (#88690, #90732, #90751, the #91791 revert, #92042) each guarded a new way it
-dangled or was stolen (rows[0] steals, `last_session` adoptions, transient clears, a pin re-anchored
-onto a cron session). A name cannot dangle; legacy `chat` keys in ui_meta are ignored and dropped.
+**There is NO session-id pin.** The exact-title registry is the sole identity. Stored pointers
+repeatedly adopted unrelated sessions; legacy `chat` keys in `ui_meta` are ignored and dropped.
 **Recency must never win** (#91791 → #92042): canonical Bot Chats are unconditionally hidden from the
 Sessions sidebar, so the bot row is the ONLY door — "newest visible session wins" walls the whole
 relationship off behind a row that previews one session and opens another. Side-chats ("New chat
@@ -100,14 +97,13 @@ reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-ch
 
 ### Group Chats: gateway rooms and classic rooms
 
-A Group Chat is either a **gateway room** (the gateway owns its log and runs its turns; `canonical-group-*`) or a **classic room** (Desktop runs its rounds; `group-*`). Keep the boundary sharp:
-
-- `groupExecutionMode` in `canonical-group-capabilities.ts` is the single resolver. Canonical means `groups.capabilities.methods` includes `groups.discard`; anything else (current `main`, standalone `hermes serve` or `hermes dashboard`, `-32601`) is classic. Don't key on `driver`, `persistent_process` or `room_link.reason`.
-- Only call methods the connection advertises, with exactly the fields in `gateway/session_group_controls.py`; `canonical-groups-contract.test.ts` checks every captured request.
-- Never auto-replay a gateway-room action. Send resends only on the user's Retry, with the same journaled `event_id`; Retry, Discard and approvals send the exact identity from `driver_status.pending_actions`.
-- Persist attempted state before dispatch. A first-attempt 4001 with `invalid_params`, `permission_denied`, `unknown_execution` or `stale_generation` can retire that exact Send; a later refusal cannot erase an earlier uncertain attempt. Retry and explicit Restore preserve the original event and payload. Window ownership and exact native compare-and-set prevent one window from replacing another window's intent. A failed Send returns only to the room it was sent from.
-- Live status, Stop and polling come from the current `driver_status`, never from the last replayed event; unresolved members are listed beside live work, not instead of it.
-- A gateway room never falls back to classic execution, and a classic room is never converted silently: **Start gateway group** creates a fresh gateway room without replaying history.
+Read [the group contract](../docs/canonical-groups.md) before changing either path.
+`groupExecutionMode` alone classifies capabilities; use only advertised methods and the exact
+`session_group_controls.py` fields. Gateway rooms never fall back to classic execution; upgrading
+creates a fresh room without replaying history. Persist attempted Send identity before dispatch;
+only explicit Retry resends it, and a later refusal never erases earlier uncertainty. Bind every
+continuation and draft restoration to its original room. Status, Stop and polling come from live
+`driver_status`, independently of prior failures.
 
 ## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)
 

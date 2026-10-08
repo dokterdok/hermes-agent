@@ -10,6 +10,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalGroupPendingActions } from './canonical-group-pending-actions'
+import { CanonicalGroupRecoveryNotices, CanonicalGroupSavedMessages } from './canonical-group-recovery'
 import { moveCanonicalGroup, updateCanonicalGroupName } from './canonical-group-registry'
 import { CanonicalGroupRetirementNotice, canonicalRetirementStatus } from './canonical-group-retirement'
 import type { RetirementStatus } from './canonical-group-retirement'
@@ -125,7 +126,17 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
   const [uploading, setUploading] = useState(false)
   const uploadingRef = useRef(false)
   const [restored, setRestored] = useState(false)
-  const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
+  const [journalError, setJournalError] = useState('')
+  const [journalLoading, setJournalLoading] = useState(true)
+  const [journalReload, setJournalReload] = useState(0)
+  const pendingRecord = useRef<PreparedCanonicalGroupSend | null>(null)
+  const [pending, setPendingState] = useState<PreparedCanonicalGroupSend | null>(null)
+  const setPending = (next: PreparedCanonicalGroupSend | null | ((current: PreparedCanonicalGroupSend | null) => PreparedCanonicalGroupSend | null)) => {
+    const value = typeof next === 'function' ? next(pendingRecord.current) : next
+    pendingRecord.current = value
+    setPendingState(value)
+  }
+  const showPending = setPending
   const [recoveries, setRecoveries] = useState<RecoverableCanonicalGroupSend[]>([])
   const inputRevision = useRef(0)
   const [busy, setBusy] = useState(false)
@@ -148,25 +159,58 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
 
   const show = (entry: PreparedCanonicalGroupSend) => {setPending(entry); setDraft(String(entry.params.payload.text ?? '')); setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])}
 
-  // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
+  // Mount lifetime is separate from a read-only journal retry.
+  // eslint-disable-next-line no-restricted-syntax -- component lifetime, not a mirror of reactive atom values
   useEffect(() => {
     alive.current = true
+
+    return () => {
+      alive.current = false
+      revision.current++
+    }
+  }, [])
+
+
+  useEffect(() => {
     let cancelled = false
+    const editing = inputRevision.current
+    const emptyDraft = !draft.trim() && !attachments.length
+    setJournalLoading(true)
+    setJournalError('')
+    setRestored(false)
     void Promise.all([readCanonicalGroupSend(binding), listCanonicalGroupSends(binding)]).then(([entry, recoverable]) => {
       if (cancelled) {return}
 
-      if (entry) {
-        setPending(entry)
+      if (entry && !pendingRecord.current && emptyDraft && inputRevision.current === editing) {
+          showPending(entry)
         setDraft(String(entry.params.payload.text ?? ''))
         setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])
       }
 
-      setRecoveries(recoverable)
-      setRestored(true)
-    }).catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
+      setRecoveries(current => {
+          const byKey = new Map(current.map(recovery => [recovery.storageKey, recovery]))
 
-    return () => { cancelled = true; alive.current = false; revision.current++ }
-  }, [binding])
+          for (const recovery of recoverable) {
+            byKey.set(recovery.storageKey, recovery)
+          }
+
+          return [...byKey.values()]
+        })
+      setRestored(true)
+    }).catch(e => { if (!cancelled) {
+          setJournalError(e instanceof Error ? e.message : String(e))} })
+      .finally(() => {
+        if (!cancelled) {
+          setJournalLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+    // Capture the editor revision at the start; changing a draft never triggers another storage read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [binding, journalReload])
 
   const refresh = async () => {
     const version = ++revision.current
@@ -393,7 +437,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
         {visible && <CanonicalGroupPendingActions actions={pendingActions} busy={busy || Boolean(retirement)} members={members} onAction={act}
           onDiscard={action => act(action)} onRefresh={refresh} unknownTitle={continuity.unknownTitle} waiting={continuity.waiting(state?.driver_status?.tasks)} />}
       </div>
-      <RoomHints error={error} explained={continuity.explained} labels={labels} notice={notice} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
+      <RoomHints busy={busy} journalError={journalError} journalLoading={journalLoading} onJournalReload={() => setJournalReload(value => value + 1)} error={error} explained={continuity.explained} labels={labels} notice={notice} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
         onRestore={restore} pausedHint={continuity.pausedHint} pending={pending} readError={readError} recoveries={recoveries}
         restoreBlocked={occupied} sendHint={sendHint} state={state} />
       <RoomComposerSlot continuity={continuity}><RoomComposer attachments={attachments} binding={binding} busy={busy} canStop={canStop} draft={draft}
@@ -408,33 +452,18 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, 
 }
 
 /** The lines between the pending work and the composer: notices, refusals, unconfirmed Sends and their recovery. */
-function RoomHints({ notice, pausedHint, readError, error, explained, state, pending, sendHint, recoveries, restoreBlocked, labels, onRefresh, onRestore }: {
-  notice: string; pausedHint: string; readError: string; error: string; explained: boolean; state: RoomState | null
+function RoomHints({ notice, pausedHint, readError, error, journalError, journalLoading, busy, explained, state, pending, sendHint, recoveries, restoreBlocked, labels, onRefresh, onJournalReload, onRestore }: {
+  notice: string; pausedHint: string; readError: string; error: string; journalError: string; journalLoading: boolean; busy: boolean; explained: boolean; state: RoomState | null
   pending: PreparedCanonicalGroupSend | null; sendHint: string; recoveries: RecoverableCanonicalGroupSend[]; restoreBlocked: boolean[]
-  labels: Labels; onRefresh: () => void; onRestore: (recovery: RecoverableCanonicalGroupSend) => void
+  labels: Labels; onRefresh: () => void; onJournalReload: () => void; onRestore: (recovery: RecoverableCanonicalGroupSend) => void
 }) {
-  // A status from the group's computers explains an unreachable host better than the generic line.
-  const unreadable = explained ? '' : readError
-  const unavailable = !!state && !state.driver_status && !explained
-
-  return <div className="grid gap-2 pb-2 text-xs text-(--ui-text-secondary)">
-    {notice && <p aria-live="polite">{notice}</p>}
+  return <>
+    <CanonicalGroupRecoveryNotices busy={busy} error={error} journalError={journalError} journalLoading={journalLoading}
+      notice={notice} onJournalReload={onJournalReload} onRefresh={onRefresh} readError={explained ? '' : readError}
+      unavailable={!!state && !state.driver_status && !explained} />
     {pausedHint && <p aria-live="polite" data-slot="paused-composer-hint">{pausedHint}</p>}
-    {unreadable && <div className="grid gap-1" role="alert"><div className="flex items-center gap-2"><span>{labels.driverUnavailable}</span><Button onClick={onRefresh} size="inline" variant="text">{labels.refresh}</Button></div>
-      <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{unreadable}</p></details>
-    </div>}
-    {error && <div className="grid gap-1 text-destructive" role="alert"><p>{labels.pendingActionUnconfirmed}</p>
-      <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{error}</p></details>
-    </div>}
-    {unavailable && <p>{labels.driverUnavailable}</p>}
-    {pending && <p role="status">{labels.restoredPendingSend}</p>}
-    {sendHint && <p aria-live="polite">{sendHint}</p>}
-    {recoveries.filter(recovery => recovery.entry.params.event_id !== pending?.params.event_id).map(recovery =>
-      <div className="flex items-center gap-2" key={recovery.storageKey}>
-        <span className="min-w-0 flex-1 truncate">{String(recovery.entry.params.payload.text || labels.groupMessage)}</span>
-        <Button disabled={restoreBlocked.some(Boolean)} onClick={() => onRestore(recovery)} size="inline" variant="text">{labels.restorePendingSend}</Button>
-      </div>)}
-  </div>
+    <CanonicalGroupSavedMessages disabled={restoreBlocked.some(Boolean)} hint={sendHint} onRestore={onRestore} pending={pending} recoveries={recoveries} />
+  </>
 }
 
 /** The native chat's composer controls; controller decisions stay in the room view. */

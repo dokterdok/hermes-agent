@@ -2,51 +2,56 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { afterEach, expect, it, vi } from 'vitest'
+import { expect, test, vi } from 'vitest'
 
-const handlers = vi.hoisted(() => new Map<string, (...args: any[]) => any>())
-const location = vi.hoisted(() => ({ directory: '' }))
-vi.mock('electron', () => ({ app: { getPath: () => location.directory }, ipcMain: { handle: (name: string, callback: (...args: any[]) => any) => handlers.set(name, callback) } }))
+const native = vi.hoisted(() => ({ home: '', handlers: new Map<string, (...args: any[]) => any>() }))
+vi.mock('electron', () => ({ app: { getPath: () => native.home }, ipcMain: {
+  handle: (name: string, handler: (...args: any[]) => any) => native.handlers.set(name, handler)
+} }))
 import { preparedJournal, registerPreparedSubmissions } from './prepared-submissions'
 
-afterEach(() => {if (location.directory) {fs.rmSync(location.directory, { recursive: true, force: true })}; handlers.clear()})
-
-function fixture() {
-  location.directory = fs.mkdtempSync(path.join(os.tmpdir(), 'prepared-native-ipc-'))
+test('real shared store IPC separates window owners and conditionally claims/retires exact entries', () => {
+  native.home = fs.mkdtempSync(path.join(os.tmpdir(), 'prepared-ipc-'))
   registerPreparedSubmissions()
-  const event = (sender: object) => ({ sender, senderFrame: { url: 'http://localhost:5174/index.html' } })
+  const first = { sender: {}, senderFrame: { url: 'http://same-origin/chat' } }
+  const second = { sender: {}, senderFrame: { url: 'http://same-origin/chat' } }
+  const call = (name: string, ...args: unknown[]) => native.handlers.get(`hermes:prepared-submissions:${name}`)!(...args)
 
-  return { event, store: preparedJournal(location.directory, 'http://localhost:5174') }
-}
-
-it('gives one WebContents a reload-stable owner and another window an independent owner', () => {
-  const { event } = fixture()
-  const owner = handlers.get('hermes:prepared-submissions:owner')!
-  const first = {}, second = {}
-
-  expect(owner(event(first))).toBe(owner(event(first)))
-  expect(owner(event(first))).not.toBe(owner(event(second)))
+  try {
+    const ownerA = call('owner', first)
+    expect(call('owner', { ...first, senderFrame: { url: 'http://same-origin/reloaded' } })).toBe(ownerA)
+    const ownerB = call('owner', second)
+    expect(ownerB).not.toBe(ownerA)
+    const a = JSON.stringify({ id: 'a', owner: ownerA })
+    const b = JSON.stringify({ id: 'b', owner: ownerB })
+    expect(call('compare-and-set', first, 'intent-a', null, a)).toBe(true)
+    expect(call('compare-and-set', second, 'intent-b', null, b)).toBe(true)
+    expect(call('compare-and-set', second, 'intent-a', null, b)).toBe(false)
+    const transferred = JSON.stringify({ id: 'a', owner: ownerB })
+    expect(call('compare-and-set', second, 'intent-a', a, transferred)).toBe(true)
+    expect(call('compare-and-set', first, 'intent-a', a, null)).toBe(false)
+    expect(call('compare-and-set', second, 'intent-a', transferred, null)).toBe(true)
+    expect(preparedJournal(native.home, 'http://same-origin').read()).toEqual({ 'intent-b': JSON.parse(b) })
+    expect(preparedJournal(native.home, 'http://other-origin').read()).toEqual({})
+  } finally {fs.rmSync(native.home, { recursive: true, force: true })}
 })
 
-it('native compare-send preserves a newer exact record and accepts large frozen payloads', () => {
-  const { event, store } = fixture()
-  const compare = handlers.get('hermes:prepared-submissions:compare-send')!
-  const sender = event({})
-  const first = { text: 'Ω'.repeat(600000), id: 'same-id' }
-  expect(compare(sender, 'slot', null, JSON.stringify(first))).toBe(true)
-  const newer = { ...first, id: 'newer-id' }
-  expect(compare(sender, 'slot', JSON.stringify(first), JSON.stringify(newer))).toBe(true)
-  expect(compare(sender, 'slot', JSON.stringify(first), null)).toBe(false)
-  expect(store.read().slot).toEqual(newer)
-  expect(compare(sender, 'slot', JSON.stringify(newer), null)).toBe(true)
-})
+test('Group CAS keeps its caps while ordinary CAS preserves large legacy records and exact comparisons', () => {
+  native.home = fs.mkdtempSync(path.join(os.tmpdir(), 'prepared-purpose-'))
+  registerPreparedSubmissions()
+  const event = { sender: {}, senderFrame: { url: 'http://same-origin/chat' } }
+  const call = (name: string, ...args: unknown[]) => native.handlers.get(`hermes:prepared-submissions:${name}`)!(event, ...args)
+  const large = JSON.stringify({ id: 'legacy-id', text: 'x'.repeat(1024 * 1024), params: { session_id: 'original' } })
+  const longKey = JSON.stringify(['original-owner', 'original-session', 'legacy text '.repeat(512)])
 
-it('does not reinterpret unreadable native storage as an empty journal', () => {
-  const { event, store } = fixture()
-  store.update('slot', { id: 'original' })
-  const file = fs.readdirSync(location.directory).find(name => name.endsWith('.json'))!
-  fs.writeFileSync(path.join(location.directory, file), '[]')
-  const before = fs.readFileSync(path.join(location.directory, file))
-  expect(() => handlers.get('hermes:prepared-submissions:compare-send')!(event({}), 'slot', null, '{}')).toThrow('Invalid prepared submission journal')
-  expect(fs.readFileSync(path.join(location.directory, file))).toEqual(before)
+  try {
+    expect(() => call('compare-and-set', 'group', null, large)).toThrow('Invalid prepared submission comparison')
+    expect(() => call('compare-and-set', longKey, null, '{}')).toThrow('Invalid prepared submission comparison')
+    expect(call('compare-and-set', 'group', null, '{}')).toBe(true)
+    expect(call('compare-send', longKey, null, large)).toBe(true)
+    expect(call('compare-send', longKey, '{}', null)).toBe(false)
+    expect(JSON.stringify(preparedJournal(native.home, 'http://same-origin').read()[longKey])).toBe(large)
+    expect(call('compare-send', longKey, large, null)).toBe(true)
+    expect(preparedJournal(native.home, 'http://same-origin').read()).toEqual({ group: {} })
+  } finally {fs.rmSync(native.home, { recursive: true, force: true })}
 })

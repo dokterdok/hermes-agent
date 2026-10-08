@@ -9,6 +9,7 @@ import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
 import { arSettings } from './ar_settings'
+import { arComposer } from './composer/ar'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
@@ -37,14 +38,7 @@ export const arOverrides = {
   artifactCard: arArtifacts.artifactCard,
   artifactPreview: arArtifacts.artifactPreview,
   sidebar: arChrome.sidebar,
-  composer: {
-    ...arChat.composer,
-    redirect: 'إعادة توجيه التشغيل الحالي',
-    queueLostNote: 'فُقد الدور أثناء إعادة التشغيل',
-    restoreImageDraft: 'استعادة مسودة الصورة',
-    queueLostDiscard: 'تجاهل',
-    queueLostDiscardTip: 'أعادت البوابة التشغيل أثناء هذا الدور ولا يمكن إكماله. تجاهله لتستمر الأدوار المنتظرة خلفه.'
-  },
+  composer: arComposer,
   statusStack: arChat.statusStack,
   updates: arBoot.updates,
   install: arBoot.install,

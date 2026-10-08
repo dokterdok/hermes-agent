@@ -35,6 +35,7 @@ test('SSH attachment pins native credentials to its tunnel and retires no gatewa
 
   const connection = await connectPreferredSshGateway({requestedProfile: 'default', localProfile: 'conn:mini::default', lifecycle: {ssh, platform: {os: 'Linux'}, profile: 'remote-name', remoteHermesPath: '/usr/bin/hermes', pickLocalPort: async () => 8765}})
   expect(connection).not.toBeNull()
+  if (!connection || !('gatewayEndpoint' in connection) || !('release' in connection)) {throw new Error('Canonical attachment required')}
   expect(connection.platform.os).toBe('Linux')
   const classic = vi.fn()
   const descriptor = await sshConnectionDescriptor(connection, 'registry:mini', 'Mini', classic)

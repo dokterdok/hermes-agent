@@ -302,13 +302,13 @@ describe('submission intent destinations', () => {
     expect(expansions).toBe(slash ? 1 : 0)
   })
 
-  it.each(['missing', 'wrong', 'unknown', '4094', 'lost-legacy'])(
+  it.each(['missing', 'wrong', 'unknown', 'legacy', '4094', 'lost-legacy'])(
     'requires a matching receipt or one pre-admission legacy refusal: %s',
     async mode => {
       const { deps, requestGateway } = setup()
-      const refusal = Object.assign(new Error('durable admission unsupported'), { code: 4094 })
+      const refusal = Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'), {code: 4000})
       requestGateway.mockImplementation(async (_method, params) => {
-        if (mode === '4094' || mode === 'lost-legacy') {
+        if (mode === 'legacy' || mode === 'lost-legacy') {
           if (params?.submission_id) {
             throw refusal
           }
@@ -320,6 +320,8 @@ describe('submission intent destinations', () => {
           return { ok: true } as never
         }
 
+        if (mode === '4094') {throw Object.assign(new Error('unproven capability code'), {code: 4094})}
+
         if (mode === 'missing') {
           return { ok: true } as never
         }
@@ -328,12 +330,12 @@ describe('submission intent destinations', () => {
       })
       let hook = renderHook(() => useSubmitPrompt(deps))
       await act(async () => {
-        expect(await hook.result.current('receipt')).toBe(mode === '4094')
+        expect(await hook.result.current('receipt')).toBe(mode === 'legacy')
       })
       hook.unmount()
       hook = renderHook(() => useSubmitPrompt(deps))
 
-      if (mode !== '4094') {
+      if (mode !== 'legacy') {
         await act(async () => {
           expect(await hook.result.current('receipt')).toBe(false)
         })

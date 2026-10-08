@@ -6,7 +6,7 @@ import type { SuccessionMessages } from './canonical-group-succession-locales'
 import { type CanonicalGroupMessages } from './canonical-group-locales'
 
 export type BotsMessages = {
-  succession: { [K in keyof SuccessionMessages]: string }
+  succession: SuccessionMessages
   canonical: { [K in keyof CanonicalGroupMessages]: string }
   /** Left rail: the bot + group-chat roster. */
   editor: {

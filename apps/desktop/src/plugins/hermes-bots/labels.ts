@@ -11,6 +11,12 @@
 import { aliasIdentityFor } from './routing'
 import type { BotMeta, RosterRow } from './types'
 
+function usesConnectionLabel(bot: Partial<RosterRow>, aliased: boolean, meta: BotMeta | null | undefined, backendTitle: string) {
+  return Boolean(bot.remoteSource && (bot.name || '').trim().toLowerCase() === 'default' &&
+    bot.connectionLabel && !aliased && !meta?.title?.trim() && !backendTitle &&
+    !(typeof bot.display_name === 'string' && bot.display_name.trim()))
+}
+
 export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): string {
   // A configured alias route claiming this row overrides source-derived
   // identity: the friendly alias name must survive hosted-session
@@ -30,16 +36,8 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
   // off sourceScoped renamed the user's main agent to an IP-derived label
   // (community report, Aug 17 2026). A name its own backend reports is a real
   // name, never traded for a Desktop-side label.
-  if (
-    bot?.remoteSource &&
-    (bot.name || '').trim().toLowerCase() === 'default' &&
-    bot.connectionLabel &&
-    !alias &&
-    !meta?.title?.trim() &&
-    !backendTitle &&
-    !(typeof bot.display_name === 'string' && bot.display_name.trim())
-  ) {
-    return bot.connectionLabel
+  if (usesConnectionLabel(bot, Boolean(alias), meta, backendTitle)) {
+    return bot.connectionLabel!
   }
 
   if (meta?.title?.trim()) {

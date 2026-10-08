@@ -65,8 +65,7 @@ test('a same-URL document reload compensates a late grant on its original gatewa
     const result = handlers.get('hermes:room-setup:create')!(event, {home: {connectionId: 'home', profile: 'default'}, name: 'Document', members: [
       {member_id: 'one', handle: 'one', connectionId: 'home', profile: 'default'}, {member_id: 'two', handle: 'two', connectionId: 'peer', profile: 'default'}]})
 
-    for (let tick = 0; tick < 100 && !effects.includes('peer:groups.peer.invite'); tick++) {await new Promise(resolve => setImmediate(resolve))}
-    expect(effects).toContain('peer:groups.peer.invite')
+    await vi.waitFor(() => expect(effects).toContain('peer:groups.peer.invite'), { timeout: 5000 })
     contents.emit('did-start-navigation', {}, URL, false, true)
     release({grant: 'private-setup-grant', target_profile: 'default', endpoint: {url: 'https://peer.invalid'}, catalog})
     expect(await result).toEqual({ok: false, reason: 'setup_document_retired'})

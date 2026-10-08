@@ -3,14 +3,23 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
-vi.mock('@hermes/plugin-sdk', async () => ({ ...await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk') }))
-vi.mock('./canonical-group-labels', () => ({ useCanonicalGroupLabels: () => ({
-  everyone: 'Everyone', unknownBot: 'Bot', members: 'Participants', groupMessage: 'Group message', messagePlaceholder: 'Message {name}…'
-}) }))
+vi.mock('@hermes/plugin-sdk', async () => ({ ...(await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')) }))
+vi.mock('./canonical-group-labels', () => ({
+  useCanonicalGroupLabels: () => ({
+    everyone: 'Everyone',
+    unknownBot: 'Bot',
+    members: 'Participants',
+    groupMessage: 'Group message',
+    messagePlaceholder: 'Message {name}…'
+  })
+}))
 
 import { CanonicalGroupComposerInput } from './canonical-group-composer'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 const members = [
   { member_id: 'opaque-owner-one', profile: 'default', handle: 'owner-atlas', display_name: 'Atlas Bot' },
@@ -20,7 +29,16 @@ const members = [
 function Composer({ onSubmit = () => {}, disabled = false }: { onSubmit?: () => void; disabled?: boolean }) {
   const [value, setValue] = useState('')
 
-  return <CanonicalGroupComposerInput disabled={disabled} members={members} name="Autumn launch" onChange={setValue} onSubmit={onSubmit} value={value} />
+  return (
+    <CanonicalGroupComposerInput
+      disabled={disabled}
+      members={members}
+      name="Autumn launch"
+      onChange={setValue}
+      onSubmit={onSubmit}
+      value={value}
+    />
+  )
 }
 
 it('finds a friendly Bot name but inserts its exact owner handle, preserving the surrounding draft', () => {
@@ -70,4 +88,41 @@ it('updates completion when the caret moves and refuses an old selection before 
   expect(screen.queryByRole('listbox')).toBeNull()
   fireEvent.keyDown(input, { key: 'Enter' })
   expect(submit).toHaveBeenCalledOnce()
+})
+
+it('does not move focus or the newer draft caret when mention completion runs late', () => {
+  const frames: FrameRequestCallback[] = []
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frames.push(callback)
+
+    return frames.length
+  })
+  render(
+    <>
+      <Composer />
+      <button type="button">Other control</button>
+    </>
+  )
+  const input = screen.getByRole('textbox') as HTMLTextAreaElement
+  input.focus()
+  fireEvent.change(input, { target: { value: '@Mir', selectionStart: 4 } })
+  fireEvent.keyDown(input, { key: 'Enter' })
+  expect(input.value).toBe('@peer-mira ')
+  const other = screen.getByRole('button', { name: 'Other control' })
+  other.focus()
+
+  for (const frame of frames) {
+    frame(0)
+  }
+  expect(document.activeElement).toBe(other)
+  input.focus()
+  fireEvent.change(input, { target: { value: '@Mir', selectionStart: 4 } })
+  fireEvent.keyDown(input, { key: 'Enter' })
+  fireEvent.change(input, { target: { value: 'My newer draft', selectionStart: 2 } })
+
+  for (const frame of frames) {
+    frame(0)
+  }
+  expect(input.value).toBe('My newer draft')
+  expect(input.selectionStart).toBe(2)
 })

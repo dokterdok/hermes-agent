@@ -8,28 +8,52 @@ import { afterEach, expect, it, vi } from 'vitest'
 vi.mock('electron', () => ({ app: {}, ipcMain: {} }))
 const nativeModule = '../../../electron/prepared-submissions'
 const { preparedJournal } = await import(/* @vite-ignore */ nativeModule)
-import { attemptCanonicalGroupSend, claimCanonicalGroupSend, clearUnsavedCanonicalGroupSends, listCanonicalGroupSends, listUnsavedCanonicalGroupSends,
-  prepareCanonicalGroupSend, readCanonicalGroupSend, rehomeCanonicalGroupSends, reofferedCanonicalGroupSend, retireCanonicalGroupSend,
-  settleCanonicalGroupSend } from './canonical-group-send'
+import {
+  attemptCanonicalGroupSend,
+  listUnsavedCanonicalGroupSends,
+  clearUnsavedCanonicalGroupSends,
+  rehomeCanonicalGroupSends,
+  reofferedCanonicalGroupSend,
+  claimCanonicalGroupSend,
+  listCanonicalGroupSends,
+  prepareCanonicalGroupSend,
+  readCanonicalGroupSend,
+  retireCanonicalGroupSend,
+  settleCanonicalGroupSend
+} from './canonical-group-send'
 
 const binding = { connectionId: 'local', profile: 'default', roomId: 'window-room' }
 const directories: string[] = []
-afterEach(() => { vi.unstubAllGlobals();
+afterEach(() => {
+  vi.unstubAllGlobals()
 
- for (const directory of directories.splice(0)) {fs.rmSync(directory, { recursive: true, force: true })} })
+  for (const directory of directories.splice(0)) {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'canonical-send-isolation-'))
   directories.push(directory)
   const store = preparedJournal(directory, 'http://localhost:5174')
 
-  const bind = (owner: string) => vi.stubGlobal('window', { hermesDesktop: { preparedSubmissions: {
-    owner: async () => owner,
-    read: async () => JSON.stringify(store.read()),
-    update: async (key: string, value: string | null) => store.update(key, value === null ? null : JSON.parse(value)),
-    compareSend: async (key: string, expected: string | null, value: string | null) =>
-      store.compareAndSet(key, expected === null ? null : JSON.parse(expected), value === null ? null : JSON.parse(value))
-  } } })
+  const bind = (owner: string) =>
+    vi.stubGlobal('window', {
+      hermesDesktop: {
+        preparedSubmissions: {
+          owner: async () => owner,
+          read: async () => JSON.stringify(store.read()),
+          update: async (key: string, value: string | null) =>
+            store.update(key, value === null ? null : JSON.parse(value)),
+          compareSend: async (key: string, expected: string | null, value: string | null) =>
+            store.compareAndSet(
+              key,
+              expected === null ? null : JSON.parse(expected),
+              value === null ? null : JSON.parse(value)
+            )
+        }
+      }
+    })
 
   return { store, bind }
 }
@@ -58,7 +82,11 @@ it('concurrent window preparations retain both exact identities instead of overw
   const [a, b] = await Promise.all([first, second])
 
   expect(a.params.event_id).not.toBe(b.params.event_id)
-  expect(Object.values(store.read()).map((entry: any) => entry.params.event_id).sort()).toEqual([a.params.event_id, b.params.event_id].sort())
+  expect(
+    Object.values(store.read())
+      .map((entry: any) => entry.params.event_id)
+      .sort()
+  ).toEqual([a.params.event_id, b.params.event_id].sort())
 })
 
 it('another window cannot retire a captured intent after a delayed acknowledgement', async () => {
@@ -102,7 +130,14 @@ it('a cold window offers explicit recovery, transfers the original identity, and
 
 it('preserves legacy room-slot input until an explicit exact recovery', async () => {
   const { store, bind } = fixture()
-  const legacy = { binding, params: { room_id: binding.roomId, event_id: 'legacy-frozen-id', payload: { text: 'Legacy pending text', thread_id: 'legacy-frozen-id' } } }
+  const legacy = {
+    binding,
+    params: {
+      room_id: binding.roomId,
+      event_id: 'legacy-frozen-id',
+      payload: { text: 'Legacy pending text', thread_id: 'legacy-frozen-id' }
+    }
+  }
   const key = JSON.stringify(['canonical-group-send-v1', binding.connectionId, binding.profile, binding.roomId])
   store.update(key, legacy)
   bind('new-window')
@@ -144,30 +179,48 @@ it('local acknowledgement failure retains the exact receipt without making anoth
     const next = await prepareCanonicalGroupSend(binding, { text: 'New A' })
     expect(next.params.event_id).not.toBe(a.params.event_id)
     expect(Object.values(store.read())).toHaveLength(2)
-  } finally {warn.mockRestore()}
+  } finally {
+    warn.mockRestore()
+  }
 })
 
 it('refuses a native bridge missing owner/CAS rather than using its unsafe update or browser storage', async () => {
-  const update = vi.fn(), browser = vi.fn()
-  vi.stubGlobal('window', { hermesDesktop: { preparedSubmissions: { read: async () => '{}', update } }, localStorage: { setItem: browser } })
+  const update = vi.fn(),
+    browser = vi.fn()
+  vi.stubGlobal('window', {
+    hermesDesktop: { preparedSubmissions: { read: async () => '{}', update } },
+    localStorage: { setItem: browser }
+  })
   await expect(prepareCanonicalGroupSend(binding, { text: 'must stay unsent' })).rejects.toThrow('update Desktop')
   expect(update).not.toHaveBeenCalled()
   expect(browser).not.toHaveBeenCalled()
 })
 
-it.each(['entire journal', 'read', 'owner', 'compareSend'])('refuses incomplete native storage: missing %s', async missing => {
-  const update = vi.fn(), browserRead = vi.fn(() => '{}'), browserWrite = vi.fn()
-  const native: Record<string, unknown> = { read: async () => '{}', owner: async () => 'window', compareSend: vi.fn(), update }
+it.each(['entire journal', 'read', 'owner', 'compareSend'])(
+  'refuses incomplete native storage: missing %s',
+  async missing => {
+    const update = vi.fn(),
+      browserRead = vi.fn(() => '{}'),
+      browserWrite = vi.fn()
+    const native: Record<string, unknown> = {
+      read: async () => '{}',
+      owner: async () => 'window',
+      compareSend: vi.fn(),
+      update
+    }
 
-  delete native[missing]
-  vi.stubGlobal('window', { hermesDesktop: missing === 'entire journal' ? {} : { preparedSubmissions: native },
-    localStorage: { getItem: browserRead, setItem: browserWrite } })
-  vi.stubGlobal('navigator', { locks: { request: vi.fn((_name, run) => run()) } })
-  await expect(prepareCanonicalGroupSend(binding, { text: 'must stay unsent' })).rejects.toThrow('update Desktop')
-  expect(update).not.toHaveBeenCalled()
-  expect(browserRead).not.toHaveBeenCalled()
-  expect(browserWrite).not.toHaveBeenCalled()
-})
+    delete native[missing]
+    vi.stubGlobal('window', {
+      hermesDesktop: missing === 'entire journal' ? {} : { preparedSubmissions: native },
+      localStorage: { getItem: browserRead, setItem: browserWrite }
+    })
+    vi.stubGlobal('navigator', { locks: { request: vi.fn((_name, run) => run()) } })
+    await expect(prepareCanonicalGroupSend(binding, { text: 'must stay unsent' })).rejects.toThrow('update Desktop')
+    expect(update).not.toHaveBeenCalled()
+    expect(browserRead).not.toHaveBeenCalled()
+    expect(browserWrite).not.toHaveBeenCalled()
+  }
+)
 
 it('publishes uncertainty before dispatch and never restores an attempted record as fresh', async () => {
   const { store, bind } = fixture()
@@ -176,10 +229,18 @@ it('publishes uncertainty before dispatch and never restores an attempted record
   const native = window.hermesDesktop!.preparedSubmissions!
   const compare = native.compareSend!
   let release!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve })
-  native.compareSend = vi.fn(async (...args: Parameters<typeof compare>) => { await gate; return compare(...args) })
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  native.compareSend = vi.fn(async (...args: Parameters<typeof compare>) => {
+    await gate
+    return compare(...args)
+  })
   const dispatch = vi.fn(() => expect((Object.values(store.read())[0] as { attempted: boolean }).attempted).toBe(true))
-  const attempting = attemptCanonicalGroupSend(binding, entry).then(fresh => { dispatch(); return fresh })
+  const attempting = attemptCanonicalGroupSend(binding, entry).then(fresh => {
+    dispatch()
+    return fresh
+  })
   await Promise.resolve()
   expect(dispatch).not.toHaveBeenCalled()
   expect((Object.values(store.read())[0] as { attempted: boolean }).attempted).toBe(false)
@@ -213,7 +274,9 @@ it('keeps an accepted message no other computer holds yet, moves it with the gro
   // Accepted: nothing blocks the composer, and the message stays in the journal in case the host is lost.
   expect(await readCanonicalGroupSend(binding)).toBeUndefined()
   expect(await listCanonicalGroupSends(binding)).toEqual([])
-  expect((await listUnsavedCanonicalGroupSends(binding)).map(record => record.entry.unsaved)).toEqual([{ seq: 4, event_id: 'user:only' }])
+  expect((await listUnsavedCanonicalGroupSends(binding)).map(record => record.entry.unsaved)).toEqual([
+    { seq: 4, event_id: 'user:only' }
+  ])
   const next = await prepareCanonicalGroupSend(binding, { text: 'The next message' })
   await retireCanonicalGroupSend(binding, next.params.event_id, next)
   await clearUnsavedCanonicalGroupSends(binding, 3)
@@ -231,7 +294,9 @@ it('keeps an accepted message no other computer holds yet, moves it with the gro
 
   // Offered again: still held alone on the new host keeps it with its new seq; a status covering that seq ends it.
   await reofferedCanonicalGroupSend(record, { protected: false, event: { event_id: 'user:only', seq: 9 } })
-  expect((await listUnsavedCanonicalGroupSends(moved)).map(record => record.entry.unsaved)).toEqual([{ seq: 9, event_id: 'user:only' }])
+  expect((await listUnsavedCanonicalGroupSends(moved)).map(record => record.entry.unsaved)).toEqual([
+    { seq: 9, event_id: 'user:only' }
+  ])
   await clearUnsavedCanonicalGroupSends(moved, 9)
   expect(Object.values(store.read())).toEqual([])
 
@@ -240,7 +305,10 @@ it('keeps an accepted message no other computer holds yet, moves it with the gro
   await attemptCanonicalGroupSend(moved, again)
   await settleCanonicalGroupSend(moved, again, { protected: false, event: { event_id: 'user:second', seq: 10 } })
   await rehomeCanonicalGroupSends(moved, binding)
-  await reofferedCanonicalGroupSend((await listUnsavedCanonicalGroupSends(binding))[0], { protected: true, event: { event_id: 'user:second', seq: 11 } })
+  await reofferedCanonicalGroupSend((await listUnsavedCanonicalGroupSends(binding))[0], {
+    protected: true,
+    event: { event_id: 'user:second', seq: 11 }
+  })
   expect(Object.values(store.read())).toEqual([])
 })
 
@@ -248,7 +316,12 @@ it('settles an acceptance as before when the host saved it, or doesn’t say', a
   const { store, bind } = fixture()
   bind('window-a')
 
-  for (const accepted of [undefined, {}, { protected: true, event: { event_id: 'user:saved', seq: 2 } }, { protected: false }]) {
+  for (const accepted of [
+    undefined,
+    {},
+    { protected: true, event: { event_id: 'user:saved', seq: 2 } },
+    { protected: false }
+  ]) {
     const entry = await prepareCanonicalGroupSend(binding, { text: 'Saved' })
     await attemptCanonicalGroupSend(binding, entry)
     await settleCanonicalGroupSend(binding, entry, accepted)

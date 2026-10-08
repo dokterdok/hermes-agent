@@ -73,8 +73,7 @@ describe('durable submit acknowledgement', () => {
     const os = await import('node:os')
     const path = await import('node:path')
     vi.doMock('electron', () => ({ app: {}, ipcMain: {} }))
-    // Exercise the native module at runtime without importing its separate,
-    // non-strict Electron project into the renderer's TypeScript project.
+    // Dynamic import keeps Electron's separate TS project outside the renderer typecheck.
     const nativeJournalModule = '../../../../../electron/prepared-submissions'
     const { preparedJournal } = await import(nativeJournalModule)
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-retire-'))
@@ -82,7 +81,8 @@ describe('durable submit acknowledgement', () => {
     const previous = window.hermesDesktop
     window.hermesDesktop = { ...previous, preparedSubmissions: {
       read: async () => JSON.stringify(journal.read()),
-      update: async (key, entry) => { journal.update(key, entry === null ? null : JSON.parse(entry)) }
+      update: async (key, entry) => { journal.update(key, entry === null ? null : JSON.parse(entry)) },
+      compareSend: async (key, expected, entry) => journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry)),
     } }
     let accepted = false
 
@@ -194,7 +194,7 @@ describe('submit timeout admission fences', () => {
       if (method !== 'prompt.submit') {return {} as never}
       submits.push(params!)
 
-      if (submits.length === 1) {throw Object.assign(new Error('capability refused'), { code: 4094 })}
+      if (submits.length === 1) {throw Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'), { code: 4000 })}
 
       if (submits.length === 2) {throw new Error('request timed out: prompt.submit')}
 

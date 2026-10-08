@@ -5,7 +5,14 @@ import type { WritableAtom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
-import { $canonicalGroupBindings, $canonicalGroupNames, CanonicalGroupList, forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
+import {
+  $canonicalGroupBindings,
+  $canonicalGroupNames,
+  CanonicalGroupList,
+  forgetCanonicalGroup,
+  registerCanonicalGroup,
+  updateCanonicalGroupName
+} from './canonical-group-registry'
 import { CreateGroupChatDialog } from './create-dialog'
 import { $botMeta } from './data'
 import { $groupChats, $groupChatWorkspace, updateGroupChat } from './group-chat'
@@ -15,7 +22,12 @@ import { GroupChatWorkspace } from './group-chat-view'
 import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './group-test-utils'
 import { translateBots } from './i18n-test-helper'
 
-const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), activation: { epoch: 1 } }))
+const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({
+  request: vi.fn(),
+  notify: vi.fn(),
+  openWorkspace: vi.fn(),
+  activation: { epoch: 1 }
+}))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
   const { en } = await import('@/i18n/en')
@@ -26,7 +38,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     ...sdk,
     gatewayActivationEpoch: () => activation.epoch,
     host: {
-      ...sdk.host, requestProfile: captured.request, notify, openWorkspace,
+      ...sdk.host,
+      requestProfile: captured.request,
+      notify,
+      openWorkspace,
       request: (method: string, params?: Record<string, unknown>) => captured.request(null, method, params),
       connections: vi.fn(async () => []),
       state: {
@@ -50,7 +65,7 @@ vi.mock('./group-chat', async importOriginal => {
   }
 })
 vi.mock('./group-chat-parts', async importOriginal => ({
-  ...await importOriginal<typeof GroupChatParts>(),
+  ...(await importOriginal<typeof GroupChatParts>()),
   // Avatar generation is unrelated to the capability decision; never request a model.
   GroupImageControls: () => null
 }))
@@ -61,13 +76,22 @@ const state = {
   gateway: host.state.gateway as WritableAtom<string>
 }
 
-const roster = [{ name: 'alpha', connectionId: 'local' }, { name: 'beta', connectionId: 'local' }]
+const roster = [
+  { name: 'alpha', connectionId: 'local' },
+  { name: 'beta', connectionId: 'local' }
+]
 const unavailable = CANONICAL_GROUP_LOCALES.en.driverUnavailable
 
 const canonicalUnavailable = { ...CANONICAL_GROUP_CAPABILITIES, driver: false }
 const appManagedUnavailable = { ...canonicalUnavailable, persistent_process: false }
 const legacy = STANDALONE_GROUP_CAPABILITIES
-const refused = [canonicalUnavailable, appManagedUnavailable, { ...CANONICAL_GROUP_CAPABILITIES, driver: undefined }, { ...CANONICAL_GROUP_CAPABILITIES, driver: 'true' }, null]
+const refused = [
+  canonicalUnavailable,
+  appManagedUnavailable,
+  { ...CANONICAL_GROUP_CAPABILITIES, driver: undefined },
+  { ...CANONICAL_GROUP_CAPABILITIES, driver: 'true' },
+  null
+]
 
 beforeEach(() => {
   activation.epoch++
@@ -96,11 +120,17 @@ afterEach(() => {
 
 function answer(capabilities: unknown) {
   request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.capabilities') {return capabilities}
+    if (method === 'groups.capabilities') {
+      return capabilities
+    }
 
-    if (method === 'groups.create') {return { room: { room_id: params.room_id, name: params.name, members: params.members } }}
+    if (method === 'groups.create') {
+      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
+    }
 
-    if (method === 'profiles.configure') {return {}}
+    if (method === 'profiles.configure') {
+      return {}
+    }
     throw new Error(`Unexpected RPC: ${method}`)
   })
 }
@@ -110,8 +140,12 @@ async function submitDialog(members = roster) {
   const onClose = vi.fn()
   render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={members} />)
 
-  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup })) })
+  for (const checkbox of screen.getAllByRole('checkbox')) {
+    fireEvent.click(checkbox)
+  }
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))
+  })
 
   return { onCreated, onClose }
 }
@@ -120,13 +154,17 @@ function pendingCreation() {
   let finish!: () => void
   const serverRooms = new Map<string, unknown>()
   request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+    if (method === 'groups.capabilities') {
+      return CANONICAL_GROUP_CAPABILITIES
+    }
 
     if (method === 'groups.create') {
       const room = { room_id: params.room_id, name: params.name, members: params.members }
       serverRooms.set(room.room_id, room)
 
-      return new Promise(resolve => { finish = () => resolve({ room }) })
+      return new Promise(resolve => {
+        finish = () => resolve({ room })
+      })
     }
 
     throw new Error(`Unexpected RPC: ${method}`)
@@ -135,26 +173,35 @@ function pendingCreation() {
   return { serverRooms, finish: () => finish() }
 }
 
-it.each(refused)('classifies %j as unavailable on both surfaces: no legacy renderer, no legacy creation', async value => {
-  answer(value)
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  expect(screen.getByText(unavailable)).toBeTruthy()
-  expect(screen.queryByRole('textbox')).toBeNull()
-  expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) as HTMLButtonElement).disabled).toBe(true)
-  cleanup()
+it.each(refused)(
+  'classifies %j as unavailable on both surfaces: no legacy renderer, no legacy creation',
+  async value => {
+    answer(value)
+    await act(async () => {
+      render(<GroupChatWorkspace group="Existing" members={roster} />)
+    })
+    expect(screen.getByText(unavailable)).toBeTruthy()
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(
+      (screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) as HTMLButtonElement).disabled
+    ).toBe(true)
+    cleanup()
 
-  const { onCreated, onClose } = await submitDialog()
-  expect(screen.getByRole('alert').textContent).toContain(unavailable)
-  expect(onCreated).not.toHaveBeenCalled()
-  expect(onClose).not.toHaveBeenCalled()
-  expect(updateGroupChat).not.toHaveBeenCalled()
-  expect($groupChats.get()).toEqual({})
-  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'groups.capabilities'])
-})
+    const { onCreated, onClose } = await submitDialog()
+    expect(screen.getByRole('alert').textContent).toContain(unavailable)
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(updateGroupChat).not.toHaveBeenCalled()
+    expect($groupChats.get()).toEqual({})
+    expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'groups.capabilities'])
+  }
+)
 
 it('keeps positive classifications working: legacy renders and creates locally, canonical creates a gateway room', async () => {
   answer(legacy)
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
+  await act(async () => {
+    render(<GroupChatWorkspace group="Existing" members={roster} />)
+  })
   expect(screen.getByRole('textbox')).toBeTruthy()
   cleanup()
   expect((await submitDialog()).onCreated).toHaveBeenCalledOnce()
@@ -174,41 +221,71 @@ it('keeps a standalone classic composer through transient failures without retar
 
   try {
     answer(STANDALONE_GROUP_CAPABILITIES)
-    await act(async () => { render(<CanonicalGroupList onOpen={vi.fn()} />) })
-    await act(async () => { render(<GroupChatWorkspace group="Standalone" members={roster} />) })
+    await act(async () => {
+      render(<CanonicalGroupList onOpen={vi.fn()} />)
+    })
+    await act(async () => {
+      render(<GroupChatWorkspace group="Standalone" members={roster} />)
+    })
     const composer = screen.getByRole('textbox')
     fireEvent.change(composer, { target: { value: 'Keep this draft' } })
-    await act(async () => { render(<GroupChatWorkspace group="Second standalone" members={roster} />) })
-    await act(async () => { render(<CanonicalGroupList onOpen={vi.fn()} />) })
+    await act(async () => {
+      render(<GroupChatWorkspace group="Second standalone" members={roster} />)
+    })
+    await act(async () => {
+      render(<CanonicalGroupList onOpen={vi.fn()} />)
+    })
     // Each discovery mount reads the current socket's surface; classic
     // workspace gates still share the latest capability classification.
     expect(request.mock.calls.filter(call => call[1].startsWith('groups.'))).toHaveLength(2)
-    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: CANONICAL_GROUP_LOCALES.en.refreshGroups })[0]) })
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: CANONICAL_GROUP_LOCALES.en.refreshGroups })[0])
+    })
     expect(request.mock.calls.filter(call => call[1].startsWith('groups.'))).toHaveLength(3)
-    request.mockImplementation(async () => { throw new Error('timeout') })
-    await act(async () => { state.gateway.set('closed') })
+    request.mockImplementation(async () => {
+      throw new Error('timeout')
+    })
+    await act(async () => {
+      state.gateway.set('closed')
+    })
     expect(screen.getAllByRole('textbox')).toContain(composer)
-    await act(async () => { activation.epoch++; state.gateway.set('open') })
+    await act(async () => {
+      activation.epoch++
+      state.gateway.set('open')
+    })
     expect((composer as HTMLTextAreaElement).value).toBe('Keep this draft')
     expect(screen.getAllByRole('textbox')).toContain(composer)
     expect(request.mock.calls.every(call => call[1] === 'groups.capabilities')).toBe(true)
-    expect(request.mock.calls.every(call => call[0]?.connectionId === 'local' && call[2]?.profile === 'default')).toBe(true)
+    expect(request.mock.calls.every(call => call[0]?.connectionId === 'local' && call[2]?.profile === 'default')).toBe(
+      true
+    )
     cleanup()
-    await act(async () => { state.profile.set('fresh-profile'); render(<GroupChatWorkspace group="Fresh" members={roster} />) })
+    await act(async () => {
+      state.profile.set('fresh-profile')
+      render(<GroupChatWorkspace group="Fresh" members={roster} />)
+    })
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.getByRole('alert').textContent).toContain('timeout')
     answer(STANDALONE_GROUP_CAPABILITIES)
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry now' })) })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry now' }))
+    })
     expect(screen.getByRole('textbox')).toBeTruthy()
     expect((await submitDialog()).onCreated).toHaveBeenCalledOnce()
-    expect(request.mock.calls.every(call => !call[1].startsWith('groups.') || call[1] === 'groups.capabilities')).toBe(true)
-  } finally { vi.useRealTimers() }
+    expect(request.mock.calls.every(call => !call[1].startsWith('groups.') || call[1] === 'groups.capabilities')).toBe(
+      true
+    )
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 it('keeps a mixed-connection classic composer on a canonical surface without offering creation', async () => {
   answer(CANONICAL_GROUP_CAPABILITIES)
   const mixed = [roster[0], { ...roster[1], connectionId: 'remote' }]
-  await act(async () => { render(<GroupChatWorkspace group="Across machines" members={mixed} />) })
+  await act(async () => {
+    render(<GroupChatWorkspace group="Across machines" members={mixed} />)
+  })
   const composer = screen.getByRole('textbox')
   fireEvent.change(composer, { target: { value: 'Keep working across machines' } })
   expect((composer as HTMLTextAreaElement).value).toBe('Keep working across machines')
@@ -228,18 +305,23 @@ it.each([false, true])('selects the canonical or classic creation path for a mix
 
   if (mixed) {
     expect(screen.getByText(CANONICAL_GROUP_LOCALES.en.classicConnection)).toBeTruthy()
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'info', message: CANONICAL_GROUP_LOCALES.en.classicConnection }))
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'info', message: CANONICAL_GROUP_LOCALES.en.classicConnection })
+    )
     expect(Object.values($groupChats.get())[0].members?.map(member => member.connectionId)).toEqual(['local', 'remote'])
   }
 })
 
 it('shows a generic create refusal without guessing a profile setup failure or creating classic state', async () => {
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+    if (method === 'groups.capabilities') {
+      return CANONICAL_GROUP_CAPABILITIES
+    }
     throw Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })
   })
   const { onCreated, onClose } = await submitDialog()
   expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.createRefused)
+  expect(screen.getByRole('alert').textContent).not.toContain('hosted_rooms.profiles')
   expect(screen.queryByRole('link')).toBeNull()
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
@@ -247,8 +329,12 @@ it('shows a generic create refusal without guessing a profile setup failure or c
   expect($groupChats.get()).toEqual({})
   expect($canonicalGroupBindings.get()).toEqual({})
   cleanup()
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })) })
+  await act(async () => {
+    render(<GroupChatWorkspace group="Existing" members={roster} />)
+  })
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }))
+  })
   expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.createRefused)
   expect(screen.queryByRole('link')).toBeNull()
   expect(screen.getByRole('textbox')).toBeTruthy()
@@ -257,9 +343,13 @@ it('shows a generic create refusal without guessing a profile setup failure or c
 })
 
 function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {
-  if (kind === 'profile') {state.profile.set('other')}
+  if (kind === 'profile') {
+    state.profile.set('other')
+  }
 
-  if (kind === 'gateway') {state.gateway.set('closed')}
+  if (kind === 'gateway') {
+    state.gateway.set('closed')
+  }
 
   if (kind === 'same-route-activation') {
     activation.epoch++
@@ -267,47 +357,81 @@ function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {
   }
 }
 
-it.each(['profile', 'gateway', 'same-route-activation'] as const)('dialog: a creation approved before the %s moved is kept on its owner and never published', async kind => {
-  const pending = pendingCreation()
-  const { onCreated, onClose } = await submitDialog()
-  expect(pending.serverRooms.size).toBe(1)
-  await act(async () => { moveSource(kind); pending.finish() })
-  expect($canonicalGroupBindings.get()).toEqual({})
-  expect(onCreated).not.toHaveBeenCalled()
-  expect(onClose).not.toHaveBeenCalled()
-  expect(pending.serverRooms.size).toBe(1)
-  expect(request.mock.calls[1][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
-})
+it.each(['profile', 'gateway', 'same-route-activation'] as const)(
+  'dialog: a creation approved before the %s moved is kept on its owner and never published',
+  async kind => {
+    const pending = pendingCreation()
+    const { onCreated, onClose } = await submitDialog()
+    expect(pending.serverRooms.size).toBe(1)
+    await act(async () => {
+      moveSource(kind)
+      pending.finish()
+    })
+    expect($canonicalGroupBindings.get()).toEqual({})
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(pending.serverRooms.size).toBe(1)
+    expect(request.mock.calls[1][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
+  }
+)
 
-it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: a capability read before the %s moved neither creates nor opens a room', async kind => {
-  const pending = pendingCreation()
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  const button = screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })
-  expect((button as HTMLButtonElement).disabled).toBe(false)
-  // Click after the source moved but before React re-renders: the stale capability must not create.
-  await act(async () => { moveSource(kind); fireEvent.click(button) })
-  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
-  expect(pending.serverRooms.size).toBe(0)
-  expect(openWorkspace).not.toHaveBeenCalled()
-})
-
+it.each(['profile', 'gateway', 'same-route-activation'] as const)(
+  'workspace: a capability read before the %s moved neither creates nor opens a room',
+  async kind => {
+    const pending = pendingCreation()
+    await act(async () => {
+      render(<GroupChatWorkspace group="Existing" members={roster} />)
+    })
+    const button = screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })
+    expect((button as HTMLButtonElement).disabled).toBe(false)
+    // Click after the source moved but before React re-renders: the stale capability must not create.
+    await act(async () => {
+      moveSource(kind)
+      fireEvent.click(button)
+    })
+    expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
+    expect(pending.serverRooms.size).toBe(0)
+    expect(openWorkspace).not.toHaveBeenCalled()
+  }
+)
 
 it('keeps friendly Bot identities on the created group and never navigates after closing a pending creation', async () => {
   const pending = pendingCreation()
   const onCreated = vi.fn()
   const onClose = vi.fn()
-  render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={[
-    { ...roster[0], display_name: 'Mira Bot' }, { ...roster[1], display_name: 'Atlas Bot' }
-  ]} />)
+  render(
+    <CreateGroupChatDialog
+      onClose={onClose}
+      onCreated={onCreated}
+      open
+      roster={[
+        { ...roster[0], display_name: 'Mira Bot' },
+        { ...roster[1], display_name: 'Atlas Bot' }
+      ]}
+    />
+  )
 
-  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
-  fireEvent.change(screen.getByRole('textbox', { name: CANONICAL_GROUP_LOCALES.en.nameOptional }), { target: { value: 'Autumn launch' } })
-  await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
-  expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.creatingGroup }) as HTMLButtonElement).disabled).toBe(true)
+  for (const checkbox of screen.getAllByRole('checkbox')) {
+    fireEvent.click(checkbox)
+  }
+  fireEvent.change(screen.getByRole('textbox', { name: CANONICAL_GROUP_LOCALES.en.nameOptional }), {
+    target: { value: 'Autumn launch' }
+  })
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))
+  })
+  expect(
+    (screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.creatingGroup }) as HTMLButtonElement).disabled
+  ).toBe(true)
   const createCall = request.mock.calls.find(call => call[1] === 'groups.create')
-  expect(createCall?.[2].members.map((member: { display_name: string }) => member.display_name)).toEqual(['Mira Bot', 'Atlas Bot'])
+  expect(createCall?.[2].members.map((member: { display_name: string }) => member.display_name)).toEqual([
+    'Mira Bot',
+    'Atlas Bot'
+  ])
   fireEvent.click(screen.getAllByRole('button', { name: CANONICAL_GROUP_LOCALES.en.close })[0])
-  await act(async () => {pending.finish()})
+  await act(async () => {
+    pending.finish()
+  })
   expect(pending.serverRooms.size).toBe(1)
   expect(onClose).toHaveBeenCalledOnce()
   expect(onCreated).not.toHaveBeenCalled()
@@ -319,9 +443,14 @@ it('releases creation when its connection disappears immediately before the clic
   const onCreated = vi.fn()
   render(<CreateGroupChatDialog onClose={vi.fn()} onCreated={onCreated} open roster={roster} />)
 
-  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
+  for (const checkbox of screen.getAllByRole('checkbox')) {
+    fireEvent.click(checkbox)
+  }
   const create = screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup })
-  await act(async () => {state.connectionId.set(null); fireEvent.click(create)})
+  await act(async () => {
+    state.connectionId.set(null)
+    fireEvent.click(create)
+  })
   expect(request.mock.calls.some(call => call[1] === 'groups.create')).toBe(false)
   expect(screen.queryByRole('button', { name: CANONICAL_GROUP_LOCALES.en.creatingGroup })).toBeNull()
   expect(onCreated).not.toHaveBeenCalled()
@@ -329,47 +458,84 @@ it('releases creation when its connection disappears immediately before the clic
 
 it('clears a recovered setup error without losing the selected Bots or group name', async () => {
   const desktop = window.hermesDesktop
-  const recover = vi.fn().mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ ok: false, pending: true, reason: 'setup_journal_unreadable' }).mockResolvedValue({ ok: true })
+  const recover = vi
+    .fn()
+    .mockResolvedValueOnce({ ok: true })
+    .mockResolvedValueOnce({ ok: false, pending: true, reason: 'setup_journal_unreadable' })
+    .mockResolvedValue({ ok: true })
   const create = vi.fn().mockResolvedValue({ ok: false, reason: 'setup_journal_write_failed' })
   window.hermesDesktop = { roomSetup: { recover, create } } as unknown as typeof window.hermesDesktop
   answer(CANONICAL_GROUP_CAPABILITIES)
 
   try {
-    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={[
-      { name: 'default', handle: 'atlas', connectionId: 'local', display_name: 'Atlas Bot' },
-      { name: 'default', handle: 'mira', connectionId: 'remote', display_name: 'Mira Bot' }
-    ]} />)})
+    await act(async () => {
+      render(
+        <CreateGroupChatDialog
+          onClose={vi.fn()}
+          open
+          roster={[
+            { name: 'default', handle: 'atlas', connectionId: 'local', display_name: 'Atlas Bot' },
+            { name: 'default', handle: 'mira', connectionId: 'remote', display_name: 'Mira Bot' }
+          ]}
+        />
+      )
+    })
 
-    for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
-    fireEvent.change(screen.getByRole('textbox', { name: CANONICAL_GROUP_LOCALES.en.nameOptional }), { target: { value: 'Harbor launch' } })
-    await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
+    for (const checkbox of screen.getAllByRole('checkbox')) {
+      fireEvent.click(checkbox)
+    }
+    fireEvent.change(screen.getByRole('textbox', { name: CANONICAL_GROUP_LOCALES.en.nameOptional }), {
+      target: { value: 'Harbor launch' }
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))
+    })
     expect(create).toHaveBeenCalledOnce()
     expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.peerSetupStorage)
-    await act(async () => {fireEvent.click(screen.getByRole('button', { name: 'Retry' }))})
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    })
     expect(screen.queryByRole('alert')).toBeNull()
-    expect((screen.getByRole('textbox', { name: CANONICAL_GROUP_LOCALES.en.nameOptional }) as HTMLInputElement).value).toBe('Harbor launch')
+    expect(
+      (screen.getByRole('textbox', { name: CANONICAL_GROUP_LOCALES.en.nameOptional }) as HTMLInputElement).value
+    ).toBe('Harbor launch')
     expect(screen.getAllByRole('checkbox').every(box => box.getAttribute('aria-checked') === 'true')).toBe(true)
-    expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }) as HTMLButtonElement).disabled).toBe(false)
-  } finally {window.hermesDesktop = desktop}
+    expect(
+      (screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }) as HTMLButtonElement).disabled
+    ).toBe(false)
+  } finally {
+    window.hermesDesktop = desktop
+  }
 })
 
-
 it('shows a newly created group in the mounted sidebar and follows its rename without discovering a foreign owner', async () => {
-  request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? CANONICAL_GROUP_CAPABILITIES : { rooms: [], next_offset: null })
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.capabilities' ? CANONICAL_GROUP_CAPABILITIES : { rooms: [], next_offset: null }
+  )
   const onOpen = vi.fn()
-  await act(async () => {render(<CanonicalGroupList onOpen={onOpen} />)})
+  await act(async () => {
+    render(<CanonicalGroupList onOpen={onOpen} />)
+  })
   const room = { room_id: 'fresh-group', name: 'Harbor launch', members: [] }
   const route = { connectionId: 'local', profile: 'default' }
   let key = ''
-  act(() => {key = registerCanonicalGroup(route, room)})
+  act(() => {
+    key = registerCanonicalGroup(route, room)
+  })
   fireEvent.click(screen.getByRole('button', { name: room.name }))
   expect(onOpen).toHaveBeenCalledWith(key)
-  act(() => {registerCanonicalGroup(route, { ...room, name: 'Friday launch' })})
+  act(() => {
+    registerCanonicalGroup(route, { ...room, name: 'Friday launch' })
+  })
   expect(screen.queryByRole('button', { name: room.name })).toBeNull()
   expect(screen.getByRole('button', { name: 'Friday launch' })).toBeTruthy()
-  act(() => {registerCanonicalGroup({ connectionId: 'another-owner', profile: 'default' }, { ...room, name: 'Private group' })})
+  act(() => {
+    registerCanonicalGroup({ connectionId: 'another-owner', profile: 'default' }, { ...room, name: 'Private group' })
+  })
   expect(screen.queryByRole('button', { name: 'Private group' })).toBeNull()
-  act(() => {forgetCanonicalGroup({ ...route, roomId: room.room_id })})
+  act(() => {
+    forgetCanonicalGroup({ ...route, roomId: room.room_id })
+  })
   expect(screen.queryByRole('button', { name: 'Friday launch' })).toBeNull()
 })
 
@@ -381,9 +547,16 @@ it('reconciles a late discovery with creation, rename and retirement that happen
   registerCanonicalGroup(route, renamed)
   const endedKey = registerCanonicalGroup(route, ended)
   let resolveList!: (value: unknown) => void
-  request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? CANONICAL_GROUP_CAPABILITIES
-    : new Promise(resolve => {resolveList = resolve}))
-  await act(async () => {render(<CanonicalGroupList onOpen={vi.fn()} />)})
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.capabilities'
+      ? CANONICAL_GROUP_CAPABILITIES
+      : new Promise(resolve => {
+          resolveList = resolve
+        })
+  )
+  await act(async () => {
+    render(<CanonicalGroupList onOpen={vi.fn()} />)
+  })
   let transientKey = ''
   act(() => {
     registerCanonicalGroup(route, { room_id: 'fresh', name: 'New group', members: [] })
@@ -392,7 +565,9 @@ it('reconciles a late discovery with creation, rename and retirement that happen
     forgetCanonicalGroup({ ...route, roomId: transient.room_id })
     forgetCanonicalGroup({ ...route, roomId: ended.room_id })
   })
-  await act(async () => {resolveList({ rooms: [renamed, ended, transient], next_offset: null })})
+  await act(async () => {
+    resolveList({ rooms: [renamed, ended, transient], next_offset: null })
+  })
   expect(screen.getByRole('button', { name: 'New group' })).toBeTruthy()
   expect(screen.getByRole('button', { name: 'Current name' })).toBeTruthy()
   expect(screen.queryByRole('alert')).toBeNull()
@@ -427,6 +602,89 @@ it('keeps the existing classic transcript and composer when explicitly starting 
   expect(Object.keys($canonicalGroupBindings.get())[0]).not.toBe('Existing')
   expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
 })
+
+it('reconciles committed create, rename and disband in the owning roster without manual Refresh', async () => {
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.capabilities' ? CANONICAL_GROUP_CAPABILITIES : method === 'groups.list' ? { rooms: [] } : {}
+  )
+  await act(async () => {
+    render(<CanonicalGroupList onOpen={vi.fn()} />)
+  })
+  const route = { connectionId: 'local', profile: 'default' }
+  let key = ''
+  await act(async () => {
+    key = registerCanonicalGroup(route, { room_id: 'added', name: 'New group', members: [] })
+  })
+  expect(screen.getByRole('button', { name: 'New group' })).toBeTruthy()
+  await act(async () => {
+    updateCanonicalGroupName($canonicalGroupBindings.get()[key], 'Renamed group')
+  })
+  expect(screen.getByRole('button', { name: 'Renamed group' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'New group' })).toBeNull()
+  await act(async () => {
+    forgetCanonicalGroup($canonicalGroupBindings.get()[key])
+  })
+  expect(screen.queryByRole('button', { name: 'Renamed group' })).toBeNull()
+})
+
+it.each([
+  ['canonical', CANONICAL_GROUP_CAPABILITIES],
+  ['classic', STANDALONE_GROUP_CAPABILITIES]
+] as const)(
+  'chooses %s rooms on a non-local connection from advertised capabilities alone',
+  async (expected, capabilities) => {
+    state.connectionId.set('ssh-mini')
+    const remote = roster.map(bot => ({ ...bot, connectionId: 'ssh-mini' }))
+    const listed = { room_id: 'listed-room', name: 'Listed remotely', members: [] }
+    request.mockImplementation(async (_route, method, params) => {
+      if (method === 'groups.capabilities') {
+        return capabilities
+      }
+
+      if (method === 'groups.list') {
+        return { rooms: [listed], next_offset: null }
+      }
+
+      if (method === 'groups.create') {
+        return { room: { room_id: params.room_id, name: params.name, members: params.members } }
+      }
+
+      if (method === 'profiles.configure') {
+        return {}
+      }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+
+    await act(async () => {
+      render(<CanonicalGroupList onOpen={vi.fn()} />)
+    })
+    expect(screen.queryByRole('button', { name: listed.name }) !== null).toBe(expected === 'canonical')
+    cleanup()
+
+    await act(async () => {
+      render(<GroupChatWorkspace group="Existing" members={remote} />)
+    })
+    expect(screen.queryByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) !== null).toBe(
+      expected === 'canonical'
+    )
+    cleanup()
+
+    const { onCreated } = await submitDialog(remote)
+    expect(onCreated).toHaveBeenCalledOnce()
+    const creates = request.mock.calls.filter(call => call[1] === 'groups.create')
+    expect(creates).toHaveLength(expected === 'canonical' ? 1 : 0)
+    expect(updateGroupChat).toHaveBeenCalledTimes(expected === 'canonical' ? 0 : 1)
+    expect(Object.values($canonicalGroupBindings.get()).filter(binding => binding.roomId !== listed.room_id)).toEqual(
+      expected === 'canonical' ? [expect.objectContaining({ connectionId: 'ssh-mini', profile: 'default' })] : []
+    )
+    expect(
+      request.mock.calls
+        .filter(call => call[1].startsWith('groups.'))
+        .every(call => call[0]?.connectionId === 'ssh-mini')
+    ).toBe(true)
+  }
+)
+
 
 it('lets your other computers continue a new group in one step, on by default, only when the host can designate them', async () => {
   const desktop = window.hermesDesktop
@@ -475,35 +733,6 @@ it('lets your other computers continue a new group in one step, on by default, o
   } finally {window.hermesDesktop = desktop}
 })
 
-/** A gateway that can host groups and join one hosted elsewhere, run by `operator`. */
-const computerCapabilities = (install: string, operator: string, extra: Record<string, unknown> = {}) => ({
-  ...CANONICAL_GROUP_CAPABILITIES, authority_gateway_id: `install:${install.repeat(32)}`, features: ['peer_setup_recovery'],
-  room_link: { enabled: true, authentication: 'proof-v2', endpoint: { available: true, url: `https://${install}.example` },
-    catalog: { persistent_process: true, installation_id: `install:${install.repeat(32)}`, text: true, attachments: false, catalog_digest: install } },
-  room_identity: { operator_name: operator, always_on: false }, ...extra })
-
-function threeComputers(byConnection: Record<string, unknown>) {
-  const room = { room_id: 'harbor', name: 'Harbor launch', members: [] }
-  const create = vi.fn().mockResolvedValue({ ok: true, room })
-  window.hermesDesktop = { roomSetup: { recover: vi.fn().mockResolvedValue({ ok: true }), create } } as unknown as typeof window.hermesDesktop
-  vi.mocked(host.connections).mockResolvedValue([{ id: 'local', label: 'Mac mini', installId: 'a'.repeat(32) },
-    { id: 'vps', label: 'Home VPS', installId: 'b'.repeat(32) }, { id: 'laptop', label: 'Laptop', installId: 'c'.repeat(32) }] as never)
-  request.mockImplementation(async (route: { connectionId: string }, method: string) => {
-    if (method === 'groups.capabilities') {return byConnection[route.connectionId]}
-    throw new Error(`Unexpected RPC: ${method}`)
-  })
-
-  return create
-}
-
-const acrossComputers = [{ name: 'default', handle: 'atlas', connectionId: 'local', display_name: 'Atlas Bot' },
-  { name: 'default', handle: 'mira', connectionId: 'vps', display_name: 'Mira Bot' },
-  { name: 'default', handle: 'rex', connectionId: 'laptop', display_name: 'Rex Bot' }]
-
-async function chooseAll() {
-  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
-  await act(async () => {await new Promise(resolve => setTimeout(resolve, 0))})
-}
 
 it('hosts a group across computers on your always-on computer by default, and creates it there', async () => {
   const desktop = window.hermesDesktop
@@ -523,6 +752,7 @@ it('hosts a group across computers on your always-on computer by default, and cr
     expect(Object.entries($canonicalGroupBindings.get())).toEqual([[expect.stringContaining('local'), { connectionId: 'vps', profile: 'default', roomId: 'harbor' }]])
   } finally {window.hermesDesktop = desktop}
 })
+
 
 it('keeps a computer that can’t host visible but disabled, and says what a sleeping host means', async () => {
   const desktop = window.hermesDesktop
@@ -544,6 +774,7 @@ it('keeps a computer that can’t host visible but disabled, and says what a sle
     expect(Object.values($canonicalGroupBindings.get())).toEqual([{ connectionId: 'local', profile: 'default', roomId: 'harbor' }])
   } finally {window.hermesDesktop = desktop}
 })
+
 
 it('suggests an always-on computer whose owner isn’t known instead of choosing it, and names the computer, not a person', async () => {
   const desktop = window.hermesDesktop
@@ -570,6 +801,7 @@ it('suggests an always-on computer whose owner isn’t known instead of choosing
     expect(create.mock.calls[0][0].home).toEqual({ connectionId: 'vps', profile: 'default' })
   } finally {window.hermesDesktop = desktop}
 })
+
 
 it('never preselects another person’s computer, names it before adding it, and offers no choice when nothing else could host', async () => {
   const desktop = window.hermesDesktop
@@ -598,3 +830,33 @@ it('never preselects another person’s computer, names it before adding it, and
     expect(create.mock.calls[0][0].home).toEqual({ connectionId: 'local', profile: 'default' })
   } finally {window.hermesDesktop = desktop}
 })
+
+
+const computerCapabilities = (install: string, operator: string, extra: Record<string, unknown> = {}) => ({
+  ...CANONICAL_GROUP_CAPABILITIES, authority_gateway_id: `install:${install.repeat(32)}`, features: ['peer_setup_recovery'],
+  room_link: { enabled: true, authentication: 'proof-v2', endpoint: { available: true, url: `https://${install}.example` },
+    catalog: { persistent_process: true, installation_id: `install:${install.repeat(32)}`, text: true, attachments: false, catalog_digest: install } },
+  room_identity: { operator_name: operator, always_on: false }, ...extra })
+
+function threeComputers(byConnection: Record<string, unknown>) {
+  const room = { room_id: 'harbor', name: 'Harbor launch', members: [] }
+  const create = vi.fn().mockResolvedValue({ ok: true, room })
+  window.hermesDesktop = { roomSetup: { recover: vi.fn().mockResolvedValue({ ok: true }), create } } as unknown as typeof window.hermesDesktop
+  vi.mocked(host.connections).mockResolvedValue([{ id: 'local', label: 'Mac mini', installId: 'a'.repeat(32) },
+    { id: 'vps', label: 'Home VPS', installId: 'b'.repeat(32) }, { id: 'laptop', label: 'Laptop', installId: 'c'.repeat(32) }] as never)
+  request.mockImplementation(async (route: { connectionId: string }, method: string) => {
+    if (method === 'groups.capabilities') {return byConnection[route.connectionId]}
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+
+  return create
+}
+
+const acrossComputers = [{ name: 'default', handle: 'atlas', connectionId: 'local', display_name: 'Atlas Bot' },
+  { name: 'default', handle: 'mira', connectionId: 'vps', display_name: 'Mira Bot' },
+  { name: 'default', handle: 'rex', connectionId: 'laptop', display_name: 'Rex Bot' }]
+
+async function chooseAll() {
+  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
+  await act(async () => {await new Promise(resolve => setTimeout(resolve, 0))})
+}

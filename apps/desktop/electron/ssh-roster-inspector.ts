@@ -11,7 +11,7 @@ export function createSshRosterInspector(options: {
   cache: Map<string, string[]>
   attemptedAt: Map<string, number>
   retryMs: number
-  installIds: Map<string, { id: string; ts: number }>
+  installIds: Map<string, { id?: string; ts: number }>
   states: Parameters<typeof readSshRosterInventory>[0]['states']
   request: Parameters<typeof readSshRosterInventory>[0]['request']
   currentConnection: (id: string) => any

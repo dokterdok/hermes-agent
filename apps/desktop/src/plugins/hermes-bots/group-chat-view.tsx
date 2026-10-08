@@ -1,3 +1,4 @@
+import * as sdk from '@hermes/plugin-sdk'
 /**
  * The group-chat room surface: the merged room view, its settings dialog, the
  * MAIN-window tab it opens into, and the two room-lifecycle mutations that
@@ -9,8 +10,6 @@
  * cycle, so it is one module. The tab registry and the composer drafts they
  * touch stay below, in `group-panes.ts`.
  */
-
-import * as sdk from '@hermes/plugin-sdk'
 import {
   atom,
   Button,
@@ -62,7 +61,8 @@ import {
   currentGroupActivity,
   GROUP_ACTIVITY_GLYPHS,
   groupActivityLabel,
-  groupActivityTone
+  groupActivityTone,
+  groupFailureDetail
 } from './group-activity'
 import type { GroupActivityEntry } from './group-activity'
 import { filesToGroupAttachments, pickGroupAttachments } from './group-attachments'
@@ -107,6 +107,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
+import { isGroupChatSelf } from './group-round-prompt'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
@@ -631,12 +632,17 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
         } else if (gatewayActivationEpoch() !== activationEpoch && groupCreationSource(route)()) {
           setRefresh(value => value + 1)
         }
-      })
+      }
+    )
 
     return () => { cancelled = true }
   }, [connectionId, profile, gateway, source, socketGeneration, refresh])
 
-  if (mode === 'legacy' || (mode === 'canonical' && !canonicalGroupEligibility({ connectionId: connectionId ?? '', profile }, props.members).eligible)) {
+  if (
+    mode === 'legacy' ||
+    (mode === 'canonical' &&
+      !canonicalGroupEligibility({ connectionId: connectionId ?? '', profile }, props.members).eligible)
+  ) {
     return <LegacyGroupChatWorkspace {...props} />
   }
 
@@ -661,11 +667,11 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
       const name = props.group
       const members = props.members.map(member => ({ ...member, ...(member.route ? { route: { ...member.route } } : {}) }))
 
-      if (mode !== 'canonical' || !sourceCurrent()) {
-        setError(b.canonical.driverUnavailable)
+            if (mode !== 'canonical' || !sourceCurrent()) {
+              setError(b.canonical.driverUnavailable)
 
-        return
-      }
+              return
+            }
 
       setBusy(true)
       setError('')
@@ -694,6 +700,13 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     }} size="sm" variant="secondary">{b.canonical.startGatewayGroup}</Button>
     </div>
   </div>
+}
+
+function groupHistoryIsForeign(entry: GroupMessage, member: GroupMember | null): boolean {
+  if (member?.remoteSource) {return true}
+  if (entry.from.gateway) {return !member?.installId || member.installId !== entry.from.gateway}
+  // Connection labels cannot establish local artifact authority.
+  return Boolean(entry.from.source)
 }
 
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
@@ -1133,7 +1146,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           {summaryActivity ? (
             <span
               className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}
-            >{`${groupActivityLabel(summaryActivity, group)} · ${relativeTime(summaryActivity.at)}`}</span>
+            >{`${groupActivityLabel(summaryActivity, group, b.canonical)} · ${relativeTime(summaryActivity.at)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (
@@ -1160,7 +1173,13 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
                   name={GROUP_ACTIVITY_GLYPHS[event.kind] || 'circle-outline'}
                 />
                 <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(event.kind))}>
-                  {groupActivityLabel(event, group)}
+                  {groupActivityLabel(event, group, b.canonical)}
+                  {event.kind === 'failed' && event.reason && (
+                    <details className="mt-1 whitespace-normal">
+                      <summary>{b.canonical.setupDetails}</summary>
+                      <p className="whitespace-pre-wrap break-words">{groupFailureDetail(event.reason)}</p>
+                    </details>
+                  )}
                 </span>
                 <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
                 {room.running && event.kind === 'working' ? (
@@ -1358,10 +1377,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     const member = isUser
       ? null
       : members.find(
-          b =>
-            b.name === entry.from.name &&
-            (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
+          candidate => isGroupChatSelf(entry.from, candidate)
         ) || null
+
+    const foreignHistory = groupHistoryIsForeign(entry, member)
 
     const display = isUser
       ? b.group.you
@@ -1455,7 +1474,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             data-slot="group-chat-message-content"
           >
             {MessageTextContent ? (
-              <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />
+              <MessageTextContent decorateText={mentionText} media={!foreignHistory} previewOnly={foreignHistory} text={entry.text} />
             ) : Streamdown ? (
               <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
             ) : (

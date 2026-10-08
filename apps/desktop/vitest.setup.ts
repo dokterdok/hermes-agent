@@ -7,7 +7,8 @@ import { InertResizeObserver } from './src/test/jsdom'
 // not `vi.stubGlobal`, so a test's `vi.unstubAllGlobals()` cannot strip it.
 globalThis.ResizeObserver ??= InertResizeObserver as unknown as typeof ResizeObserver
 
-// Same transaction fixture as #130016; native journal tests use real CAS.
+// jsdom lacks Web Locks. Serialize callbacks to exercise the browser journal's
+// transaction boundary; native journal tests use the real Electron store.
 const webLocks = new Map<string, Promise<unknown>>()
 Object.defineProperty(navigator, 'locks', { configurable: true, value: {
   request: (name: string, run: () => unknown) => {

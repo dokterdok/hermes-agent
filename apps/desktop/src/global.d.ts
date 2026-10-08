@@ -432,12 +432,15 @@ declare global {
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
       roomSetup?: {
-        create: (input: RoomSetupInput) => Promise<{ ok: boolean; reason?: string; room?: CanonicalRoom; successors?: 'designated' | 'failed' }>
+        create: (
+          input: RoomSetupInput
+        ) => Promise<{ ok: boolean; reason?: string; room?: CanonicalRoom; successors?: 'designated' | 'failed' }>
         recover: () => Promise<{ ok: boolean; pending?: number; reason?: string }>
         addBackup?: (input: RoomBackupInput) => Promise<{ ok: boolean; reason?: string; install_id?: string }>
       }
       preparedSubmissions?: {
         owner?: () => Promise<string>
+        compareAndSet?: (key: string, expected: string | null, entry: string | null) => Promise<boolean>
         read: () => Promise<string>
         update: (key: string, entry: string | null) => Promise<void>
         compareSend?: (key: string, expected: string | null, entry: string | null) => Promise<boolean>
