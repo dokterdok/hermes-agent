@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.gateway.test_session_hosted_rpc import owner as owner
 
 
 def test_authorized_upload_send_download_and_task_consumption(tmp_path):
@@ -25,7 +24,6 @@ def test_authorized_upload_send_download_and_task_consumption(tmp_path):
     params = dict(room_id='room', upload_id='upload', kind='file', name='note.txt', mime='text/plain', data_base64=base64.b64encode(b'committed bytes').decode())
     metadata = upload(service, actor, params)
     manifest = [{k: metadata[k] for k in ('attachment_id', 'kind', 'name', 'size', 'mime')}]
-    store = HostedRoomAttachmentStore(service.db_path)
     from gateway.session_hosted_attachments import append_user_event
     append_user_event(service, room_id='room', event_id='event', payload={'text':'read', 'attachments':manifest}, gateway_id='gateway', epoch=1)
     bound = [{**manifest[0], 'event_id': 'event'}]
@@ -42,12 +40,12 @@ def test_authorized_upload_send_download_and_task_consumption(tmp_path):
 
 
 @pytest.fixture
-def owned_owner(owner):
+def owned_owner(hosted_owner):
     """Gateway authorities run in the process that owns their profile home."""
     from gateway.runtime_ownership import process_ownership
-    home = Path(owner[0].db.db_path).resolve().parent
+    home = Path(hosted_owner[0].db.db_path).resolve().parent
     process_ownership.reserve([home])
-    yield owner
+    yield hosted_owner
     process_ownership.release(home)
 
 

@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.gateway.test_session_hosted_rpc import owner as owner
 
 
 def _server(home):
@@ -19,14 +18,14 @@ def _server(home):
     return GatewayControlServer(home, verb_handlers={'identify': lambda: descriptor})
 
 
-def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, tmp_path):
+def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_owner, tmp_path):
     from gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
         owner_request,
     )
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import list_session_admissions, RuntimeStoreError
-    authority, loop, _, _ = owner
+    authority, loop, _, _ = hosted_owner
     source, target = tmp_path / 'source', tmp_path / 'target'
     source.mkdir(mode=0o700)
     target.mkdir(mode=0o700)
@@ -135,7 +134,7 @@ class _SourceTask:
 
 
 @pytest.fixture
-def document_target_owner(owner, tmp_path, monkeypatch):
+def document_target_owner(hosted_owner, tmp_path, monkeypatch):
     """A real named target store with its own input-custody and process ownership."""
     from gateway.runtime_ownership import process_ownership
     from gateway.session_authority import SessionAuthority
@@ -151,11 +150,11 @@ def document_target_owner(owner, tmp_path, monkeypatch):
     try:
         db = SessionDB(target_home / 'state.db')
         initialize_input_custody(db)
-        authority = SessionAuthority(owner[0].runner, profile_id=str(target_home),
+        authority = SessionAuthority(hosted_owner[0].runner, profile_id=str(target_home),
                                      instance_id='test', db=db,
                                      epoch=begin_runtime_epoch(db, instance_id='test'))
         monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-        yield authority, owner[1], target_home
+        yield authority, hosted_owner[1], target_home
     finally:
         if db is not None:
             db.close()
