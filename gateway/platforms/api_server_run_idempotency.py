@@ -642,9 +642,12 @@ class RunIdempotencyStore:
                 'room_id', 'member_id', 'target_install_id', 'target_profile')):
             return False
         room_id = previous['room_id']
-        if previous['authority_epoch'] > fence.fenced_epoch_locked(self._conn, room_id):
+        if previous['authority_epoch'] == successor['authority_epoch']:
             if not self._learned_same_epoch_successor_locked(previous, successor):
                 return False
+        elif (previous['authority_epoch'] > successor['authority_epoch']
+                or previous['authority_epoch'] > fence.fenced_epoch_locked(self._conn, room_id)):
+            return False
         return fence.successor_controls_locked(self._conn, room_id,
             candidate_install_id=successor['authority_gateway_id'], epoch=successor['authority_epoch'])
 
