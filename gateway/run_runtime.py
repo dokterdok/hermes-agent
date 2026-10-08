@@ -241,7 +241,6 @@ async def _retire_profile_authority(authority):
     from gateway.session_cron import unbind_owner
     from gateway.session_logical_preparation import stop_logical_preparation
 
-    await stop_logical_preparation(authority)
     service = getattr(authority, 'hosted_room_service', None)
     if service is not None:
         await asyncio.to_thread(service.stop, timeout=5)
