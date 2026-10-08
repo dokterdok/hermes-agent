@@ -7,7 +7,7 @@ from gateway import hosted_rooms
 from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret, room_grant_token_digest
 from gateway.platforms.api_server_room_grants import authorize_room_admission
 from hermes_state_runtime import RuntimeStoreError, admit_session_input
-from tests.gateway.test_session_group_peers import gateway as gateway, invite, linked_room
+from tests.gateway.test_session_group_peers import gateway as gateway, invite, linked_room  # noqa: F401
 from gateway.session_group_peers import room_link
 
 

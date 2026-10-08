@@ -109,6 +109,18 @@ class Peer:
             raise PeerRunsHTTPError("unreachable", retryable=True)
         return {"run_id": "run-accepted", "status": self.stop_status}
 
+    def cancel_dispatch(self, *, dispatch, grant):
+        from gateway.hosted_room_peer import HostedMemberDispatch, verify_room_grant
+        checked = HostedMemberDispatch.from_mapping(dispatch)
+        verify_room_grant(self.secret, grant, checked, permission='stop')
+        receipt = rooms.remote_run_receipt(self.db_path, record={
+            **self.bound_scope, 'task_id': checked.task_id,
+            'execution_generation': checked.execution_generation})
+        if receipt is None:
+            raise PeerRunsHTTPError('exact cancellation remains unknown', ambiguous=True)
+        return self.stop_receipt(task_id=checked.task_id,
+                                 execution_generation=checked.execution_generation, grant=grant)
+
 
 @pytest.fixture
 def case(tmp_path, monkeypatch):
@@ -137,6 +149,8 @@ def case(tmp_path, monkeypatch):
         scope = dict(room_id="room", home_install_id=gateway, authority_gateway_id=gateway,
                      authority_epoch=1, member_id="peer", target_profile="default")
         peer = Peer(catalog, scope, service.db_path)
+        # Renewal's durable cleanup uses the same inert participant as the control path.
+        monkeypatch.setattr('gateway.session_group_peer_cleanup.PeerRunsHTTPClient', lambda **_: peer)
         grant = issue_room_grant(peer.secret, grant_id="grant", **scope,
                                  target_install_id=catalog.installation_id,
                                  execution_policy_digest=catalog.execution_policy.policy_digest,

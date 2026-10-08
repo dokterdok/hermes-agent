@@ -1,5 +1,7 @@
 """RoomLink room-member grants and capability HTTP handlers."""
 
+import sqlite3
+import sys
 import time
 import uuid
 from typing import Any, Optional
@@ -17,6 +19,16 @@ class RoomGrantReauthorizationRequired(ValueError):
 def _json_error(_openai_error, message: str, *, status: int, **error_kwargs) -> "web.Response":
     """JSON error response built with the injected ``_openai_error`` envelope builder."""
     return web.json_response(_openai_error(message, **error_kwargs), status=status)
+
+
+def adapter_handler(name: str, api_server):
+    """Bind the adapter while resolving grant handlers and facade policy at call time."""
+    async def handler(self, request: "web.Request") -> "web.Response":
+        return await getattr(sys.modules[__name__], name)(
+            self, request, _openai_error=api_server._openai_error,
+            _api_request_profile=api_server._api_request_profile)
+    handler.__name__ = name
+    return handler
 
 
 def _require_unchanged_execution_policy(claims: dict[str, Any], execution_policy: dict[str, Any]) -> None:
@@ -166,7 +178,7 @@ async def _handle_room_member_invitation(
     try:
         profile, _ = _local_target(None, _api_request_profile)
         invitation = _issue_invitation(self, body, profile)
-    except Exception as exc:
+    except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
         return _json_error(_openai_error, str(exc), code="invalid_room_invitation", status=400)
     return web.json_response({"object": "hermes.room_member.invitation", **invitation}, status=201)
 
@@ -301,13 +313,13 @@ async def _handle_room_member_grant_revoke_exact(
         claims = decode_room_grant(
             self._room_grant_secret(), token, permission="status", allow_expired_for_revocation=True)
         _local_target(claims, _api_request_profile)
-    except Exception as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     try:
         hosted_rooms.revoke_room_grant_token(
             _grant_db(self), claims=claims, token_sha256=room_grant_token_digest(token),
             expires_at=_hard_expiry(claims))
-    except Exception:
+    except (OSError, sqlite3.Error, ValueError):
         return _json_error(
             _openai_error, "Room grant revocation could not be saved; retry it.",
             code="room_grant_revocation_unavailable", status=503)

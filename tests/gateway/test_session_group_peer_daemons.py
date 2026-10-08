@@ -296,6 +296,7 @@ async def _join_pair(home_ws, target_ws, *, peer_first=False):
 
 
 def test_peer_approval_wait_keeps_target_policy_and_stop_works(tmp_path):
+    from gateway import hosted_rooms
     root = Path(__file__).resolve().parents[2]
     home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY')
     with socket.socket() as sock:
@@ -314,7 +315,7 @@ def test_peer_approval_wait_keeps_target_policy_and_stop_works(tmp_path):
 
     async def exercise(home_desc, target_desc):
         async with websocket(home, home_desc) as home_ws, websocket(target, target_desc) as target_ws:
-            await _join_pair(home_ws, target_ws)
+            room, _ = await _join_pair(home_ws, target_ws)
             await _send(home_ws, 'approval-stop', '@reviewer APPROVAL_WAIT')
             async with asyncio.timeout(45):
                 while not (actions := (await rpc(home_ws, 'groups.state', room_id='linked'))[
@@ -336,6 +337,14 @@ def test_peer_approval_wait_keeps_target_policy_and_stop_works(tmp_path):
                         'result']['driver_status']['pending_actions']):
                     await asyncio.sleep(.1)
             assert actions[0]['request_id'] != action['request_id']
+            # Stop's durable watermark precedes transport delivery. A newly
+            # requested Allow must not release the target tool in that interval.
+            hosted_rooms.request_room_stop(home / 'state.db', room_id='linked', cancel_id='before-allow',
+                expected_gateway_id=room['authority_gateway_id'], expected_epoch=room['authority_epoch'])
+            blocked = await rpc(home_ws, 'groups.approve', room_id='linked', member_id='reviewer',
+                task_id=actions[0]['task_id'], execution_generation=actions[0]['execution_generation'],
+                request_id=actions[0]['request_id'], choice='once')
+            assert 'error' in blocked and marker.is_dir(), blocked
             assert (await rpc(home_ws, 'groups.stop', room_id='linked'))['result']['cancelled'] == 1
             await _events(home_ws, 'turn.cancelled', timeout=10)
             assert marker.is_dir()
@@ -395,6 +404,50 @@ def test_disband_offline_target_cleanup_survives_both_gateway_restarts(tmp_path)
             with daemon(root, home, home_env, barrier=False) as (_, hd):
                 asyncio.run(reconciled(hd))
     finally:
+        for model in (home_model, target_model):
+            model.shutdown()
+            model.server_close()
+
+
+def test_disband_of_an_active_peer_finishes_from_its_retained_receipt(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY', 'DISBAND_ACTIVE')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    home, home_env = _gateway(tmp_path, 'home', home_model, root)
+    target, target_env = _gateway(tmp_path, 'target', target_model, root, api_port=port)
+    async def exercise(hd, td):
+        async with websocket(home, hd) as hw, websocket(target, td) as tw:
+            _, invitation = await _join_pair(hw, tw)
+            await _send(hw, 'active-disband', '@reviewer DISBAND_ACTIVE')
+            assert await asyncio.to_thread(target_model.gates['DISBAND_ACTIVE'][0].wait, 30)
+            async with asyncio.timeout(10):
+                while True:
+                    with sqlite3.connect(home / 'state.db') as db:
+                        if db.execute('SELECT COUNT(*) FROM hosted_room_remote_runs').fetchone()[0]:
+                            break
+                    await asyncio.sleep(.05)
+            response = await rpc(hw, 'groups.disband', room_id='linked')
+            assert ('tombstone' in response.get('result', {})
+                    or response.get('error', {}).get('message') == 'room_retiring'), response
+            target_model.gates['DISBAND_ACTIVE'][1].set()
+            async with asyncio.timeout(30):
+                while True:
+                    state = (await rpc(hw, 'groups.state', room_id='linked', include_disbanded=True))['result']
+                    if state['room'].get('disbanded_at') and not state['driver_status']['peer_cleanup']:
+                        break
+                    await asyncio.sleep(.1)
+            assert not state['driver_status']['working']
+            code, body = await asyncio.to_thread(_grant_status, f'http://127.0.0.1:{port}', invitation['grant'])
+            assert (code, body['error']['code']) == (403, 'room_reauthorization_required')
+            assert len(target_model.requests) == 1
+    try:
+        with daemon(root, target, target_env, barrier=False) as (_, td):
+            with daemon(root, home, home_env, barrier=False) as (_, hd):
+                asyncio.run(exercise(hd, td))
+    finally:
+        target_model.gates['DISBAND_ACTIVE'][1].set()
         for model in (home_model, target_model):
             model.shutdown()
             model.server_close()

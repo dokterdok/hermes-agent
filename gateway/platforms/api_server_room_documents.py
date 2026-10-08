@@ -137,3 +137,16 @@ def lookup_run_response(adapter, request, *, scope, key, fingerprint, session_id
     if outcome == "conflict" or (outcome == "reused" and record is not None):
         return _replay_or_conflict(adapter, request, outcome, record, gateway_session_key, _openai_error)
     return None
+
+
+async def prepare_run_input(adapter, request, *, scope, key, fingerprint, session_id,
+                            gateway_session_key, room_dispatch, has_documents, _openai_error):
+    """Replay accepted input before preparing new bytes or spending a concurrency slot."""
+    replay = lookup_run_response(adapter, request, scope=scope, key=key, fingerprint=fingerprint,
+        session_id=session_id, gateway_session_key=gateway_session_key,
+        has_documents=has_documents, _openai_error=_openai_error)
+    if replay is not None or not has_documents:
+        return None, replay
+    return await prepare_document_input(adapter, request, room_dispatch, idempotency_scope=scope,
+        idempotency_key=key, session_id=session_id, gateway_session_key=gateway_session_key,
+        _openai_error=_openai_error)

@@ -130,3 +130,38 @@ async def resolve_unknown_run(adapter, run_id, body):
         actor, SessionRef(authority.profile_id, row['target_session_id']),
         row['admission_id'], generation)
     return asdict(receipt)
+
+
+def authorize_run_admission(adapter, request, run_id):
+    """Keep grant validity and a durable Stop in the canonical accepting write."""
+    from gateway.platforms.api_server_room_grants import authorize_room_admission
+    grant_authorize = authorize_room_admission(adapter, request)
+
+    def authorize(conn):
+        if grant_authorize is not None:
+            grant_authorize(conn)
+        if adapter._run_idempotency_store.stop_requested(run_id):
+            raise RuntimeStoreError('run_cancelled')
+    return authorize
+
+
+async def observe_run(adapter, run_id, admitted, **kwargs):
+    """Consume another listener's durable Stop and await the canonical terminal receipt."""
+    import asyncio
+    from gateway.session_api_turn import observe_api_turn
+    if adapter._run_idempotency_store.stop_requested(run_id):
+        await stop_run(adapter, run_id)
+        authority, ref, _ = admitted
+        admitted = authority, ref, run_admission(adapter, run_id)[1]
+    observation = asyncio.create_task(observe_api_turn(admitted, **kwargs))
+    try:
+        while not observation.done():
+            await asyncio.wait({observation}, timeout=0.5)
+            if (adapter._run_idempotency_store.stop_requested(run_id)
+                    and run_id not in adapter._stopping_run_ids):
+                await stop_run(adapter, run_id)
+        return await observation
+    finally:
+        if not observation.done():
+            observation.cancel()
+            await asyncio.gather(observation, return_exceptions=True)

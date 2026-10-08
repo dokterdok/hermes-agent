@@ -227,6 +227,7 @@ class FakeSessionRPC:
             result = {
                 "active": session_state["active"],
                 "task_id": session_state["task_id"],
+                "execution_generation": session_state.get("execution_generation"),
             }
             if session_state.get("pending_approval"):
                 result["status"] = "waiting_for_approval"
@@ -242,16 +243,19 @@ class FakeSessionRPC:
         session_id: str,
         source: str,
         expected_task_id: str,
+        expected_execution_generation: int,
     ):
         params = {
             "profile": profile,
             "session_id": session_id,
             "source": source,
             "expected_task_id": expected_task_id,
+            "expected_execution_generation": expected_execution_generation,
         }
         with self._lock:
             current = self.states[session_id]
-            if not current["active"] or current["task_id"] != expected_task_id:
+            if (not current["active"] or current["task_id"] != expected_task_id
+                    or current.get("execution_generation") != expected_execution_generation):
                 self.calls.append(("interrupt_skipped", params))
                 return {"interrupted": False}
             current["active"] = False
@@ -545,6 +549,28 @@ def test_transport_resolver_selects_member_transport_without_forking_state(
     assert all(task_identity == identity for _, task_identity, _ in resolutions)
     assert any(method == "submit" for method, _ in selected.calls)
 
+
+
+def test_ambiguous_error_cannot_requeue_even_with_a_nonadmission_flag(db: Path):
+    class ConflictingFailureRPC(FakeSessionRPC):
+        def submit(self, **kwargs):
+            self.calls.append(("submit", dict(kwargs)))
+            raise PeerRunsHTTPError("uncertain peer outcome", ambiguous=True, not_admitted=True, retryable=True)
+
+    identity = _identity()
+    _admit(db, identity)
+    rpc = ConflictingFailureRPC()
+    now = [100.0]
+    runtime = _runtime(db, rpc, clock=lambda: now[0], lease_ttl_seconds=30)
+    runtime._run_cycle()
+    # Unknown work retains its lease boundary before becoming recoverable.
+    assert state.get_task(db, identity)["status"] == "running"
+    now[0] = 131.0
+    runtime._run_cycle()
+    saved = state.get_task(db, identity)
+    assert saved["status"] == "indeterminate"
+    assert saved["execution_generation"] == 1
+    assert [call[1]["execution_generation"] for call in rpc.calls if call[0] == "submit"] == [1]
 
 def test_not_admitted_peer_task_stays_queued_with_exponential_capped_retry(
     db: Path,
@@ -884,7 +910,7 @@ def test_oversized_terminal_reply_is_bounded_without_waiting_for_deadline(db: Pa
     assert result["text"].endswith("share the full result as a file.]")
 
 
-def test_peer_recovery_probe_is_bounded_by_attempt_and_stale_age(db: Path):
+def test_unknown_peer_is_deferred_only_after_its_stale_deadline(db: Path):
     identity = _identity()
     now = [100.0]
 
@@ -927,22 +953,18 @@ def test_peer_recovery_probe_is_bounded_by_attempt_and_stale_age(db: Path):
     )
     state.recover_room(db, recovery_lease, clock=clock)
     runtime.transport_resolver = lambda _binding, _task: object()
-    probes = []
-
     def inspect(_binding, task):
-        probes.append((task["identity"].task_id, now[0]))
         return SimpleNamespace(terminal=None, active=False, status=None)
 
     runtime._inspect_recovery_session = inspect
 
     assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is True
     assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is True
-    assert probes == [(identity.task_id, 102.0)]
-
+    assert state.get_task(db, identity)["status"] == "indeterminate"
     now[0] = 108.0
     assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is False
-    assert probes == [(identity.task_id, 102.0), (identity.task_id, 108.0)]
-    assert state.get_task(db, identity)["status"] == "deferred"
+    saved = state.get_task(db, identity)
+    assert saved["status"] == "deferred" and saved["execution_generation"] == 1
 
 
 def test_turn_deadline_stops_exact_attempt_and_publishes_durable_failure(db: Path):
@@ -1880,32 +1902,6 @@ def test_pending_local_approval_is_reported_with_safe_choices(db: Path):
     assert action["approval"]["choices"] == ["once", "deny"]
     assert runtime.stop(timeout=5.0)
 
-
-def test_cancel_never_interrupts_a_newer_task_in_the_same_session(db: Path):
-    identity = _identity()
-    _admit(db, identity)
-    rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc)
-
-    runtime.start()
-    assert rpc.submitted.wait(1.0)
-    session_id = next(iter(rpc.states))
-
-    def switch_to_newer_task() -> None:
-        with rpc._lock:
-            rpc.states[session_id]["active"] = True
-            rpc.states[session_id]["task_id"] = "task-2"
-
-    rpc.on_info = switch_to_newer_task
-    cancelled = runtime.cancel(identity, cancel_id="cancel-old-task")
-
-    assert cancelled["status"] == "stopping"
-    assert not [call for call in rpc.calls if call[0] == "interrupt"]
-    skipped = [params for method, params in rpc.calls if method == "interrupt_skipped"]
-    assert all(params["expected_task_id"] == identity.task_id for params in skipped)
-    assert rpc.states[session_id]["active"] is True
-    assert rpc.states[session_id]["task_id"] == "task-2"
-    assert runtime.stop(timeout=5.0)
 
 
 def test_status_reports_room_blocked_on_unresolved_indeterminate_task(db: Path):

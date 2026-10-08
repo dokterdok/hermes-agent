@@ -74,7 +74,7 @@ def _make_adapter(api_key: str = "") -> APIServerAdapter:
 
 def _claim_run(adapter: APIServerAdapter, run_id: str) -> None:
     """Stamp *run_id* as owned by the unprefixed (default) request scope."""
-    request = make_mocked_request('POST', '/v1/runs')
+    request = make_mocked_request("POST", "/v1/runs")
     adapter._run_owners[run_id] = adapter._run_idempotency_scope(request)
 
 

@@ -93,22 +93,25 @@ def test_info_and_interrupt_are_exact_task_scoped():
     server._sessions["runtime"] = {
         "history_lock": lock,
         "running": True,
-        "_hosted_room_task": {"task_id": "task-a"},
+        "_hosted_room_task": {"task_id": "task-a", "execution_generation": 2},
     }
     rpc = HostedRoomServerRPC(server)
 
     assert rpc.info(profile="ops", session_id="runtime", source="bot_room") == {
         "active": True,
         "task_id": "task-a",
+        "execution_generation": 2,
     }
     rpc.interrupt(
         profile="ops",
         session_id="runtime",
         source="bot_room",
         expected_task_id="task-a",
+        expected_execution_generation=2,
     )
     params = next(params for method, params in calls if method == "session.interrupt")
     assert params["expected_hosted_task_id"] == "task-a"
+    assert params["expected_hosted_execution_generation"] == 2
 
 
 def test_local_approval_snapshot_and_response_use_exact_request():
@@ -122,7 +125,7 @@ def test_local_approval_snapshot_and_response_use_exact_request():
         "history_lock": threading.Lock(),
         "running": True,
         "session_key": "stored-session",
-        "_hosted_room_task": {"task_id": "task-a"},
+        "_hosted_room_task": {"task_id": "task-a", "execution_generation": 2},
     }
     rpc = HostedRoomServerRPC(server)
 
@@ -133,6 +136,8 @@ def test_local_approval_snapshot_and_response_use_exact_request():
         session_id="runtime",
         request_id="approval-1",
         choice="once",
+        expected_task_id="task-a",
+        expected_execution_generation=2,
     ) == {"resolved": 1}
     params = next(params for method, params in calls if method == "approval.respond")
     assert params == {
@@ -140,6 +145,8 @@ def test_local_approval_snapshot_and_response_use_exact_request():
         "request_id": "approval-1",
         "choice": "once",
         "all": False,
+        "expected_hosted_task_id": "task-a",
+        "expected_hosted_execution_generation": 2,
     }
 
 
