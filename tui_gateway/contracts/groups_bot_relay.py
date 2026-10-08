@@ -13,7 +13,7 @@ from typing import Literal
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
-from .registry import method
+from .registry import canonical_method, method
 from .server_requests import ApprovalChoice
 
 # ── shared room shapes ────────────────────────────────────────────────────────────────────────
@@ -373,7 +373,7 @@ class GroupsDiscardResult(Result):
     task: RoomTaskReceipt
 
 
-method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
+canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
        doc="Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.")
 
 
@@ -398,7 +398,7 @@ class GroupsAttachmentResult(Result):
     event_id: str | None = None
 
 
-method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=GroupsAttachmentResult,
+canonical_method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=GroupsAttachmentResult,
        doc="Upload owner-authorized bytes for a canonical room message.")
 
 
@@ -411,7 +411,7 @@ class GroupsAttachmentDownloadResult(GroupsAttachmentResult):
     data_base64: str
 
 
-method("groups.attachment.download", params=GroupsAttachmentDownloadParams, result=GroupsAttachmentDownloadResult,
+canonical_method("groups.attachment.download", params=GroupsAttachmentDownloadParams, result=GroupsAttachmentDownloadResult,
        doc="Read bytes bound to a canonical room event, subject to current viewer authorization.")
 
 
@@ -429,6 +429,8 @@ class RoomFileProducer(Result):
 
 
 class RoomFileItem(Result):
+    # Omitted by older hosts and for available rows; false never authorizes Download.
+    available: bool = True
     attachment_id: str
     kind: str
     name: str
@@ -450,8 +452,9 @@ class GroupsAttachmentListResult(Result):
     has_more: bool
 
 
-method("groups.attachment.list", params=GroupsAttachmentListParams, result=GroupsAttachmentListResult,
-       doc="List authorized published room-file versions with stable paging, search and producer filtering.")
+canonical_method("groups.attachment.list", params=GroupsAttachmentListParams, result=GroupsAttachmentListResult,
+       doc="List authorized published room-file references with stable paging, search and producer filtering. "
+           "available=false retains a historical reference whose bytes are unavailable here; omitted means locally available.")
 
 
 # ── replication / authority takeover ──────────────────────────────────────────────────────────

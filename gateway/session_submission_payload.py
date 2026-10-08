@@ -5,8 +5,17 @@ from gateway.session_surface import admit_surface
 
 
 def normalize_submission_payload(authority, actor, request):
+    def admitted():
+        with authority.db._read_ctx() as conn:
+            row = conn.execute('SELECT * FROM session_admissions WHERE principal_id=? AND '
+                               'target_session_id=? AND request_id=?',
+                               (actor.subject, request.ref.session_id, request.request_id)).fetchone()
+        from hermes_state_runtime import _row
+        return _row(row) if row is not None else None
+
     payload = {'text': request.payload['text'], **admit_finite(request.payload),
-               **admit_surface(request.payload), **admit_attachments(request.payload.get('attachments'))}
+               **admit_surface(request.payload),
+               **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
     source = authority.sessions[request.ref.session_id].source
     if source is not None and source.user_id != actor.subject:
         # Durable server authorization, not a client payload field. The original

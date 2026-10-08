@@ -64,6 +64,8 @@ class SessionAuthority:
         self.pending_stops = {}
         # The generation whose Stop was last delivered to the session's cached agent.
         self.delivered_stops = {}
+        # Set by profile retirement (unserve): the drain claims no successor after its running turn.
+        self.retiring = False
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -95,7 +97,7 @@ class SessionAuthority:
             raise RuntimeStoreError('permission_denied')
 
     def _require_admission_open(self):
-        if self.runner._draining:
+        if self.runner._draining or self.retiring:
             raise RuntimeStoreError('runtime_draining')
 
     def logical_owner(self, session_id):
@@ -215,6 +217,13 @@ class SessionAuthority:
         if live.task is None or live.task.done():
             live.task = asyncio.create_task(self._drain(ref))
             live.task.add_done_callback(_log_drain_failure)
+
+    def wake_after_worker(self, session_id):
+        """A worker execution on ``session_id`` (a logical owner or its compression continuation)
+        ended: a drain that parked behind it re-runs. A no-op while a drain is running."""
+        for sid in dict.fromkeys((session_id, self.logical_owner(session_id))):
+            if sid in self.sessions:
+                self._schedule(SessionRef(self.profile_id, sid))
 
     def _pause(self, ref, reason):
         """The FIFO stopped without claiming its head. Committed rows stay queued for a later
@@ -367,12 +376,16 @@ class SessionAuthority:
         finish; the paused FIFO behind it resumes. Never requeues the lost input."""
         self.authorize(actor, ref, 'session:control')
         await self.receipt(actor, ref, admission_id)
-        row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
-                                            generation=generation)
-        # Before the follower is scheduled: its request must not carry the discarded text merged in.
-        from gateway.session_local_recovery import transcript_target
+        # The transcript boundary commits WITH the terminal transition: a follower can never be
+        # claimed with the discarded text left open to be merged into its request.
         from gateway.session_results import close_discarded_turn
-        close_discarded_turn(self.db, transcript_target(self, ref))
+        row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
+                                            generation=generation,
+                                            _terminal_write=lambda conn, lost, _outcome, _result: close_discarded_turn(self.db, conn, lost))
+        # Its own write txn + unlink, so it runs after the resolution commits; a discarded image
+        # would otherwise stay on disk forever (the drain releases only settled turns).
+        from gateway.session_ingress_media import release_admission_media
+        release_admission_media(self.db, admission_id)
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)
@@ -509,9 +522,18 @@ class SessionAuthority:
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                 self._pause(ref, exc.reason)
                 return
+            if row is None and first is not None:
+                # Not empty: a live worker (or a claim this drain does not own) blocks the head.
+                # Release the delivery waiters like any pause; the worker's finish wakes the FIFO
+                # (``wake_after_worker``) and the drain then answers through the adapter.
+                self._pause(ref, 'session_busy')
+                return
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False
             if row is None:
+                # A viewer that left while this work ran could not end the ACP session then.
+                from gateway.session_acp_lifecycle import end_idle_acp_session
+                end_idle_acp_session(self, ref.session_id)
                 return
             admission_id = row['admission_id']
             with live.event_stream.lock:
