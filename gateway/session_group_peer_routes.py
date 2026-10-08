@@ -171,8 +171,6 @@ class CanonicalPeerClient:
         value = getattr(self._client, name)
         if not callable(value):
             return value
-        if name == 'recover_dispatch' and callable(getattr(self._client, 'recover_accepted_dispatch', None)):
-            return lambda **kwargs: self._recover_existing(value, kwargs)
         if name == 'recover_dispatch':
             return lambda **kwargs: self._recover(value, kwargs)
         if name in _NEW_WORK:
@@ -180,19 +178,6 @@ class CanonicalPeerClient:
         if name in _OBSERVATION:
             return lambda **kwargs: self._observe(name, value, kwargs)
         return value  # revoke_grant_exact included: exact cleanup never swaps the bearer
-
-    def _recover_existing(self, call, kwargs):
-        # End must still observe accepted work. This helper cannot POST a Run;
-        # a missing receipt retains the ordinary retiring/new-admission fence.
-        observed = {key: kwargs[key] for key in ('dispatch', 'grant')}
-        original_grant = self._grant
-        accepted = self._observe('recover_accepted_dispatch', self._client.recover_accepted_dispatch, observed)
-        if accepted is not None:
-            return accepted
-        if kwargs.get('observation_only'):
-            return self._observe('recover_dispatch', call, {**observed, 'observation_only': True})
-        self._grant = original_grant  # no accepted receipt: never promote an observer grant into new-work authority
-        return self._new_work('recover_dispatch', call, kwargs)
 
     def _status(self, status, grant):
         set_route_status(self._service, self._key, status, grant)
@@ -219,9 +204,12 @@ class CanonicalPeerClient:
         # A receipt miss must still pass the original route's admission fence below.
         with before_sending('recover_dispatch'):
             grant = self._observer_grant(adopt=False)
-            accepted = call(**{**kwargs, 'grant': grant, 'admit_if_missing': False})
+            observed = {'dispatch': kwargs['dispatch'], 'grant': grant}
+            accepted = call(**observed, admit_if_missing=False)
         if accepted is not None:
             return accepted
+        if kwargs.get('observation_only'):
+            return self._observe('recover_dispatch', call, {**observed, 'observation_only': True})
         return self._new_work('recover_dispatch', call, kwargs)
 
     def _new_work(self, name, call, kwargs):

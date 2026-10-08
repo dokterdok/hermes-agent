@@ -809,23 +809,13 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         requested_provider=agent_overrides.get("requested_provider"), route=route)
     if selection_error:
         return _json_error(_openai_error, selection_error, status=400)
-    # A lost-acceptance replay must resolve even while the original run holds the last
-    # concurrency slot; this read reserves nothing (the atomic reserve below closes the race).
-    from gateway.platforms.api_server_room_documents import lookup_run_response
-    replay = lookup_run_response(
+    from gateway.platforms.api_server_room_documents import prepare_run_input
+    document_bytes, input_response = await prepare_run_input(
         self, request, scope=idempotency_scope, key=idempotency_key, fingerprint=idempotency_fingerprint,
-        session_id=session_id, gateway_session_key=gateway_session_key,
+        session_id=session_id, gateway_session_key=gateway_session_key, room_dispatch=room_dispatch,
         peer_files=peer_files, _openai_error=_openai_error)
-    if replay is not None:
-        return replay
-    document_bytes = None
-    if peer_files:
-        from gateway.platforms.api_server_room_documents import prepare_peer_files
-        document_bytes, document_response = await prepare_peer_files(
-            self, request, room_dispatch, idempotency_scope=idempotency_scope, idempotency_key=idempotency_key,
-            session_id=session_id, gateway_session_key=gateway_session_key, _openai_error=_openai_error)
-        if document_response is not None:
-            return document_response
+    if input_response is not None:
+        return input_response
     # Enforce concurrency only for a genuinely new run.
     limited = self._concurrency_limited_response()
     if limited is not None:

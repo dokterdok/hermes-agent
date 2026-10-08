@@ -505,11 +505,13 @@ class PeerRunsHTTPClient:
         return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
 
     def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str, observation_only=False,
-                         before_preparation_resume=None) -> Mapping[str, Any]:
+                         before_preparation_resume=None, admit_if_missing=True) -> Mapping[str, Any] | None:
         """Observe output-enabled attempts; legacy text retains its idempotent replay."""
         accepted = self.recover_accepted_dispatch(dispatch=dispatch, grant=grant)
         if accepted is not None:
             return accepted
+        if not admit_if_missing:
+            return None
         checked = self._checked_dispatch(dispatch, grant)
         key, now = (checked.task_id, checked.execution_generation), self.clock()
         backoff = self._recovery_backoff.get(key)
