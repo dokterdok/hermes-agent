@@ -81,9 +81,9 @@ def owner_request(home, verb, params, *, timeout=30):
     return response['result']
 
 
-def _attest(binding, operation, params):
+def _attest(binding, operation, params, *, request=None):
     try:
-        result = owner_request(binding['source_home'], 'hosted-attest', {
+        result = (request or owner_request)(binding['source_home'], 'hosted-attest', {
             'selector': binding['selector'], 'operation': operation,
             'params': {**params, '_target_home': binding['target_home']}})
     except RuntimeStoreError:
@@ -137,7 +137,7 @@ def source_attachment_digests(service, member, room_id, manifest):
     return digests
 
 
-def _attachment_data(binding, attested, params):
+def _attachment_data(binding, attested, params, *, request=None):
     """Transfer bytes, not foreign filenames, with a task fence on every chunk."""
     from gateway.hosted_room_driver import validate_bound_task_manifest
     manifest = attested.get('attachments', [])
@@ -153,7 +153,7 @@ def _attachment_data(binding, attested, params):
         while len(data) < item['size']:
             chunk = _attest(binding, 'attachment', {
                 'task': params['task'], 'execution_generation': params['execution_generation'],
-                'prompt': attested['prompt'], 'attachments': manifest, 'index': index, 'offset': len(data)})
+                'prompt': attested['prompt'], 'attachments': manifest, 'index': index, 'offset': len(data)}, request=request)
             raw = base64.b64decode(chunk['data_base64'], validate=True)
             expected = min(_CHUNK_BYTES, item['size'] - len(data))
             if chunk['owner'] != attested['owner'] or len(raw) != expected or chunk['sha256'] != digest:
@@ -213,10 +213,22 @@ def install_hosted_transport(server, authority, loop, *, attest):
 
     def target(envelope, peer):
         selected, params = select(envelope)
-        with owner_scope(selected):
-            return produce(selected, params)
 
-    def produce(authority, envelope):
+        def request_source(home, verb, params):
+            registry = getattr(getattr(selected, 'runner', None), 'session_authorities', None)
+            local = registry.for_home(home) if registry is not None else None
+            if local is None:
+                return owner_request(home, verb, params)
+            # Re-enter the same source handler and its profile/liveness/attestation guards.
+            # A multiplexed Windows owner has one pipe: recursively dialing it deadlocks.
+            if verb != 'hosted-attest' or local.profile_id != str(home):
+                raise RuntimeStoreError('profile_mismatch')
+            return source({**params, 'profile_id': str(home)}, peer)
+
+        with owner_scope(selected):
+            return produce(selected, params, request_source=request_source)
+
+    def produce(authority, envelope, *, request_source):
         if set(envelope) != {'source_home', 'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
         operation, params = envelope['operation'], dict(envelope['params'])
@@ -229,7 +241,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
             raise RuntimeStoreError('profile_mismatch')
         binding = {'source_home': envelope['source_home'], 'selector': selector,
                    'target_home': authority.profile_id}
-        attested = _attest(binding, operation, params)
+        attested = _attest(binding, operation, params, request=request_source)
         binding['owner'] = attested['owner']
         principal = _principal(authority, binding)
         # Authorization already happened: every operation, including each attachment
@@ -248,7 +260,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
             conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         authority.db._execute_write(persist)
         if operation == 'submit':
-            rpc.hosted_attachment_data = _attachment_data(binding, attested, params)
+            rpc.hosted_attachment_data = _attachment_data(binding, attested, params, request=request_source)
             params['attachments'] = attested['attachments'] or None
             params['task'] = TaskIdentity(**params['task'])
             params['on_terminal'] = lambda value: None

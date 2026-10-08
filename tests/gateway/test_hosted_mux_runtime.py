@@ -77,20 +77,13 @@ def test_hosted_lifecycle_serves_and_stops_every_authority(mux):
     assert all(not s.runtime.status()['running'] for s in services.values())
 
 
-def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
+def _hosted_pair(mux):
     from gateway import hosted_rooms
     from gateway.session_authorities import owner_scope
     from gateway.session_hosted_service import CanonicalHostedRoomService
-    from gateway.session_hosted_transport import (
-        HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
-    )
-    from gateway import hosted_room_driver as tasks
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-    from gateway.session_ingress_media import restore_native_media
-    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    from gateway.session_hosted_transport import HostedRoomOwnerRPC, install_hosted_transport
 
     runner, homes, loop, _ = mux
-    # Isolate routing from startup: construct the real per-profile services directly.
     for authority in runner.session_authorities:
         with owner_scope(authority):
             service = CanonicalHostedRoomService(authority, loop)
@@ -106,6 +99,23 @@ def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
             members=[{'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
     rpc = HostedRoomOwnerRPC(home=homes['beta'], source_home=homes['alpha'],
                             room_id='room', member_id='helper', profile='beta')
+    return source, target, rpc
+
+
+def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
+    from gateway import hosted_rooms
+    from gateway.session_authorities import owner_scope
+    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from gateway.session_hosted_transport import (
+        HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
+    )
+    from gateway import hosted_room_driver as tasks
+    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    from gateway.session_ingress_media import restore_native_media
+    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+
+    runner, homes, loop, _ = mux
+    source, target, rpc = _hosted_pair(mux)
     sid = rpc.create(profile='beta', source='bot_room', title='Group: room')['session_id']
     assert target.db.get_session(sid)['source'] == 'bot_room'
     assert source.db.get_session(sid) is None
@@ -135,6 +145,12 @@ def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
         process_generation='fixture', ttl_seconds=30, clock=time.time)
     tasks.start_task(source.db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
     try:
+        base = dict(profile='beta', source='bot_room', session_id=sid, prompt='input',
+                    task=identity, execution_generation=1, attachments=manifest, on_terminal=lambda row: None)
+        for bad in ({'execution_generation': 99}, {'task': tasks.TaskIdentity('room', 'other', 'thread', 'turn')},
+                    {'prompt': 'forged input'}):
+            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                rpc.submit(**{**base, **bad})
         receipt = rpc.submit(profile='beta', source='bot_room', session_id=sid, prompt='input',
             task=identity, execution_generation=1, attachments=manifest, on_terminal=lambda row: None)
         repeated = rpc.submit(profile='beta', source='bot_room', session_id=sid, prompt='input',
@@ -285,3 +301,33 @@ def test_startup_preserves_queued_work_until_ready(mux, monkeypatch):
     sid, = target.sessions
     admission, = list_session_admissions(target.db, session_id=sid, pending_only=False)
     assert admission['admission_id'] == executed[0] and admission['status'] == 'terminal'
+
+
+@pytest.mark.parametrize('revocation', ['member', 'authority', 'source_deleted', 'target_unserved'])
+def test_local_attestation_keeps_profile_member_and_authority_guards(mux, revocation):
+    from gateway.session_hosted_transport import HostedRoomOwnerRPC
+    from hermes_state_runtime import RuntimeStoreError
+    from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
+
+    runner, homes, _, _ = mux
+    source, target, rpc = _hosted_pair(mux)
+    coords = dict(profile='beta', source='bot_room', title='Group: room')
+    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        HostedRoomOwnerRPC(home=homes['beta'], source_home=homes['alpha'],
+            room_id='room', member_id='other', profile='beta').create(**coords)
+    assert rpc.create(**coords)['session_id']
+    if revocation == 'member':
+        source.db._execute_write(lambda conn: conn.execute("UPDATE hosted_rooms SET members_json='[]'"))
+    elif revocation == 'authority':
+        source.db._execute_write(lambda conn: conn.execute("UPDATE hosted_rooms SET authority_gateway_id='other'"))
+    elif revocation == 'source_deleted':
+        mark_named_profile_deleted(homes['alpha'])
+    else:
+        runner.session_authorities.remove(homes['beta'])
+    try:
+        with pytest.raises(RuntimeStoreError):
+            rpc.create(**coords)
+    finally:
+        clear_named_profile_deleted(homes['alpha'])
+        if revocation == 'target_unserved':
+            runner.session_authorities.add(homes['beta'], target, name='beta')

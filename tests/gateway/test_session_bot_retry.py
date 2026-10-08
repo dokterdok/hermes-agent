@@ -35,7 +35,7 @@ async def bot(tmp_path, monkeypatch):
     store._db = SessionDB(db_path=tmp_path / 'state.db')
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None)
-    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    runner._intake_adapter_for = runner._delivery_adapter_for = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
     owner = Principal('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
     chat = create_local_session(authority, owner, {'request_id': 'bot', 'source': 'gui', 'cwd': str(tmp_path),
