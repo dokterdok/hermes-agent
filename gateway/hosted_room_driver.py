@@ -79,7 +79,7 @@ _SETTLE_RUNNING_SQL = _generation_update(_SETTLE_SET, "running") + f" AND {_RUN_
 _SETTLE_STOPPING_SQL = _generation_update(_SETTLE_SET, "stopping")
 _REQUEUE_RUNNING_SQL = _task_update(
     f"{_REQUEUE_SET}, started_at=NULL, updated_at=?", f"status='running' AND {_GENERATION_FENCE} AND {_RUN_FENCE}")
-_CANCEL_QUEUED_SQL = _task_update(_CANCEL_SET, "status='queued' AND cancel_generation=?")
+_CANCEL_QUEUED_SQL = _task_update(_CANCEL_SET, "status IN ('queued', 'deferred') AND cancel_generation=?")
 _BEGIN_STOP_SQL = _task_update(
     "status='stopping', cancel_generation=?, cancel_id=?, updated_at=?",
     "status IN ('running', 'indeterminate', 'deferred') AND cancel_generation=?")
@@ -896,8 +896,6 @@ def defer_not_admitted_task(
         sql=_generation_update("status='deferred', result_json=?, terminal_at=?, updated_at=?", "running")
         + f" AND {_RUN_FENCE}", set_params=(result_json, now, now),
         stale="not-admitted task changed during deferral")
-
-
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:
