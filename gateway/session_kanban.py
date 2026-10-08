@@ -1,4 +1,5 @@
 """Trusted dispatcher claims enter the ordinary owner's durable admission queue."""
+import asyncio
 from contextlib import closing
 from dataclasses import asdict, replace
 import threading
@@ -78,6 +79,9 @@ async def run_task(connection, params):
     from hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
     authority = connection.authority
+    # Resolved off-loop up front: no await may separate the saved-claim check, session
+    # creation and the claim's write transaction below.
+    owner_db = str(await asyncio.to_thread(Path(authority.db.db_path).resolve))
     # The dispatcher attempt is the durable request identity, including after the
     # task closes. Retry checks the saved claim, never reinterprets updated cards.
     request_id = 'kanban:' + json.dumps([params.get('board'), params.get('task_id'), params.get('run_id')], separators=(',', ':'))
@@ -114,7 +118,7 @@ async def run_task(connection, params):
             if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
                 raise RuntimeStoreError('stale_kanban_claim')
             kb._append_event(conn, task.id, 'owner_admitted',
-                {'db': str(Path(authority.db.db_path).resolve()), 'session_id': ref.session_id,
+                {'db': owner_db, 'session_id': ref.session_id,
                  'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
                 run_id=task.current_run_id)
     await connection.resume(ref, {})
@@ -204,28 +208,65 @@ def run_worker_turns(agent, frame, history):
         author = frame.get('turn_author')
         return agent.run_conversation(frame['text'], conversation_history=history,
                                       **({'turn_author': author} if author is not None else {}))
-    from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+    from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
     code, last_output = 1, ''
     try:
         result = _run_task_turns(agent, frame, history, context)
-        code = KANBAN_RATE_LIMIT_EXIT_CODE if result.get('failed') and result.get('failure_reason') in {'rate_limit', 'billing'} else int(bool(result.get('failed') or result.get('interrupted')))
-        last_output = str(result.get('final_response') or '')[-500:]
+        code = turn_exit_code(result, kanban_worker=True)
+        last_output = str(result.get('final_response') or '')[-500:] if isinstance(result, dict) else ''
         return result
+    except Exception as exc:
+        code = turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc))
+        raise
     finally:
-        _TURNS_DONE.set()
-        import os
-        from hermes_cli.kanban_db_connect import connect_closing
-        from hermes_cli import kanban_db as kb
-        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
-            row = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' ORDER BY id DESC LIMIT 1",
-                (context['task_id'], context['run_id'])).fetchone()
-            bound = json.loads(row[0]) if row else {}
-            if (bound.get('pid'), bound.get('claim_lock')) == (os.getpid(), context['claim_lock']):
-                # Closing a run clears its claim/PID and replaces metadata; keep the
-                # result in the immutable attempt event stream instead.
-                kb._append_event(conn, context['task_id'], 'worker_result',
-                    {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code,
-                     'last_output': last_output}, run_id=context['run_id'])
+        _record_worker_result(context, code, last_output)
+
+
+def record_start_failure(frame, exc):
+    """The worker died before any turn ran (agent construction resolves credentials): book the
+    one-shot CLI's credential exit (75 quota wall / 78 re-login / 1) instead of a bare crash."""
+    context = json.loads(frame['policy'].get('kanban_json') or 'null')
+    if context is None:
+        return
+    from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
+    _record_worker_result(context, turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc)), '')
+
+
+def _record_worker_result(context, code, last_output):
+    _TURNS_DONE.set()
+    import os
+    from hermes_cli.kanban_db_connect import connect_closing
+    from hermes_cli import kanban_db as kb
+    with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+        if _bound_worker_matches(conn, context):
+            # Closing a run clears its claim/PID and replaces metadata; keep the
+            # result in the immutable attempt event stream instead.
+            kb._append_event(conn, context['task_id'], 'worker_result',
+                {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code,
+                 'last_output': last_output}, run_id=context['run_id'])
+
+
+def _bound_worker_matches(conn, context):
+    import os
+    row = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' ORDER BY id DESC LIMIT 1",
+        (context['task_id'], context['run_id'])).fetchone()
+    bound = json.loads(row[0]) if row else {}
+    return (bound.get('pid'), bound.get('claim_lock')) == (os.getpid(), context['claim_lock'])
+
+
+def _bound_claim_is_live(context):
+    """Retry proof for a managed worker: the frame's exact run/claim lease is live and unexpired,
+    and THIS interpreter is the one ``bind_worker_context`` bound to it. The run's worker_pid is
+    the dispatcher's spawned submitter here, so pid identity comes from ``worker_bound`` instead."""
+    from agent.kanban_turn_recovery import worker_claim_is_live
+    if not worker_claim_is_live(task_id=context['task_id'], db_path=context['db'], run_id=str(context['run_id']),
+                                claim_lock=context['claim_lock'], verify_pid=False):
+        return False
+    try:
+        with closing(sqlite3.connect(Path(context['db']).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+            return _bound_worker_matches(conn, context)
+    except sqlite3.Error:
+        return False
 
 
 def worker_result(path, params):
@@ -248,7 +289,21 @@ def _run_task_turns(agent, frame, history, context):
         raise ValueError('kanban_skills_unavailable')
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history)
-    if not context['goal_mode']:
+
+    def recover(nudge):
+        nonlocal result
+        prior = result.get('messages') if isinstance(result, dict) else None
+        result = agent.run_conversation(nudge, conversation_history=prior or
+                                        agent._session_db.get_messages_as_conversation(agent.session_id))
+    # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
+    # carrier is this frame's bound claim, never the owner process's environment.
+    from agent.kanban_turn_recovery import recover_failed_kanban_turns
+    recover_failed_kanban_turns(recover, lambda: result, task_id=context['task_id'],
+                                claim_check=lambda: _bound_claim_is_live(context))
+    from hermes_cli.turn_exit import turn_exit_code
+    # Only a settled turn may continue the goal loop: an exhausted or denied recovery reaches
+    # the honest exit path without re-entering the model under an unprovable claim.
+    if not context['goal_mode'] or turn_exit_code(result, kanban_worker=True) != 0:
         return result
     from hermes_cli.goals import run_kanban_goal_loop, DEFAULT_MAX_TURNS
     from hermes_cli import kanban_db as kb

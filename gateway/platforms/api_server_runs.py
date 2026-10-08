@@ -649,6 +649,31 @@ def _run_session_key(self, request, _openai_error):
     return key, None
 
 
+def _run_idempotency_identity(self, request, body, gateway_session_key, idempotency_key) -> tuple:
+    """``(principal scope, request fingerprint)`` for a keyed POST /v1/runs; ``("", "")`` unkeyed."""
+    if not idempotency_key:
+        return "", ""
+    return self._run_idempotency_scope(request), hashlib.sha256(json.dumps(
+        {"body": body, "gateway_session_key": gateway_session_key or ""},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+
+
+def _run_user_message(raw_input, _openai_error) -> tuple:
+    """POST /v1/runs ``input`` -> ``(user_message, error_response_or_None)``."""
+    if not raw_input:
+        return None, _json_error(_openai_error, "Missing 'input' field", status=400)
+    if isinstance(raw_input, str):
+        user_message = raw_input
+    else:
+        user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
+    if not user_message:
+        return None, _json_error(_openai_error, "No user message found in input", status=400)
+    return user_message, None
+
+
+
+
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
@@ -673,22 +698,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         return _json_error(
             _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
             code="invalid_idempotency_key", status=400)
-    idempotency_scope = idempotency_fingerprint = ""
-    if idempotency_key:
-        idempotency_scope = self._run_idempotency_scope(request)
-        idempotency_fingerprint = hashlib.sha256(json.dumps(
-            {"body": body, "gateway_session_key": gateway_session_key or ""},
-            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        ).encode()).hexdigest()
+    idempotency_scope, idempotency_fingerprint = _run_idempotency_identity(
+        self, request, body, gateway_session_key, idempotency_key)
     raw_input = body.get("input")
-    if not raw_input:
-        return _json_error(_openai_error, "Missing 'input' field", status=400)
-    if isinstance(raw_input, str):
-        user_message = raw_input
-    else:
-        user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
-    if not user_message:
-        return _json_error(_openai_error, "No user message found in input", status=400)
+    user_message, input_err = _run_user_message(raw_input, _openai_error)
+    if input_err is not None:
+        return input_err
     try:
         turn_author = _api_server._request_turn_author(body)
     except ValueError as exc:
@@ -1466,7 +1481,7 @@ async def _handle_resolve_unknown_run(
         return err
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, LookupError):  # bad JSON/UTF-8 (ValueError) or unknown charset: no body
         body = None
     from gateway.platforms.api_server_authority_runs import resolve_unknown_run
     from hermes_state_runtime import RuntimeStoreError

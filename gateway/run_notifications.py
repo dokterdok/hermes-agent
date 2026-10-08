@@ -13,31 +13,19 @@ import dataclasses
 import json
 import logging
 import time
-from contextlib import suppress
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
+from agent.i18n import t
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
-from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
+from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
+from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
-
-# A failed /update leaves the previous version running; the full pip/git log stays on the host
-# (`hermes update` re-runs it in the terminal) and only a short tail is quoted in chat.
-_UPDATE_FAILED_NOTICE = (
-    "❌ Hermes update failed; the previous version is still running. Run `hermes update` on the "
-    "host to see the full error, or try /update again later.")
-
-# An update's completion notice waits for its target platform adapter to (re)connect before it
-# can be delivered. Nothing bounds that wait, so a marker naming a platform that is not
-# configured at all — no adapter will ever appear — would keep itself on disk and re-log a
-# deferred line on every poll, in every process, forever. Stop waiting past this age.
-_UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS = 3600.0
 
 
 def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_id, thread_id) -> tuple:
@@ -49,15 +37,6 @@ def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_
     """
     return _notice_target_key(
         platform_value if profile is None else f"{profile}:{platform_value}", chat_id, thread_id)
-
-
-def _delivery_target_key(platform_value: str, chat_id, thread_id) -> tuple:
-    """Dedupe key for one DELIVERED chat, profile-independent.
-
-    Two served profiles can share a single home chat (one Telegram group for the whole host);
-    keyed per profile they would each post their own "Gateway online" notice into it.
-    """
-    return _notice_target_key(platform_value, chat_id, thread_id)
 
 
 def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[str] = None):
@@ -74,11 +53,6 @@ def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[st
             "Home-channel transport unavailable for %s%s: %s",
             f"{profile}:" if profile else "", getattr(platform, "value", platform), exc)
         return None
-
-
-def _update_output_tail(output: str, limit: int) -> str:
-    """Last ``limit`` chars of an update log, prefixed with an ellipsis when cut."""
-    return output if len(output) <= limit else "…" + output[-limit:]
 
 
 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -131,47 +105,12 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
-class GatewayNotificationsMixin:
+class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
     _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
     _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[1:])
-
-    @dataclasses.dataclass
-    class _UpdatePaths:
-        """Marker files ``hermes update --gateway`` and its watcher exchange under HERMES_HOME."""
-
-        pending: Path
-        claimed: Path
-        output: Path
-        exit_code: Path
-        prompt: Path
-        response: Path
-
-        def any_pending(self) -> bool:
-            return self.pending.exists() or self.claimed.exists()
-
-        def unlink_all(self) -> None:
-            for p in (self.pending, self.claimed, self.output, self.exit_code, self.prompt, self.response):
-                p.unlink(missing_ok=True)
-
-    @dataclasses.dataclass
-    class _UpdateTarget:
-        """Resolved delivery target for update watcher messages."""
-
-        adapter: Any
-        chat_id: Any
-        session_key: Optional[str]
-        metadata: Any
-        platform: Any
-
-        def send_metadata(self):
-            from gateway.run import _non_conversational_metadata
-            return _non_conversational_metadata(self.metadata, platform=self.platform)
-
-        async def send(self, text: str):
-            return await self.adapter.send(self.chat_id, text, metadata=self.send_metadata())
 
     @dataclasses.dataclass
     class _CompletionClaim:
@@ -517,304 +456,6 @@ class GatewayNotificationsMixin:
                 getattr(result, "error", None) or "no result")
         return result
 
-    def _schedule_update_notification_watch(self) -> None:
-        """Ensure a background task is watching for update completion."""
-        existing_task = getattr(self, "_update_notification_task", None)
-        if existing_task and not existing_task.done():
-            return
-        try:
-            self._update_notification_task = asyncio.create_task(self._watch_update_progress())
-        except RuntimeError:
-            logger.debug("Skipping update notification watcher: no running event loop")
-
-    @classmethod
-    def _update_paths(cls) -> "GatewayNotificationsMixin._UpdatePaths":
-        from gateway.run import _hermes_home
-        return cls._UpdatePaths(
-            pending=_hermes_home / ".update_pending.json",
-            claimed=_hermes_home / ".update_pending.claimed.json", output=_hermes_home / ".update_output.txt",
-            exit_code=_hermes_home / ".update_exit_code",
-            prompt=_hermes_home / ".update_prompt.json", response=_hermes_home / ".update_response",
-        )
-
-    @staticmethod
-    def _marker_profile(data: dict) -> Optional[str]:
-        """Owning profile of a persisted restart/update marker: explicit ``profile``, else the
-        ``agent:<profile>:`` lane of its ``session_key`` (markers written before ``profile`` was
-        persisted); ``None`` = default profile."""
-        profile = str(data.get("profile") or "").strip()
-        if profile:
-            return profile
-        from gateway.session import profile_from_session_key_namespace
-        parts = str(data.get("session_key") or "").split(":")
-        if len(parts) >= 5 and parts[0] == "agent" and parts[1] not in ("main", ""):
-            return profile_from_session_key_namespace(parts[1])
-        return None
-
-    @staticmethod
-    def _marker_age_seconds(data: dict) -> Optional[float]:
-        """Age of a persisted update marker, from the ``timestamp`` stamped by its writer.
-
-        ``None`` when the marker carries no parseable stamp — the field is absent on markers
-        written before it existed, and callers keep the old retry behavior rather than guess.
-        """
-        raw = str(data.get("timestamp") or "").strip()
-        if not raw:
-            return None
-        try:
-            stamped = datetime.fromisoformat(raw)
-        except ValueError:
-            return None
-        # The writer stamps a naive local ``datetime.now()``; tolerate a tz-aware one too.
-        now = datetime.now(stamped.tzinfo) if stamped.tzinfo else datetime.now()
-        return (now - stamped).total_seconds()
-
-    def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
-        """Resolve adapter/chat/session for update watcher messages from the pending marker."""
-        for path in (paths.claimed, paths.pending):
-            if not path.exists():
-                continue
-            with suppress(Exception):
-                pending = json.loads(path.read_text(encoding="utf-8-sig"))
-                platform_str = pending.get("platform")
-                chat_id = pending.get("chat_id")
-                session_key = pending.get("session_key")
-                if not (platform_str and chat_id):
-                    continue  # BASE: an incomplete marker falls through to the next path, not "unresolved"
-                platform = Platform(platform_str)
-                # The requester's OWN profile bot (marker ``profile``, else the ``agent:<profile>:`` key
-                # lane); a bare self.adapters lookup is the default bot under multiplex.
-                adapter = self._authorization_adapter(platform, self._marker_profile(pending))
-                if not adapter:
-                    return None
-                metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
-                # Fallback session key if not stored (old pending files)
-                return self._UpdateTarget(
-                    adapter, chat_id, session_key or f"{platform_str}:{chat_id}", metadata, platform,
-                )
-        return None
-
-    def _pending_marker_metadata(self, platform, chat_id, data: dict, adapter):
-        """Thread metadata for a persisted update/restart marker (thread_id/chat_type/message_id keys)."""
-        return self._thread_metadata_for_target(
-            platform, chat_id, data.get("thread_id"), chat_type=data.get("chat_type"),
-            reply_to_message_id=data.get("message_id"), adapter=adapter,
-        )
-
-    async def _watch_update_completion_only(self, paths: "_UpdatePaths", deadline: float, poll_interval: float) -> None:
-        """Fallback when no adapter/chat can be resolved: wait for the exit code, then notify."""
-        logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
-        # Poll until _send_update_notification delivers (it returns False while the platform reconnects).
-        loop = asyncio.get_running_loop()
-        while paths.any_pending() and loop.time() < deadline:
-            if paths.exit_code.exists() and await self._send_update_notification():
-                return
-            await asyncio.sleep(poll_interval)
-        if paths.any_pending() and not paths.exit_code.exists():
-            paths.exit_code.write_text("124", encoding="utf-8")
-            await self._send_update_notification()
-
-    @staticmethod
-    def _update_exit_code(paths: "_UpdatePaths") -> int:
-        return int(paths.exit_code.read_text(encoding="utf-8-sig").strip() or "1")
-
-    @staticmethod
-    def _read_update_output_since(path: Path, offset: int) -> tuple[str, int]:
-        """Read update output defensively; logs may contain invalid UTF-8."""
-        try:
-            data = path.read_bytes()
-        except OSError:
-            return "", offset
-        if len(data) <= offset:
-            return "", len(data)
-        return data[offset:].decode("utf-8", errors="replace"), len(data)
-
-    async def _send_update_output(self, target: "_UpdateTarget", text: str) -> None:
-        """Send buffered update output as fenced chunks that fit message limits (Telegram: 4096)."""
-        from tools.ansi_strip import strip_ansi
-        clean = strip_ansi(text).strip()
-        if not clean:
-            return
-        max_chunk = 3500
-        for i in range(0, len(clean), max_chunk):
-            with _log_suppressed(logging.DEBUG, "Update stream send failed: %s"):
-                await target.send(f"```\n{clean[i:i + max_chunk]}\n```")
-
-    async def _forward_update_prompt(self, target: "_UpdateTarget", prompt_text: str, default: str) -> None:
-        """Forward an update prompt: platform-native buttons first (Discord, Telegram), else text."""
-        sent_buttons = False
-        adapter = target.adapter
-        if getattr(type(adapter), "send_update_prompt", None) is not None:
-            with _log_suppressed(logging.DEBUG, "Button-based update prompt failed: %s"):
-                await adapter.send_update_prompt(
-                    chat_id=target.chat_id, prompt=prompt_text, default=default,
-                    session_key=target.session_key, metadata=target.send_metadata(),
-                )
-                sent_buttons = True
-        if not sent_buttons:
-            default_hint = f" (default: {default})" if default else ""
-            _p = getattr(adapter, "typed_command_prefix", "/")
-            await target.send(
-                f"☤ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
-                f"Reply `{_p}approve` (yes) or `{_p}deny` (no), or type your answer directly."
-            )
-        # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.
-        self._session_state(target.session_key).persistent.update_prompt_pending = True
-        logger.info("Forwarded update prompt to %s: %s", target.session_key, prompt_text[:80])
-
-    def _clear_update_markers(self, paths: "_UpdatePaths", session_key: Optional[str]) -> None:
-        paths.unlink_all()
-        state = self._peek_session_state(session_key)
-        if state is not None:
-            state.persistent.update_prompt_pending = False
-
-    async def _watch_update_progress(
-        self, poll_interval: float = 2.0, stream_interval: float = 4.0, timeout: float = 1800.0
-    ) -> None:
-        """Watch ``hermes update --gateway``, streaming output + forwarding prompts.
-
-        Polls ``.update_output.txt`` for new content and sends chunks to the user periodically;
-        detects ``.update_prompt.json`` (written when the update process needs input) and forwards it.
-        """
-        paths = self._update_paths()
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        target = self._resolve_update_target(paths)
-        if target is None:
-            await self._watch_update_completion_only(paths, deadline, poll_interval)
-            return
-        session_key = target.session_key
-        bytes_sent = 0
-        last_stream_time = loop.time()
-        buffer = ""
-
-        async def _flush_buffer() -> None:
-            nonlocal buffer, last_stream_time
-            text, buffer = buffer, ""
-            if text.strip():
-                last_stream_time = loop.time()
-                await self._send_update_output(target, text)
-
-        def _read_new_output() -> None:
-            nonlocal buffer, bytes_sent
-            if paths.output.exists():
-                with suppress(OSError):
-                    chunk, bytes_sent = self._read_update_output_since(paths.output, bytes_sent)
-                    buffer += chunk
-
-        while loop.time() < deadline:
-            if paths.exit_code.exists():
-                _read_new_output()
-                await _flush_buffer()
-                with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
-                    exit_code = self._update_exit_code(paths)
-                    await target.send(
-                        "✅ Hermes update finished." if exit_code == 0 else _UPDATE_FAILED_NOTICE
-                    )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
-                self._clear_update_markers(paths, session_key)
-                return
-            _read_new_output()
-            if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
-                await _flush_buffer()
-            # Forward a prompt only when none is pending, else every poll re-forwards the same prompt.
-            _pending_state = self._peek_session_state(session_key) if session_key else None
-            if paths.prompt.exists() and session_key and not getattr(
-                getattr(_pending_state, "persistent", None), "update_prompt_pending", False
-            ):
-                try:
-                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8-sig"))
-                    prompt_text = prompt_data.get("prompt", "")
-                    if prompt_text:
-                        await _flush_buffer()  # user sees context before the prompt
-                        await self._forward_update_prompt(target, prompt_text, prompt_data.get("default", ""))
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.debug("Failed to read update prompt: %s", e)
-            await asyncio.sleep(poll_interval)
-        if not paths.exit_code.exists():
-            logger.warning("Update watcher timed out after %.0fs", timeout)
-            paths.exit_code.write_text("124", encoding="utf-8")
-            await _flush_buffer()
-            with suppress(Exception):
-                await target.send("❌ Hermes update timed out after 30 minutes.")
-            self._clear_update_markers(paths, session_key)
-
-    async def _send_update_notification(self) -> bool:
-        """If an update finished, notify the user.
-
-        False while the update is still running (caller may retry); True after a definitive send/skip.
-        """
-        from gateway.run import _non_conversational_metadata
-        paths = self._update_paths()
-        if not paths.any_pending():
-            return False
-        cleanup = True
-        active_pending_path = paths.claimed
-
-        def _defer(reason: str, *args) -> bool:
-            nonlocal cleanup, active_pending_path
-            logger.info(reason, *args)
-            cleanup = False
-            active_pending_path = paths.pending
-            paths.claimed.replace(paths.pending)
-            return False
-
-        try:
-            if paths.pending.exists():
-                try:
-                    paths.pending.replace(paths.claimed)
-                except FileNotFoundError:
-                    if not paths.claimed.exists():
-                        return True
-            elif not paths.claimed.exists():
-                return True
-            pending = json.loads(paths.claimed.read_text(encoding="utf-8-sig"))
-            platform_str = pending.get("platform")
-            chat_id = pending.get("chat_id")
-            if not paths.exit_code.exists():
-                return _defer("Update notification deferred: update still running")
-            exit_code = self._update_exit_code(paths)
-            output = paths.output.read_bytes().decode("utf-8", errors="replace") if paths.output.exists() else ""
-            platform = Platform(platform_str)
-            adapter = self._authorization_adapter(platform, self._marker_profile(pending))
-            if chat_id and not adapter:
-                age = self._marker_age_seconds(pending)
-                if age is not None and age > _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS:
-                    # The platform never came back. Deferring forever leaks the markers and re-logs
-                    # on every poll for the life of the install: the startup path reschedules this
-                    # watcher whenever the markers are still on disk, so an undeliverable marker
-                    # outlives every restart. Give up loudly, clear the markers, and report a
-                    # definitive decision (True) so the caller stops rescheduling.
-                    logger.warning(
-                        "Post-update notification for %s:%s dropped after %.1fh: %s adapter never "
-                        "connected", platform_str, chat_id, age / 3600.0, platform_str)
-                    self._clear_update_markers(paths, pending.get("session_key"))
-                    return True
-                # Target platform not reconnected yet (common right after the update's restart): keep the
-                # markers for a later retry instead of silently losing the notification.
-                return _defer("Update notification deferred: %s adapter not connected yet", platform_str)
-            if chat_id:
-                metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
-                from tools.ansi_strip import strip_ansi
-                output = strip_ansi(output).strip()
-                if exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
-                    if output:
-                        msg = f"{msg}\n\n```\n{_update_output_tail(output, 3500)}\n```"
-                else:
-                    msg = _UPDATE_FAILED_NOTICE
-                    if output:
-                        msg = f"{msg}\n\nLast lines:\n```\n{_update_output_tail(output, 800)}\n```"
-                await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
-                logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
-        except Exception as e:
-            logger.warning("Post-update notification failed: %s", e)
-        finally:
-            if cleanup:
-                for p in (active_pending_path, paths.claimed, paths.output, paths.exit_code):
-                    p.unlink(missing_ok=True)
-        return True
-
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         from gateway.delivery import resolve_delivery_transport
@@ -850,7 +491,7 @@ class GatewayNotificationsMixin:
                     if data.get(field):
                         metadata[field] = str(data[field])
             result = await transport.send(
-                platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
+                platform, str(chat_id), t("gateway.startup.restarted"),
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found") and returns
@@ -942,16 +583,13 @@ class GatewayNotificationsMixin:
             # is only consulted when a free-tier identity already exists and its own free-tier rung
             # (which may mint on a fresh install, NS-829) answers from that identity without a network
             # call. No token refresh at boot either way.
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
-            if not guest_carries_inference():
-                return None
-            if resolve_provider("auto") != "nous":
+            from hermes_cli.anon_auth import free_tier_route
+            if not free_tier_route():
                 return None
         except Exception as exc:
             logger.debug("Free tier startup line skipped: %s", exc)
             return None
-        return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
+        return t("gateway.startup.free_tier_line")
 
     _planned_restart_notice_lock: Optional[asyncio.Lock] = None
 
@@ -1007,14 +645,14 @@ class GatewayNotificationsMixin:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = t("gateway.startup.online")
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"
         targets = list(self._served_home_channel_transports())
         # A chat already notified for ANOTHER profile is not notified again.
         notified_chats = {
-            _delivery_target_key(platform.value, home.chat_id, home.thread_id)
+            _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             for profile, platform, _cfg, home, _transport in targets
             if _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id) in skipped
         }
@@ -1028,7 +666,7 @@ class GatewayNotificationsMixin:
             target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)
             if target in skipped or target in delivered:
                 continue
-            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id)
+            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             if chat in notified_chats:
                 delivered.add(target)
                 continue
@@ -1071,30 +709,11 @@ class GatewayNotificationsMixin:
         if cause == "corrupt":
             db_path = _default_db_path()
             backups_dir = get_default_hermes_root() / "backups"
-            message = (
-                "⚠️ Session database corruption detected. Messages may not be "
-                "persisted. Recovery options:\n"
-                f"1. Run `hermes {profile_arg}doctor --fix`\n"
-                "2. Stop the gateway, then recover with:\n"
-                f"   hermes {profile_arg}sessions recover --source {db_path} "
-                "--inspect-only\n"
-                f"   (if it reports recoverable) hermes {profile_arg}sessions recover "
-                f"--source {db_path} --output recovered-state.db\n"
-                "   — recovery snapshots the damaged file first; do NOT run "
-                "`sqlite3 ... \".recover\"` against the live state.db, a "
-                "vulnerable sqlite3 CLI can corrupt it further\n"
-                f"3. Restore from a backup in {backups_dir}/\n"
-                f"Run `hermes {profile_arg}doctor` for sanitized diagnostics."
-            )
+            message = t("gateway.startup.db_corrupt", profile_arg=profile_arg, db_path=db_path, backups_dir=backups_dir)
         elif cause == "fts_index":
             # Index-scoped corruption: the message tables are not damaged, so the recover /
             # restore advice above would be destructive on a healthy file (#97794).
-            message = (
-                "⚠️ Session database reported a corruption error confined to the search index "
-                "(FTS5); the message tables are not damaged. Messages may not be persisted until "
-                f"it is repaired: run `hermes {profile_arg}doctor --fix`, then restart the gateway. Do not run "
-                f"recovery tools or restore a backup unless `hermes {profile_arg}doctor` confirms damage."
-            )
+            message = t("gateway.startup.db_fts_corrupt", profile_arg=profile_arg)
         else:
             from hermes_state_user_copy import describe_storage_failure
             failure = describe_storage_failure(error)
@@ -1104,11 +723,8 @@ class GatewayNotificationsMixin:
             # opened its store at startup and stays broken until it is restarted.
             action = failure.action
             if failure.cause not in _SELF_CLEARING_STORAGE_CAUSES:
-                action = f"{action} Then `hermes {profile_arg}gateway restart`."
-            message = (
-                "⚠️ Session database unavailable — messages may not be saved and /resume will be "
-                f"empty. Cause: {failure.gloss}. {action}"
-            )
+                action = t("gateway.startup.db_then_restart", action=action, profile_arg=profile_arg)
+            message = t("gateway.startup.db_unavailable", cause=failure.gloss, action=action)
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
         from gateway.warning_notifications import present_notification
         for platform, _platform_cfg, home, transport in self._home_channel_transports():
@@ -1356,6 +972,13 @@ class GatewayNotificationsMixin:
                 metadata["gateway_session_id"] = parent_session_id
             if evt.get('_automation_identities'):
                 metadata['automation_identities'] = evt['_automation_identities']
+            if source.platform == Platform.LOCAL and evt.get("type", "completion") == "completion":
+                # A local completion persists as the async-result card the in-process TUI wrote;
+                # messaging rows stay internal_notification, as on main.
+                from tools.process_registry_notifications import (
+                    PROCESS_COMPLETE_DISPLAY_KIND, process_completion_display_text)
+                metadata["display_kind"] = PROCESS_COMPLETE_DISPLAY_KIND
+                metadata["display_text"] = evt.get("_display_text") or process_completion_display_text([evt])
             # The queued event's ``message_id`` is the message that STARTED the process, and the
             # persisted origin carries the same stale id. A synthetic completion is not a reply to
             # it: by delivery time the user has often continued elsewhere, and an event anchored
@@ -1738,10 +1361,13 @@ class GatewayNotificationsMixin:
                 entries_to_deliver = entries
             synth_text = (entries_to_deliver[0][0] if len(entries_to_deliver) == 1
                           else self._format_coalesced_process_completions(entries_to_deliver))
+            from tools.process_registry_notifications import process_completion_display_text
+            display_text = process_completion_display_text([evt for _text, evt, _future in entries_to_deliver])
             # A duplicate primary returns None from the dedupe seam; try the next identity so a fresh
             # sibling is never discarded with it.
             delivered = None
             for _text, candidate_evt, _future in entries_to_deliver:
+                candidate_evt = dict(candidate_evt, _display_text=display_text)
                 if getattr(self, 'session_authority', None) is not None:
                     candidate_evt = dict(candidate_evt, _automation_identities=[
                         producer_identity(self, evt) for _text, evt, _future in entries_to_deliver])
@@ -1915,8 +1541,8 @@ class GatewayNotificationsMixin:
 
     def _restore_secondary_completion_ledgers(self, profile_homes) -> None:
         """Re-queue undelivered async completions from every SECONDARY profile's ledger. The process
-        registry restores only the launch profile's ``state.db`` at import; a secondary's rows would
-        otherwise never be replayed after a restart."""
+        registry's ``restore_completions()`` covers only the launch profile's ``state.db``; a
+        secondary's rows would otherwise never be replayed after a restart."""
         from tools.async_delegation import restore_undelivered_completions
         from tools.process_registry import process_registry as _pr
         self._each_secondary_ledger(profile_homes, lambda: restore_undelivered_completions(_pr.completion_queue),
@@ -2094,14 +1720,14 @@ class GatewayNotificationsMixin:
             return _format_concise_process_notification(session_id, command, session.exit_code, new_output,
                                                         duration_seconds=_dur)
         header = _format_concise_process_notification(session_id, command, session.exit_code, "", duration_seconds=_dur)
-        return f"{header}\n\nFinal output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
+        return t("gateway.background.final_output", header=header, output=new_output.strip()) if new_output.strip() else header
 
     def _format_process_running_message(self, session) -> str:
         from gateway.run import _redact_gateway_user_facing_secrets, _shorten_command_for_display
         new_output = self._redacted_output_tail(session, 500)
         short_cmd = _shorten_command_for_display(_redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""))
-        header = "⏳ Background task still running" + (f" — `{short_cmd}`" if short_cmd else "")
-        return f"{header}\n\nRecent output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
+        header = t("gateway.background.still_running") + (f" — `{short_cmd}`" if short_cmd else "")
+        return t("gateway.background.recent_output", header=header, output=new_output.strip()) if new_output.strip() else header
 
     def arm_process_watcher(self, watcher: dict) -> bool:
         """Start ``_run_process_watcher`` for a watcher registered mid-turn, from the agent's
