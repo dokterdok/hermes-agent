@@ -8,7 +8,7 @@ import pytest
 from gateway import hosted_rooms
 from gateway.platforms.api_server_room_grants import _grant_db
 from gateway.session_controls import AuthorityConnection
-from tests.gateway.test_session_group_peers import gateway, call
+from tests.gateway.test_session_group_peers import gateway as gateway, call
 
 
 def test_setup_invitation_replay_is_frozen_and_revocable_after_lost_reply(gateway, monkeypatch):
@@ -46,6 +46,15 @@ def test_failed_receipt_commit_rolls_back_the_real_peer_reservation(gateway, mon
         'request_id': 'desktop-issuance-2', 'room_id': 'failed-setup'})))
     assert not isinstance(rejected, dict)
     assert not hosted_rooms.peer_room_is_reserved(db_path, room_id='failed-setup', target_profile='default')
+    # A failed higher-epoch issuance cannot retire the still-current grant in the separate RunStore.
+    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
+    from gateway.platforms.api_server_run_authority import room_authority
+    claims = decode_room_grant(gateway_room_grant_secret(), first['grant'], permission='status')
+    failed_advance = asyncio.run(call(gateway.owner, 'groups.peer.invite', **(params | {
+        'request_id': 'desktop-failed-epoch', 'authority_epoch': 2})))
+    assert not isinstance(failed_advance, dict)
+    assert gateway.adapter._run_idempotency_store.accepts_room_authority(room_authority(claims))
+    assert hosted_rooms.peer_room_grant_is_current(db_path, claims=claims)
     with hosted_rooms._transaction(db_path) as conn:
         assert conn.execute('SELECT COUNT(*) FROM hosted_room_setup_invitations').fetchone()[0] == 1
 

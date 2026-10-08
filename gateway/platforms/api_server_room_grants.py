@@ -203,17 +203,24 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) ->
         execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
         ttl_seconds=ttl, status_ttl_seconds=status_ttl)
     claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
-    from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+    from gateway.platforms.api_server_run_authority import room_authority
     authority = room_authority(claims)
     if not self._run_idempotency_store.accepts_room_authority(authority):
         raise RoomGrantReauthorizationRequired("room authority has already advanced")
     hosted_rooms.reserve_peer_room(
         _grant_db(self), claims=claims, expires_at=_hard_expiry(claims), conn=conn)
-    if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), authority):
-        raise RoomGrantReauthorizationRequired("room authority has already advanced")
+    # A borrowed reservation writer has not committed yet. Its caller publishes
+    # the separate RunStore floor only after the grant receipt is durable.
+    if conn is None:
+        _observe_invitation_authority(self, claims)
     return {"grant": token, "target_profile": profile, "catalog": catalog,
             "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"])}
 
+
+def _observe_invitation_authority(self, claims):
+    from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+    if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), room_authority(claims)):
+        raise RoomGrantReauthorizationRequired("room authority has already advanced")
 
 
 async def _handle_room_member_capabilities(
