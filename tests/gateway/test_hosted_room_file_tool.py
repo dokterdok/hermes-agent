@@ -6,7 +6,7 @@ import base64
 import json
 import os
 import sqlite3
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -50,7 +50,7 @@ def _share(home: Path, path, *, scope=None, **kwargs):
 
 def test_outside_a_group_chat_turn_the_tool_refuses(tmp_path: Path):
     path = tmp_path / "review.md"
-    path.write_text("Review this.\n", encoding="utf-8")
+    path.write_bytes(b"Review this.\n")
     assert json.loads(share_group_file(str(path))) == {
         "ok": False, "error": "File sharing is available only during a Group Chat turn."}
     turn = _Turn(tmp_path / "state.db", _scope())
@@ -61,9 +61,9 @@ def test_outside_a_group_chat_turn_the_tool_refuses(tmp_path: Path):
 
 def test_a_shared_file_is_copied_and_reported_without_its_path(tmp_path: Path):
     path = tmp_path / "review.md"
-    path.write_text("Review this.\n", encoding="utf-8")
+    path.write_bytes(b"Review this.\n")
     result = _share(tmp_path, path, name="handoff.md")
-    assert result["ok"] is True and result["name"] == "handoff.md"
+    assert result["ok"] is True and result["name"] == "handoff.md", result
     assert str(path) not in json.dumps(result)
     stored, = RoomArtifactOutbox(tmp_path / "state.db").list(_scope())
     assert stored["artifact_id"] == result["artifact_id"]
@@ -73,7 +73,7 @@ def test_a_shared_file_is_copied_and_reported_without_its_path(tmp_path: Path):
 
 def test_relative_paths_and_unexpected_errors_are_refused_without_detail(tmp_path: Path, monkeypatch):
     path = tmp_path / "review.md"
-    path.write_text("Review this.\n", encoding="utf-8")
+    path.write_bytes(b"Review this.\n")
     monkeypatch.chdir(tmp_path)
     assert _share(tmp_path, path.name) == {"ok": False, "error": UNSAFE}
     monkeypatch.setattr(RoomArtifactOutbox, "put_open_file", lambda *_a, **_k: (_ for _ in ()).throw(
@@ -82,6 +82,7 @@ def test_relative_paths_and_unexpected_errors_are_refused_without_detail(tmp_pat
     assert result == {"ok": False, "error": "That file could not be shared. Check the file and try again."}
 
 
+@pytest.mark.require_symlinks
 @pytest.mark.parametrize("layout", ["direct", "ancestor"])
 def test_symbolic_links_are_never_followed(tmp_path: Path, layout):
     target = tmp_path / "target"
@@ -96,6 +97,7 @@ def test_symbolic_links_are_never_followed(tmp_path: Path, layout):
     assert _share(tmp_path, link) == {"ok": False, "error": "Symbolic links cannot be shared."}
 
 
+@pytest.mark.require_symlinks
 def test_the_opened_bytes_are_shared_even_if_the_path_is_swapped(tmp_path: Path, monkeypatch):
     safe = tmp_path / "safe"
     safe.mkdir()
@@ -186,11 +188,12 @@ def test_remote_execution_backends_are_read_through_their_file_adapter(tmp_path:
         _exec=lambda command, timeout: SimpleNamespace(exit_code=0, stdout="HERMES_ROOM_FILE_V1:" + json.dumps(
             {"ok": True, "data": base64.b64encode(payload).decode("ascii")}) + "\n"))
     monkeypatch.setattr(file_tools_paths, "_terminal_env_type_for_task", lambda task_id: "ssh")
-    monkeypatch.setattr(file_tools_paths, "_resolve_path_for_task", lambda path, task_id: Path(path))
+    monkeypatch.setattr(file_tools_paths, "_resolve_path_for_task", lambda path, task_id: PurePosixPath(path))
     monkeypatch.setattr(file_tools, "_get_file_ops", lambda task_id: file_ops)
     result = _share(home, "/remote/workspace/handoff.md", task_id="room-session")
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert RoomArtifactOutbox(home / "state.db").read(_scope(), result["artifact_id"])[1] == payload
+    assert _share(home, "workspace/handoff.md", task_id="room-session") == {"ok": False, "error": UNSAFE}
     assert _share(home, "/remote/home/.ssh/id_ed25519", task_id="room-session") == {
         "ok": False, "error": "Hermes credential and internal state files cannot be shared."}
 
