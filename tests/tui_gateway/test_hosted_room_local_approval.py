@@ -7,7 +7,7 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from tui_gateway.hosted_room_service import HostedRoomService
-from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
+from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server, _start_approval_task
 
 
 @pytest.mark.parametrize("offered", [["once", "always", "deny"], ["always", "session"], []])
@@ -19,8 +19,8 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
             super().__init__()
             self.approvals = []
 
-        def approve(self, *, session_id, request_id, choice):
-            self.approvals.append((session_id, request_id, choice))
+        def approve(self, *, session_id, request_id, choice, expected_task_id, expected_execution_generation):
+            self.approvals.append((session_id, request_id, choice, expected_task_id, expected_execution_generation))
             return {"resolved": 1}
 
     db = tmp_path / "state.db"
@@ -100,7 +100,7 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
         choice="once",
         request_id="approval-1",
     ) == {"resolved": 1}
-    assert rpc.approvals == [("ops-session", "approval-1", "once")]
+    assert rpc.approvals == [("ops-session", "approval-1", "once", task["identity"].task_id, 1)]
     assert service.status("room-1")["pending_actions"] == []
 
 
@@ -109,6 +109,11 @@ def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
+    service.local_profiles = lambda: ('default', 'ops')
+    service.create_room(room_id='room-1', name='Approval room',
+                        members=[{'member_id': 'local', 'profile': 'default', 'handle': 'hermes'},
+                                 {'member_id': 'ops', 'profile': 'ops', 'handle': 'ops'}])
+    _start_approval_task(service, task_id='task-local-1', member_id='local', profile='default')
     service._set_pending_action(
         "room-1",
         "local",
@@ -139,6 +144,8 @@ def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
             "session_id": "local-session",
             "request_id": "approval-local-1",
             "choice": "once",
+            "expected_task_id": "task-local-1",
+            "expected_execution_generation": 1,
         }
     ]
     assert service.status("room-1")["pending_actions"] == []
