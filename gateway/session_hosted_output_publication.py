@@ -690,7 +690,8 @@ class CanonicalHostedOutput:
                     self._output_write(lambda conn: conn.execute(
                         f"DELETE FROM {OBLIGATIONS} WHERE room_id=? AND state='completed'", (room_id,)))
         if remaining:
-            raise RuntimeError("File cleanup is still pending. Try ending the group chat again after it finishes.")
+            from tui_gateway.hosted_room_service import RoomStopPendingError
+            raise RoomStopPendingError("File cleanup is still pending. Try ending the group chat again after it finishes.")
 
     def _force_obligation(self, identity, scope, manifest, operation, action, *, reason="room_disbanded"):
         """Disband: settle one obligation now, overriding its backoff or block."""
