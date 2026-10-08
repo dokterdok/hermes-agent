@@ -382,9 +382,11 @@ def _owned(runner, subject):
     from gateway.session_authorities import all_authorities
     for authority in all_authorities(runner):
         with authority.db._read_ctx() as conn:
-            for grant in grants(conn):
-                if grant['owner'] == subject:
-                    yield authority, grant
+            snapshot = grants(conn)
+        # Callers read this authority again; DELETE-mode reads hold a nonreentrant lock.
+        for grant in snapshot:
+            if grant['owner'] == subject:
+                yield authority, grant
 
 
 def _list(runner, params, subject, loop):
