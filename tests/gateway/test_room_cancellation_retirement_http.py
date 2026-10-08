@@ -70,7 +70,9 @@ async def test_mass_cancellation_disband_compacts_without_fabricating_absence(tm
 
 
 @pytest.mark.asyncio
-async def test_successor_epoch_fences_admission_paused_before_writer(tmp_path, monkeypatch):
+@pytest.mark.parametrize('successor_home', ['home', 'successor'])
+@pytest.mark.parametrize('successor_member', ['member-1', 'member-2'])
+async def test_successor_epoch_fences_admission_paused_before_writer(tmp_path, monkeypatch, successor_home, successor_member):
     adapter = _adapter(tmp_path / 'runs.db')
     entered, release = asyncio.Event(), asyncio.Event()
     history = adapter._conversation_history_for_session
@@ -86,12 +88,18 @@ async def test_successor_epoch_fences_admission_paused_before_writer(tmp_path, m
     try:
         async with TestClient(TestServer(app(adapter))) as cli:
             grant, body = await _invitation(cli)
+            if successor_member != 'member-1':
+                extra = await cli.post('/v1/room-members/invitations', headers={'Authorization': 'Bearer test-room-key'},
+                    json={'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'home',
+                          'authority_epoch': 1, 'member_id': successor_member})
+                assert extra.status == 201
             pending = asyncio.create_task(cli.post('/v1/runs', headers=_headers(grant), json=body))
             await asyncio.wait_for(entered.wait(), 10)
             successor = await cli.post('/v1/room-members/invitations',
                 headers={'Authorization': 'Bearer test-room-key'}, json={
-                    'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'successor',
-                    'authority_epoch': 2, 'member_id': 'member-1'})
+                    'room_id': 'room-1', 'home_install_id': successor_home, 'authority_gateway_id': 'successor',
+                    'authority_epoch': 2, 'member_id': successor_member, 'previous_authority': {
+                        'home_install_id': 'home', 'authority_gateway_id': 'home', 'authority_epoch': 1}})
             assert successor.status == 201
             release.set()
             refused = await pending
@@ -100,15 +108,23 @@ async def test_successor_epoch_fences_admission_paused_before_writer(tmp_path, m
             assert not create.called
             assert adapter._run_idempotency_store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 0
             # The genuine successor can run new work; the fence is not a room-wide outage.
+            if successor_member != 'member-1':
+                successor = await cli.post('/v1/room-members/invitations',
+                    headers={'Authorization': 'Bearer test-room-key'}, json={
+                        'room_id': 'room-1', 'home_install_id': successor_home, 'authority_gateway_id': 'successor',
+                        'authority_epoch': 2, 'member_id': 'member-1', 'previous_authority': {
+                            'home_install_id': 'home', 'authority_gateway_id': 'home', 'authority_epoch': 1}})
+                assert successor.status == 201
             invitation = await successor.json()
             agent = MagicMock()
             agent.run_conversation.return_value = {'final_response': 'new owner', 'messages': []}
             agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
             create.side_effect, create.return_value = None, agent
-            body['hosted_room_dispatch'].update(authority_epoch=2, authority_gateway_id='successor', task_id='new-task')
+            body['hosted_room_dispatch'].update(home_install_id=successor_home, authority_epoch=2,
+                                               authority_gateway_id='successor', task_id='new-task')
             headers = {**_headers(invitation['grant']), 'Idempotency-Key': 'room:new-task:1'}
             accepted = await cli.post('/v1/runs', headers=headers, json=body)
-            assert accepted.status == 202
+            assert accepted.status == 202, await accepted.json()
             await asyncio.wait_for(asyncio.gather(*adapter._active_run_tasks.values()), 10)
             assert agent.run_conversation.call_count == 1
     finally:
@@ -138,4 +154,38 @@ async def test_ordinary_revoke_and_reinvite_keeps_exact_same_epoch_cancellations
             assert result['run_id'] == run_id and result['status'] == 'cancelled'
             assert not create.called
     finally:
+        adapter._run_idempotency_store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('member_id', ['member-1', 'another-member'])
+async def test_unlinked_collision_leaves_original_paused_writer_authorized(tmp_path, monkeypatch, member_id):
+    adapter = _adapter(tmp_path / 'runs.db')
+    entered, release = asyncio.Event(), asyncio.Event()
+    history = adapter._conversation_history_for_session
+    async def pause(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await history(*args, **kwargs)
+    agent = MagicMock()
+    agent.run_conversation.return_value = {'final_response': 'original owner', 'messages': []}
+    agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+    monkeypatch.setattr(adapter, '_create_agent', MagicMock(return_value=agent))
+    monkeypatch.setattr(adapter, '_conversation_history_for_session', pause)
+    try:
+        async with TestClient(TestServer(app(adapter))) as cli:
+            grant, body = await _invitation(cli)
+            pending = asyncio.create_task(cli.post('/v1/runs', headers=_headers(grant), json=body))
+            await asyncio.wait_for(entered.wait(), 15)
+            unrelated = await cli.post('/v1/room-members/invitations',
+                headers={'Authorization': 'Bearer test-room-key'}, json={
+                    'room_id': 'room-1', 'home_install_id': 'unrelated', 'authority_gateway_id': 'unrelated',
+                    'authority_epoch': 2, 'member_id': member_id})
+            assert unrelated.status == 400
+            release.set()
+            assert (await pending).status == 202
+            await asyncio.wait_for(asyncio.gather(*adapter._active_run_tasks.values()), 15)
+            assert agent.run_conversation.call_count == 1
+    finally:
+        release.set()
         adapter._run_idempotency_store.close()

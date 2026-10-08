@@ -140,7 +140,7 @@ class RunIdempotencyStore:
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
                 owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
-                cancel_if_missing: bool = False, room_authority=None):
+                cancel_if_missing: bool = False, room_authority=None, _authorize=None):
         """Reserve admission, or atomically fence an absent key and stop its existing run.
 
         Cancellation addresses the scoped identity, not a payload fingerprint. Its durable
@@ -165,6 +165,9 @@ class RunIdempotencyStore:
             if superseded(self._conn, room_authority):
                 self._conn.commit()
                 return "authority_retired", None
+            if _authorize is not None and not _authorize():
+                self._conn.commit()
+                return "authority_retired", None
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
@@ -173,6 +176,8 @@ class RunIdempotencyStore:
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
                  retention_until, now, now, int(cancel_if_missing)))
             if room_authority is not None:
+                from gateway.platforms.api_server_run_authority import canonical
+                room_authority = canonical(self._conn, room_authority)
                 self._conn.execute("UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=? WHERE run_id=?",
                                    (*room_authority[:2], run_id))
             self._conn.commit()
@@ -194,23 +199,76 @@ class RunIdempotencyStore:
             return "authority_retired", None
         return ("missing", None) if row is None else _outcome(row, fingerprint)
 
-    def accepts_room_authority(self, authority):
-        from gateway.platforms.api_server_run_authority import superseded
+    def accepts_room_authority(self, authority, previous=None, namespace=None, claims=None, previous_home=None):
+        from gateway.platforms.api_server_run_authority import namespace_matches, successor, superseded
+        from gateway.platforms.api_server_room_origins import accepts
         with self._lock:
-            return not superseded(self._conn, authority)
+            candidate = successor(self._conn, authority, previous)
+            return (namespace_matches(self._conn, namespace, candidate) and not superseded(self._conn, candidate)
+                    and (claims is None or accepts(self._conn, claims, previous_home)))
+
+    def knows_room_target(self, claims):
+        from gateway.platforms.api_server_room_origins import retained
+        with self._lock:
+            return retained(self._conn, claims) is not None
+
+    def knows_room_authority(self, authority):
+        from gateway.platforms.api_server_run_authority import canonical
+        with self._lock:
+            return self._conn.execute("SELECT 1 FROM run_room_authorities WHERE authority_key=?",
+                                      (canonical(self._conn, authority)[0],)).fetchone() is not None
+
+    def permits_room_retirement(self, authority):
+        from gateway.platforms.api_server_run_authority import retirement_allowed
+        with self._lock:
+            return retirement_allowed(self._conn, authority)
 
     def room_authority_retired(self, authority):
+        from gateway.platforms.api_server_run_authority import canonical, retirement_allowed
         with self._lock:
+            if not retirement_allowed(self._conn, authority):
+                return False
+            authority = canonical(self._conn, authority)
             row = self._conn.execute(
                 "SELECT retired_through FROM run_room_authorities WHERE authority_key=?", (authority[0],)).fetchone()
         return row is not None and authority[1] <= row[0]
 
-    def observe_room_authority(self, scope, authority):
+    def room_origin_home(self, claims):
+        from gateway.platforms.api_server_run_authority import origin_home, room_authority
+        with self._lock:
+            return origin_home(self._conn, room_authority(claims), claims["home_install_id"])
+
+    def observe_room_authority(self, scope, authority, previous=None, previous_home=None, namespace=None, claims=None):
         from gateway.platforms.api_server_run_authority import observe
         with self._immediate_txn():
-            current = observe(self._conn, scope, authority)
+            current = observe(self._conn, scope, authority, previous, previous_home, namespace, claims)
             self._conn.commit()
         return current
+
+    def commit_room_invitation(self, claims, previous, previous_home, commit_reservation):
+        """Grant writer precedes this lock; keep admissions fenced through both commits.
+
+        The callback validates legacy reservations, writes the grant, and commits its
+        writer before returning. A failed grant commit never changes this store's floor.
+        """
+        from gateway.platforms.api_server_run_authority import (
+            canonical, namespace_matches, observe, room_authority, room_namespace, room_run_scope,
+            successor, superseded)
+        from gateway.platforms.api_server_room_origins import accepts, retained
+        authority, namespace = room_authority(claims), room_namespace(claims)
+        with self._immediate_txn():
+            candidate = successor(self._conn, authority, previous)
+            if (not namespace_matches(self._conn, namespace, candidate) or superseded(self._conn, candidate)
+                    or not accepts(self._conn, claims, previous_home)):
+                raise ValueError("room authority has already advanced")
+            known = retained(self._conn, claims) is not None or self._conn.execute(
+                "SELECT 1 FROM run_room_authorities WHERE authority_key=?",
+                (canonical(self._conn, authority)[0],)).fetchone() is not None
+            commit_reservation(known)
+            if not observe(self._conn, room_run_scope(claims), authority, previous, previous_home, namespace, claims):
+                raise ValueError("room authority has already advanced")
+            self._conn.commit()
+
 
     def retire_room_authority(self, scope, authority):
         from gateway.platforms.api_server_run_authority import retire

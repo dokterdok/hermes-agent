@@ -224,7 +224,8 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
 
     def status(self, room_id=None):
         from gateway import session_group_peer_cleanup as cleanup
-        return {**super().status(room_id), 'peer_cleanup': cleanup.status(self.db_path, room_id),
+        from gateway import hosted_room_retirement as retirement
+        return {**super().status(room_id), 'peer_retirements': retirement.status(self.db_path, room_id) if room_id else [], 'peer_cleanup': cleanup.status(self.db_path, room_id),
                 'retiring': self.is_retiring(room_id) if room_id is not None else False}
 
     def _maintain_peer_lifecycle(self):

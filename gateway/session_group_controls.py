@@ -22,6 +22,8 @@ GROUP_METHODS = {
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
     'groups.peer.register': 'session:control',
+    'groups.peer.retirements': 'session:read',
+    'groups.peer.retire': 'session:control',
     'groups.peer.invite': 'session:operator',
     'groups.peer.revoke': 'session:operator',
 }
@@ -44,8 +46,10 @@ _FIELDS = {
                        'choice', 'request_id'},
     'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
-                           'member_id', 'ttl_seconds', 'status_ttl_seconds'},
+                           'member_id', 'ttl_seconds', 'status_ttl_seconds', 'retirement_only', 'previous_authority'},
     'groups.peer.revoke': {'grant'},
+    'groups.peer.retirements': {'room_id'},
+    'groups.peer.retire': {'room_id', 'retirement_id', 'grant'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -201,8 +205,10 @@ def _group(authority, actor, home, method, params):
                 link['room_id'] == params.get('room_id') for link in rooms.list_room_link_records(db_path)):
             raise RuntimeStoreError('runtime_coordination_required')
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
+        from gateway.hosted_room_retirement import status
         return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
-                expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
+                expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch']),
+                'retirements': status(db_path, params['room_id'])}
 
     def state():
         room = rooms.room_state(db_path, **params)
@@ -211,7 +217,24 @@ def _group(authority, actor, home, method, params):
             result['driver_status'] = service.status(room['room_id'])
         return result
 
+    from gateway import hosted_room_retirement as retirement
+    def retirement_status():
+        visible = []
+        for item in retirement.status(db_path, params.get('room_id')):
+            if room_authorizer is None:
+                raise RuntimeStoreError('permission_denied')
+            try:
+                room_authorizer(actor.subject, item['room_id'])
+            except RuntimeStoreError as exc:
+                if exc.reason != 'permission_denied':
+                    raise
+            else:
+                visible.append(item)
+        return {'retirements': visible}
     handlers = {
+        'groups.peer.retirements': retirement_status,
+        'groups.peer.retire': lambda: retirement.settle_control(
+            getattr(authority, 'hosted_room_service'), params),
         'groups.capabilities': capabilities,
         'groups.list': listing,
         'groups.create': create,
