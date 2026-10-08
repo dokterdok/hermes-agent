@@ -14,7 +14,6 @@ import httpx
 
 from gateway.platforms.base import SendResult
 from agent.ssl_verify import platform_ssl_context
-from gateway.platforms.base import SendResult
 
 logger = logging.getLogger(__name__)
 
