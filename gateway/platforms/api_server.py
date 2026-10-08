@@ -19,7 +19,6 @@ from functools import wraps
 import logging
 import os
 import re
-import sqlite3
 import sys
 import threading
 import time
@@ -146,6 +145,8 @@ from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from gateway.platforms.api_server_response_store import ResponseStore
+from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -230,7 +231,6 @@ def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
     if raw_port is None:
         raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
     return host, _coerce_port(raw_port, DEFAULT_PORT)
-MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 # Send a comment before remote API clients' common 20-second idle deadline.
 # This constant is shared by OpenAI chat/Responses and native session SSE.
@@ -297,37 +297,10 @@ def _clean_request_string(value: Any) -> Optional[str]:
     return (value.strip() or None) if isinstance(value, str) else None
 
 
-def _request_reasoning_config(model_options: Any) -> Optional[Dict[str, Any]]:
-    """Translate model_options (structured ``reasoning`` or legacy ``reasoning_effort``) into
-    AIAgent reasoning_config; unknown effort values are ignored, never raised."""
-    if not isinstance(model_options, dict):
-        return None
-    reasoning = model_options.get("reasoning")
-    enabled: Any = None
-    effort: Any = model_options.get("reasoning_effort")
-    if isinstance(reasoning, dict):
-        enabled = reasoning.get("enabled")
-        effort = reasoning.get("effort", effort)
-    effort_norm = str(effort).strip().lower() if effort is not None else ""
-    if enabled is False or effort_norm == "none":
-        return {"enabled": False}
-    if effort_norm in _REASONING_EFFORTS and effort_norm != "none":
-        return {"enabled": True, "effort": effort_norm}
-    if enabled is True:
-        return {"enabled": True}
-    return None
-
-
-def _request_service_tier(model_options: Any) -> Any:
-    """Return a per-request service_tier override or _REQUEST_OPTION_MISSING."""
-    if not isinstance(model_options, dict):
-        return _REQUEST_OPTION_MISSING
-    if "service_tier" in model_options:
-        raw_tier = model_options.get("service_tier")
-        return _clean_request_string(raw_tier) if isinstance(raw_tier, str) else raw_tier
-    if "fast" in model_options:
-        return "priority" if _coerce_request_bool(model_options.get("fast"), default=False) else None
-    return _REQUEST_OPTION_MISSING
+# model_options decoding lives in the topical sibling (line-cap offset);
+# re-exported here so importers are unaffected.
+from gateway.platforms.api_server_request_options import (  # noqa: E402
+    _request_reasoning_config, _request_service_tier)
 
 
 def _apply_runtime_agent_overrides(
@@ -720,108 +693,6 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
-class ResponseStore:
-    """SQLite-backed LRU store for Responses API state (full conversation history per response
-    for ``previous_response_id`` chaining). Persists across restarts; in-memory fallback."""
-
-    def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
-        self._max_size = max_size
-        if db_path is None:
-            db_path = ":memory:"
-            with suppress(Exception):
-                from hermes_cli.config import get_hermes_home
-                db_path = str(get_hermes_home() / "response_store.db")
-        self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
-        try:
-            self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        except Exception:
-            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
-            self._db_path = None
-        # Shared WAL-fallback so response_store.db degrades gracefully on NFS/SMB/FUSE homes.
-        from hermes_state_wal import apply_wal_with_fallback
-        apply_wal_with_fallback(self._conn, db_label="response_store.db")
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS responses ("
-            "response_id TEXT PRIMARY KEY, data TEXT NOT NULL, accessed_at REAL NOT NULL)")
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS conversations (name TEXT PRIMARY KEY, response_id TEXT NOT NULL)")
-        self._conn.commit()
-        # Conversation history lives here: owner-only perms, once at init (not per commit).
-        self._tighten_file_permissions()
-
-    def _tighten_file_permissions(self) -> None:
-        """Force owner-only permissions on the DB and SQLite sidecars."""
-        if not self._db_path:
-            return
-        for candidate in (Path(self._db_path), Path(f"{self._db_path}-wal"), Path(f"{self._db_path}-shm")):
-            try:
-                if candidate.exists():
-                    candidate.chmod(0o600)
-            except OSError:
-                logger.debug("Failed to restrict response store permissions for %s", candidate, exc_info=True)
-
-    def get(self, response_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve a stored response by ID (updates access time for LRU)."""
-        row = self._conn.execute(
-            "SELECT data FROM responses WHERE response_id = ?", (response_id,)).fetchone()
-        if row is None:
-            return None
-        self._conn.execute(
-            "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
-            (time.time(), response_id))
-        self._conn.commit()
-        try:
-            return json.loads(row[0])
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Corrupted JSON in response store for id=%s, evicting entry", response_id)
-            self._conn.execute("DELETE FROM responses WHERE response_id = ?", (response_id,))
-            self._conn.commit()
-            return None
-
-    def put(self, response_id: str, data: Dict[str, Any]) -> None:
-        """Store a response, evicting the oldest if at capacity."""
-        self._conn.execute(
-            "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()))
-        count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
-        if count > self._max_size:
-            evict_ids = [row[0] for row in self._conn.execute(
-                "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
-                (count - self._max_size,)).fetchall()]
-            if evict_ids:
-                placeholders = ",".join("?" for _ in evict_ids)
-                # Conversation mappings pointing at evicted responses go too.
-                self._conn.execute(f"DELETE FROM conversations WHERE response_id IN ({placeholders})", evict_ids)
-                self._conn.execute(f"DELETE FROM responses WHERE response_id IN ({placeholders})", evict_ids)
-        self._conn.commit()
-
-    def delete(self, response_id: str) -> bool:
-        """Remove a response (and conversation mappings to it). True if found and deleted."""
-        self._conn.execute("DELETE FROM conversations WHERE response_id = ?", (response_id,))
-        cursor = self._conn.execute("DELETE FROM responses WHERE response_id = ?", (response_id,))
-        self._conn.commit()
-        return cursor.rowcount > 0
-
-    def get_conversation(self, name: str) -> Optional[str]:
-        """Get the latest response_id for a conversation name."""
-        row = self._conn.execute("SELECT response_id FROM conversations WHERE name = ?", (name,)).fetchone()
-        return row[0] if row else None
-
-    def set_conversation(self, name: str, response_id: str) -> None:
-        """Map a conversation name to its latest response_id."""
-        self._conn.execute("INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)", (name, response_id))
-        self._conn.commit()
-
-    def close(self) -> None:
-        """Close the database connection."""
-        with suppress(Exception):
-            self._conn.close()
-
-    def __len__(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
-        return row[0] if row else 0
-
-
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
@@ -1059,10 +930,28 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     return hashlib.sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
-def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: str) -> str:
+def _names_launch_profile(profile: str) -> bool:
+    """True when a /p/<profile>/ prefix names the profile this process was LAUNCHED as: its
+    un-prefixed and prefixed requests are one profile and must key one session."""
+    try:
+        from hermes_cli.profiles import profile_matches_home
+        from hermes_constants import get_routing_process_hermes_home
+        return profile_matches_home(profile, home=get_routing_process_hermes_home())
+    except Exception:
+        return False
+
+
+def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: str,
+                            profile: Optional[str] = None) -> str:
     """Stable session id from the system prompt + first user message (constant across all
-    turns of an Open WebUI-style conversation), so one Hermes session/sandbox is reused."""
+    turns of an Open WebUI-style conversation), so one Hermes session/sandbox is reused.
+    A routed ``/p/<profile>/`` prefix namespaces the seed: the id keys process-wide state
+    (session store, per-session sandbox), so two profiles opening with identical text must not
+    collide (#123989). Default/standalone ids are unchanged so live conversations survive, and
+    the launch profile addressed through its own ``/p/<launch>/`` prefix keeps the un-prefixed id."""
     seed = f"{system_prompt or ''}\n{first_user_message}"
+    if profile and profile != "default" and not _names_launch_profile(profile):
+        seed = f"{profile}\0{seed}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"api-{digest}"
 
@@ -1101,19 +990,31 @@ except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
 
 
+# English labels stay as constants: ``gateway.run._GATEWAY_AUTH_ERROR_RE`` / ``_GATEWAY_RATE_LIMIT_RE``
+# sniff these words in failure envelopes, so matchers and tests key off them regardless of the
+# display language. ``user_text()`` renders the human-facing line through ``t()``.
+PROVIDER_AUTH_FAILED_LABEL = "Provider authentication failed"
+PROVIDER_RATE_LIMITED_LABEL = "Provider rate-limited"
+
+
 class _ProviderAuthResolutionError(RuntimeError):
     """Provider credential resolution failed. Typed so callers never mislabel other
     RuntimeErrors from run_conversation() (e.g. a closed OpenAI client) as auth failures."""
 
-    def user_text(self) -> str:
-        """Raw-surface failure line. A quota/429 cap with valid credentials must not be labelled an
-        authentication failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
+    def is_rate_limited(self) -> bool:
+        """A quota/429 cap with valid credentials must not be labelled an authentication
+        failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
         from hermes_cli.auth import is_rate_limited_auth_error
 
         cause = self.__cause__
         cause = getattr(cause, "__cause__", None) if isinstance(cause, RuntimeError) else cause
-        label = "Provider rate-limited" if is_rate_limited_auth_error(cause) else "Provider authentication failed"
-        return f"⚠️ {label}: {self}"
+        return bool(is_rate_limited_auth_error(cause))
+
+    def user_text(self) -> str:
+        """Raw-surface failure line shown as the assistant reply in API-backed chat UIs."""
+        label = t("platform.api_server.provider_rate_limited" if self.is_rate_limited()
+                  else "platform.api_server.provider_auth_failed")
+        return t("platform.api_server.provider_error_line", label=label, error=self)
 
 
 class _SessionEventQueue:
@@ -1301,10 +1202,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _gateway_is_draining() -> bool:
         """Whether the owning gateway currently refuses new agent turns."""
         try:
+            from gateway.platforms.api_server_fire_startup import runner_is_draining
             from gateway.run import _gateway_runner_ref
             runner = _gateway_runner_ref()
-            return bool(runner and (getattr(runner, "_draining", False)
-                                    or getattr(runner, "_external_drain_active", False)))
+            return bool(runner) and runner_is_draining(runner)
         except Exception:
             return False
 
@@ -1872,11 +1773,22 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         with self._session_db_cache_lock:
             if self._session_db_cache_closed:
                 return None
-            db = self._session_dbs.get(key)
+            db = self._cached_session_db_locked(key)
             if db is None:
                 db = acquire(home / "state.db")
                 self._session_dbs[key] = db
             return db
+
+    def _cached_session_db_locked(self, key: str) -> Optional[Any]:
+        """Caller holds ``_session_db_cache_lock``. A profile unserve/delete tears the home's
+        generation down through ``hermes_state_registry.close_all_under`` (clearing
+        ``_shared_registry_owned``) without telling this cache; serving that handle would keep
+        raising ``StateDbReplacedError`` after a recreate, so drop it and let the caller reopen."""
+        db = self._session_dbs.get(key)
+        if db is not None and getattr(db, "_shared_registry_owned", True) is False:
+            del self._session_dbs[key]
+            return None
+        return db
 
     def _close_cached_session_dbs(self) -> None:
         """Close SessionDB handles owned by this adapter's profile cache."""
@@ -1924,14 +1836,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             home = get_hermes_home()
             key = str(home)
             with self._session_db_cache_lock:
-                cached = self._session_dbs.get(key)
+                cached = self._cached_session_db_locked(key)
             if cached is not None:
                 return cached
             if self._session_db_lock is None:
                 self._session_db_lock = asyncio.Lock()
             async with self._session_db_lock:
                 with self._session_db_cache_lock:
-                    cached = self._session_dbs.get(key)
+                    cached = self._cached_session_db_locked(key)
                 if cached is not None:
                     return cached
                 return await asyncio.to_thread(self._open_and_cache_session_db, home)
@@ -2467,12 +2379,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """GET /api/model/options — the dashboard/TUI model-picker inventory, so external clients
         can sync to the configured provider catalog instead of scraping /v1/models."""
         refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
+        include_unconfigured = _coerce_request_bool(
+            request.query.get("include_unconfigured"), default=True)
         try:
             from hermes_cli.inventory import build_model_options_payload, load_picker_context
 
             def _build_payload() -> Dict[str, Any]:
                 return build_model_options_payload(
-                    load_picker_context(), include_unconfigured=True, refresh=refresh)
+                    load_picker_context(), include_unconfigured=include_unconfigured, refresh=refresh)
             # Enrichment can fetch pricing/provider catalogs: keep it off the event loop.
             payload = await asyncio.to_thread(_build_payload)
             return web.json_response(payload)
@@ -2976,6 +2890,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Full system prompts / model_config never cross the client API; only their presence.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
         payload["has_model_config"] = bool(session.get("model_config"))
+        raw_model_config = session.get("model_config")
+        try:
+            model_config = (
+                json.loads(raw_model_config)
+                if isinstance(raw_model_config, str)
+                else raw_model_config
+            )
+        except (TypeError, json.JSONDecodeError):
+            model_config = None
+        # Exact-id consumers may inspect/resume delegate children even though
+        # list endpoints intentionally omit them. Project only the provenance
+        # bit the client needs so it cannot accidentally promote such a row
+        # into an ordinary session list; never expose the model snapshot.
+        payload["is_internal_child"] = bool(
+            isinstance(model_config, dict)
+            and model_config.get("_delegate_from") is not None
+        )
         return payload
 
     @staticmethod
@@ -3130,11 +3061,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if title is not None:
                 clean_title = db.sanitize_title(str(title))
                 if clean_title:
-                    conflict = conn.execute(
-                        "SELECT id FROM sessions WHERE title = ? AND id != ?", (clean_title, session_id)).fetchone()
-                    if conflict:
+                    try:
+                        db._resolve_title_conflict(conn, session_id, clean_title)
+                    except ValueError as exc:  # the DB's uniqueness rule; undo the INSERT
                         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-                        return None, f"title:Title already in use by session {conflict['id']}"
+                        return None, f"title:{exc}"
                 conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))
             session_row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             return (dict(session_row) if session_row else {
@@ -3250,8 +3181,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
+        include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
+        # Compression lineage: return root→tip messages, matching the REST router (#51058).
         messages = await asyncio.to_thread(
-            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page)
+            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
+            include_compacted=include_compacted, include_ancestors=True)
         return web.json_response({
             "object": "list", "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],
@@ -3957,6 +3891,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a
         NAS-minted JWT via the pluggable verifier, NOT API_SERVER_KEY. 202 + background run so
         a long turn never trips NAS's timeout; the store CAS claim guards double-fire on retry."""
+        # Startup-wait budget starts here so a slow JWKS fetch cannot outlast the forwarder timeout.
+        received_at = asyncio.get_running_loop().time()
         from hermes_cli.config import cfg_get, load_config
         from plugins.cron_providers.chronos.verify import get_fire_verifier
         auth = request.headers.get("Authorization", "")
@@ -4004,14 +3940,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
             provider = resolve_cron_scheduler()
             loop = asyncio.get_running_loop()
-            # Live adapters (parity with the built-in ticker): E2EE / relay-fronted platforms
-            # have no native credential, so without them delivery fails.
-            runner = self.gateway_runner or request.app.get("gateway_runner")
-            if runner is None:
-                with suppress(Exception):
-                    from gateway.run import _gateway_runner_ref
-                    runner = _gateway_runner_ref()
-            adapters = getattr(runner, "adapters", None) or None
+            from gateway.platforms.api_server_fire_startup import live_adapters_once_started
+            refusal, adapters = await live_adapters_once_started(self, request, job_id, received_at=received_at)
+            if refusal is not None:
+                return refusal
 
             def _detach_fire(fire_fn, *fire_args) -> "web.Response":
                 # The done callback owns the reservation once the task is detached.

@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
@@ -85,9 +86,7 @@ export function ComposerControls({
   const showStop = busy && !hasComposerPayload
   const showQueueButton = busy && busyAction !== 'stop' && busyAction !== 'queue' && hasComposerPayload
 
-  const sendLabel = busy
-    ? { interrupt: c.redirect, queue: c.queueMessage, steer: c.steer, stop: c.stop }[busyAction]
-    : c.send
+  const sendLabel = composerSendLabel(busy, busyAction, c)
 
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
@@ -132,21 +131,7 @@ export function ComposerControls({
           {voiceControls}
         </>
       )}
-      {busy && busyAction !== 'steer' && onSteer ? (
-        <Tip label={c.steer}>
-          <Button
-            aria-label={c.steer}
-            className={GHOST_ICON_BTN}
-            disabled={disabled}
-            onClick={onSteer}
-            size="icon"
-            type="button"
-            variant="ghost"
-          >
-            <Codicon name="debug-step-over" size="0.875rem" />
-          </Button>
-        </Tip>
-      ) : null}
+      {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}
       {showQueueButton ? (
         <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />} placement="control">
           <Button
@@ -179,6 +164,7 @@ export function ComposerControls({
             aria-label={showStop ? c.stop : sendLabel}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
+            onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
             type="submit"
           >
             {showStop ? (
@@ -199,6 +185,38 @@ export function ComposerControls({
       {hudMode ? <HudWindowButtons /> : null}
     </div>
   )
+}
+
+function composerSendLabel(
+  busy: boolean,
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  c: { redirect: string; queueMessage: string; send: string; steer: string; stop: string }
+): string {
+  return busy ? { interrupt: c.redirect, queue: c.queueMessage, steer: c.steer, stop: c.stop }[busyAction] : c.send
+}
+
+function renderSteerButton(
+  busy: boolean,
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  onSteer: (() => void) | undefined,
+  disabled: boolean,
+  label: string
+) {
+  return busy && busyAction !== 'steer' && onSteer ? (
+    <Tip label={label}>
+      <Button
+        aria-label={label}
+        className={GHOST_ICON_BTN}
+        disabled={disabled}
+        onClick={onSteer}
+        size="icon"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="debug-step-over" size="0.875rem" />
+      </Button>
+    </Tip>
+  ) : null
 }
 
 function HudWindowButtons() {

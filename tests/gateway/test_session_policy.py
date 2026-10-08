@@ -21,6 +21,8 @@ def test_policy_selects_surface_and_isolates_cwd(tmp_path):
     assert policies[2].platform == 'desktop'
     assert 'desktop_ui' in policies[2].toolsets
     assert all('desktop_ui' not in p.toolsets for p in policies[:2])
+    # Platform-gated toolsets (catalog) ride on the Desktop surface only, like the native TUI factory.
+    assert 'catalog' in policies[2].toolsets and all('catalog' not in p.toolsets for p in policies[:2])
     cfg['platform_toolsets']['cli'].clear()
     assert 'terminal' in policies[0].toolsets
 
@@ -46,7 +48,8 @@ def test_launch_policy_reaches_real_turn_runner(tmp_path):
     home, state = tmp_path / 'home', tmp_path / 'state'
     home.mkdir()
     state.mkdir()
-    env = {k: os.environ[k] for k in ('PATH', 'SYSTEMROOT', 'LANG', 'TZ') if k in os.environ}
+    from tests.gateway.fixtures.local_recovery_probe import child_env
+    env = child_env()
     env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(state), PYTHONPATH=str(repo))
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'session_policy_peer.py')],
                             cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=130)
@@ -135,3 +138,84 @@ def test_null_config_sections_read_as_absent(tmp_path):
     assert isinstance(legacy, LocalSessionPolicy)
     assert legacy.config().get('display', {}).get('busy_input_mode', 'interrupt') == 'interrupt'
 
+
+
+def test_frozen_route_keeps_its_endpoint_after_live_config_edit(tmp_path, monkeypatch):
+    """R2-M2: the frozen policy's config-derived endpoint is the one its frozen credential
+    belongs to; a later ``model.base_url`` edit must not redirect that credential."""
+    import json
+    from types import SimpleNamespace
+    from gateway.session_policy import build_policy, bind_launch_key
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_cli.config_effective import load_user_config_effective
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+
+    def write(url, key):
+        (home / 'config.yaml').write_text(json.dumps(
+            {'model': {'provider': 'custom', 'base_url': url, 'api_key': key, 'default': 'm'}}))
+    write('http://127.0.0.1:1/v1', 'sk-frozen-endpoint-one')
+    private = {}
+    policy = build_policy({'cwd': str(tmp_path), 'model': 'm'}, load_user_config_effective(home / 'config.yaml'),
+                          private_secrets=private)
+    authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=None)
+    policy = bind_launch_key(authority, 'sid', policy, None, config_secrets=private)
+    write('http://127.0.0.1:2/v1', 'sk-new-endpoint-two')
+    monkeypatch.setattr('gateway.session_policy.policy_for_source', lambda runner, source: policy)
+    from gateway.run import GatewayRunner
+    runner = object.__new__(GatewayRunner)
+    runner.session_authority, runner._sessions = authority, {}
+    _, runtime = GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, source=SimpleNamespace())
+    assert (runtime['base_url'], runtime['api_key']) == ('http://127.0.0.1:1/v1', 'sk-frozen-endpoint-one')
+
+
+def test_frozen_bare_custom_route_keeps_its_endpoint_pool_and_launch_key_wins(tmp_path, monkeypatch):
+    """The frozen ``model.api_key`` is config, not a launch key: a URL-matched credential pool still
+    serves the frozen endpoint (refresh/rotation on 401/429), while a bound launch key wins (R2-M1)."""
+    import json
+    from types import SimpleNamespace
+    from gateway.session_policy import build_policy, bind_launch_key
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_cli.config_effective import load_user_config_effective
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    url = 'http://127.0.0.1:1/v1'
+    (home / 'config.yaml').write_text(json.dumps(
+        {'model': {'provider': 'custom', 'base_url': url, 'api_key': 'sk-frozen-config', 'default': 'm'}}))
+    pool = object()
+    monkeypatch.setattr('hermes_cli.runtime_provider._try_resolve_from_custom_pool', lambda base_url, *a, **k: {
+        'provider': 'custom', 'api_mode': 'chat_completions', 'base_url': base_url, 'api_key': 'sk-pooled',
+        'source': 'pool:custom', 'credential_pool': pool} if base_url.rstrip('/') == url else None)
+    authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=None)
+    from gateway.run import GatewayRunner
+    runner = object.__new__(GatewayRunner)
+    runner.session_authority, runner._sessions = authority, {}
+    runtimes = []
+    for sid, launch in (('config-keyed', None), ('launch-keyed', 'sk-launch-explicit')):
+        private = {}
+        params = {'cwd': str(tmp_path), 'model': 'm'} | ({'api_key': launch} if launch else {})
+        policy = build_policy(params, load_user_config_effective(home / 'config.yaml'), private_secrets=private)
+        policy = bind_launch_key(authority, sid, policy, launch, config_secrets=private)
+        monkeypatch.setattr('gateway.session_policy.policy_for_source', lambda runner, source, p=policy: p)
+        runtimes.append(GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, source=SimpleNamespace())[1])
+    assert (runtimes[0]['base_url'], runtimes[0]['credential_pool']) == (url, pool)
+    assert (runtimes[1]['api_key'], runtimes[1]['credential_pool']) == ('sk-launch-explicit', None)
+
+
+def test_lazy_info_reports_the_free_tier_pinned_model(tmp_path, monkeypatch):
+    """A not-yet-built session with no launch model/provider runs on ``nous/welcome`` on the free
+    tier (the agent build pins it), so ``session.info`` says so; an explicit launch model stands."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from gateway.session_local import _lazy_model
+    from gateway.session_policy import build_policy
+    import hermes_cli.anon_auth as anon_auth
+    authority = SimpleNamespace(runner=None, profile_id='fixture')
+    monkeypatch.setattr(anon_auth, 'free_tier_route', lambda: True)
+    configured = replace(build_policy({'cwd': str(tmp_path)}, {'model': {'default': 'cfg-model'}}), model='cfg-model')
+    assert _lazy_model(authority, configured) == anon_auth.GUEST_MODEL
+    assert _lazy_model(authority, build_policy({'cwd': str(tmp_path), 'model': 'pick'}, {})) == 'pick'
+    monkeypatch.setattr(anon_auth, 'free_tier_route', lambda: False)
+    assert _lazy_model(authority, configured) == 'cfg-model'

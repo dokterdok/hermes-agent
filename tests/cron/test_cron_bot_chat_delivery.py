@@ -109,7 +109,7 @@ def test_deliver_message_carries_cron_attribution(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     captured = {}
 
-    def fake_deliver(home, owner, message, *, delivery_id):
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
         captured["message"] = message
         return {"status": "settled", "message": message, "delivery_id": delivery_id}
 
@@ -119,6 +119,28 @@ def test_deliver_message_carries_cron_attribution(tmp_path, monkeypatch):
     assert 'Cronjob "Daily digest" output' in captured["message"]
     assert "not the user" in captured["message"]
     assert "the payload" in captured["message"]
+
+
+def test_failure_notice_reaches_the_owner_as_a_diagnostic(tmp_path, monkeypatch):
+    """A delivered ``for_failure`` notice keeps ``notification_category="diagnostic"`` through
+    the owner transport (R1/R2 minor: the category was accepted but dropped)."""
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seen = []
+
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
+        seen.append(notification_category)
+        return {"status": "settled", "message": message, "delivery_id": delivery_id,
+                "notification_category": notification_category}
+
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "local-bot"})
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", fake_deliver)
+    monkeypatch.setattr("gateway.warning_notifications.warning_notifications_enabled", lambda *a, **k: True)
+    job = {"id": "j1", "name": "n", "execution_id": "r1"}
+    assert _deliver_to_bot_chat(job, "boom", "", for_failure=True) is None
+    assert _deliver_to_bot_chat(dict(job, execution_id="r2"), "ok", "") is None
+    assert seen == ["diagnostic", "result"]
 
 
 def test_deliver_without_authority_is_unverified_not_a_second_writer(tmp_path, monkeypatch):
@@ -144,7 +166,7 @@ def test_failure_notice_to_a_profile_hiding_warnings_is_suppressed_not_sent(tmp_
     (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n")
     admitted = []
 
-    def fake_deliver(home, owner, message, *, delivery_id):
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
         admitted.append(message)
         return {"status": "queued", "message": message, "delivery_id": delivery_id}
 
@@ -176,3 +198,50 @@ def test_delivery_targets_include_local_profiles():
     bot_chat_entries = [t for t in targets if t["id"].startswith(BOT_CHAT_PLATFORM)]
     # No gateway home channel needed for bot-chat targets.
     assert all(t["home_target_set"] for t in bot_chat_entries)
+
+
+# ── legacy cron/bot_chat_pending upgrade path ────────────────────────────────
+
+def test_tick_hands_legacy_pending_records_to_the_live_owner_once(tmp_path, monkeypatch):
+    """Records the retired CLI lane left in cron/bot_chat_pending are never orphaned: a queued
+    (never-started) record is admitted to the live owner under its own id; a claimed one (an
+    uncertain CLI turn) is never resent; the files stay as evidence."""
+    import json
+
+    import cron.jobs as J
+    import cron.scheduler as S
+    from cron import scheduler_authority
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(J, "HERMES_DIR", tmp_path)
+    monkeypatch.setattr(J, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(J, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(J, "OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr(S, "_hermes_home", tmp_path)
+    monkeypatch.setattr(S, "_sweep_mcp_orphans", lambda: None)
+    monkeypatch.setattr(scheduler_authority, "reconcile_pending", lambda *, allow_connect=True: None)
+    (tmp_path / "state.db").write_text("")
+    root = tmp_path / "cron" / "bot_chat_pending"
+    root.mkdir(parents=True)
+    queued, claimed = "a" * 64, "b" * 64
+    for key, status in ((queued, "queued"), (claimed, "claimed")):
+        (root / f"{key}.json").write_text(json.dumps(dict(
+            id=key, status=status, job={"id": "j1", "name": "Digest"}, content="the report",
+            profile="", home=str(tmp_path), sequence=1, for_failure=True)))
+    admitted = []
+
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
+        admitted.append((delivery_id, message, notification_category))
+        return {"status": "queued", "message": message, "delivery_id": delivery_id}
+
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "bot"})
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", fake_deliver)
+
+    S.tick(verbose=False)
+    S.tick(verbose=False)
+
+    assert [(key, category) for key, _, category in admitted] == [(queued, "diagnostic")]
+    assert 'Cronjob "Digest" output' in admitted[0][1] and "the report" in admitted[0][1]
+    assert json.loads((root / f"{queued}.json").read_text())["status"] == "transferred"
+    assert json.loads((root / f"{claimed}.json").read_text())["status"] == "claimed"

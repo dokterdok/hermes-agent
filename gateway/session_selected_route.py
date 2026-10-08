@@ -580,11 +580,14 @@ def supports_files_runtime(runtime):
 def supports_files_agent(agent):
     """Post-setup closed positive set, including init-time fallback/client drift."""
     from openai import OpenAI
-    from anthropic import Anthropic
     mode = getattr(agent, 'api_mode', None)
     if (getattr(agent, 'acp_command', None) or getattr(agent, 'provider', None) == 'moa'):
         return False
     if mode == 'anthropic_messages':
+        try:
+            from anthropic import Anthropic
+        except ImportError:
+            return False
         return type(getattr(agent, '_anthropic_client', None)) is Anthropic
     return mode in {'chat_completions', 'codex_responses'} and type(getattr(agent, 'client', None)) is OpenAI
 
