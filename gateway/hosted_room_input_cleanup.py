@@ -38,7 +38,6 @@ def remove_sealed_copy(path, copy):
 
 
 def _remove_windows(path, copy):
-    import msvcrt
     import ntsecuritycon
     import pywintypes
     import win32api
@@ -46,45 +45,79 @@ def _remove_windows(path, copy):
     import win32file
 
     flags = win32file.FILE_FLAG_BACKUP_SEMANTICS | win32file.FILE_FLAG_OPEN_REPARSE_POINT
-    with ExitStack() as held:
-        for component in [*reversed(path.parent.parents), path.parent]:
-            access = (win32con.GENERIC_READ | win32con.GENERIC_WRITE
-                      if component == path.parent else ntsecuritycon.FILE_READ_ATTRIBUTES)
-            try:
-                directory = win32file.CreateFile(str(component), access, win32con.FILE_SHARE_READ,
-                    None, win32con.OPEN_EXISTING, flags, None)
-            except pywintypes.error as exc:
-                if exc.winerror == 2:
-                    return True
-                raise
-            held.callback(directory.Close)
-            attributes = win32file.GetFileInformationByHandle(directory)[0]
-            if (attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT
-                    or not attributes & win32con.FILE_ATTRIBUTE_DIRECTORY):
-                raise ValueError('sealed input directory changed')
-        try:
-            leaf = win32file.CreateFile(str(path), win32con.GENERIC_READ | ntsecuritycon.DELETE,
-                win32con.FILE_SHARE_READ, None, win32con.OPEN_EXISTING,
-                win32file.FILE_FLAG_OPEN_REPARSE_POINT, None)
-        except pywintypes.error as exc:
-            if exc.winerror != 2:
-                raise
-        else:
-            try:
-                attributes = win32file.GetFileInformationByHandle(leaf)[0]
-                if attributes & (win32con.FILE_ATTRIBUTE_REPARSE_POINT | win32con.FILE_ATTRIBUTE_DIRECTORY):
-                    raise ValueError('sealed input entry changed')
+    native = copy['namespace'] == 'native'
+    container = None
+    flush_parent = None
+    try:
+        with ExitStack() as held:
+            for component in [*reversed(path.parent.parents), path.parent]:
+                access = (win32con.GENERIC_READ | win32con.GENERIC_WRITE
+                          if component == path.parent or native and component == path.parent.parent
+                          else ntsecuritycon.FILE_READ_ATTRIBUTES)
+                if native and component == path.parent:
+                    access |= ntsecuritycon.DELETE
+                try:
+                    directory = win32file.CreateFile(str(component), access, win32con.FILE_SHARE_READ,
+                        None, win32con.OPEN_EXISTING, flags, None)
+                except pywintypes.error as exc:
+                    if exc.winerror == 2:
+                        if container is not None:
+                            win32file.FlushFileBuffers(container)
+                        return True
+                    raise
+                held.callback(directory.Close)
+                attributes = win32file.GetFileInformationByHandle(directory)[0]
+                if (attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT
+                        or not attributes & win32con.FILE_ATTRIBUTE_DIRECTORY):
+                    raise ValueError('sealed input directory changed')
+                if native and component == path.parent.parent:
+                    container = directory
+            _remove_windows_leaf(path, copy)
+            win32file.FlushFileBuffers(directory)
+            if native:
                 process = win32api.GetCurrentProcess()
-                duplicate = win32api.DuplicateHandle(process, leaf, process, 0, False,
-                                                      win32con.DUPLICATE_SAME_ACCESS)
-                fd = msvcrt.open_osfhandle(duplicate.Detach(), os.O_RDONLY | os.O_BINARY)
-                with os.fdopen(fd, 'rb') as source:
-                    _verified_source(source, copy)
-                    win32file.SetFileInformationByHandle(leaf, win32file.FileDispositionInfo, True)
-            finally:
-                leaf.Close()
-        win32file.FlushFileBuffers(directory)
+                flush_parent = win32api.DuplicateHandle(process, container, process, 0, False,
+                                                        win32con.DUPLICATE_SAME_ACCESS)
+                try:
+                    win32file.SetFileInformationByHandle(directory, win32file.FileDispositionInfo, True)
+                except pywintypes.error as exc:
+                    if exc.winerror != 145:  # Other names in this digest directory still own it.
+                        raise
+        if flush_parent is not None:
+            win32file.FlushFileBuffers(flush_parent)
+    finally:
+        if flush_parent is not None:
+            flush_parent.Close()
     return True
+
+
+def _remove_windows_leaf(path, copy):
+    import msvcrt
+    import ntsecuritycon
+    import pywintypes
+    import win32api
+    import win32con
+    import win32file
+
+    try:
+        leaf = win32file.CreateFile(str(path), win32con.GENERIC_READ | ntsecuritycon.DELETE,
+            win32con.FILE_SHARE_READ, None, win32con.OPEN_EXISTING,
+            win32file.FILE_FLAG_OPEN_REPARSE_POINT, None)
+    except pywintypes.error as exc:
+        if exc.winerror != 2:
+            raise
+        return
+    with ExitStack() as held:
+        held.callback(leaf.Close)
+        attributes = win32file.GetFileInformationByHandle(leaf)[0]
+        if attributes & (win32con.FILE_ATTRIBUTE_REPARSE_POINT | win32con.FILE_ATTRIBUTE_DIRECTORY):
+            raise ValueError('sealed input entry changed')
+        process = win32api.GetCurrentProcess()
+        duplicate = win32api.DuplicateHandle(process, leaf, process, 0, False, win32con.DUPLICATE_SAME_ACCESS)
+        fd = msvcrt.open_osfhandle(duplicate.Detach(), os.O_RDONLY | os.O_BINARY)
+        with os.fdopen(fd, 'rb') as source:
+            _verified_source(source, copy)
+            win32file.SetFileInformationByHandle(leaf, win32file.FileDispositionInfo, True)
 
 
 @contextmanager
@@ -144,12 +177,29 @@ def _finish_quarantine(directory, quarantine, name, copy):
 
 
 def _remove_posix(path, copy):
+    import errno
+
     with ExitStack() as held:
         try:
-            directory = held.enter_context(_parent_fd(path.parent))
+            container = held.enter_context(_parent_fd(path.parent.parent))
         except FileNotFoundError:
             return True
-        return _quarantine_posix(directory, path.name, copy)
+        try:
+            directory = os.open(path.parent.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=container)
+        except FileNotFoundError:
+            os.fsync(container)
+            return True
+        held.callback(os.close, directory)
+        removed = _quarantine_posix(directory, path.name, copy)
+        if removed and copy['namespace'] == 'native':
+            try:
+                # rmdir cannot follow a substituted symlink or remove a nonempty directory.
+                os.rmdir(path.parent.name, dir_fd=container)
+            except OSError as exc:
+                if exc.errno not in {errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST, errno.ENOTDIR}:
+                    raise
+            os.fsync(container)
+        return removed
 
 
 def _quarantine_posix(directory, name, copy):

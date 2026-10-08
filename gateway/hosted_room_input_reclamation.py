@@ -121,6 +121,12 @@ def _collect(db, *, epoch, limit, namespace):
                 continue  # Uncertain bytes/identity never authorize deletion.
         return selected, len(rows)
     selected, scanned = db._execute_write(seal)  # Seal MUST commit before the first unlink.
+    removed = _remove_selected_copies(db, epoch=epoch, selected=selected)
+    return {'scanned': scanned, 'sealed': len(selected), 'removed': removed}
+
+
+def _remove_selected_copies(db, *, epoch, selected):
+    """Drain only committed seals, rechecking live custody on the accepting writer."""
     removed = 0
     for copy_id, generation in selected:
         def unlink(conn):
@@ -134,12 +140,20 @@ def _collect(db, *, epoch, limit, namespace):
             if not remove_sealed_copy(path, row):
                 return 0
             conn.execute("UPDATE input_custody_copies SET state='removed' WHERE copy_id=?", (copy_id,))
+            # A legacy native release uses this row only as a crash journal.
+            # Indexed preparations/receipts keep their generation evidence.
+            if row['namespace'] == 'native':
+                conn.execute('''DELETE FROM input_custody_copies WHERE copy_id=? AND state='removed'
+                    AND NOT EXISTS(SELECT 1 FROM input_custody_items WHERE copy_id=?)
+                    AND NOT EXISTS(SELECT 1 FROM input_custody_native_items WHERE copy_id=?)
+                    AND NOT EXISTS(SELECT 1 FROM input_custody_refs WHERE copy_id=?)
+                    AND NOT EXISTS(SELECT 1 FROM input_custody_branch_refs WHERE copy_id=?)''', (copy_id,) * 5)
             return 1
         try:
             removed += db._execute_write(unlink)
         except (OSError, ValueError):
             continue  # The earlier committed seal survives; a later pass can finish.
-    return {'scanned': scanned, 'sealed': len(selected), 'removed': removed}
+    return removed
 
 
 def collect_working_copies(db, *, epoch, limit=64):
