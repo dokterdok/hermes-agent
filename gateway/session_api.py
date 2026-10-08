@@ -36,7 +36,7 @@ def _pin_api_identity(runner, source, *, transport_profile=None):
     return identity.transport_profile if identity is not None else None
 
 
-def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None):
+def bind_api_session(authority, session_id, *, hosted_dispatch=None, hosted_origin_home=None, declared_key=None):
     """Only the authenticated API edge may reserve an API source; never public RPC."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
@@ -45,7 +45,8 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
     if hosted_dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch
         dispatch = HostedMemberDispatch.from_mapping(hosted_dispatch)
-        room_identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
+        room_identity = [hosted_origin_home or dispatch.home_install_id, dispatch.room_id,
+                         dispatch.member_id, dispatch.target_profile]
         expected = 'room_' + hashlib.sha256('\0'.join(room_identity).encode()).hexdigest()[:32]
         if expected != session_id:
             raise RuntimeStoreError('admission_conflict')

@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 
+import psutil
 from websockets.asyncio.client import connect
 from tests.gateway.test_normal_runtime_boot import control
 
@@ -69,11 +70,43 @@ def websocket(home, desc):
                    subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + grant['ticket']])
 
 
+class DaemonProcess(subprocess.Popen):
+    """Crash the authenticated gateway, whose Windows venv launcher has another PID."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.launcher = psutil.Process(self.pid)
+        self.gateway = None
+
+    def identify(self, descriptor):
+        gateway = psutil.Process(descriptor['pid'])
+        assert gateway == self.launcher or self.launcher in gateway.parents()
+        self.gateway = gateway  # psutil retains birth identity to reject PID reuse.
+
+    def kill(self):
+        try:
+            targets = [self.gateway] if self.gateway is not None else self.launcher.children(recursive=True)
+        except psutil.NoSuchProcess:
+            targets = []
+        # A gateway crash leaves its independent workers alive, just as SIGKILL does.
+        for target in targets:
+            try:
+                target.kill()
+                target.wait(timeout=10)
+            except psutil.NoSuchProcess:
+                pass
+            assert not target.is_running()
+        try:
+            self.launcher.kill()
+        except psutil.NoSuchProcess:
+            pass
+
+
 @contextmanager
 def daemon(root, home, env, *, barrier, fixture='local_recovery_daemon.py'):
     command = [sys.executable, str(root / 'tests/gateway/fixtures' / fixture)] if barrier else [sys.executable, '-m', 'gateway.run']
     with (home / ('first.log' if barrier else 'restart.log')).open('w+') as log:
-        proc = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+        proc = DaemonProcess(command, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 120
             desc = {}
@@ -88,10 +121,10 @@ def daemon(root, home, env, *, barrier, fixture='local_recovery_daemon.py'):
             log.flush()
             log.seek(0)
             assert desc.get('state') == 'ready', log.read()
+            proc.identify(desc)
             yield proc, desc
         finally:
-            if proc.poll() is None:
-                proc.kill()
+            proc.kill()
             proc.wait(timeout=10)
 
 

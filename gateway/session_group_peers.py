@@ -67,14 +67,11 @@ def _invite(authority, params, *, actor_subject=None):
         raise RuntimeStoreError('room_link_unavailable')
     if 'request_id' in params or 'requested_at' in params:
         from gateway.session_group_invitations import issue
-        invitation, issued = issue(authority, actor_subject, params,
-            lambda conn: _issue_invitation(_api_server(authority), params, 'default', conn=conn))
-        if issued:
-            from gateway.hosted_room_peer import decode_room_grant
-            from gateway.platforms.api_server_room_grants import _observe_invitation_authority
-            adapter = _api_server(authority)
-            claims = decode_room_grant(adapter._room_grant_secret(), invitation['grant'], permission='status')
-            _observe_invitation_authority(adapter, claims)
+        from gateway.platforms.api_server_room_grants import _publish_frozen_invitation
+        adapter = _api_server(authority)
+        invitation, _ = issue(authority, actor_subject, params,
+            lambda conn, record: _issue_invitation(adapter, params, 'default', conn=conn, commit_receipt=record),
+            lambda conn, response: _publish_frozen_invitation(adapter, params, response, conn))
     else:
         invitation = _issue_invitation(_api_server(authority), params, 'default')
     return {'grant': invitation['grant'], 'target_profile': invitation['target_profile'],
@@ -114,6 +111,8 @@ def probe_route(client, grant, catalog, scope):
         raise RuntimeStoreError(reason) from exc
     except HostedRoomPeerError as exc:
         raise RuntimeStoreError('peer_target_mismatch') from exc
+    if probe.get('retirement_only') is True:
+        raise RuntimeStoreError('peer_target_unsupported')
     if live != catalog or any(probe.get(k) != v for k, v in scope.items()):
         raise RuntimeStoreError('peer_target_mismatch')
 
