@@ -1596,6 +1596,7 @@ export interface RoomDriverStatus {
   pending_actions: Record<string, unknown>[]
   peer_routes: PeerRouteStatus[]
   peer_cleanup?: Record<string, unknown>[] | null
+  peer_retirements?: Record<string, unknown>[] | null
   retiring?: boolean | null
   replication?: Record<string, unknown> | null
 }
@@ -1653,6 +1654,7 @@ export interface GroupsDisbandParams {
 }
 export interface GroupsDisbandResult {
   tombstone: RoomTombstone
+  retirements?: Record<string, unknown>[]
 }
 export interface RoomTombstone {
   room_id: string
@@ -1831,6 +1833,8 @@ export interface GroupsPeerInviteParams {
   passive_only?: boolean | null
   successor?: boolean | null
   custody_only?: boolean | null
+  retirement_only?: boolean | null
+  previous_authority?: Record<string, unknown> | null
 }
 export interface GroupsPeerInviteResult {
   grant: string
@@ -2129,6 +2133,19 @@ export interface BrowserControllerParams {
 }
 export interface BrowserControllerDetachResult {
   detached?: boolean
+}
+export interface GroupsPeerRetirementsParams {
+  profile?: string | null
+  room_id?: string | null
+}
+export interface GroupsPeerRetireResult {
+  retirements: Record<string, unknown>[]
+}
+export interface GroupsPeerRetireParams {
+  profile?: string | null
+  room_id: string
+  retirement_id: string
+  grant?: string | null
 }
 export interface I18nLanguagesResult {
   languages: LanguageOption[]
@@ -5420,6 +5437,10 @@ export interface RpcMethods {
   'groups.peer.invite': { params: GroupsPeerInviteParams; result: GroupsPeerInviteResult }
   /** Register and probe one scoped peer route on the room home. */
   'groups.peer.register': { params: GroupsPeerRegisterParams; result: GroupsPeerRegisterResult }
+  /** Retry authority retirement with an optional fresh exact-scope target grant; never reopen execution. */
+  'groups.peer.retire': { params: GroupsPeerRetireParams; result: GroupsPeerRetireResult }
+  /** List retained peer-authority retirement obligations, including ended rooms. */
+  'groups.peer.retirements': { params: GroupsPeerRetirementsParams; result: GroupsPeerRetireResult }
   /** Revoke one target-issued grant using its exact profile scope. */
   'groups.peer.revoke': { params: GroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
   /** Continue a replicated room on this gateway at epoch + 1; requires confirm=true. Refused (4118, reason authority_takeover_disabled) until exclusive-authority recovery exists. */
@@ -5878,6 +5899,8 @@ export const RPC_METHODS = [
   'groups.log',
   'groups.peer.invite',
   'groups.peer.register',
+  'groups.peer.retire',
+  'groups.peer.retirements',
   'groups.peer.revoke',
   'groups.promote',
   'groups.rename',
