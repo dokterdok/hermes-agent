@@ -1,10 +1,12 @@
 """Bounded logical-attempt preparation during the owning authority's lifetime."""
 import asyncio
 import logging
+import sqlite3
 
 from gateway.session_authorities import owner_scope
-from hermes_state_errors import is_transient_sqlite_error
+from hermes_state_errors import StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_logical_attempts import prepare_logical_attempt_index, record_logical_preparation_worker
+from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 _BATCH_SIZE = 128
@@ -40,8 +42,11 @@ async def _drain(authority, stopped):
             try:
                 await asyncio.to_thread(record_logical_preparation_worker, authority.db,
                                        epoch=authority.epoch, state='failed')
-            except Exception:
-                pass  # a closed/replaced/stale store cannot accept this owner's verdict
+            except (sqlite3.Error, StateDbReplacedError, RuntimeStoreError) as verdict_error:
+                # A retired/failed store cannot accept this owner's verdict.
+                reason = verdict_error.reason if isinstance(verdict_error, RuntimeStoreError) else type(verdict_error).__name__
+                logger.warning('Could not persist logical-attempt failure for profile %s (%s)',
+                               authority.profile_id, reason)
             logger.exception('Logical-attempt preparation stopped for profile %s', authority.profile_id)
             return
         if step['complete']:
@@ -76,5 +81,5 @@ async def stop_logical_preparation(authority):
             try:
                 await asyncio.to_thread(record_logical_preparation_worker, authority.db,
                                        epoch=authority.epoch, state='stopped')
-            except Exception:
+            except (sqlite3.Error, StateDbReplacedError, RuntimeStoreError):
                 logger.debug('Could not record the stopped preparation owner', exc_info=True)

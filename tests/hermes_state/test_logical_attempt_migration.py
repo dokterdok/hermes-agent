@@ -167,6 +167,7 @@ def test_replace_and_drop_cannot_turn_projection_loss_into_new(tmp_path, retired
             assert lookup(db, task='fresh') is None
 
 
+@pytest.mark.platforms("linux", "macos")
 def test_replaced_database_is_unavailable_not_stale_absence(tmp_path):
     path = tmp_path / 'state.db'
     replacement = tmp_path / 'replacement.db'
@@ -204,3 +205,18 @@ def test_scoped_live_damage_never_becomes_absence_or_foreign_hold(tmp_path):
         failed = prepare(db)
         assert failed['error'] == 'scoped_live_corruption' and not failed['complete']
         assert lookup(db, sid='unrelated') is None
+
+
+@pytest.mark.platforms("windows")
+def test_open_database_replacement_is_refused_and_projection_remains_owned(tmp_path):
+    path, replacement = tmp_path / 'state.db', tmp_path / 'replacement.db'
+    with SessionDB(replacement) as other:
+        assert prepare(other)['complete']
+    with SessionDB(path) as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        accepted = accept(db, epoch)
+        assert prepare(db)['complete']
+        with pytest.raises(PermissionError):
+            replacement.replace(path)
+        assert lookup(db)['admission_id'] == accepted['admission_id']
+        assert lookup(db, task='fresh') is None
