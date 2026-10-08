@@ -109,9 +109,10 @@ def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
-    service.local_profiles = lambda: ('default',)
+    service.local_profiles = lambda: ('default', 'ops')
     service.create_room(room_id='room-1', name='Approval room',
-                        members=[{'member_id': 'local', 'profile': 'default', 'handle': 'hermes'}])
+                        members=[{'member_id': 'local', 'profile': 'default', 'handle': 'hermes'},
+                                 {'member_id': 'ops', 'profile': 'ops', 'handle': 'ops'}])
     _start_approval_task(service, task_id='task-local-1', member_id='local', profile='default')
     service._set_pending_action(
         "room-1",
