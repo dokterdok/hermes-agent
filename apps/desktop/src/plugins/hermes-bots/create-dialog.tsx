@@ -33,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
   Textarea,
+  Tip,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
@@ -1157,16 +1158,17 @@ function GroupCreateSelection({selected, visible, allMeta, checked, createPendin
                 key={botRosterKey(bot)}
                 variant="muted"
               >
+                <Tip label={b.group.removeFromSelection}>
                 <RowButton
                   disabled={createPending}
                   onClick={() =>
                     onSelection(botRosterKey(bot), false)
                   }
-                  title={b.group.removeFromSelection}
                 >
                   {displayName(bot, botRosterMeta(bot, allMeta))}
                   <Codicon className="text-[0.6rem]" name="close" />
                 </RowButton>
+                </Tip>
               </Badge>
             ))}
           </div>

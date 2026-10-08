@@ -9,7 +9,20 @@ import threading
 from fastapi import FastAPI
 from hermes_cli.pty_session import run_reaper
 
-_log = logging.getLogger("hermes_cli.web_server")
+logger = logging.getLogger("hermes_cli.web_server")
+
+
+def _unlink_pty_markers(app: FastAPI) -> None:
+    """Second pass after ``PTY_REGISTRY.close_all()``: drop channel markers left in app state,
+    including stale paths from sessions reaped earlier (``PtySession.close()`` only removes
+    markers owned by live registry sessions)."""
+    from hermes_cli.web_server import _get_pty_active_session_files
+
+    for marker in set(_get_pty_active_session_files(app).values()):
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @asynccontextmanager
@@ -66,7 +79,7 @@ async def standalone_lifespan(app: "FastAPI"):
     try:
         tui_gateway.server.install_tui_message_injector()
     except Exception:
-        _log.warning("TUI message injector did not install", exc_info=True)
+        logger.warning("TUI message injector did not install", exc_info=True)
 
     hosted_room_start_cancel = threading.Event()
 
@@ -74,7 +87,7 @@ async def standalone_lifespan(app: "FastAPI"):
         try:
             _hosted_groups.start_hosted_room_service()
         except Exception:
-            _log.exception("Hosted Group Chat recovery failed during backend startup")
+            logger.exception("Hosted Group Chat recovery failed during backend startup")
         finally:
             if hosted_room_start_cancel.is_set():
                 _hosted_groups.stop_hosted_room_service(timeout=1.0)
@@ -106,7 +119,7 @@ async def standalone_lifespan(app: "FastAPI"):
 
             _reap_unsupervised_gateway_orphans(min_age_s=_REAP_MIN_AGE_SECONDS)
         except Exception:
-            _log.exception("Desktop startup: orphan gateway reap failed")
+            logger.exception("Desktop startup: orphan gateway reap failed")
 
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
@@ -139,6 +152,10 @@ async def standalone_lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
+    # Nous free tier: the ONE place its identity is created. Inventories credentials, mints only
+    # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
+    # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's
+    # first setup.status waits on the record (bounded) instead.
     from hermes_cli.free_tier_bootstrap import start_background_bootstrap
 
     start_background_bootstrap()
@@ -149,7 +166,7 @@ async def standalone_lifespan(app: "FastAPI"):
         try:
             tui_gateway.server.clear_tui_message_injector()
         except Exception:
-            _log.debug("TUI message injector clear skipped", exc_info=True)
+            logger.debug("TUI message injector clear skipped", exc_info=True)
         hosted_room_start_cancel.set()
         _hosted_groups.stop_hosted_room_service(timeout=5.0)
         hosted_room_start_thread.join(timeout=1.0)
@@ -160,13 +177,21 @@ async def standalone_lifespan(app: "FastAPI"):
         auto_archive_task.cancel()
         eager_reconcile_thread.join()
         await PTY_REGISTRY.close_all()
+
+        # PtySession.close() removes markers owned by live registry sessions.
+        # This second pass cleans any channel markers left in app state,
+        # including stale paths from sessions reaped earlier.
+        _unlink_pty_markers(app)
+
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
             from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
 
             shutdown_local_runtime()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:
+            # Shutdown boundary: a supervisor that fails to stop must not skip the
+            # managed-gateway teardown below; log it so the orphan is diagnosable.
+            logger.warning("managed local runtime shutdown failed", exc_info=True)
         if desktop_owned:
             _terminate_desktop_managed_gateway()
 
@@ -192,6 +217,7 @@ async def http_lifespan(app: FastAPI):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await PTY_REGISTRY.close_all()
+        _unlink_pty_markers(app)
 
 
 @asynccontextmanager
