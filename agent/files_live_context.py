@@ -12,6 +12,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 import weakref
+import sqlite3
 
 
 FILES_ERROR_OMITTED = 'Provider error details omitted: request contains prepared Files content.'
@@ -34,7 +35,8 @@ def native_files_refusal(agent, messages):
     if not (isinstance(getattr(agent, '_persist_user_message_override', None), FilesUserTranscript)
             or any(files_entry(agent, row) is not None for row in messages)):
         return None
-    detail = 'Prepared Files input is not supported by codex_app_server; no native turn was started.'
+    detail = ('This Bot can’t read attachments with its current connection. Use a Bot with file support, '
+              'or send the message without attachments.')
     return safe_files_result(agent, {
         'final_response': detail, 'error': detail, 'messages': messages,
         'api_calls': 0, 'completed': False, 'failed': True,
@@ -348,7 +350,7 @@ class FilesReplayBindings:
                 return
             try:
                 active = agent._session_db.get_messages(session_id)
-            except Exception:
+            except (OSError, sqlite3.Error, RuntimeError):
                 return
             from agent.memory_manager import sanitize_context
             by_id = {r['id']: r for r in active}

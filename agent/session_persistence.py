@@ -593,4 +593,4 @@ class SessionPersistenceMixin:
         _save_trajectory_to_file(trajectory, self.model, completed)
 
     _extract_api_error_context = _forward_static("agent.agent_runtime_helpers", "extract_api_error_context")
-    _dump_api_request_debug = _forward("agent.agent_runtime_helpers", "dump_api_request_debug")
+    _dump_api_request_debug = _forward("agent.api_request_debug", "dump_api_request_debug")

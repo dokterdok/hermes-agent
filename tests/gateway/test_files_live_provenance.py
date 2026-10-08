@@ -93,36 +93,33 @@ def test_gateway_provenance_failure_never_expands(live, monkeypatch, fault):
     live.ctx.history = live.store.load_transcript('owned')
     row_id = live.db.get_messages('owned')[0]['id']
     other = None
-    if fault == 'missing_id':
-        live.ctx.history[0].pop('message_id')
-    elif fault == 'forged_row':
-        live.ctx.history[0]['_row_id'] = row_id + 100
-    elif fault == 'duplicate_source':
-        live.ctx.history.extend(copy.deepcopy(live.ctx.history))
-    elif fault == 'duplicate_sql':
-        live.db.append_message('owned', 'user', content=SAFE, platform_message_id='admission-one')
-    elif fault == 'inactive_original':
-        live.db._conn.execute('UPDATE messages SET active=0 WHERE id=?', (row_id,))
-        live.db._conn.commit()
-    elif fault == 'compacted_clone':
-        rows = live.db.get_messages('owned')
-        live.db.archive_and_compact('owned', rows)
-    elif fault == 'wrong_db':
+    if fault == 'wrong_db':
         other = SessionDB(live.path / 'other.db')
         other.create_session(session_id='owned', source='api_server')
         other.append_message('owned', 'user', content=SAFE, platform_message_id='admission-one')
         assert other.get_messages('owned')[0]['id'] == row_id
         live.agent._session_db = other
-    elif fault == 'wrong_session':
-        live.agent.session_id = 'different-physical-session'
-    elif fault == 'read_failure':
-        monkeypatch.setattr(live.db, 'get_messages', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('read failed')))
-    elif fault == 'changed_content':
-        live.ctx.history[0]['content'] += ' rewritten'
-    elif fault == 'mirror':
-        live.ctx.history[0]['mirror'] = True
-    elif fault == 'lost_history':
-        live.ctx.history = []
+    else:
+        def deactivate():
+            live.db._conn.execute('UPDATE messages SET active=0 WHERE id=?', (row_id,))
+            live.db._conn.commit()
+
+        faults = {
+            'missing_id': lambda: live.ctx.history[0].pop('message_id'),
+            'forged_row': lambda: live.ctx.history[0].update(_row_id=row_id + 100),
+            'duplicate_source': lambda: live.ctx.history.extend(copy.deepcopy(live.ctx.history)),
+            'duplicate_sql': lambda: live.db.append_message(
+                'owned', 'user', content=SAFE, platform_message_id='admission-one'),
+            'inactive_original': deactivate,
+            'compacted_clone': lambda: live.db.archive_and_compact('owned', live.db.get_messages('owned')),
+            'wrong_session': lambda: setattr(live.agent, 'session_id', 'different-physical-session'),
+            'read_failure': lambda: monkeypatch.setattr(
+                live.db, 'get_messages', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('read failed'))),
+            'changed_content': lambda: live.ctx.history[0].update(content=live.ctx.history[0]['content'] + ' rewritten'),
+            'mirror': lambda: live.ctx.history[0].update(mirror=True),
+            'lost_history': lambda: setattr(live.ctx, 'history', []),
+        }
+        faults[fault]()
     try:
         history, _, _ = live.turn._load_turn_history(live.agent, True)
         assert not live.agent._files_live_entries
