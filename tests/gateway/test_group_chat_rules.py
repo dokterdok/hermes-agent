@@ -10,7 +10,9 @@ from gateway import group_chat_rules as rules
 from gateway import hosted_rooms
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError
-from tests.gateway.group_chat_fixtures import OWNER, Bot, authority_for, message, runner_for
+from tests.gateway.group_chat_fixtures import (
+    OWNER, Bot, authority_for, finish_approval_task, message, runner_for, start_approval_task,
+)
 
 KEY, OTHER_KEY = 'a' * 64, 'b' * 64
 MEMBERS = [{'member_id': 'ada', 'profile': 'default', 'handle': 'ada', 'target': {'kind': 'local', 'profile': 'default'}},
@@ -44,6 +46,7 @@ def setup(tmp_path, monkeypatch):
 
 
 def pending(setup, request, *, member='ada', key=KEY, task='task-1', choices=('once', 'deny')):
+    start_approval_task(setup.service, 'mine', member, task)
     approval = {'kind': 'approval', 'prompt_id': request, 'command': 'rm -rf ./build',
                 'description': 'delete', 'choices': list(choices)}
     if key:
@@ -78,9 +81,11 @@ def test_always_approves_once_then_answers_the_same_operation_by_itself(setup):
     result = always(setup, first)
     assert result['status'] == 'resolved' and result['remembered'] == rules._rules(
         setup.db._conn)[0]['rule_id'][:6]
-    assert setup.service.approvals == [{'session_id': 'session-ada', 'request_id': 'req-1', 'choice': 'once'}]
+    assert setup.service.approvals == [{'session_id': 'session-ada', 'request_id': 'req-1', 'choice': 'once',
+                                       'expected_task_id': 'task-1', 'expected_execution_generation': 1}]
     pending(setup, 'req-2', task='task-2')
-    assert setup.service.approvals[-1] == {'session_id': 'session-ada', 'request_id': 'req-2', 'choice': 'once'}
+    assert setup.service.approvals[-1] == {'session_id': 'session-ada', 'request_id': 'req-2', 'choice': 'once',
+                                         'expected_task_id': 'task-2', 'expected_execution_generation': 1}
     pending(setup, 'req-2', task='task-2')  # the driver reports it again: answered only once
     assert len(setup.service.approvals) == 2
     rule, = rules.rules_for(setup.authority, setup.chat.key, hosted_rooms.room_state(setup.db.db_path, room_id='mine'))
@@ -108,9 +113,9 @@ def test_revoking_the_chat_or_a_new_room_authority_ends_the_rule(setup):
 
 def test_a_new_authority_epoch_never_reuses_an_old_rule(setup):
     always(setup, pending(setup, 'req-1'))
-    with setup.db._lock:
-        setup.db._conn.execute("UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id='mine'")
-        setup.db._conn.commit()
+    finish_approval_task(setup.service, 'mine')
+    hosted_rooms.claim_authority(setup.db.db_path, room_id='mine', expected_gateway_id=setup.gateway,
+                                 expected_epoch=1, new_gateway_id=setup.gateway, event_id='fixture-epoch-2')
     pending(setup, 'req-2', task='task-2')
     assert len(setup.service.approvals) == 1
     room = hosted_rooms.room_state(setup.db.db_path, room_id='mine')
@@ -126,8 +131,8 @@ def test_always_needs_an_exact_rememberable_local_request(setup):
     with pytest.raises(RuntimeStoreError, match='unsupported_operation'):
         always(setup, pending(setup, 'req-1', key=None))
     with pytest.raises(RuntimeStoreError, match='unsupported_operation'):
-        always(setup, pending(setup, 'req-2', member='far'))
-    exact = pending(setup, 'req-3')
+        always(setup, pending(setup, 'req-2', member='far', task='peer-task'))
+    exact = pending(setup, 'req-3', task='local-task')
     with pytest.raises(RuntimeError, match='no longer pending'):
         always(setup, {**exact, 'request_id': 'req-other'})
     for remember in (None, {'grant_id': setup.chat.key}, 'chat'):
@@ -153,7 +158,9 @@ def test_another_owners_room_or_a_foreign_grant_is_never_remembered(setup):
     hosted_rooms.create_room(setup.db.db_path, room_id='theirs', name='Theirs', members=MEMBERS,
                              authority_gateway_id=setup.gateway)
     action = {'kind': 'approval', 'task_id': 't', 'execution_generation': 1, 'session_id': 's', 'request_id': 'r',
-              'approval': {'remember_key': KEY, 'remember_context': 'Local, folder /work', 'command': 'x'}}
+              'approval': {'remember_key': KEY, 'remember_context': 'Local, folder /work', 'command': 'x',
+                           'prompt_id': 'r', 'choices': ['once', 'deny']}}
+    start_approval_task(setup.service, 'theirs', 'ada', 't')
     setup.service._set_pending_action('theirs', 'ada', action)
     result = setup.service.approve_room_task('theirs', member_id='ada', task_id='t', execution_generation=1,
                                              choice='always', request_id='r', remember=setup.remember)
@@ -208,10 +215,21 @@ def test_damaged_rules_are_ignored(setup):
     always(setup, pending(setup, 'req-1'))
     key, value = setup.db._conn.execute(
         "SELECT key, value FROM state_meta WHERE key LIKE 'gateway.messaging.rule.v1:%'").fetchone()
-    for damaged in ('{', json.dumps({**json.loads(value), 'operation_key': 'x'}),
-                    json.dumps({**json.loads(value), 'room_id': 'theirs'})):
+    for index, damaged in enumerate(('{', json.dumps({**json.loads(value), 'operation_key': 'x'}),
+                                    json.dumps({**json.loads(value), 'room_id': 'theirs'}))):
         setup.authority.db._execute_write(lambda conn: conn.execute(
             'UPDATE state_meta SET value=? WHERE key=?', (damaged, key)))
         assert rules._rules(setup.db._conn) == []
-        pending(setup, f'req-{damaged[:3]}', task='task-x' + damaged[:3])
+        pending(setup, f'req-damaged-{index}', task=f'task-damaged-{index}')
     assert len(setup.service.approvals) == 1
+
+
+def test_stop_fences_a_remembered_approval_without_restarting_the_task(setup):
+    exact = pending(setup, 'req-1')
+    always(setup, exact)
+    hosted_rooms.request_room_stop(setup.db.db_path, room_id='mine', cancel_id='stop-fixture',
+                                   expected_gateway_id=setup.gateway, expected_epoch=1)
+    pending(setup, 'req-2')
+    assert len(setup.service.approvals) == 1
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        setup.service.approve_room_task('mine', **{**exact, 'request_id': 'req-2'}, choice='once')

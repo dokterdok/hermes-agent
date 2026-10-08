@@ -250,6 +250,7 @@ def _worker_env(authority):
     secrets over a scrubbed base, never the launch profile's process environment (the same
     rule MCP stdio children and shell hooks follow). Single-profile gateways inherit the
     process env byte-for-byte, exactly as before."""
+    import os
     from pathlib import Path
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import _is_routed_home
@@ -265,7 +266,8 @@ def _worker_env(authority):
     from tools.environments.local import _scrub_credentials, build_subprocess_env, strip_launch_profile_env
     # The scrub removes credentials, not settings: the launch profile's TERMINAL_* policy and
     # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
-    env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True), home)
+    base = strip_launch_profile_env(os.environ.copy(), target_home=home)
+    env = build_subprocess_env(base=base, scrub_secrets=True)
     if routed:
         # Same rule as served_profile_child_env: env_passthrough / first-party carve-outs must not
         # forward launch-process provider credentials that no .env or source snapshot recorded.

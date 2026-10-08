@@ -7,6 +7,10 @@ import pytest
 
 @pytest.mark.parametrize("multiplex", [True, False])
 def test_secondary_profile_worker_gets_no_launch_credentials(tmp_path, monkeypatch, multiplex):
+    import os
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PATH", os.defpath)
     launch = tmp_path / ".hermes"
     sec = launch / "profiles" / "l106742sec"
     sec.mkdir(parents=True)

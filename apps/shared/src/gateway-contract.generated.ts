@@ -1460,6 +1460,7 @@ export interface GroupsCapabilitiesResult {
 /** ``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``. */
 export interface RoomLinkStatus {
   enabled: boolean
+  authentication?: 'proof-v2' | null
   profile?: string | null
   catalog?: RoomLinkCatalog | null
   endpoint?: RoomLinkEndpoint | null
@@ -1582,6 +1583,9 @@ export interface RoomDriverStatus {
   counts: Record<string, number>
   pending_actions: Record<string, unknown>[]
   peer_routes: PeerRouteStatus[]
+  peer_cleanup?: Record<string, unknown>[] | null
+  peer_retirements?: Record<string, unknown>[] | null
+  retiring?: boolean | null
 }
 export interface PeerRouteStatus {
   room_id: string
@@ -1635,6 +1639,7 @@ export interface GroupsDisbandParams {
 }
 export interface GroupsDisbandResult {
   tombstone: RoomTombstone
+  retirements?: Record<string, unknown>[]
 }
 export interface RoomTombstone {
   room_id: string
@@ -1670,6 +1675,8 @@ export interface GroupsRetryParams {
   profile?: string | null
   room_id: string
   task_id: string
+  member_id?: string | null
+  execution_generation?: number | null
 }
 export interface GroupsRetryResult {
   retried?: boolean
@@ -1749,6 +1756,9 @@ export interface GroupsPeerInviteParams {
   member_id?: string | null
   grant_id?: string | null
   ttl_seconds?: number | null
+  status_ttl_seconds?: number | null
+  retirement_only?: boolean | null
+  previous_authority?: Record<string, unknown> | null
 }
 export interface GroupsPeerInviteResult {
   grant: string
@@ -1871,6 +1881,19 @@ export interface BrowserControllerParams {
 }
 export interface BrowserControllerDetachResult {
   detached?: boolean
+}
+export interface GroupsPeerRetirementsParams {
+  profile?: string | null
+  room_id?: string | null
+}
+export interface GroupsPeerRetireResult {
+  retirements: Record<string, unknown>[]
+}
+export interface GroupsPeerRetireParams {
+  profile?: string | null
+  room_id: string
+  retirement_id: string
+  grant?: string | null
 }
 export interface I18nLanguagesResult {
   languages: LanguageOption[]
@@ -2876,6 +2899,8 @@ export interface ApprovalRespondParams {
   choice?: string | null
   all?: boolean | null
   request_id?: string | null
+  expected_hosted_task_id?: string | null
+  expected_hosted_execution_generation?: number | null
 }
 export interface ApprovalRespondResult {
   resolved: number
@@ -3496,6 +3521,7 @@ export interface SessionInterruptParams {
   session_id: string
   profile?: string | null
   expected_hosted_task_id?: string | null
+  expected_hosted_execution_generation?: number | null
 }
 export interface SessionInterruptResult {
   status: InterruptStatus
@@ -4426,6 +4452,57 @@ export interface OnboardingCatalogPlugin {
   app_state: CatalogAppState
   sentence: string
 }
+export interface GroupsDiscardParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  task_id: string
+  execution_generation: number
+}
+export interface GroupsDiscardResult {
+  discarded: boolean
+  task: RoomTaskReceipt
+}
+export interface GroupsAttachmentUploadParams {
+  profile?: string | null
+  room_id: string
+  upload_id: string
+  kind: string
+  name: string
+  mime: string
+  data_base64: string
+}
+export interface GroupsAttachmentResult {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+}
+export interface GroupsAttachmentDownloadParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  attachment_id: string
+}
+export interface GroupsAttachmentDownloadResult {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+  data_base64: string
+}
 export interface PromptReceiptParams {
   session_id: string
   admission_id: string
@@ -4628,59 +4705,6 @@ export interface WorkerPersistParams {
 }
 /** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
 export type WorkerPersistResult = Record<string, unknown>
-export interface GroupsAttachmentUploadParams {
-  profile?: string | null
-  room_id: string
-  upload_id: string
-  kind: string
-  name: string
-  mime: string
-  data_base64: string
-}
-export interface RoomAttachment {
-  attachment_id: string
-  kind: string
-  name: string
-  size: number
-  mime: string
-  sha256: string
-  state: string
-  created_at: number
-  idempotent: boolean
-  event_id?: string | null
-  [key: string]: unknown
-}
-export interface GroupsAttachmentDownloadParams {
-  profile?: string | null
-  room_id: string
-  event_id: string
-  attachment_id: string
-}
-export interface RoomAttachmentBytes {
-  attachment_id: string
-  kind: string
-  name: string
-  size: number
-  mime: string
-  sha256: string
-  state: string
-  created_at: number
-  idempotent: boolean
-  event_id?: string | null
-  data_base64: string
-  [key: string]: unknown
-}
-export interface GroupsDiscardParams {
-  profile?: string | null
-  room_id: string
-  member_id: string
-  task_id: string
-  execution_generation: number
-}
-export interface GroupsDiscardResult {
-  discarded?: boolean
-  task: RoomTaskReceipt
-}
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -5397,6 +5421,10 @@ export interface RpcMethods {
   'groups.peer.invite': { params: GroupsPeerInviteParams; result: GroupsPeerInviteResult }
   /** Register and probe one scoped peer route on the room home. */
   'groups.peer.register': { params: GroupsPeerRegisterParams; result: GroupsPeerRegisterResult }
+  /** Retry authority retirement with an optional fresh exact-scope target grant; never reopen execution. */
+  'groups.peer.retire': { params: GroupsPeerRetireParams; result: GroupsPeerRetireResult }
+  /** List retained peer-authority retirement obligations, including ended rooms. */
+  'groups.peer.retirements': { params: GroupsPeerRetirementsParams; result: GroupsPeerRetireResult }
   /** Revoke one target-issued grant using its exact profile scope. */
   'groups.peer.revoke': { params: GroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
   /** Continue a replicated room on this gateway at epoch + 1; requires confirm=true. */
@@ -5407,7 +5435,7 @@ export interface RpcMethods {
   'groups.replica_state': { params: GroupsReplicaStateParams; result: GroupsReplicaStateResult }
   /** Persist one authority-stamped replay page into the local replica store; idempotent. */
   'groups.replicate': { params: GroupsReplicateParams; result: GroupsReplicateResult }
-  /** Retry one indeterminate room task after explicit user confirmation. */
+  /** Retry one eligible room task; canonical controls require exact proven nonadmission. */
   'groups.retry': { params: GroupsRetryParams; result: GroupsRetryResult }
   /** Append one inert message.user event idempotently; the actor is server-owned. */
   'groups.send': { params: GroupsSendParams; result: GroupsSendResult }
@@ -5840,6 +5868,8 @@ export const RPC_METHODS = [
   'groups.log',
   'groups.peer.invite',
   'groups.peer.register',
+  'groups.peer.retire',
+  'groups.peer.retirements',
   'groups.peer.revoke',
   'groups.promote',
   'groups.rename',
@@ -6043,11 +6073,11 @@ export interface CanonicalRpcMethods {
   'cron.status': { params: CronAdmissionParams; result: CronStatusResult }
   /** Admit one cron firing into the owning profile's durable FIFO. */
   'cron.submit': { params: CronRunParams; result: CronSubmitResult }
-  /** Read one committed attachment for a live room viewer. */
-  'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: RoomAttachmentBytes }
-  /** Store one attachment for a later groups.send manifest (idempotent per upload_id). */
-  'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: RoomAttachment }
-  /** Discard one indeterminate room task after explicit user confirmation. */
+  /** Read bytes bound to a canonical room event, subject to current viewer authorization. */
+  'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: GroupsAttachmentDownloadResult }
+  /** Upload owner-authorized bytes for a canonical room message. */
+  'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: GroupsAttachmentResult }
+  /** Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop. */
   'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
   'kanban.run': { params: KanbanRunParams; result: KanbanRunResult }

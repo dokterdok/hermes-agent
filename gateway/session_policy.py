@@ -9,7 +9,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
-                           'yolo', 'safe_mode', 'ignore_user_config'})
+                           'yolo', 'safe_mode', 'ignore_user_config', 'room_plumbing'})
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 _ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp'}
@@ -89,6 +89,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
 
+    from gateway.session_local_plumbing import validate_policy
+    validate_policy(params)
     source = params.get('source', 'cli')
     if source == 'a2a':
         from gateway.session_a2a import build_forward_policy
@@ -295,7 +297,9 @@ def policy_for_source(runner, source):
     from gateway.config import Platform
     if source.platform != Platform.LOCAL:
         return None
-    adapter = runner._adapter_for_source(source)
+    # LOCAL launch policy belongs to its registered runtime profile, not the
+    # receiving transport used to deliver a routed native reply.
+    adapter = runner._adapters_for_profile(source.profile).get(Platform.LOCAL)
     if isinstance(adapter, LocalSessionAdapter) and adapter.authorize_source(source):
         policy = adapter.policies.get(source.chat_id)
         if policy is None:

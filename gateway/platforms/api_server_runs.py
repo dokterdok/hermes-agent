@@ -77,6 +77,9 @@ _ROOM_RETENTION_REQUEST_KEY = (
     RequestKey("hermes.room_run_retention_until", float) if RequestKey is not None
     else "hermes.room_run_retention_until")
 # Forwarded subagent lifecycle fields; free-text ones are secret-redacted.
+_ROOM_AUTHORITY_REQUEST_KEY = (
+    RequestKey("hermes.room_run_authority", tuple) if RequestKey is not None
+    else "hermes.room_run_authority")
 _SUBAGENT_EVENT_KEYS = (
     "goal", "task_count", "task_index", "subagent_id", "child_session_id", "delegation_id", "parent_id",
     "depth", "model", "tool_count", "status", "summary", "duration_seconds", "input_tokens",
@@ -239,20 +242,24 @@ def _initialize_run_state(self, *, store_factory) -> None:
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
-    return [
-        ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
+    from gateway.platforms.api_server_room_proof import wrap
+    return [(method, path, wrap(self, handler)) for method, path, handler in [
+        ("POST", "/v1/runs", self._handle_runs),
+        ("POST", "/v1/runs/stop", self._handle_stop_run),
+        ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
-        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
+        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]]
 
 
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
     return {
         "supported": True,
         "durable": self._run_idempotency_store.durable,
+        "cancel_by_key": self._run_idempotency_store.durable,
         "retention_seconds": store_type.RETENTION_SECONDS}
 
 
@@ -377,9 +384,15 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
     if self._room_grant_token(request):
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
-        parts = (claims[k] for k in (
-            "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
-            "member_id", "target_install_id", "target_profile"))
+        from gateway.platforms.api_server_run_authority import room_authority, room_namespace, room_run_scope
+        authority = room_authority(claims)
+        try:
+            request[_ROOM_AUTHORITY_REQUEST_KEY] = authority
+        except (AttributeError, TypeError):
+            setattr(request, "_hermes_room_run_authority", authority)
+        scope = room_run_scope(claims)
+        self._run_idempotency_store.observe_room_authority(scope, authority, namespace=room_namespace(claims), claims=claims)
+        return scope
     else:
         parts = (_api_server._api_request_profile.get() or "default",
                  self._expected_api_key() or "unauthenticated-test-listener")
@@ -394,6 +407,26 @@ def _check_run_auth(self, request: "web.Request", *, permission: str, _api_serve
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_api_server._openai_error)
     return None
+
+
+def _reserve_room_run(self, request, *args, **kwargs):
+    """Recheck a captured peer only for a new row, under the grant accepting writer.
+
+    This guard also survives a RunStore publication failure after a successful
+    grant commit. Existing run controls retain their original replay authority.
+    """
+    if not self._room_grant_token(request):
+        return self._run_idempotency_store.reserve(*args, **kwargs)
+    from gateway import hosted_rooms
+    from gateway.platforms.api_server_room_grants import _grant_db, _room_grant_claims
+    with hosted_rooms._transaction(_grant_db(self), immediate=True) as conn:
+        def authorized():
+            try:
+                _room_grant_claims(self, request, permission=_room_permission_for(request), conn=conn)
+                return True
+            except ValueError:
+                return False
+        return self._run_idempotency_store.reserve(*args, **kwargs, _authorize=authorized)
 
 
 def _owner_alive(owner_pid: int, owner_started: int) -> bool:
@@ -431,7 +464,10 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
             status="interrupted", error="The gateway restarted before this run settled.",
             last_event="run.interrupted", updated_at=time.time())
         self._run_idempotency_store.update_status(run_id, status)
-    self._run_statuses[run_id] = status
+    # Another process may own the live executor. Do not freeze its status in this
+    # process: subsequent polls must observe the owner's durable terminal receipt.
+    if status.get("status") in TERMINAL_STATUSES:
+        self._run_statuses[run_id] = status
     self._run_idempotency_ids.add(run_id)
     self._run_owners[run_id] = scope
     return status
@@ -488,6 +524,10 @@ def _accepted_response(run_id: str, status: str, gateway_session_key, *, replaye
 
 def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> "web.Response":
     """409 for a fingerprint conflict, else a 202 replay of the already-admitted run."""
+    if outcome == "authority_retired":
+        return _json_error(
+            _openai_error, "Room authority has advanced; this attempt cannot be admitted.",
+            code="run_history_retired", status=409)
     if outcome == "conflict":
         return _json_error(
             _openai_error, "Idempotency-Key was already used with a different request payload",
@@ -637,6 +677,17 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             _api_server._api_request_profile.reset(token)
 
 
+def _run_session_key(self, request, _openai_error):
+    """A room grant cannot select an unrelated conversation through the session header."""
+    key, error = self._parse_session_key_header(request)
+    if error is not None:
+        return key, error
+    if key and self._room_grant_token(request):
+        return key, _json_error(_openai_error, "Room grants cannot select an unrelated conversation.",
+                                code="invalid_room_dispatch", status=403)
+    return key, None
+
+
 def _run_idempotency_identity(self, request, body, gateway_session_key, idempotency_key) -> tuple:
     """``(principal scope, request fingerprint)`` for a keyed POST /v1/runs; ``("", "")`` unkeyed."""
     if not idempotency_key:
@@ -660,40 +711,11 @@ def _run_user_message(raw_input, _openai_error) -> tuple:
     return user_message, None
 
 
-def _admit_run_to_authority(
-    self, launch, run_id, session_history_delivery, _declared_selected,
-    idempotency_scope, idempotency_key, _openai_error,
-) -> Optional["web.Response"]:
-    """Admit a /v1/runs turn to the session authority FIFO -> ``None``, or the 409 refusal."""
-    from gateway.session_api_turn import admit_api_turn
-    from hermes_state_runtime import RuntimeStoreError
-    try:
-        with self._profile_scope(launch.request_profile):
-            launch.admission = admit_api_turn(self, user_message=launch.user_message,
-                conversation_history=launch.conversation_history, active_run_id=run_id,
-                run_owner_scope=self._run_owners[run_id],
-                turn_author=launch.turn_author,
-                history_from_session=session_history_delivery,
-                session_history_delivery='1' if session_history_delivery else '',
-                bind_declared_conversation=_declared_selected,
-                **launch.agent_kwargs)
-    except RuntimeStoreError as exc:
-        # A refused admission owns no run: drop every reservation so an exact
-        # retry is refused again instead of replaying a run nobody executes.
-        _forget_run(
-            self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-            self._run_statuses, self._run_owners, self._run_idempotency_ids)
-        if idempotency_key:
-            self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
-        return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
-    return None
-
-
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
     # Long-term memory scope header (see chat_completions for details).
-    gateway_session_key, key_err = self._parse_session_key_header(request)
+    gateway_session_key, key_err = _run_session_key(self, request, _openai_error)
     if key_err is not None:
         return key_err
     try:
@@ -741,8 +763,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     if idempotency_key:
         outcome, record = self._run_idempotency_store.lookup(
             idempotency_scope, idempotency_key, idempotency_fingerprint,
-            retention_until=_room_retention_until(request))
-        if outcome == "conflict" or (outcome == "reused" and record is not None):
+            retention_until=_room_retention_until(request),
+            room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
+        if outcome != "missing":
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
     # Enforce concurrency only for a genuinely new run.
     limited = self._concurrency_limited_response()
@@ -780,10 +803,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     initial_status = self._set_run_status(
         run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
     if idempotency_key:
-        outcome, record = self._run_idempotency_store.reserve(
+        outcome, record = _reserve_room_run(self, request,
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
             owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request))
+            retention_until=_room_retention_until(request),
+            room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
         if outcome != "created":
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
@@ -806,13 +830,14 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
     # Under session authority the same call admits the turn to the Bot Chat's own FIFO, which is
     # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
-    admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
-    if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
-        refused = _admit_run_to_authority(
-            self, launch, run_id, session_history_delivery, _declared_selected,
-            idempotency_scope, idempotency_key, _openai_error)
-        if refused is not None:
-            return refused
+    admitted = (
+        await self._admit_to_live_bot_chat(session_id, user_message, turn_author)
+        if selected_session_id and not _run_stop_requested(self, run_id) else None)
+    if admitted is None:
+        error = _admit_run_to_authority(self, request, launch, idempotency_key=idempotency_key,
+                                         idempotency_scope=idempotency_scope, _api_server=_api_server)
+        if error is not None:
+            return error
     self._activate_admitted_request()
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
@@ -824,6 +849,43 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+
+
+def _admit_run_to_authority(self, request, launch, *, idempotency_key, idempotency_scope, _api_server):
+    """Bind this reserved run to the canonical writer, retaining durable cancellation fences."""
+    if getattr(self.gateway_runner, 'session_authority', None) is None:
+        return None
+    from gateway.session_api_turn import admit_api_turn
+    from gateway.platforms.api_server_authority_runs import authorize_run_admission
+    from hermes_state_runtime import RuntimeStoreError
+    run_id = launch.run_id
+    try:
+        with self._profile_scope(launch.request_profile):
+            launch.admission = admit_api_turn(self, user_message=launch.user_message,
+                conversation_history=launch.conversation_history, active_run_id=run_id,
+                run_owner_scope=self._run_owners[run_id], turn_author=launch.turn_author,
+                history_from_session=launch.session_history_delivery,
+                session_history_delivery='1' if launch.session_history_delivery else '',
+                bind_declared_conversation=launch.declared_selected,
+                _authorize_write=authorize_run_admission(self, request, run_id), **launch.agent_kwargs)
+    except RuntimeStoreError as exc:
+        if self._run_idempotency_store.stop_requested(run_id):
+            from gateway.platforms.api_server_authority_runs import run_admission
+            if run_admission(self, run_id) is not None:
+                return _json_error(_api_server._openai_error, 'Run admission outcome is unknown.',
+                                   code='run_outcome_unknown', status=503)
+            # A failed accepting write and an exact absence check prove this
+            # reserved run cannot execute, even when policy/grant refusal won first.
+            self._set_run_status(run_id, 'cancelled', last_event='run.cancelled')
+            return _accepted_response(run_id, 'cancelled', launch.gateway_session_key, replayed=True)
+        # A refused admission owns no run. Stop fences remain durable even if a
+        # simultaneous refusal asks to release the provisional reservation.
+        _forget_run(self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+                    self._run_statuses, self._run_owners, self._run_idempotency_ids)
+        if idempotency_key:
+            self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
+        return _json_error(_api_server._openai_error, exc.reason, code=exc.reason, status=409)
+    return None
 
 
 def _run_usage(agent) -> Dict[str, int]:
@@ -897,9 +959,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
-            r = agent.run_conversation(
-                user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id, **author_kwargs)
+            if _run_stop_requested(self, run.run_id):
+                r = {"interrupted": True}
+            else:
+                r = agent.run_conversation(
+                    user_message=run.user_message, conversation_history=run.conversation_history,
+                    task_id=effective_task_id, **author_kwargs)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -937,8 +1002,8 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     The receipt is the only truth about the turn: ``settled`` completes the run with the owner's
     reply, a failed receipt fails it with the owner's classified reason. ``/stop`` cannot reach the
     owner's turn — the mailbox has no recall once a record is claimed — so a stop ends this run
-    as ``cancelled`` while the chat finishes on its own; the stop handler already reports that a
-    run without an in-process agent is not interruptible here.
+    as ``cancelled`` while the chat finishes on its own for ordinary API runs. A RoomLink Stop
+    must prove that execution ended, so room runs keep observing the owner's terminal receipt.
     """
     from gateway.platforms.api_server_bot_chat import await_live_delivery
 
@@ -957,7 +1022,8 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     try:
         self._set_run_status(run_id, "running", delivery_id=delivery_id)
         record = await await_live_delivery(
-            self, home, record, None, should_stop=lambda: run_id in self._stopping_run_ids)
+            self, home, record, None,
+            should_stop=lambda: run.agent_kwargs["room_dispatch"] is None and _run_stop_requested(self, run_id))
         if record["status"] in ("queued", "claimed"):
             _finish("cancelled", completed=False, partial=False, interrupted=True)
             return
@@ -1024,11 +1090,12 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("interrupted")
             return
         self._set_run_status(run_id, "running")
-        if run_id in self._stopping_run_ids:
+        if _run_stop_requested(self, run_id) and run.admission is None:
             _finish("cancelled")
             return
         if run.admission is not None:
-            from gateway.session_api_turn import observe_api_controls, observe_api_turn
+            from gateway.session_api_turn import observe_api_controls
+            from gateway.platforms.api_server_authority_runs import observe_run
             tool_cb = self._make_run_event_callback(run_id, loop)
 
             def _control_cb(event_type, prompt):
@@ -1047,8 +1114,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error))
 
             with observe_api_controls(run.admission, _control_cb):
-                result, usage = await observe_api_turn(
-                    run.admission, stream_delta_callback=_text_cb,
+                result, usage = await observe_run(
+                    self, run_id, run.admission, stream_delta_callback=_text_cb,
                     tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
@@ -1061,8 +1128,15 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-            result, usage, served_runtime = await _submit_api_worker(
+            worker = _submit_api_worker(
                 loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+            if run.agent_kwargs["room_dispatch"] is not None:
+                while not worker.done():
+                    await asyncio.wait({worker}, timeout=0.5)
+                    if _run_stop_requested(self, run_id) and run_id not in self._stopping_run_ids:
+                        _stop_loaded_run(self, run_id, self._run_statuses[run_id], agent,
+                                         self._active_run_tasks.get(run_id), _api_server=_api_server)
+            result, usage, served_runtime = await worker
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
@@ -1392,29 +1466,79 @@ async def _handle_steer_run(self, request: "web.Request", *, _api_server) -> "we
     return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
 
 
+def _run_stop_requested(self, run_id: str) -> bool:
+    return run_id in self._stopping_run_ids or (
+        run_id in self._run_idempotency_ids and self._run_idempotency_store.stop_requested(run_id))
+
+
+async def _handle_stop_run_admission(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """Stop a RoomLink generation, fencing late admission when no run exists yet."""
+    from gateway.platforms.api_server_room_dispatch import _validate_room_stop
+
+    try:
+        body = await request.json()
+        _validate_room_stop(self, request, body, _api_server=_api_server)
+        scope = self._run_idempotency_scope(request)
+    except (ValueError, TypeError) as exc:
+        return _room_grant_error_response(exc, _openai_error=_api_server._openai_error)
+    if not self._run_idempotency_store.durable:
+        return _json_error(
+            _api_server._openai_error, "Durable admission cancellation is unavailable.",
+            code="run_cancellation_unavailable", status=503)
+    run_id, now = f"run_{uuid.uuid4().hex}", time.time()
+    cancelled = {
+        "object": "hermes.run", "run_id": run_id, "status": "cancelled",
+        "admission_cancelled": True, "created_at": now, "updated_at": now}
+    outcome, record = _reserve_room_run(self, request,
+        scope, request.headers["Idempotency-Key"].strip(), "", run_id, cancelled,
+        retention_until=_room_retention_until(request), cancel_if_missing=True,
+        room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
+    if outcome == "authority_retired":
+        return _json_error(_api_server._openai_error, "Room authority has advanced.",
+                           code="run_history_retired", status=409)
+    run_id = str(record["run_id"])
+    status = self._durable_run_status(request, run_id) or record["status"]
+    return await _stop_owned_run(
+        self, run_id, status, self._active_run_agents.get(run_id), self._active_run_tasks.get(run_id),
+        _api_server=_api_server)
+
+
 async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web.Response":
-    """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
-    _openai_error = _api_server._openai_error
+    """Stop an exact run, or atomically cancel a RoomLink admission identity."""
+    if not request.match_info.get("run_id"):
+        return await _handle_stop_run_admission(self, request, _api_server=_api_server)
     run_id, status, agent, task, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
-    # A run whose turn a live Bot Chat owns (``_execute_run_via_live_owner``) is not an API
-    # admission: its stop is the legacy in-process task cancel below, never ``stop_run``.
-    if (getattr(self.gateway_runner, 'session_authority', None) is not None
-            and not (task is not None and status.get("delivery_id"))):
-        from gateway.platforms.api_server_authority_runs import stop_run
-        from hermes_state_runtime import RuntimeStoreError
-        try:
+    self._run_idempotency_store.request_stop(self._run_idempotency_scope(request), run_id)
+    return await _stop_owned_run(self, run_id, status, agent, task, _api_server=_api_server)
+
+
+async def _stop_owned_run(self, run_id, status, agent, task, *, _api_server):
+    from gateway.platforms.api_server_authority_runs import run_admission, stop_run
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        # A reservation may precede its canonical write; a live Bot Chat mailbox has
+        # separate ownership. Only an actual API admission enters canonical controls.
+        if run_admission(self, run_id) is not None:
             return web.json_response(await stop_run(self, run_id))
-        except RuntimeStoreError as exc:
-            return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+    except RuntimeStoreError as exc:
+        return _json_error(_api_server._openai_error, exc.reason, code=exc.reason, status=409)
+    return _stop_loaded_run(self, run_id, status, agent, task, _api_server=_api_server)
+
+
+def _stop_loaded_run(self, run_id, status, agent, task, *, _api_server):
     if status.get("status") in TERMINAL_STATUSES:
         return web.json_response(status)
-    if agent is None and task is None:
+    if agent is None and task is None and not _run_stop_requested(self, run_id):
         return _json_error(
-            _openai_error, f"Run is not active in this gateway process: {run_id}",
+            _api_server._openai_error, f"Run is not active in this gateway process: {run_id}",
             code="run_not_active", status=409)
+    if agent is None and task is None and run_id not in self._run_statuses:
+        # Its executor lives in another process; only that owner may publish terminal
+        # state. The durable intent will be consumed there, and polls read its receipt.
+        return web.json_response({"run_id": run_id, "status": "stopping"})
     self._set_run_status(run_id, "stopping", last_event="run.stopping")
     self._stopping_run_ids.add(run_id)
     if agent is not None:

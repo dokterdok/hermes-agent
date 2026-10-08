@@ -24,9 +24,11 @@ class HostedRoomPeerClient(Protocol):
     def prepare(self, *, room_id: str, profile: str, source: str, grant: str, create: bool,
                 expected_session_id: str | None = None) -> Mapping[str, Any] | None: ...
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]: ...
-    def history(self, *, room_id: str, profile: str, session_id: str, grant: str
+    def history(self, *, room_id: str, profile: str, session_id: str, grant: str,
+                task_id: str | None = None, execution_generation: int | None = None,
                 ) -> Sequence[Mapping[str, Any]]: ...
-    def status(self, *, room_id: str, profile: str, session_id: str, grant: str
+    def status(self, *, room_id: str, profile: str, session_id: str, grant: str,
+               task_id: str | None = None, execution_generation: int | None = None,
                ) -> Mapping[str, Any]: ...
     def stop(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any] | None: ...
     def stop_receipt(self, *, task_id: str, execution_generation: int, grant: str
@@ -92,7 +94,8 @@ class FailoverHostedRoomPeerClient:
         call.__name__ = method
         return call
 
-    prepare, dispatch, history, status, stop = map(_delegate, ("prepare", "dispatch", "history", "status", "stop"))
+    prepare, dispatch, history, status, stop, stop_receipt = map(
+        _delegate, ("prepare", "dispatch", "history", "status", "stop", "stop_receipt"))
     del _delegate
 
     def bind_room_scope(self, **kwargs):
@@ -135,6 +138,8 @@ def build_member_dispatch(
 
 class PeerHostedRoomTransport(InternalSessionRPC):
     """Translate runtime session operations into recipient-validated peer RPC."""
+
+    requires_terminal_stop_evidence = True
 
     def __init__(
         self, *, binding: HostedRoomBinding, route: PeerMemberRoute,
@@ -205,6 +210,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
             source_event_seq=self.source_event_seq, prompt=prompt,
             trace_id=self.route.trace_id or f"trace-{uuid.uuid4().hex}")
         self._dispatch = dispatch
+        self.task_id, self.execution_generation = task.task_id, execution_generation
         self._session_id = session_id
         result = self.client.dispatch(dispatch=dispatch.as_mapping(), grant=self.route.grant)
         if result.get("status") in {"settled", "failed", "cancelled"}:
@@ -213,22 +219,29 @@ class PeerHostedRoomTransport(InternalSessionRPC):
 
     def history(self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]:
         self._validate_coordinates(profile=profile, source=source)
-        return self.client.history(**self._scoped(profile=profile, session_id=session_id))
+        return self.client.history(**self._scoped(
+            profile=profile, session_id=session_id,
+            task_id=self.task_id, execution_generation=self.execution_generation))
 
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
         self._validate_coordinates(profile=profile, source=source)
-        return self.client.status(**self._scoped(profile=profile, session_id=session_id))
+        return self.client.status(**self._scoped(
+            profile=profile, session_id=session_id,
+            task_id=self.task_id, execution_generation=self.execution_generation))
 
     def interrupt(
-        self, *, profile: str, session_id: str, source: str, expected_task_id: str
+        self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_execution_generation: int,
     ) -> Mapping[str, Any] | None:
         self._validate_coordinates(profile=profile, source=source)
+        if type(expected_execution_generation) is not int or expected_execution_generation < 1:
+            return None
         dispatch = self._dispatch
         if dispatch is not None:
-            if dispatch.task_id != expected_task_id:
+            if (dispatch.task_id, dispatch.execution_generation) != (expected_task_id, expected_execution_generation):
                 return None
             return self.client.stop(dispatch=dispatch.as_mapping(), grant=self.route.grant)
-        if (self.task_id != expected_task_id or not self.execution_generation
+        if (self.task_id != expected_task_id or self.execution_generation != expected_execution_generation
                 or not hasattr(self.client, "stop_receipt")):
             return None
         return self.client.stop_receipt(

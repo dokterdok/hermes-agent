@@ -1,5 +1,7 @@
 """RoomLink room-member grants and capability HTTP handlers."""
 
+import sqlite3
+import sys
 import time
 import uuid
 from typing import Any, Optional
@@ -17,6 +19,16 @@ class RoomGrantReauthorizationRequired(ValueError):
 def _json_error(_openai_error, message: str, *, status: int, **error_kwargs) -> "web.Response":
     """JSON error response built with the injected ``_openai_error`` envelope builder."""
     return web.json_response(_openai_error(message, **error_kwargs), status=status)
+
+
+def adapter_handler(name: str, api_server):
+    """Bind the adapter while resolving grant handlers and facade policy at call time."""
+    async def handler(self, request: "web.Request") -> "web.Response":
+        return await getattr(sys.modules[__name__], name)(
+            self, request, _openai_error=api_server._openai_error,
+            _api_request_profile=api_server._api_request_profile)
+    handler.__name__ = name
+    return handler
 
 
 def _require_unchanged_execution_policy(claims: dict[str, Any], execution_policy: dict[str, Any]) -> None:
@@ -71,14 +83,19 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
-    return [
+    from gateway.platforms.api_server_room_proof import wrap, cleanup_issuance
+    return [(method, path, wrap(self, handler)) for method, path, handler in [
         ("POST", "/v1/room-members/invitations", self._handle_room_member_invitation),
         ("GET", "/v1/room-members/capabilities", self._handle_room_member_capabilities),
         ("POST", "/v1/room-members/grants/refresh", self._handle_room_member_grant_refresh),
-        ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke)]
+        ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke),
+        ("POST", "/v1/room-members/grants/revoke-exact", self._handle_room_member_grant_revoke_exact),
+        ("POST", "/v1/room-members/grants/cleanup-issuance", lambda request: cleanup_issuance(self, request))]]
 
 
 def _room_grant_token(request: "web.Request") -> str:
+    if hasattr(request, "get") and request.get("verified_room_grant"):
+        return request["verified_room_grant"]
     scheme, separator, token = str(request.headers.get("Authorization") or "").partition(" ")
     return token.strip() if separator and scheme.lower() == "hermesroom" else ""
 
@@ -97,15 +114,97 @@ def _decode_request_grant(self, request: "web.Request", *, permission: str) -> d
     return decode_room_grant(self._room_grant_secret(), token, permission=permission)
 
 
-def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
+def _grant_db(adapter):
+    """Canonical grants share the accepting session writer; legacy uses its room store."""
+    from gateway.session_authorities import active_authority
+    from gateway import hosted_rooms
+    authority = active_authority(getattr(adapter, 'gateway_runner', None))
+    return authority.db.db_path if authority is not None else hosted_rooms.default_db_path()
+
+
+def _room_grant_claims(self, request: "web.Request", *, permission: str, conn=None) -> dict[str, Any]:
     claims = _decode_request_grant(self, request, permission=permission)
     from gateway import hosted_rooms
-    db_path = hosted_rooms.default_db_path()
-    if hosted_rooms.room_grant_is_revoked(db_path, claims=claims):
+    from gateway.hosted_room_peer import room_grant_token_digest
+    db_path = _grant_db(self)
+    if hosted_rooms.room_grant_is_revoked(
+            db_path, claims=claims, token_sha256=room_grant_token_digest(self._room_grant_token(request)), conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is revoked")
-    if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims):
+    if _retirement_only(claims):
+        from gateway.platforms.api_server_run_authority import room_authority
+        if not self._run_idempotency_store.permits_room_retirement(room_authority(claims)):
+            raise RoomGrantReauthorizationRequired("room retirement authority is not retained")
+    elif not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims, conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is no longer current")
     return claims
+
+
+def _retirement_only(claims):
+    return set(claims["permissions"]) == {"status", "retire"}
+
+
+def _previous_authority(claims, body):
+    """An owner explicitly names the current predecessor; room and target stay fixed."""
+    from gateway.platforms.api_server_run_authority import room_authority
+    previous = body.get("previous_authority")
+    if previous is None:
+        return None
+    fields = {"home_install_id", "authority_gateway_id", "authority_epoch"}
+    if not isinstance(previous, dict) or set(previous) != fields:
+        raise ValueError("previous_authority requires exact home, gateway and epoch")
+    if (type(previous["authority_epoch"]) is not int or previous["authority_epoch"] < 1
+            or any(not isinstance(previous[key], str) or not previous[key] for key in fields - {"authority_epoch"})):
+        raise ValueError("previous_authority has invalid coordinates")
+    return room_authority({**claims, **previous})
+
+
+def _record_invitation(self, claims, body, *, db_path=None):
+    from gateway import hosted_rooms
+    from gateway.platforms.api_server_run_authority import room_authority
+    authority = room_authority(claims)
+    if _retirement_only(claims):
+        if not self._run_idempotency_store.permits_room_retirement(authority):
+            raise RoomGrantReauthorizationRequired("room retirement authority is not retained")
+        return
+    previous = _previous_authority(claims, body)
+    previous_home = body["previous_authority"]["home_install_id"] if previous is not None else None
+    db_path = db_path or _grant_db(self)
+    # Every participant takes the grant writer before the RunStore lock. Holding
+    # both through grant commit closes the captured-writer publication window.
+    with hosted_rooms._transaction(db_path, immediate=True) as conn:
+        def commit_reservation(known):
+            if previous is None and not known and conn.execute(
+                    "SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND target_profile=?",
+                    (claims["room_id"], claims["target_profile"])).fetchone() is not None:
+                raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
+            hosted_rooms.reserve_peer_room(db_path, claims=claims, expires_at=_hard_expiry(claims), conn=conn)
+            conn.commit()
+        self._run_idempotency_store.commit_room_invitation(claims, previous, previous_home, commit_reservation)
+
+
+def authorize_room_admission(adapter, request):
+    """Recheck a peer bearer in the canonical admission's accepting write transaction.
+
+    The callback is private request state, never persisted with execution input. Its
+    reads share the writer lock with participant revocation and scope replacement.
+    """
+    token = _room_grant_token(request)
+    if not token:
+        return None
+    secret = adapter._room_grant_secret()
+    from gateway import hosted_rooms
+    from gateway.hosted_room_peer import decode_room_grant, room_grant_token_digest
+    from hermes_state_runtime import RuntimeStoreError
+    digest = room_grant_token_digest(token)
+    def authorize(conn):
+        try:
+            claims = decode_room_grant(secret, token, permission="dispatch")
+            if (hosted_rooms.room_grant_is_revoked(None, claims=claims, token_sha256=digest, conn=conn)
+                    or not hosted_rooms.peer_room_grant_is_current(None, claims=claims, conn=conn)):
+                raise ValueError("room grant was revoked or replaced")
+        except ValueError as exc:
+            raise RuntimeStoreError("room_reauthorization_required") from exc
+    return authorize
 
 
 async def _handle_room_member_invitation(
@@ -118,38 +217,46 @@ async def _handle_room_member_invitation(
     if error:
         return error
     required = set(_ROOM_IDENTITY_FIELDS)
-    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds"}
+    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "previous_authority", "retirement_only"}
     if set(body) - allowed or not required <= set(body):
         return _json_error(
             _openai_error, "Invitation is missing required room authority fields.",
             code="invalid_room_invitation", status=400)
     try:
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
-        profile, target_install_id = _local_target(None, _api_request_profile)
-        ttl = float(body.get("ttl_seconds", 3600))
-        if not 60 <= ttl <= 24 * 60 * 60:
-            raise ValueError("ttl_seconds must be between 60 and 86400")
-        status_ttl = float(body.get("status_ttl_seconds", ttl))
-        if not ttl <= status_ttl <= 30 * 24 * 60 * 60:
-            raise ValueError("status_ttl_seconds must be at least ttl_seconds and no more than 2592000")
-        execution_policy, catalog = _local_room_catalog(self, profile, target_install_id)
-        token = issue_room_grant(
-            self._room_grant_secret(),
-            grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
-            **_room_identity(body, coerce=True),
-            target_install_id=target_install_id, target_profile=profile,
-            execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
-            ttl_seconds=ttl, status_ttl_seconds=status_ttl)
-        claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
-        hosted_rooms.reserve_peer_room(
-            hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
-    except Exception as exc:
+        profile, _ = _local_target(None, _api_request_profile)
+        invitation = _issue_invitation(self, body, profile)
+    except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
         return _json_error(_openai_error, str(exc), code="invalid_room_invitation", status=400)
-    return web.json_response({
-        "object": "hermes.room_member.invitation", "grant": token, "target_profile": profile,
-        "catalog": catalog, "expires_at": float(claims["expires_at"]),
-        "status_expires_at": float(claims["status_expires_at"])}, status=201)
+    return web.json_response({"object": "hermes.room_member.invitation", **invitation}, status=201)
+
+
+def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any]:
+    """Mint and reserve one room grant for *profile*: the API-key route and ``groups.peer.invite``."""
+    from gateway import hosted_rooms
+    from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+    if (type(body.get("retirement_only", False)) is not bool
+            or (body.get("retirement_only") and "previous_authority" in body)):
+        raise ValueError("retirement_only must be a boolean without previous_authority")
+    target_install_id = hosted_rooms.local_authority_gateway_id()
+    ttl = float(body.get("ttl_seconds", 3600))
+    if not 60 <= ttl <= 24 * 60 * 60:
+        raise ValueError("ttl_seconds must be between 60 and 86400")
+    status_ttl = float(body.get("status_ttl_seconds", ttl))
+    if not ttl <= status_ttl <= 30 * 24 * 60 * 60:
+        raise ValueError("status_ttl_seconds must be at least ttl_seconds and no more than 2592000")
+    execution_policy, catalog = _local_room_catalog(self, profile, target_install_id)
+    token = issue_room_grant(
+        self._room_grant_secret(),
+        grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
+        **_room_identity(body, coerce=True),
+        target_install_id=target_install_id, target_profile=profile,
+        execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
+        **({"permissions": ("status", "retire")} if body.get("retirement_only") else {}),
+        ttl_seconds=ttl, status_ttl_seconds=status_ttl)
+    claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
+    _record_invitation(self, claims, body)
+    return {"grant": token, "target_profile": profile, "catalog": catalog,
+            "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"])}
 
 
 async def _handle_room_member_capabilities(
@@ -163,7 +270,8 @@ async def _handle_room_member_capabilities(
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response({
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
-        "target_profile": profile, "catalog": catalog})
+        "target_profile": profile, "catalog": catalog,
+        **({"retirement_only": True} if _retirement_only(claims) else {})})
 
 
 async def _handle_room_member_grant_refresh(
@@ -182,7 +290,7 @@ async def _handle_room_member_grant_refresh(
         # A status-only bearer must never mint dispatch authority: renewal needs live "dispatch".
         claims = self._room_grant_claims(request, permission="dispatch")
         profile, installation_id = _local_target(claims, _api_request_profile)
-        now = time.time()
+        now = request.get("room_proof_issued_at", time.time())
         hard_expiry = _hard_expiry(claims)
         remaining = hard_expiry - now
         requested = float(body.get("ttl_seconds", MAX_DISPATCH_GRANT_TTL_SECONDS))
@@ -193,11 +301,14 @@ async def _handle_room_member_grant_refresh(
             execution_policy = execution_policy_mapping(target_profile=profile)
         _require_unchanged_execution_policy(claims, execution_policy)
         token = issue_room_grant(
-            self._room_grant_secret(), grant_id=f"grant-refresh-{uuid.uuid4().hex}",
+            self._room_grant_secret(), grant_id="grant-refresh-" + request.get("room_proof_request_id", uuid.uuid4().hex),
             **_room_identity(claims), target_install_id=installation_id, target_profile=profile,
             execution_policy_digest=execution_policy["policy_digest"],
             permissions=claims["permissions"], issued_at=now, ttl_seconds=dispatch_ttl,
             status_expires_at=hard_expiry)
+        # A revocation that landed after the first check must not let this renewal out; one that
+        # lands after this check covers it, since it was issued before.
+        self._room_grant_claims(request, permission="dispatch")
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response({
@@ -211,9 +322,9 @@ async def _handle_room_member_grant_revoke(
     body, error = await self._read_json_body(request)
     if error:
         return error
-    if body:
+    if set(body) - {"retire_authority"} or ("retire_authority" in body and type(body["retire_authority"]) is not bool):
         return _json_error(
-            _openai_error, "Grant revoke accepts no fields.",
+            _openai_error, "Grant revoke accepts only the boolean retire_authority option.",
             code="invalid_room_grant_revoke", status=400)
     try:
         from gateway import hosted_rooms
@@ -221,8 +332,53 @@ async def _handle_room_member_grant_revoke(
         # verify signature/scope/horizon directly (not _room_grant_claims) and upsert the id.
         claims = _decode_request_grant(self, request, permission="status")
         _local_target(claims, _api_request_profile)
+        if body.get("retire_authority"):
+            if "retire" not in claims["permissions"]:
+                return _json_error(_openai_error, "This grant does not authorize room retirement.",
+                                   code="room_retirement_not_granted", status=403)
+            from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+            authority = room_authority(claims)
+            if not self._run_idempotency_store.room_authority_retired(authority):
+                self._room_grant_claims(request, permission="retire")
+            self._run_idempotency_store.retire_room_authority(room_run_scope(claims), authority)
         hosted_rooms.revoke_room_grant_scope(
-            hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
+            _grant_db(self), claims=claims, expires_at=_hard_expiry(claims))
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
+    return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True,
+                              "authority_retired": bool(body.get("retire_authority"))})
+
+
+async def _handle_room_member_grant_revoke_exact(
+    self, request: "web.Request", *, _openai_error, _api_request_profile) -> "web.Response":
+    """Revoke exactly the grant authenticating this request: the rest of its scope stays usable.
+
+    The home retires a grant it has replaced. Idempotent: a retry after a lost response, or a
+    grant already past its lifetime, still gets the acknowledgement.
+    """
+    body, error = await self._read_json_body(request)
+    if error:
+        return error
+    if body:
+        return _json_error(
+            _openai_error, "Grant revoke accepts no fields.", code="invalid_room_grant_revoke", status=400)
+    try:
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import decode_room_grant, room_grant_token_digest
+        token = self._room_grant_token(request)
+        if not token:
+            raise ValueError("room grant is missing")
+        claims = decode_room_grant(
+            self._room_grant_secret(), token, permission="status", allow_expired_for_revocation=True)
+        _local_target(claims, _api_request_profile)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _room_grant_error_response(exc, _openai_error=_openai_error)
+    try:
+        hosted_rooms.revoke_room_grant_token(
+            _grant_db(self), claims=claims, token_sha256=room_grant_token_digest(token),
+            expires_at=_hard_expiry(claims))
+    except (OSError, sqlite3.Error, ValueError):
+        return _json_error(
+            _openai_error, "Room grant revocation could not be saved; retry it.",
+            code="room_grant_revocation_unavailable", status=503)
     return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})

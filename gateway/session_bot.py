@@ -308,7 +308,7 @@ async def _maybe_retry(authority, home, record):
         event.metadata['turn_author'] = dict(record['author'])
     record['retry'] = {'identity': identity}
     _publish(home, record)
-    receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity)
+    receipt = await authority.admit_automation(authority.runner._delivery_adapter_for(live.source), event, identity)
     record.update(_result(authority, record))
     if receipt.status in {'queued', 'started'}:
         _watch_reply(authority, home, record['delivery_id'], receipt.admission_id)
@@ -485,7 +485,7 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
         if legacy is not None:
             return None  # that cancellation (or a late claim) stands; nothing was admitted
         raise RuntimeStoreError('admission_conflict')
-    receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
+    receipt = await authority.admit_automation(authority.runner._delivery_adapter_for(live.source), event, 'bot:' + key)
     record.update(status='canonical', admission_id=receipt.admission_id)
     record.update(_result(authority, record))  # publish the outcome senders poll, not a bare marker
     if receipt.status in {'queued', 'started'}:

@@ -62,6 +62,8 @@ class SessionAuthority:
         # Stops accepted for a running generation whose agent does not exist yet
         # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
         self.pending_stops = {}
+        # The generation whose Stop was last delivered to the session's cached agent.
+        self.delivered_stops = {}
         # Set by profile retirement (unserve): the drain claims no successor after its running turn.
         self.retiring = False
 
@@ -248,7 +250,16 @@ class SessionAuthority:
         self._require_admission_open()
         payload = await prepare_native(self.runner, event)
         self._require_admission_open()
-        source = restore_native(payload).source
+        source = restore_native(payload, self.runner).source
+        # Registration persists the receiving bot beside the runtime route. The
+        # codec's wire source omits identity, so reconstruct it only from the
+        # private provenance that restore_native just validated against the live
+        # connector. Without this, a routed queue loses its transport on restart.
+        if getattr(self.runner.config, 'multiplex_profiles', False):
+            from gateway.session_identity import restore_identity
+            provenance = payload['native_text_v1']['provenance']
+            transport = provenance.get('transport_profile') or self.runner._primary_profile_name
+            restore_identity(source, runner=self.runner, transport_profile=transport)
         ref = self.register(source)
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
@@ -293,9 +304,17 @@ class SessionAuthority:
                         check_local_input(
                             self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
-                self.sessions.setdefault(sid, LiveSession(source, route))
-                if any(row['status'] == 'unknown' for row in rows):
+                live = self.sessions.get(sid)
+                if live is None:
+                    live = self.sessions[sid] = LiveSession(source, route)
+                current = list_session_admissions(self.db, session_id=sid)
+                if any(row['status'] == 'unknown' for row in current):
                     raise RuntimeStoreError('unknown_execution')
+                if (any(row['status'] == 'started' for row in current)
+                        or live.task is not None and not live.task.done()):
+                    results[sid] = 'active'
+                    continue
+                live.source, live.route = source, route
                 self._schedule(SessionRef(self.profile_id, sid))
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:
@@ -393,7 +412,7 @@ class SessionAuthority:
         from gateway.session_results import close_discarded_turn
         row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
                                             generation=generation,
-                                            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost))
+                                            _terminal_write=lambda conn, lost, _outcome, _result: close_discarded_turn(self.db, conn, lost))
         # Its own write txn + unlink, so it runs after the resolution commits; a discarded image
         # would otherwise stay on disk forever (the drain releases only settled turns).
         from gateway.session_ingress_media import release_admission_media
@@ -411,6 +430,7 @@ class SessionAuthority:
             agent = self.agent(ref)
             if agent is not None:
                 agent.interrupt()
+                self.delivered_stops[ref.session_id] = generation
             else:
                 # Accepted for this exact claim; the turn must not construct its agent
                 # afterwards and run the work as if no Stop had arrived.
@@ -419,7 +439,11 @@ class SessionAuthority:
 
     def adopt_agent(self, session_id, generation, agent):
         """The turn installs its agent for the running claim; a Stop latched while there
-        was no agent to deliver it to fires now, never against a later generation."""
+        was no agent to deliver it to fires now, never against a later generation. A Stop
+        delivered to the cached agent for an earlier generation may have landed after that
+        turn's finalizer cleared it, so it is dropped rather than cancelling this turn."""
+        if self.delivered_stops.pop(session_id, generation) != generation:
+            agent.clear_interrupt()
         if self.pending_stops.get(session_id) == generation:
             del self.pending_stops[session_id]
             agent.interrupt()
@@ -475,6 +499,7 @@ class SessionAuthority:
         live = self.sessions[ref.session_id]
         while True:
             try:
+                claim_guard = None
                 pending = list_session_admissions(self.db, session_id=ref.session_id)
                 if any(row['status'] == 'unknown' for row in pending):
                     self._pause(ref, 'unknown_execution')
@@ -490,7 +515,7 @@ class SessionAuthority:
                             service = getattr(self, 'hosted_room_service', None)
                             if service is None:
                                 raise RuntimeStoreError('permission_denied')
-                            await asyncio.to_thread(service.check_admission, ref, first)
+                            claim_guard = await asyncio.to_thread(service.check_admission, ref, first, _for_claim=True)
                         # Cancellation may advance the FIFO while the source owner is awaited;
                         # the successor must earn its own reauthorization, not inherit this one.
                         current = get_session_admission(self.db, admission_id=first['admission_id'])
@@ -509,7 +534,7 @@ class SessionAuthority:
                 if first is not None and 'native_text_v1' in first['payload']:
                     from gateway.session_envelope import check_native_route
                     await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
-                                       self.runner._adapter_for_source(live.source))
+                                       self.runner._delivery_adapter_for(live.source))
                     # Cancellation may advance FIFO while the connector is awaited.
                     # Never let the successor inherit this row's fresh verdict.
                     current = get_session_admission(self.db, admission_id=first['admission_id'])
@@ -519,8 +544,11 @@ class SessionAuthority:
                     from gateway.session_api_turn import check_api_turn
                     check_api_turn(self, ref, first['payload'])
                 self._require_admission_open()
-                row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id)
+                row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id,
+                    **({'_authorize_write': claim_guard} if claim_guard is not None else {}))
             except RuntimeStoreError as exc:
+                if exc.reason == 'admission_changed':
+                    continue  # A different FIFO head needs its own outside-writer authorization.
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                 self._pause(ref, exc.reason)
@@ -562,25 +590,8 @@ class SessionAuthority:
                     live.controls.snapshot(ref.session_id, None)
                     from gateway.session_ingress_media import release_admission_media
                     release_admission_media(self.db, admission_id)
-                    # ``status`` is the message.complete contract's TurnStatus: the Desktop
-                    # extends a Stopped bubble to the persisted partial only on 'interrupted'.
-                    complete = {
-                        'text': response, 'content': response, 'admission_id': admission_id,
-                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
-                        'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
-                            settled['outcome'], 'error')}
-                    # Only the agent's reuse site sets this (never inferred from equal text): the
-                    # final repeats a reply the viewer already painted, so it settles in place.
-                    captured_result = (captured or {}).get('result') or {}
-                    if response and captured_result.get('response_reused'):
-                        complete['response_reused'] = True
-                    # The committed row addresses of the turn: a viewer binds the streamed reply to
-                    # its stored row, so a transcript read racing this frame never paints it twice.
-                    # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
-                    # prompt (``user-<submission_id>``), which the queued admission ack could not name.
-                    if isinstance(captured_result.get('persisted_turn'), dict):
-                        complete['persisted_turn'] = {**captured_result['persisted_turn'],
-                                                      'submission_id': row['request_id']}
+                    from gateway.session_results import completion_payload
+                    complete = completion_payload(row, settled, response, captured)
                     live.event_stream.publish(ref.session_id, complete)
                     # The idle snapshot (running=false) follows the completion, as on every other
                     # host: a viewer that read running=false first settled the reply as a turn whose

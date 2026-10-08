@@ -32,7 +32,7 @@ def check_api_turn(authority, ref, payload):
     live = authority.sessions[ref.session_id]
     if live.source.platform == Platform.API_SERVER:
         restore_api_session(authority, ref.session_id)
-    adapter = authority.runner._adapter_for_source(live.source)
+    adapter = authority.runner._delivery_adapter_for(live.source)
     if adapter is None or getattr(adapter, 'gateway_runner', None) is not authority.runner:
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:
@@ -150,10 +150,14 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
         check_api_settings(adapter, settings)
         from gateway.session_contract import SessionRef
         return authority, SessionRef(authority.profile_id, sid), row
-    ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
+    dispatch = kwargs.get("room_dispatch")
+    origin_home = adapter._run_idempotency_store.room_origin_home(dispatch) if dispatch is not None else None
+    ref = bind_api_session(authority, sid, hosted_dispatch=dispatch, hosted_origin_home=origin_home,
+                           declared_key=declared_key)
     check_api_turn(authority, ref, payload)
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
-                              session_id=sid, request_id=request_id, payload=payload)
+                              session_id=sid, request_id=request_id, payload=payload,
+                              _authorize_write=kwargs.get("_authorize_write"))
     return authority, ref, row
 
 
@@ -233,13 +237,14 @@ async def run_api_turn(adapter, *, approval_notify_callback=None, approval_sessi
 async def observe_api_turn(admitted, **kwargs):
     authority, ref, row = admitted
     from hermes_state_runtime import get_session_admission
-    # The admission-time snapshot is stale once a drain already running ahead claims and settles
-    # (or a stop cancels) the row; a waiter registered after that is never resolved. The current
-    # row decides, read with no suspension before the waiter is registered.
-    status = (get_session_admission(authority.db, admission_id=row['admission_id']) or row)['status']
-    if status == 'unknown':
+    # A queued snapshot may have been cancelled before this observer task got its
+    # first tick. Re-read before registering a waiter for work that will not run.
+    row = get_session_admission(authority.db, admission_id=row['admission_id'])
+    if row is None or row['target_session_id'] != ref.session_id:
+        raise RuntimeStoreError('not_found')
+    if row['status'] == 'unknown':
         raise RuntimeStoreError('unknown_execution')
-    if status == 'terminal':
+    if row['status'] == 'terminal':
         result, usage = _settled_api_result(authority, row['admission_id'])
         callback = kwargs.get('stream_delta_callback')
         if callback:
@@ -271,7 +276,7 @@ def _settled_api_result(authority, admission_id):
     if saved is None:
         from hermes_state_runtime import get_session_admission
         current = get_session_admission(authority.db, admission_id=admission_id)
-        if current['outcome'] == 'cancelled':
+        if current is not None and current['outcome'] == 'cancelled':
             return {'final_response': '', 'interrupted': True, 'completed': False}, {}
         raise RuntimeStoreError('unknown_execution')
     return saved['result'], saved['usage']

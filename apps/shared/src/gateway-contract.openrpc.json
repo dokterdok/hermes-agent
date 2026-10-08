@@ -1267,6 +1267,42 @@
       }
     },
     {
+      "name": "groups.peer.retire",
+      "summary": "Retry authority retirement with an optional fresh exact-scope target grant; never reopen execution.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsPeerRetireParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRetireResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.retirements",
+      "summary": "List retained peer-authority retirement obligations, including ended rooms.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsPeerRetirementsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRetireResult"
+        }
+      }
+    },
+    {
       "name": "groups.peer.revoke",
       "summary": "Revoke one target-issued grant using its exact profile scope.",
       "params": [
@@ -1358,7 +1394,7 @@
     },
     {
       "name": "groups.retry",
-      "summary": "Retry one indeterminate room task after explicit user confirmation.",
+      "summary": "Retry one eligible room task; canonical controls require exact proven nonadmission.",
       "params": [
         {
           "name": "params",
@@ -5485,6 +5521,30 @@
             ],
             "default": null,
             "title": "Request Id"
+          },
+          "expected_hosted_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Hosted Task Id"
+          },
+          "expected_hosted_execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Hosted Execution Generation"
           }
         },
         "required": [
@@ -15301,6 +15361,143 @@
         "title": "GroupsAttachmentDownloadParams",
         "type": "object"
       },
+      "GroupsAttachmentDownloadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Id"
+          },
+          "data_base64": {
+            "title": "Data Base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "kind",
+          "name",
+          "size",
+          "mime",
+          "sha256",
+          "state",
+          "created_at",
+          "idempotent",
+          "data_base64"
+        ],
+        "title": "GroupsAttachmentDownloadResult",
+        "type": "object"
+      },
+      "GroupsAttachmentResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Id"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "kind",
+          "name",
+          "size",
+          "mime",
+          "sha256",
+          "state",
+          "created_at",
+          "idempotent"
+        ],
+        "title": "GroupsAttachmentResult",
+        "type": "object"
+      },
       "GroupsAttachmentUploadParams": {
         "additionalProperties": false,
         "properties": {
@@ -15597,6 +15794,15 @@
         "properties": {
           "tombstone": {
             "$ref": "#/components/schemas/RoomTombstone"
+          },
+          "retirements": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Retirements",
+            "type": "array"
           }
         },
         "required": [
@@ -15650,7 +15856,6 @@
         "additionalProperties": false,
         "properties": {
           "discarded": {
-            "default": true,
             "title": "Discarded",
             "type": "boolean"
           },
@@ -15659,6 +15864,7 @@
           }
         },
         "required": [
+          "discarded",
           "task"
         ],
         "title": "GroupsDiscardResult",
@@ -15945,6 +16151,43 @@
             ],
             "default": null,
             "title": "Ttl Seconds"
+          },
+          "status_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Ttl Seconds"
+          },
+          "retirement_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retirement Only"
+          },
+          "previous_authority": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Previous Authority"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -16085,6 +16328,98 @@
           "target_profile"
         ],
         "title": "GroupsPeerRegisterResult",
+        "type": "object"
+      },
+      "GroupsPeerRetireParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "retirement_id": {
+            "title": "Retirement Id",
+            "type": "string"
+          },
+          "grant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Grant"
+          }
+        },
+        "required": [
+          "room_id",
+          "retirement_id"
+        ],
+        "title": "GroupsPeerRetireParams",
+        "type": "object"
+      },
+      "GroupsPeerRetireResult": {
+        "additionalProperties": false,
+        "properties": {
+          "retirements": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Retirements",
+            "type": "array"
+          }
+        },
+        "required": [
+          "retirements"
+        ],
+        "title": "GroupsPeerRetireResult",
+        "type": "object"
+      },
+      "GroupsPeerRetirementsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Room Id"
+          }
+        },
+        "title": "GroupsPeerRetirementsParams",
         "type": "object"
       },
       "GroupsPeerRevokeParams": {
@@ -16450,6 +16785,30 @@
           "task_id": {
             "title": "Task Id",
             "type": "string"
+          },
+          "member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member Id"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Generation"
           }
         },
         "required": [
@@ -28930,143 +29289,6 @@
         "title": "RoomActor",
         "type": "object"
       },
-      "RoomAttachment": {
-        "additionalProperties": true,
-        "properties": {
-          "attachment_id": {
-            "title": "Attachment Id",
-            "type": "string"
-          },
-          "kind": {
-            "title": "Kind",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "size": {
-            "title": "Size",
-            "type": "integer"
-          },
-          "mime": {
-            "title": "Mime",
-            "type": "string"
-          },
-          "sha256": {
-            "title": "Sha256",
-            "type": "string"
-          },
-          "state": {
-            "title": "State",
-            "type": "string"
-          },
-          "created_at": {
-            "title": "Created At",
-            "type": "number"
-          },
-          "idempotent": {
-            "title": "Idempotent",
-            "type": "boolean"
-          },
-          "event_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Event Id"
-          }
-        },
-        "required": [
-          "attachment_id",
-          "kind",
-          "name",
-          "size",
-          "mime",
-          "sha256",
-          "state",
-          "created_at",
-          "idempotent"
-        ],
-        "title": "RoomAttachment",
-        "type": "object"
-      },
-      "RoomAttachmentBytes": {
-        "additionalProperties": true,
-        "properties": {
-          "attachment_id": {
-            "title": "Attachment Id",
-            "type": "string"
-          },
-          "kind": {
-            "title": "Kind",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "size": {
-            "title": "Size",
-            "type": "integer"
-          },
-          "mime": {
-            "title": "Mime",
-            "type": "string"
-          },
-          "sha256": {
-            "title": "Sha256",
-            "type": "string"
-          },
-          "state": {
-            "title": "State",
-            "type": "string"
-          },
-          "created_at": {
-            "title": "Created At",
-            "type": "number"
-          },
-          "idempotent": {
-            "title": "Idempotent",
-            "type": "boolean"
-          },
-          "event_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Event Id"
-          },
-          "data_base64": {
-            "title": "Data Base64",
-            "type": "string"
-          }
-        },
-        "required": [
-          "attachment_id",
-          "kind",
-          "name",
-          "size",
-          "mime",
-          "sha256",
-          "state",
-          "created_at",
-          "idempotent",
-          "data_base64"
-        ],
-        "title": "RoomAttachmentBytes",
-        "type": "object"
-      },
       "RoomAuthority": {
         "additionalProperties": false,
         "properties": {
@@ -29123,6 +29345,50 @@
             },
             "title": "Peer Routes",
             "type": "array"
+          },
+          "peer_cleanup": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Peer Cleanup"
+          },
+          "peer_retirements": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Peer Retirements"
+          },
+          "retiring": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retiring"
           }
         },
         "required": [
@@ -29365,6 +29631,19 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "authentication": {
+            "anyOf": [
+              {
+                "const": "proof-v2",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Authentication"
           },
           "profile": {
             "anyOf": [
@@ -32228,6 +32507,18 @@
             ],
             "default": null,
             "title": "Expected Hosted Task Id"
+          },
+          "expected_hosted_execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Hosted Execution Generation"
           }
         },
         "required": [
@@ -41553,7 +41844,7 @@
     },
     {
       "name": "groups.attachment.download",
-      "summary": "Read one committed attachment for a live room viewer.",
+      "summary": "Read bytes bound to a canonical room event, subject to current viewer authorization.",
       "params": [
         {
           "name": "params",
@@ -41565,13 +41856,13 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/RoomAttachmentBytes"
+          "$ref": "#/components/schemas/GroupsAttachmentDownloadResult"
         }
       }
     },
     {
       "name": "groups.attachment.upload",
-      "summary": "Store one attachment for a later groups.send manifest (idempotent per upload_id).",
+      "summary": "Upload owner-authorized bytes for a canonical room message.",
       "params": [
         {
           "name": "params",
@@ -41583,13 +41874,13 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/RoomAttachment"
+          "$ref": "#/components/schemas/GroupsAttachmentResult"
         }
       }
     },
     {
       "name": "groups.discard",
-      "summary": "Discard one indeterminate room task after explicit user confirmation.",
+      "summary": "Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.",
       "params": [
         {
           "name": "params",

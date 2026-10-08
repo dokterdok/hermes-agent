@@ -120,6 +120,12 @@ async def execute_admission(authority, ref, row):
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])
                 api_execution.set(prepared)
+                if prepared['adapter']._run_idempotency_store.stop_requested(row['request_id']):
+                    # A queued admission can outlive its HTTP observer and be recovered
+                    # after restart. Its durable Stop must win before any agent work.
+                    authority.pending_results[row['admission_id']] = {
+                        'result': {'final_response': '', 'interrupted': True, 'completed': False}, 'usage': {}}
+                    return ''
                 if isinstance(event.text, list):
                     # The durable transcript keeps the committed media references (the same
                     # ``[Image attached ...]`` hints native transports persist), not only the caption.
@@ -142,7 +148,7 @@ async def execute_admission(authority, ref, row):
             # before the completion event exists in the replay ring.
             authority.pending_results[row['admission_id']] = {'result': result, 'usage': captured.get('usage', {})}
             if not native and not is_api and response:
-                adapter = authority.runner._adapter_for_source(event.source)
+                adapter = authority.runner._delivery_adapter_for(event.source)
                 if adapter is not None:
                     await deliver_response(adapter, event, live.route, response)
             return response

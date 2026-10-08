@@ -11,7 +11,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from gateway.platforms.api_server_runs import _RunStream
 from tests.gateway.test_api_server_runs import (
@@ -544,10 +544,7 @@ class TestHostedRoomRuns:
             grant = (await invitation.json())["grant"]
             room_headers = {"Authorization": f"HermesRoom {grant}"}
             run_id = "run_room_stream"
-            scope_request = MagicMock()
-            scope_request.headers = room_headers
-            scope_request.path = f"/v1/runs/{run_id}/events"
-            scope_request.method = "GET"
+            scope_request = make_mocked_request('GET', f'/v1/runs/{run_id}/events', headers=room_headers)
             adapter._run_owners[run_id] = adapter._run_idempotency_scope(scope_request)
             adapter._run_streams[run_id] = _RunStream()
             adapter._run_streams_created[run_id] = time.time()

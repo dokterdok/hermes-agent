@@ -13,7 +13,6 @@ from typing import Literal
 
 from .base import JsonValue, Params, Result
 from .common import OpenModel
-from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .registry import canonical_method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
@@ -311,59 +310,3 @@ class WorkerPersistResult(OpenModel):
 
 canonical_method("worker.persist", params=WorkerPersistParams, result=WorkerPersistResult,
                  doc="Sequence-fenced typed persistence write from an adopted worker.")
-
-
-# ── hosted rooms (canonical-only verbs) ───────────────────────────────────────────────────────
-
-
-class GroupsAttachmentUploadParams(RoomParams):
-    upload_id: str
-    kind: str
-    name: str
-    mime: str
-    data_base64: str
-
-
-class RoomAttachment(OpenModel):
-    attachment_id: str
-    kind: str
-    name: str
-    size: int
-    mime: str
-    sha256: str
-    state: str
-    created_at: float
-    idempotent: bool
-    event_id: str | None = None
-
-
-canonical_method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=RoomAttachment,
-                 doc="Store one attachment for a later groups.send manifest (idempotent per upload_id).")
-
-
-class GroupsAttachmentDownloadParams(RoomParams):
-    event_id: str
-    attachment_id: str
-
-
-class RoomAttachmentBytes(RoomAttachment):
-    data_base64: str
-
-
-canonical_method("groups.attachment.download", params=GroupsAttachmentDownloadParams,
-                 result=RoomAttachmentBytes, doc="Read one committed attachment for a live room viewer.")
-
-
-class GroupsDiscardParams(RoomParams):
-    member_id: str
-    task_id: str
-    execution_generation: int
-
-
-class GroupsDiscardResult(Result):
-    discarded: bool = True
-    task: RoomTaskReceipt
-
-
-canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
-                 doc="Discard one indeterminate room task after explicit user confirmation.")

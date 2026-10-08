@@ -1,6 +1,8 @@
 """Room worker threads use the real authority ledger, never TUI dispatch."""
 import asyncio
 import threading
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -161,17 +163,33 @@ def test_controls_are_exact_current_admission_and_loop_safe(hosted_owner):
     assert pending['request_id'] == 'approve-me'
     assert pending['choices'] == ['once', 'deny']
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        rpc.approve(session_id=sid, request_id='approve-me', choice='always')
+        rpc.approve(session_id=sid, request_id='approve-me', choice='always',
+            expected_task_id='task', expected_execution_generation=1)
     assert not answers
-    assert rpc.approve(session_id=sid, request_id='approve-me', choice='once')['status'] == 'resolved'
+    for choice in ('once', 'deny'):
+        for change in ({'expected_task_id': 'other'}, {'expected_execution_generation': 2}):
+            with pytest.raises(RuntimeStoreError, match='stale_generation'):
+                rpc.approve(**(dict(session_id=sid, request_id='approve-me', choice=choice,
+                    expected_task_id='task', expected_execution_generation=1) | change))
+    for generation in (None, True, 0):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            rpc.approve(session_id=sid, request_id='approve-me', choice='once',
+                expected_task_id='task', expected_execution_generation=generation)
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        rpc._call('approve', session_id=sid, request_id='approve-me', choice='once')
+    assert not answers
+    assert rpc.approve(session_id=sid, request_id='approve-me', choice='once',
+        expected_task_id='task', expected_execution_generation=1)['status'] == 'resolved'
     assert answers == [('approval', 'approve-me', 'once')]
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
-        rpc.interrupt(**coords, session_id=sid, expected_task_id='other')
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='other', expected_execution_generation=1)
     assert not agent.interrupted
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task')['interrupted']
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1) == {
+        'interrupted': False, 'status': 'running'}
     assert agent.interrupted
     with pytest.raises(RuntimeStoreError):
-        rpc.approve(session_id=sid, request_id='missing', choice='once')
+        rpc.approve(session_id=sid, request_id='missing', choice='once',
+            expected_task_id='task', expected_execution_generation=1)
     async def same_loop():
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             rpc.info(**coords, session_id=sid)
@@ -192,8 +210,9 @@ def test_terminal_callback_follows_canonical_drain_without_polling(hosted_owner,
         return 'canonical reply'
     # This RPC component fixture supplies the service gate explicitly; daemon
     # coverage exercises the real durable member/task authorizer.
-    authority.runner._adapter_for_source = lambda source: authority.runner.adapters[source.platform]
-    authority.hosted_room_service = SimpleNamespace(check_admission=lambda ref, row: True)
+    authority.runner._intake_adapter_for = authority.runner._delivery_adapter_for = lambda source: authority.runner.adapters[source.platform]
+    authority.hosted_room_service = SimpleNamespace(
+        check_admission=lambda ref, row, **kwargs: (lambda conn, selected: None) if kwargs.get('_for_claim') else True)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     monkeypatch.setattr(authority, '_schedule', SessionAuthority._schedule.__get__(authority))
     done, receipts = threading.Event(), []
@@ -293,7 +312,7 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(host
     sid = rpc.create(**coords, title='Group: room')['session_id']
     receipts = []
     rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'), execution_generation=1, on_terminal=receipts.append)
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task')['interrupted']
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1)['interrupted']
     history = rpc.history(**coords, session_id=sid)
     assert history[-1]['status'] == 'cancelled'
     assert history[-1]['task_id'] == 'task'
@@ -305,6 +324,78 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(host
     settle_session_input(authority.db, epoch=authority.epoch, admission_id=row['admission_id'], generation=row['generation'], outcome='completed', result=None)
     with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
         rpc.history(**coords, session_id=sid)
+
+
+def _hosted_retry_attempt(hosted_owner, monkeypatch):
+    from gateway import hosted_room_driver as tasks, hosted_rooms
+    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+    authority, loop, _, agent = hosted_owner
+    service = CanonicalHostedRoomService(authority, loop)
+    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
+    service.authorize_room('alice', 'room', create=True)
+    gateway = hosted_rooms.local_authority_gateway_id()
+    hosted_rooms.create_room(authority.db.db_path, room_id='room', name='Room',
+        authority_gateway_id=gateway, members=[{'member_id':'one','profile':'default','handle':'one'}])
+    identity = tasks.TaskIdentity('room','same-task','thread','turn')
+    tasks.admit_task(authority.db.db_path, identity,
+        payload={'target_profile':'default','target_member_id':'one','source_event_seq':1,'prompt':'frozen'}, clock=time.time)
+    lease = tasks.acquire_lease(authority.db.db_path, room_id='room', gateway_id=gateway,
+        authority_epoch=1, process_generation='old-owner', ttl_seconds=1, clock=lambda:100.)
+    attempt = tasks.start_task(authority.db.db_path, identity, lease, expected_cancel_generation=0, clock=lambda:100.)
+    rpc = service._resolve_member_transport(HostedRoomBinding('room',gateway,1), tasks.get_task(authority.db.db_path,identity))
+    coords = {'profile':'default','source':'bot_room'}
+    sid = rpc.create(**coords,title='Group: room')['session_id']
+    coords['session_id'] = sid
+    receipt = rpc.submit(**coords,prompt='frozen',task=identity,execution_generation=attempt.execution_generation,on_terminal=lambda _:None)
+    return authority, service, agent, tasks, identity, attempt, rpc, coords, receipt, gateway
+
+
+@pytest.mark.parametrize('new_state',['queued','started'])
+def test_old_producer_stop_does_not_target_a_later_explicit_retry(hosted_owner, monkeypatch, new_state):
+    from hermes_state_runtime import claim_session_input, settle_session_input, list_session_admissions
+    authority, service, agent, tasks, identity, attempt, rpc, coords, receipt, gateway = _hosted_retry_attempt(hosted_owner,monkeypatch)
+    old = claim_session_input(authority.db,epoch=authority.epoch,session_id=coords['session_id'])
+    observed = rpc.info(**coords)
+    assert (observed['task_id'],observed['execution_generation']) == (identity.task_id,1)
+    old_stop = {**coords,'expected_task_id':observed['task_id'],
+                'expected_execution_generation':observed['execution_generation']}
+    # The canonical turn finishes while its home-side observation was lost.
+    settle_session_input(authority.db,epoch=authority.epoch,admission_id=old['admission_id'],
+        generation=old['generation'],outcome='completed',result={'result':{'final_response':'old complete'},'usage':{}})
+    new_lease = tasks.acquire_lease(authority.db.db_path,room_id='room',gateway_id=gateway,
+        authority_epoch=1,process_generation='replacement-owner',ttl_seconds=100,clock=lambda:102.)
+    tasks.recover_room(authority.db.db_path,new_lease,clock=lambda:102.)
+    tasks.defer_indeterminate_task(authority.db.db_path,identity,new_lease,expected_execution_generation=1,
+        expected_cancel_generation=0,reason='member_unavailable',clock=lambda:102.)
+    # Explicit operator Retry of a deferred turn is supported by the driver.
+    tasks.requeue_deferred_task(authority.db.db_path,identity,new_lease,expected_execution_generation=1,
+        expected_cancel_generation=0,clock=lambda:102.)
+    retry = tasks.start_task(authority.db.db_path,identity,new_lease,expected_cancel_generation=0,clock=lambda:102.)
+    assert retry.execution_generation == 2
+    second = rpc.submit(**coords,prompt='frozen',task=identity,execution_generation=2,on_terminal=lambda _:None)
+    if new_state == 'started':
+        claim_session_input(authority.db,epoch=authority.epoch,session_id=coords['session_id'])
+    from hermes_state_runtime import RuntimeStoreError
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        rpc.interrupt(**old_stop)
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        rpc._call('interrupt', **{key:value for key,value in old_stop.items() if key != 'expected_execution_generation'})
+    for bad in (True, 0):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            rpc.interrupt(**{**old_stop, 'expected_execution_generation':bad})
+    rows = list_session_admissions(authority.db,session_id=coords['session_id'],pending_only=False)
+    current = next(row for row in rows if row['admission_id']==second['admission_id'])
+    assert current['status']==new_state and not agent.interrupted, 'old Stop targeted the later hosted generation'
+    stopped = rpc.interrupt(**{**old_stop, 'expected_execution_generation':2})
+    current = next(row for row in list_session_admissions(authority.db,session_id=coords['session_id'],pending_only=False)
+                   if row['admission_id']==second['admission_id'])
+    if new_state == 'queued':
+        assert stopped == {'interrupted': True, 'status': 'interrupted'}
+        assert (current['status'], current['outcome']) == ('terminal', 'cancelled')
+    else:
+        assert stopped == {'interrupted': False, 'status': 'running'}
+        assert current['status'] == 'started' and agent.interrupted
 
 
 def test_room_member_turns_cannot_block_on_an_unanswerable_clarify(hosted_owner, monkeypatch):

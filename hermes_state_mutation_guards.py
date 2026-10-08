@@ -55,7 +55,7 @@ def require_idle(db, conn, session_ids):
 
 
 def delete_targets(conn, session_id):
-    from hermes_state_sessions import _collect_delegate_child_ids, _expand_compression_lineage_ids
+    from hermes_state_sessions import _collect_delegate_child_ids
     import json
     from hermes_state_compression import _CHAIN_CAP
     from hermes_state_local import POLICY_PREFIX
@@ -76,12 +76,35 @@ def delete_targets(conn, session_id):
     # authorized, so a parent link into another principal's chain (an imported or forged edge)
     # stops the walk instead of deleting their conversation.
     from hermes_state_mutation_binding import same_history_owner
-    frontier = list(targets)
+    frontier = set(targets)
     for _ in range(_CHAIN_CAP):
-        frontier = [sid for sid in _expand_compression_lineage_ids(conn, frontier)
-                    if sid not in targets and same_history_owner(conn, session_id, sid)]
+        found = set()
+        for sid in frontier:
+            found.update(other for other in _compression_neighbors(conn, sid)
+                         if same_history_owner(conn, sid, other))
+        found.update(_collect_delegate_child_ids(conn, frontier))
+        frontier = found - targets
         if not frontier:
             break
         targets.update(frontier)
-    targets.update(_collect_delegate_child_ids(conn, targets))
+    else:
+        raise RuntimeStoreError('admission_conflict')
     return [session_id, *sorted(targets - {session_id})]
+
+
+def _compression_neighbors(conn, session_id):
+    from hermes_state_common import _non_continuation_child_sql
+    edge = _non_continuation_child_sql('child.', 'parent.id')
+    children = conn.execute("""
+        SELECT child.id FROM sessions parent
+        JOIN sessions child ON child.parent_session_id=parent.id
+        WHERE parent.id=? AND parent.end_reason='compression'
+        """ + edge + ' LIMIT 2', (session_id,)).fetchall()
+    if len(children) > 1:
+        raise RuntimeStoreError('admission_conflict')
+    parents = conn.execute("""
+        SELECT parent.id FROM sessions child
+        JOIN sessions parent ON child.parent_session_id=parent.id
+        WHERE child.id=? AND parent.end_reason='compression'
+        """ + edge, (session_id,)).fetchall()
+    return {row[0] for row in [*children, *parents]}

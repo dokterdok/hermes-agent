@@ -2,6 +2,8 @@
 import asyncio
 from contextlib import nullcontext
 from pathlib import Path
+import sqlite3
+import threading
 
 from gateway.session_contract import Principal
 from gateway.session_authorities import active_authority, all_authorities, owner_scope
@@ -17,12 +19,45 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         self._remembered_attempts = {}  # tries per request a chat's remembered approval may answer
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
+        # Serializes every peer route publication (registration, renewal) with Disband.
+        self.peer_route_lock = threading.RLock()
+        self._disband_upkeep_lock = threading.Lock()
+        self._disband_retry_at = {}
+        self._peer_cleanup_inflight = set()
+        self._peer_renewals, self._peer_renewal_scans = {}, {}  # session_group_peer_routes
         super().__init__(None, db_path=authority.db.db_path)
+
+    def _load_stored_links(self):
+        super()._load_stored_links()
+        for key, client in self.peer_clients.items():
+            client.proof_install_id = self.peer_routes[key].target_install_id
 
     def _make_rpc(self, server):
         # Member-specific canonical transports retain exact durable history. They
         # intentionally use the runtime's receipt-capable (non-legacy) recovery path.
         return self
+
+    def register_peer_route(self, *, room_id, member_id, route, client, target_url=None, catalog=None,
+                            expected_grant=None, authorize=None):
+        # Persisted, then published; the grant it replaces is retired (session_group_peer_routes).
+        from gateway.session_group_peer_routes import publish_route
+        publish_route(self, room_id=room_id, member_id=member_id, route=route, client=client,
+                      target_url=target_url, catalog=catalog, expected_grant=expected_grant,
+                      authorize=authorize)
+
+    def _track_peer_client(self, binding, key, route, client):
+        from gateway.session_group_peer_routes import CanonicalPeerClient
+        return CanonicalPeerClient(self, binding, key, route, client)
+
+    def _runtime_options(self):
+        # A peer turn its gateway never received is deferred with that proof, so the room's
+        # next turn runs; Retry (HostedControls) requeues it. Peer grants renew in the room's cycle.
+        return {'defer_not_admitted_members': True, 'maintain_leased_room': self._maintain_peer_grants,
+                'maintain_service': self._maintain_peer_lifecycle}
+
+    def _maintain_peer_grants(self, binding, lease):
+        from gateway.session_group_peer_routes import maintain_peer_grants
+        maintain_peer_grants(self, binding, lease)
 
     def profile_homes(self):
         from gateway.run import _load_gateway_config
@@ -66,6 +101,15 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         if target_home is None or params.get('_target_home') != str(target_home):
             raise RuntimeStoreError('permission_denied')
         result = {'owner': owner, 'target_home': str(target_home)}
+        if operation == 'approve':
+            from gateway.hosted_room_approval import require_current_approval
+            task = params.get('task')
+            if not isinstance(task, dict) or task.get('room_id') != room_id:
+                raise RuntimeStoreError('permission_denied')
+            current = require_current_approval(self, room_id, member, task.get('task_id'),
+                                               params.get('execution_generation'))
+            if asdict(current['identity']) != task:
+                raise RuntimeStoreError('permission_denied')
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -91,6 +135,93 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                               attachment_digests=source_attachment_digests(self, member, room_id, manifest))
         return result
 
+
+    def begin_disband(self, room_id):
+        """Persist the admission fence before waiting for any remote Stop or cleanup."""
+        import json
+        gateway_id, epoch = self._owned_authority(room_id)
+        self.authority.db._execute_write(lambda conn: conn.execute(
+            'INSERT OR IGNORE INTO state_meta(key,value) VALUES (?,?)',
+            ('gateway.peer.retiring.v1:' + room_id, json.dumps([gateway_id, epoch]))))
+
+    def is_retiring(self, room_id):
+        with self.authority.db._read_ctx() as conn:
+            return conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                                ('gateway.peer.retiring.v1:' + room_id,)).fetchone() is not None
+
+    def send(self, *, room_id, **kwargs):
+        with self.peer_route_lock:
+            if self.is_retiring(room_id):
+                raise RuntimeStoreError('room_retiring')
+            return super().send(room_id=room_id, **kwargs)
+
+    def _resume_disbands(self):
+        import json
+        import time
+        from gateway import hosted_rooms
+        from tui_gateway.hosted_room_peer_http import room_grant_request_budget, room_grant_request_budget_remaining
+        if not self._disband_upkeep_lock.acquire(blocking=False):
+            return  # Stop resolves its binding through this provider too.
+        try:
+            with self.authority.db._read_ctx() as conn:
+                pending = conn.execute('SELECT key,value FROM state_meta WHERE key LIKE ?',
+                                       ('gateway.peer.retiring.v1:%',)).fetchall()
+            now = time.time()
+            with room_grant_request_budget(2):
+                for row in sorted(pending, key=lambda row: self._disband_retry_at.get(row['key'], 0)):
+                    if room_grant_request_budget_remaining() <= 0:
+                        break
+                    if self._disband_retry_at.get(row['key'], 0) > now:
+                        continue
+                    self._disband_retry_at[row['key']] = now + 5
+                    room_id = row['key'][len('gateway.peer.retiring.v1:'):]
+                    try:
+                        with self.peer_route_lock:
+                            room = hosted_rooms.room_state(self.db_path, room_id=room_id, include_disbanded=True)
+                            if room.get('disbanded_at') is not None:
+                                continue
+                            gateway_id, epoch = json.loads(row['value'])
+                            if (room['authority_gateway_id'], room['authority_epoch']) != (gateway_id, epoch):
+                                continue
+                            self.stop_room(room_id, cancel_id='room-disbanded', require_acknowledged=True)
+                            self.revoke_room_routes(room_id)
+                            hosted_rooms.disband_room(self.db_path, room_id=room_id,
+                                                      expected_gateway_id=gateway_id, expected_epoch=epoch)
+                    except (OSError, RuntimeError, sqlite3.Error, ValueError):
+                        # The durable fence remains; a later cycle resumes exact Stop.
+                        continue
+        finally:
+            self._disband_upkeep_lock.release()
+
+
+    def revoke_room_routes(self, room_id):
+        from gateway import hosted_room_links, hosted_rooms
+        from gateway import session_group_peer_cleanup as cleanup
+        with self.peer_route_lock:
+            routes = [link for link in hosted_room_links.load_room_links(self.db_path) if link.room_id == room_id]
+            # Journal all grants before contacting any target or removing any route.
+            with hosted_rooms._transaction(self.db_path) as conn:
+                for link in routes:
+                    cleanup.retain(self.db_path, link, mode='scope', conn=conn)
+            cleanup.drain(self, force=True, room_id=room_id)
+            hosted_rooms.delete_room_link_records(self.db_path, room_id=room_id)
+            with self._policy_lock:
+                for link in routes:
+                    key = (room_id, link.member_id)
+                    for table in (self.peer_routes, self._peer_route_status, self.peer_clients):
+                        table.pop(key, None)
+            return len(routes)
+
+    def status(self, room_id=None):
+        from gateway import session_group_peer_cleanup as cleanup
+        from gateway import hosted_room_retirement as retirement
+        return {**super().status(room_id), 'peer_retirements': retirement.status(self.db_path, room_id) if room_id else [], 'peer_cleanup': cleanup.status(self.db_path, room_id),
+                'retiring': self.is_retiring(room_id) if room_id is not None else False}
+
+    def _maintain_peer_lifecycle(self):
+        from gateway import session_group_peer_cleanup as cleanup
+        cleanup.drain(self)
+        self._resume_disbands()
 
     def bindings(self):
         with self.authority.db._read_ctx() as conn:
@@ -133,7 +264,17 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
     def _resolve_member_transport(self, binding, task):
         if self._member_is_peer(binding.room_id, str(task['payload'].get('target_member_id') or task['payload'].get('target_profile'))):
-            return super()._resolve_member_transport(binding, task)
+            from gateway.session_group_peers import refused_peer_turn
+            refused = refused_peer_turn(self, binding.room_id, task)
+            if refused is not None:
+                return refused
+            transport = super()._resolve_member_transport(binding, task)
+            if task.get('status') == 'queued':
+                # Bound before the dispatch is sent: Retry later requires this same authority.
+                from gateway.session_group_peer_controls import capture_retry_binding
+                transport.nonadmission_retry_binding = capture_retry_binding(
+                    self, binding, task, transport.route, transport.client)
+            return transport
         from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
         payload = task['payload']
         member = str(payload.get('target_member_id') or payload.get('target_profile'))
@@ -150,12 +291,22 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                     source_home=self.authority.profile_id, room_id=binding.room_id,
                     member_id=member, profile=profile)
                 return self.member_rpcs[key]
-            def authorized(conn, operation, identity, generation):
+            def authorized(conn, operation, identity, generation, *, new_write=False):
                 # Admission checks must share the FIFO writer's snapshot. Opening
                 # another transaction here would reintroduce the revocation race.
                 from gateway.hosted_rooms import _room_from_row
-                from gateway.hosted_room_driver import _task_from_row
+                from gateway.hosted_room_driver import (
+                    _task_from_row, _require_room_authority, RoomUnavailableError, StaleLeaseError)
                 _epoch(conn, self.authority.epoch)
+                if operation in {'submit', 'execute'}:
+                    try:
+                        _require_room_authority(conn, binding.room_id, binding.gateway_id, binding.authority_epoch)
+                    except (RoomUnavailableError, StaleLeaseError):
+                        return False
+                execute = new_write or operation == 'execute'
+                if execute and conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                        ('gateway.peer.retiring.v1:' + binding.room_id,)).fetchone():
+                    return False
                 owned = conn.execute('SELECT value FROM state_meta WHERE key=?',
                                      (_OWNER + binding.room_id,)).fetchone()
                 if owned is None or owned[0] != owner:
@@ -182,6 +333,10 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                     if stored is None:
                         return False
                     current = _task_from_row(stored)
+                    if execute and conn.execute("SELECT 1 FROM hosted_room_events WHERE room_id=? AND seq>? "
+                            "AND kind='room.stop_requested' LIMIT 1",
+                            (binding.room_id, current['payload']['source_event_seq'])).fetchone():
+                        return False
                     return (current['identity'] == identity and current['execution_generation'] == generation
                             and current['payload'].get('target_profile') == profile
                             and current['payload'].get('target_member_id', profile) == member
@@ -190,11 +345,21 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 return True
             def authorize(operation, identity, generation):
                 with self.authority.db._read_ctx() as conn:
-                    return authorized(conn, operation, identity, generation)
+                    if not authorized(conn, operation, identity, generation):
+                        return False
+                if operation == 'approve':
+                    # Approval owns its short transaction; never open it inside
+                    # the admission writer or while retaining this read context.
+                    from gateway.hosted_room_approval import require_current_approval
+                    if identity is None:
+                        return False
+                    current = require_current_approval(self, binding.room_id, member, identity.task_id, generation)
+                    return current['identity'] == identity
+                return True
             def authorize_write(conn, identity, generation):
                 # Raise to refuse rather than return False: a guard that only returns False
                 # is ignored wherever the admission hook signals refusal by raising.
-                if not authorized(conn, 'submit', identity, generation):
+                if not authorized(conn, 'submit', identity, generation, new_write=True):
                     raise RuntimeStoreError('permission_denied')
                 return True
             principal = Principal(owner, self.authority.profile_id,
@@ -205,8 +370,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 authorize_write=authorize_write)
         return self.member_rpcs[key]
 
-    def check_admission(self, ref, row):
-        """Reconstruct the private producer from durable task state before claim."""
+    def check_admission(self, ref, row, *, _for_claim=False):
+        """Validate the producer; the drain also requests its exact writer guard."""
         import json
         from gateway.hosted_room_driver import TaskIdentity, list_tasks
         from gateway.session_hosted_attachments import committed_submission_payload
@@ -230,6 +395,20 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                     or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'))
                     or rpc.authorizer('execute', identity, generation) is not True):
                 raise ValueError('changed hosted binding')
+            if _for_claim:
+                from copy import deepcopy
+                if not callable(rpc.authorize_write):
+                    raise ValueError('same-home claim has no writer authority')
+                expected = deepcopy(row)
+
+                def authorize_claim(conn, selected):
+                    if selected['admission_id'] != expected['admission_id']:
+                        raise RuntimeStoreError('admission_changed')
+                    if selected != expected:
+                        raise RuntimeStoreError('permission_denied')
+                    rpc.authorize_write(conn, identity, generation)
+
+                return authorize_claim
             return task
         except (ValueError, TypeError, KeyError, StopIteration) as exc:
             raise RuntimeStoreError('permission_denied') from exc
@@ -255,11 +434,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             from gateway.group_chat_rules import apply_remembered
             apply_remembered(self, room_id, member_id, action)
 
-    def approve(self, *, session_id, request_id, choice):
+    def approve(self, *, session_id, request_id, choice, expected_task_id, expected_execution_generation):
         rpc = next((r for r in self.member_rpcs.values() if r.ref.session_id == session_id), None)
         if rpc is None:
             raise RuntimeStoreError('permission_denied')
-        return rpc.approve(session_id=session_id, request_id=request_id, choice=choice)
+        return rpc.approve(session_id=session_id, request_id=request_id, choice=choice,
+            expected_task_id=expected_task_id, expected_execution_generation=expected_execution_generation)
 
 
 async def ensure_hosted_service(runner):
