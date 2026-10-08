@@ -167,7 +167,9 @@ class _Journey:
     def cli(self, *args):
         done = subprocess.run([sys.executable, '-m', 'hermes_cli.main', 'groups', *args], env=self.env,
                               cwd=self.root, capture_output=True, text=True, timeout=180)
-        assert done.returncode == 0, (done.stdout, done.stderr[-3000:], self.cli_diagnostic())
+        if done.returncode:
+            print('GROUP_CHAT_CONTROL_DIAGNOSTIC ' + json.dumps(self.cli_diagnostic(), indent=2), flush=True)
+        assert done.returncode == 0, (done.stdout, done.stderr[-3000:])
         return done.stdout
 
     def cli_diagnostic(self):
