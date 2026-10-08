@@ -21,6 +21,29 @@ from tui_gateway.hosted_room_peer_http import (
 )
 
 
+@pytest.mark.parametrize("status", [408, 409, 425, 429])
+def test_admission_conflict_or_temporary_http_error_is_not_proof_of_nonadmission(status):
+    error = urllib.error.HTTPError(
+        "https://peer.example.test/v1/runs", status, "uncertain admission", {},
+        io.BytesIO(b'{"error":{"code":"idempotency_key_conflict"}}'))
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        PeerRunsHTTPClient._raise_http_error(
+            error, method="POST", path="/v1/runs", deadline=time.monotonic() + 5)
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+
+
+def test_documented_invalid_admission_still_proves_rejection():
+    error = urllib.error.HTTPError(
+        "https://peer.example.test/v1/runs", 400, "invalid admission", {},
+        io.BytesIO(b'{"error":{"code":"invalid_idempotency_key"}}'))
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        PeerRunsHTTPClient._raise_http_error(
+            error, method="POST", path="/v1/runs", deadline=time.monotonic() + 5)
+    assert caught.value.not_admitted is True
+    assert caught.value.ambiguous is False
+
+
 class FakePeer(BaseHTTPRequestHandler):
     sessions = []
     runs = {}
@@ -250,9 +273,11 @@ def test_failover_transport_stops_retained_run_without_replaying_dispatch(peer_s
         route=route, client=wrapped, task_id=dispatch["task_id"],
         execution_generation=dispatch["execution_generation"])
     coords = dict(profile=route.target_profile, session_id=accepted["session_id"], source="bot_room")
-    assert transport.interrupt(**coords, expected_task_id="another-task") is None
+    assert transport.interrupt(**coords, expected_task_id="another-task",
+        expected_execution_generation=dispatch["execution_generation"]) is None
     assert FakePeer.runs[accepted["run_id"]]["status"] == "running"
-    stopped = transport.interrupt(**coords, expected_task_id=dispatch["task_id"])
+    stopped = transport.interrupt(**coords, expected_task_id=dispatch["task_id"],
+        expected_execution_generation=dispatch["execution_generation"])
     assert stopped is not None and stopped["status"] == "stopping"
     assert FakePeer.runs[accepted["run_id"]]["status"] == "cancelled"
     assert len(FakePeer.idempotency) == 1
@@ -1066,9 +1091,13 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
         api_key="",
     )
 
+    retired = []
     def request(path, **_kwargs):
         if path == "/v1/room-members/grants/refresh":
             return {"grant": "replacement.room.grant"}
+        if path == "/v1/room-members/grants/revoke-exact":
+            retired.append(_kwargs['room_grant'])
+            return {'revoked': True}
         assert path == "/v1/room-members/capabilities"
         return {"catalog": refreshed}
 
@@ -1083,6 +1112,7 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
     assert caught.value.error_code == error_code
     assert caught.value.needs_reauthorization is True
     assert caught.value.not_admitted is True
+    assert retired == ['replacement.room.grant']
 
 
 def test_grant_refresh_preserves_unchanged_catalog_and_policy():

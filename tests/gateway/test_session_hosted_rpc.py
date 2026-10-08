@@ -2,6 +2,8 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,8 +15,6 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_o
     """Revocation must fence admission, not merely pause execution afterward."""
     import concurrent.futures
     import json
-    from pathlib import Path
-    import time
 
     from gateway import hosted_room_driver as tasks, hosted_room_input_preparation
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
@@ -93,8 +93,6 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_o
 
 def test_same_home_custody_guard_keeps_shared_room_refusal_and_exact_controls(hosted_owner, monkeypatch):
     """New work honors the shared room fence on its writer; status and exact Stop remain readable."""
-    from pathlib import Path
-    import time
     from gateway import hosted_room_driver as tasks, hosted_rooms
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_state_runtime import RuntimeStoreError
@@ -244,20 +242,35 @@ def test_controls_are_exact_current_admission_and_loop_safe(hosted_owner):
     assert pending['request_id'] == 'approve-me'
     assert pending['choices'] == ['once', 'deny']
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        rpc.approve(session_id=sid, request_id='approve-me', choice='always')
+        rpc.approve(session_id=sid, request_id='approve-me', choice='always',
+            expected_task_id='task', expected_execution_generation=1)
     assert not answers
-    assert rpc.approve(session_id=sid, request_id='approve-me', choice='once')['status'] == 'resolved'
+    for choice in ('once', 'deny'):
+        for change in ({'expected_task_id': 'other'}, {'expected_execution_generation': 2}):
+            with pytest.raises(RuntimeStoreError, match='stale_generation'):
+                rpc.approve(**(dict(session_id=sid, request_id='approve-me', choice=choice,
+                    expected_task_id='task', expected_execution_generation=1) | change))
+    for generation in (None, True, 0):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            rpc.approve(session_id=sid, request_id='approve-me', choice='once',
+                expected_task_id='task', expected_execution_generation=generation)
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        rpc._call('approve', session_id=sid, request_id='approve-me', choice='once')
+    assert not answers
+    assert rpc.approve(session_id=sid, request_id='approve-me', choice='once',
+        expected_task_id='task', expected_execution_generation=1)['status'] == 'resolved'
     assert answers == [('approval', 'approve-me', 'once')]
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
-        rpc.interrupt(**coords, session_id=sid, expected_task_id='other')
+        rpc.interrupt(**coords, session_id=sid, expected_task_id='other', expected_execution_generation=1)
     assert not agent.interrupted
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task') == {
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1) == {
         'interrupted': False, 'status': 'running'}
     assert agent.interrupted
     # The request alone does not end the turn: the admission is still running.
     assert rpc.info(**coords, session_id=sid)['status'] == 'started'
     with pytest.raises(RuntimeStoreError):
-        rpc.approve(session_id=sid, request_id='missing', choice='once')
+        rpc.approve(session_id=sid, request_id='missing', choice='once',
+            expected_task_id='task', expected_execution_generation=1)
     async def same_loop():
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             rpc.info(**coords, session_id=sid)
@@ -380,7 +393,7 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(host
     sid = rpc.create(**coords, title='Group: room')['session_id']
     receipts = []
     rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'), execution_generation=1, on_terminal=receipts.append)
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task')['interrupted']
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1)['interrupted']
     history = rpc.history(**coords, session_id=sid)
     assert history[-1]['status'] == 'cancelled'
     assert history[-1]['task_id'] == 'task'
@@ -417,7 +430,7 @@ def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(hoste
     async def interrupt(actor, ref, generation):
         interrupted.append(generation)
     monkeypatch.setattr(authority, 'interrupt', interrupt)
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task') == {
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1) == {
         'interrupted': False, 'status': 'running'}
     assert interrupted == [claimed[0]['generation']]
     assert rpc.info(**coords, session_id=sid)['status'] == 'started'

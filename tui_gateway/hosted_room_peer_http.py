@@ -9,6 +9,7 @@ import logging
 import math
 import re
 import socket
+import sqlite3
 import threading
 import time
 import urllib.error
@@ -282,7 +283,8 @@ class PeerRunsHTTPClient:
         self._output_dispatch_digests: dict[tuple[str, int], str] = {}
         self._room_scope: dict[str, Any] | None = None
         self._auth_probe_lock = threading.Lock()
-        self._auth_probe_rejections: OrderedDict[tuple[str, str, str], tuple[float, str, int, str | None]] = (
+        self._auth_probe_rejections: OrderedDict[
+            tuple[str, str, str], tuple[float, str, int | None, str | None, bool, bool, bool]] = (
             OrderedDict())
 
     def bind_receipt_store(self, db_path: Path | str) -> None:
@@ -492,11 +494,13 @@ class PeerRunsHTTPClient:
         return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
 
     def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str, observation_only=False,
-                         before_preparation_resume=None) -> Mapping[str, Any]:
+                         before_preparation_resume=None, admit_if_missing=True) -> Mapping[str, Any] | None:
         """Observe output-enabled attempts; legacy text retains its idempotent replay."""
         accepted = self.recover_accepted_dispatch(dispatch=dispatch, grant=grant)
         if accepted is not None:
             return accepted
+        if not admit_if_missing:
+            return None
         checked = self._checked_dispatch(dispatch, grant)
         key, now = (checked.task_id, checked.execution_generation), self.clock()
         backoff = self._recovery_backoff.get(key)
@@ -999,7 +1003,7 @@ class PeerRunsHTTPClient:
             # A replacement nobody will use is retired, not left live until it expires.
             try:
                 self.revoke_grant_exact(grant=replacement)
-            except Exception:
+            except (OSError, RuntimeError, sqlite3.Error, ValueError):
                 logger.warning("Could not retire an unused refreshed room grant")
             raise
         return {**refreshed, "catalog": probe.get("catalog")}
@@ -1048,13 +1052,15 @@ class PeerRunsHTTPClient:
                 del self._auth_probe_rejections[key]
                 rejected = None
         if rejected is not None:
-            _, message, status_code, error_code = rejected
-            raise PeerRunsHTTPError(message, status_code=status_code, error_code=error_code)
+            _, message, status_code, error_code, retryable, ambiguous, not_admitted = rejected
+            raise PeerRunsHTTPError(message, status_code=status_code, error_code=error_code,
+                                    retryable=retryable, ambiguous=ambiguous, not_admitted=not_admitted)
 
     def _remember_auth_probe_rejection(self, key: tuple[str, str, str], failure: PeerRunsHTTPError) -> None:
         with self._auth_probe_lock:
             self._auth_probe_rejections[key] = (
-                self.clock() + _AUTH_PROBE_COOLDOWN_SECONDS, str(failure), failure.status_code, failure.error_code)
+                self.clock() + _AUTH_PROBE_COOLDOWN_SECONDS, str(failure), failure.status_code, failure.error_code,
+                failure.retryable, failure.ambiguous, failure.not_admitted)
             self._auth_probe_rejections.move_to_end(key)
             while len(self._auth_probe_rejections) > _MAX_AUTH_PROBE_REJECTIONS:
                 self._auth_probe_rejections.popitem(last=False)

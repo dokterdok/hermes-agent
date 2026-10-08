@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import nullcontext
 from pathlib import Path
+import sqlite3
 import threading
 
 from gateway.session_contract import Principal
@@ -110,6 +111,15 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
             from gateway.session_hosted_output_owner import attest_output_action
             result.update(attest_output_action(self, room_id, member, profile, operation, params))
             return result
+        if operation == 'approve':
+            from gateway.hosted_room_approval import require_current_approval
+            task = params.get('task')
+            if not isinstance(task, dict) or task.get('room_id') != room_id:
+                raise RuntimeStoreError('permission_denied')
+            current = require_current_approval(self, room_id, member, task.get('task_id'),
+                                               params.get('execution_generation'))
+            if asdict(current['identity']) != task:
+                raise RuntimeStoreError('permission_denied')
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -187,7 +197,7 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                             self.revoke_room_routes(room_id)
                             hosted_rooms.disband_room(self.db_path, room_id=room_id,
                                                       expected_gateway_id=gateway_id, expected_epoch=epoch)
-                    except Exception:
+                    except (OSError, RuntimeError, sqlite3.Error, ValueError):
                         # The durable fence remains; a later cycle resumes exact Stop.
                         continue
         finally:
@@ -344,7 +354,17 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                 return True
             def authorize(operation, identity, generation):
                 with self.authority.db._read_ctx() as conn:
-                    return authorized(conn, operation, identity, generation)
+                    if not authorized(conn, operation, identity, generation):
+                        return False
+                if operation == 'approve':
+                    # Approval owns its short transaction; never open it inside
+                    # the admission writer or while retaining this read context.
+                    from gateway.hosted_room_approval import require_current_approval
+                    if identity is None:
+                        return False
+                    current = require_current_approval(self, binding.room_id, member, identity.task_id, generation)
+                    return current['identity'] == identity
+                return True
             def authorize_write(conn, identity, generation):
                 # Raise to refuse rather than return False: a guard that only returns False
                 # is ignored wherever the admission hook signals refusal by raising.
@@ -402,11 +422,12 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
         except (ValueError, TypeError, KeyError, StopIteration) as exc:
             raise RuntimeStoreError('permission_denied') from exc
 
-    def approve(self, *, session_id, request_id, choice):
+    def approve(self, *, session_id, request_id, choice, expected_task_id, expected_execution_generation):
         rpc = next((r for r in self.member_rpcs.values() if r.ref.session_id == session_id), None)
         if rpc is None:
             raise RuntimeStoreError('permission_denied')
-        return rpc.approve(session_id=session_id, request_id=request_id, choice=choice)
+        return rpc.approve(session_id=session_id, request_id=request_id, choice=choice,
+            expected_task_id=expected_task_id, expected_execution_generation=expected_execution_generation)
 
 
 async def ensure_hosted_service(runner):

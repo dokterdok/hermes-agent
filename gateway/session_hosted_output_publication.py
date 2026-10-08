@@ -250,7 +250,7 @@ class CanonicalHostedOutput:
             return False
         try:
             action()
-        except Exception as exc:
+        except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
             self._record_outcome(scope, error=exc)
             return False
         self._record_outcome(scope)
@@ -443,7 +443,7 @@ class CanonicalHostedOutput:
                 attachments = existing_message["payload"].get("attachments", [])
             else:
                 attachments = self._stage_output(identity, scope, manifest, recipients)
-        except Exception as exc:
+        except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
             self._abort_staged(scope.room_id, message_event_id(scope))
             self._record_outcome(scope, error=exc)
             return None
@@ -534,7 +534,7 @@ class CanonicalHostedOutput:
             return
         try:
             published = self._published_files(scope, manifest)
-        except Exception as exc:
+        except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
             self._record_intent(identity, scope, manifest, row["operation"] if row else "ack")
             self._record_outcome(scope, error=exc)
             return
@@ -704,7 +704,7 @@ class CanonicalHostedOutput:
         self._output_write(reopen)
         try:
             action()
-        except Exception as exc:
+        except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
             self._record_outcome(scope, error=exc)
             return False
         self._record_outcome(scope, completed=reason)

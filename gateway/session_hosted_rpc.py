@@ -19,10 +19,11 @@ _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
 
 class HostedRoomAuthorityRPC:
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
-                 authorize, authorize_write=None, timeout=30):
+                 authorize, authorize_write=None, authorize_approval=None, timeout=30):
         self.authority, self.loop = authority, loop
         self.room_id, self.member_id, self.profile = room_id, member_id, profile
         self.principal, self.authorizer, self.timeout = principal, authorize, timeout
+        self.approval_authorizer = authorize_approval
         self.authorize_write = authorize_write
         self.callbacks = {}
         binding = json.dumps([room_id, member_id, profile], separators=(',', ':'))
@@ -61,7 +62,7 @@ class HostedRoomAuthorityRPC:
         if operation == 'submit' and (not isinstance(task, TaskIdentity)
                 or task.room_id != self.room_id or type(generation) is not int or generation < 1):
             raise RuntimeStoreError('invalid_params')
-        if self.authorizer(operation, task, generation) is not True:
+        if self.authorizer('info' if operation == 'approve' else operation, task, generation) is not True:
             raise RuntimeStoreError('permission_denied')
         return await getattr(self, '_' + operation)(params)
 
@@ -203,11 +204,15 @@ class HostedRoomAuthorityRPC:
         return result
 
     async def _interrupt(self, params):
+        generation = params.get('expected_execution_generation')
+        if type(generation) is not int or generation < 1:
+            raise RuntimeStoreError('invalid_params')
         rows = self._rows()
-        current = next(((row, task) for row, task, _ in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
-        if current is None or current[1].task_id != params['expected_task_id']:
+        current = next(((row, task, hosted_generation) for row, task, hosted_generation in rows
+                        if row['status'] in {'started', 'unknown', 'queued'}), None)
+        if current is None or (current[1].task_id, current[2]) != (params['expected_task_id'], generation):
             raise RuntimeStoreError('stale_generation')
-        row, _ = current
+        row, _, _ = current
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
@@ -265,13 +270,35 @@ class HostedRoomAuthorityRPC:
             member_id=self.member_id, target_profile=self.profile)
 
     async def _approve(self, params):
-        if params['choice'] not in {'once', 'deny'}:
+        expected_task = params.get('expected_task_id')
+        expected_generation = params.get('expected_execution_generation')
+        if (params['choice'] not in {'once', 'deny'} or not isinstance(expected_task, str) or not expected_task
+                or type(expected_generation) is not int or expected_generation < 1):
             raise RuntimeStoreError('invalid_params')
         snapshot = await self.authority.attach(self.principal, self.ref)
         prompt = next((p for p in snapshot.prompts if p.get('prompt_id') == params['request_id']
                        and p.get('kind') == 'approval'), None)
         if prompt is None:
             raise RuntimeStoreError('stale_generation')
+        matches = [(task, generation) for row, task, generation in self._rows()
+                   if row['status'] == 'started' and row['generation'] == snapshot.handle.execution_generation]
+        if len(matches) != 1:
+            raise RuntimeStoreError('stale_generation')
+        task, generation = matches[0]
+        # A prompt ID may be reused by a later turn. Never substitute the
+        # current admission for the hosted task the user actually selected.
+        if (task.task_id, generation) != (expected_task, expected_generation):
+            raise RuntimeStoreError('stale_generation')
+        if params['choice'] == 'once':
+            # The producer call may have waited on this loop after the service
+            # check. Reauthorize the actual pending admission before releasing it.
+            # Both source checks can wait on SQLite; to_thread preserves the
+            # owning ContextVars while the loop remains available for controls.
+            allowed = await (asyncio.to_thread(self.approval_authorizer, task, generation)
+                             if self.approval_authorizer is not None
+                             else asyncio.to_thread(self.authorizer, 'approve', task, generation))
+            if allowed is not True:
+                raise RuntimeStoreError('permission_denied')
         return await self.authority.respond(self.principal, self.ref,
             snapshot.handle.execution_generation, params['request_id'], {'choice': params['choice']})
 
@@ -295,12 +322,14 @@ class HostedRoomAuthorityRPC:
     def info(self, *, profile, session_id, source):
         return self._call('info', profile=profile, session_id=session_id, source=source)
 
-    def interrupt(self, *, profile, session_id, source, expected_task_id):
-        return self._call('interrupt', profile=profile, session_id=session_id, source=source, expected_task_id=expected_task_id)
+    def interrupt(self, *, profile, session_id, source, expected_task_id, expected_execution_generation):
+        return self._call('interrupt', profile=profile, session_id=session_id, source=source,
+                          expected_task_id=expected_task_id, expected_execution_generation=expected_execution_generation)
 
     def discard(self, *, profile, session_id, source, expected_task_id, execution_generation):
         return self._call('discard', profile=profile, session_id=session_id, source=source,
                           expected_task_id=expected_task_id, execution_generation=execution_generation)
 
-    def approve(self, *, session_id, request_id, choice):
-        return self._call('approve', session_id=session_id, request_id=request_id, choice=choice)
+    def approve(self, *, session_id, request_id, choice, expected_task_id, expected_execution_generation):
+        return self._call('approve', session_id=session_id, request_id=request_id, choice=choice,
+            expected_task_id=expected_task_id, expected_execution_generation=expected_execution_generation)

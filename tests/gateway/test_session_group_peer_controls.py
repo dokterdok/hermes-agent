@@ -149,6 +149,8 @@ def case(tmp_path, monkeypatch):
         scope = dict(room_id="room", home_install_id=gateway, authority_gateway_id=gateway,
                      authority_epoch=1, member_id="peer", target_profile="default")
         peer = Peer(catalog, scope, service.db_path)
+        # Renewal's durable cleanup uses the same inert participant as the control path.
+        monkeypatch.setattr('gateway.session_group_peer_cleanup.PeerRunsHTTPClient', lambda **_: peer)
         grant = issue_room_grant(peer.secret, grant_id="grant", **scope,
                                  target_install_id=catalog.installation_id,
                                  execution_policy_digest=catalog.execution_policy.policy_digest,
