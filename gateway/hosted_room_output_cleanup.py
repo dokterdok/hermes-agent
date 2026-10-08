@@ -81,7 +81,7 @@ def _open_windows_directory(path, access, flags):
 
 
 def ensure_directory(root):
-    """Create beneath held ancestors; never chmod or create through a replacement."""
+    """Create privately beneath held ancestors without following replacement links."""
     root = Path(os.path.abspath(root))
     if os.name == 'nt':
         with _windows_parent(root, create=True):
@@ -89,7 +89,7 @@ def ensure_directory(root):
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     directory = os.open(root.anchor, flags)
     try:
-        for part in root.parts[1:]:
+        for index, part in enumerate(root.parts[1:], start=1):
             try:
                 child = os.open(part, flags, dir_fd=directory)
             except FileNotFoundError:
@@ -98,6 +98,10 @@ def ensure_directory(root):
                 child = os.open(part, flags, dir_fd=directory)
             os.close(directory)
             directory = child
+            if index >= len(root.parts) - 2:
+                # Preserve the original outbox privacy fence on these two owned
+                # directories, through descriptors that cannot follow a symlink.
+                os.fchmod(directory, 0o700)
     finally:
         os.close(directory)
 
