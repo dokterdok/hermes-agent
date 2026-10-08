@@ -147,9 +147,69 @@ def _room_grant_claims(self, request: "web.Request", *, permission: str, conn=No
     if hosted_rooms.room_grant_is_revoked(
             db_path, claims=claims, token_sha256=room_grant_token_digest(self._room_grant_token(request)), conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is revoked")
-    if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims, conn=conn):
+    if _retirement_only(claims):
+        from gateway.platforms.api_server_run_authority import room_authority
+        if not self._run_idempotency_store.permits_room_retirement(room_authority(claims)):
+            raise RoomGrantReauthorizationRequired("room retirement authority is not retained")
+    elif not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims, conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is no longer current")
     return claims
+
+
+def _retirement_only(claims):
+    return set(claims["permissions"]) == {"status", "retire"}
+
+
+def _previous_authority(claims, body):
+    """An owner explicitly names the current predecessor; room and target stay fixed."""
+    from gateway.platforms.api_server_run_authority import room_authority
+    previous = body.get("previous_authority")
+    if previous is None:
+        return None
+    fields = {"home_install_id", "authority_gateway_id", "authority_epoch"}
+    if not isinstance(previous, dict) or set(previous) != fields:
+        raise ValueError("previous_authority requires exact home, gateway and epoch")
+    if (type(previous["authority_epoch"]) is not int or previous["authority_epoch"] < 1
+            or any(not isinstance(previous[key], str) or not previous[key] for key in fields - {"authority_epoch"})):
+        raise ValueError("previous_authority has invalid coordinates")
+    return room_authority({**claims, **previous})
+
+
+def _record_invitation(self, claims, body, verified_origin=None):
+    from gateway import hosted_rooms
+    from gateway.platforms.api_server_run_authority import room_authority, room_namespace, room_run_scope
+    authority = room_authority(claims)
+    if _retirement_only(claims):
+        if not self._run_idempotency_store.permits_room_retirement(authority):
+            raise RoomGrantReauthorizationRequired("room retirement authority is not retained")
+        return
+    previous = _previous_authority(claims, body)
+    previous_home = body["previous_authority"]["home_install_id"] if previous is not None else None
+    namespace = room_namespace(claims)
+    if verified_origin is not None:
+        target = self._run_idempotency_store.observe_verified_room_authority(
+            claims, body.get("previous_authority"), verified_origin)
+        replaced = target[2:4] if target is not None else previous[1:3] if previous is not None else None
+        if replaced is not None and replaced[0] == authority[1] and replaced[1] != authority[2]:
+            # The learned winner replaces the shared reservation, including members
+            # that did not consent to receiving another continuation grant.
+            with hosted_rooms._transaction(_grant_db(self), immediate=True) as conn:
+                conn.execute("""DELETE FROM hosted_room_peer_reservations WHERE room_id=?
+                    AND target_profile=? AND authority_epoch=? AND authority_gateway_id=?""",
+                    (claims["room_id"], claims["target_profile"], replaced[0], replaced[1]))
+    elif not self._run_idempotency_store.accepts_room_authority(authority, previous, namespace, claims, previous_home):
+        raise RoomGrantReauthorizationRequired("room authority has already advanced")
+    if (verified_origin is None and previous is None and not self._run_idempotency_store.knows_room_authority(authority)
+            and not self._run_idempotency_store.knows_room_target(claims)):
+        with hosted_rooms._transaction(_grant_db(self)) as conn:
+            existing = conn.execute("""SELECT 1 FROM hosted_room_peer_reservations
+                WHERE room_id=? AND target_profile=?""", (claims["room_id"], claims["target_profile"])).fetchone()
+        if existing is not None:
+            raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
+    if verified_origin is None:
+        if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), authority, previous, previous_home, namespace, claims):
+            raise RoomGrantReauthorizationRequired("room authority has already advanced")
+    hosted_rooms.reserve_peer_room(_grant_db(self), claims=claims, expires_at=_hard_expiry(claims))
 
 
 def authorize_room_admission(adapter, request):
@@ -188,7 +248,7 @@ async def _handle_room_member_invitation(
         return error
     required = set(_ROOM_IDENTITY_FIELDS)
     allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication", "work_records",
-                          "passive_only", "successor", "continuation"}
+                          "passive_only", "successor", "continuation", "previous_authority", "retirement_only"}
     if set(body) - allowed or not required <= set(body):
         return _json_error(
             _openai_error, "Invitation is missing required room authority fields.",
@@ -201,7 +261,7 @@ async def _handle_room_member_invitation(
     return web.json_response({"object": "hermes.room_member.invitation", **invitation}, status=201)
 
 
-def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any]:
+def _issue_invitation(self, body: dict[str, Any], profile: str, *, _verified_origin=None) -> dict[str, Any]:
     """Mint and reserve one room grant for *profile*: the API-key route and ``groups.peer.invite``.
 
     The grant keeps this gateway a custodian of the room's history unless ``replication: false``
@@ -216,9 +276,14 @@ def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any
     from gateway.hosted_room_custody import set_local_consent
     from gateway.hosted_room_passive_protocol import passive_capabilities
     from gateway.hosted_room_peer import decode_room_grant, invitation_permissions, issue_room_grant
+    if (type(body.get("retirement_only", False)) is not bool
+            or (body.get("retirement_only") and "previous_authority" in body)):
+        raise ValueError("retirement_only must be a boolean without previous_authority")
     permissions = invitation_permissions(
         body.get("replication", True), body.get("work_records", False),
         passive_only=body.get("passive_only", False), successor=body.get("successor", False))
+    if body.get("retirement_only"):
+        permissions = ("status", "retire")
     continuation = body.get("continuation", True)
     if type(continuation) is not bool:
         raise ValueError("continuation must be a boolean")
@@ -238,14 +303,12 @@ def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any
         execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
         ttl_seconds=ttl, status_ttl_seconds=status_ttl)
     claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
-    from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
-    authority = room_authority(claims)
-    if not self._run_idempotency_store.accepts_room_authority(authority):
-        raise RoomGrantReauthorizationRequired("room authority has already advanced")
-    hosted_rooms.reserve_peer_room(
-        _grant_db(self), claims=claims, expires_at=_hard_expiry(claims))
-    if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), authority):
-        raise RoomGrantReauthorizationRequired("room authority has already advanced")
+    _record_invitation(self, claims, body, _verified_origin)
+    invitation = {"grant": token, "target_profile": profile, "catalog": catalog,
+                  "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"]),
+                  "passive_replication": passive_capabilities()}
+    if _retirement_only(claims):
+        return invitation
     if "replicate" in permissions:
         set_local_consent(_grant_db(self), room_id=claims["room_id"], allowed="successor" in permissions)
     from gateway.hosted_room_succession import record_consent_locked, withdraw_consent_locked
@@ -253,6 +316,9 @@ def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any
         if continuation:
             record_consent_locked(conn, room_id=claims["room_id"], member_id=claims["member_id"],
                                   target_profile=profile, options={
+                                      "authority": {key: claims[key] for key in (
+                                          "home_install_id", "authority_gateway_id", "authority_epoch")},
+                                      "origin_install_id": self._run_idempotency_store.room_lineage_origin(claims),
                                       "replication": body.get("replication", True),
                                       "work_records": body.get("work_records", False),
                                       "passive_only": body.get("passive_only", False),
@@ -261,9 +327,7 @@ def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any
         else:
             withdraw_consent_locked(conn, room_id=claims["room_id"], member_id=claims["member_id"],
                                     target_profile=profile)
-    return {"grant": token, "target_profile": profile, "catalog": catalog,
-            "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"]),
-            "passive_replication": passive_capabilities()}
+    return invitation
 
 
 async def _handle_room_member_capabilities(
@@ -275,6 +339,10 @@ async def _handle_room_member_capabilities(
         _, catalog = _local_room_catalog(self, profile, installation_id)
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_openai_error)
+    if _retirement_only(claims):
+        return web.json_response({"object": "hermes.room_member.capabilities",
+            **{key: claims[key] for key in _ROOM_IDENTITY_FIELDS}, "target_profile": profile,
+            "catalog": catalog, "retirement_only": True})
     from gateway.hosted_room_passive_protocol import passive_capabilities
     enrollment = None
     if "replicate" in claims.get("permissions", ()):
