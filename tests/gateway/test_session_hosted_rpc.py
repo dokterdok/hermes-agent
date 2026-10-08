@@ -293,7 +293,7 @@ def test_terminal_callback_follows_canonical_drain_without_polling(hosted_owner,
         return 'canonical reply'
     # This RPC component fixture supplies the service gate explicitly; daemon
     # coverage exercises the real durable member/task authorizer.
-    authority.runner._adapter_for_source = lambda source: authority.runner.adapters[source.platform]
+    authority.runner._adapter_for_source = authority.runner._intake_adapter_for = authority.runner._delivery_adapter_for = lambda source: authority.runner.adapters[source.platform]
     authority.hosted_room_service = SimpleNamespace(
         check_admission=lambda ref, row, **kwargs: (lambda conn, selected: None) if kwargs.get('_for_claim') else True)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
