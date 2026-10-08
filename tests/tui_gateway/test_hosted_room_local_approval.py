@@ -106,11 +106,6 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
 
 def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
-    service.local_profiles = lambda: ('default', 'ops')
-    service.create_room(room_id='room-1', name='Local', members=[
-        {'member_id': 'local', 'profile': 'default', 'handle': 'local'},
-        {'member_id': 'other', 'profile': 'ops', 'handle': 'other'}])
-    _start_approval_task(service, task_id='task-local-1', member_id='local', profile='default')
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
