@@ -1535,8 +1535,11 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
 
 
 def _codex_app_server_turn(agent: Any, s: Any) -> Optional[Dict[str, Any]]:
-    """The codex app-server's result for this turn, or None when its failure activated a fallback and the
-    generic loop retries the same user turn."""
+    """Return a native result, or None when the configured fallback retries this turn."""
+    from agent.files_live_context import native_files_refusal
+    refusal = native_files_refusal(agent, s.messages)
+    if refusal is not None:
+        return refusal
     codex_result = agent._run_codex_app_server_turn(
         user_message=s.user_message, original_user_message=s.original_user_message,
         messages=s.messages, effective_task_id=s.effective_task_id,
@@ -1545,8 +1548,7 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[Dict[str, Any]]:
     from agent.turn_recovery import activate_codex_app_server_fallback
     if not activate_codex_app_server_fallback(agent, codex_result):
         return codex_result
-    # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
-    # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
+    # Preserve the failed native call in the fallback turn's accounting.
     s.api_call_count = int(codex_result.get("api_calls") or 0)
     s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
     return None
@@ -1849,6 +1851,21 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
             return
         if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) != "user":
             return
+        files_snapshot = getattr(agent, '_files_safe_results', False) is True
+        canonical = getattr(agent, '_session_messages', None)
+        if files_snapshot:
+            # finalize_turn exports an independent safe snapshot. Only this
+            # turn's complete canonical projection may gain our generated close;
+            # never adopt alternate/partial result history as canonical rows.
+            if (not isinstance(canonical, list) or messages != canonical
+                    or (messages is not canonical
+                        and result.get('turn_id') != getattr(agent, '_current_turn_id', None))):
+                return
+            from agent.files_live_context import require_current_files_context
+            entry = require_current_files_context(agent, canonical)
+            if entry is not None and entry.turn_id != getattr(agent, '_current_turn_id', None):
+                return
+            messages = canonical
         # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
         # hedge over the whole list rather than under-report a possible side effect.
         start = result.get("current_turn_user_idx")
@@ -1860,6 +1877,11 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
             boundary["display_metadata"] = failure
         append_message(messages, boundary)
         agent._flush_messages_to_session_db(messages)
+        if files_snapshot:
+            from agent.files_live_context import safe_files_result
+            projected = safe_files_result(agent, {**result, 'messages': messages})
+            result.clear()
+            result.update(projected)
     except Exception:
         logger.debug("failed-turn boundary not written", exc_info=True)
 

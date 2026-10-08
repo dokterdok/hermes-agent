@@ -1239,26 +1239,15 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
-def _has_replayable_sidecar(role: Any, content: Any, msg: Dict[str, Any]) -> bool:
-    """True for an assistant row whose reply lives only in the ``api_content`` sidecar.
-
-    A reasoning-only clean stop persists ``content=""`` and the promoted text in ``api_content``
-    (agent/turn_final_response.py). Gating replay on ``content`` alone dropped that row, so the
-    next gateway turn lost the assistant's answer and replayed user->user."""
-    return (
-        role == "assistant"
-        and not content
-        and isinstance(msg.get("api_content"), str)
-        and bool(msg.get("api_content"))
-    )
 
 
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]], *, channel_prompt: Optional[str] = None,
-    inject_timestamps: bool = False) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    inject_timestamps: bool = False, files_bindings=None) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
+    from agent.replay_cleanup import has_replayable_sidecar
     from hermes_time import get_timezone as _get_msg_tz
     from gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
@@ -1287,7 +1276,7 @@ def _build_gateway_agent_history(
         if "tool_calls" in msg or "tool_call_id" in msg or role == "tool":
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
             agent_history.append(clean_msg)
-        elif content or _has_replayable_sidecar(role, content, msg):
+        elif content or has_replayable_sidecar(role, content, msg):
             replay_timestamp = msg.get("timestamp")
             # Clean before rendering: a timestamp prefix hides recovery notes
             # from the startswith-based stripper. Retain an embedded original time.
@@ -1319,6 +1308,9 @@ def _build_gateway_agent_history(
                 entry["content"] = f"[Delivered from {mirror_src}] {entry['content']}"
                 entry.pop("api_content", None)  # prefix rewrite: the sidecar no longer matches
             agent_history.append(entry)
+            if files_bindings is not None:
+                files_bindings.transformed(msg, entry, unchanged=(
+                    content == msg.get("content") and not msg.get("mirror")))
 
     # Keep gateway resume byte-identical to the TUI resume and send paths. The
     # canonicalizer owns interrupted-block, dangling-tail, and stale-confirmation
