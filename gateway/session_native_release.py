@@ -8,16 +8,30 @@ from gateway.hosted_room_input_reclamation import copy_path, verified_identity, 
 from hermes_state_input_custody import copy_is_held, create_schema, seal_copy
 
 
+def pending_api_image_references(db):
+    """An interrupted quarantine no longer appears in the ordinary image glob."""
+    with db._read_ctx() as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='input_custody_copies'").fetchone():
+            return []
+        copies = conn.execute("SELECT * FROM input_custody_copies WHERE namespace='native' AND state='sealed'").fetchall()
+    return [{'path': str(copy_path(db, copy)), 'sha256': copy['digest'], 'size': copy['size']}
+            for copy in copies if media._API_IMAGE_NAME.fullmatch(copy['name'])
+            and copy['name'][4:36] == copy['digest'][:32]]
+
+
 def _indexed_candidate(conn, db, reference, held, identities, now):
     path = Path(reference['path'])
     if str(path) in held or path.parent.parent != media._media_root():
         return None
     record = conn.execute('''SELECT * FROM input_custody_copies
         WHERE namespace='native' AND digest=? AND name=?''', (reference['sha256'], path.name)).fetchone()
+    size = reference.get('size')
+    if size is None:
+        size = record['size'] if record is not None else path.stat(follow_symlinks=False).st_size
     copy = dict(record) if record is not None else dict(copy_id=uuid.uuid4().hex, namespace='native',
-        digest=reference['sha256'], name=path.name, size=reference['size'], generation=1,
+        digest=reference['sha256'], name=path.name, size=size, generation=1,
         state='preparing', device=None, inode=None)
-    if (copy_path(db, copy) != path or copy['size'] != reference['size'] or copy_is_held(conn, copy, now)
+    if (copy_path(db, copy) != path or copy['size'] != size or copy_is_held(conn, copy, now)
             or _external_holds(conn, db, copy, path, now)):
         return None
     try:
@@ -39,13 +53,8 @@ def _indexed_candidate(conn, db, reference, held, identities, now):
     return dict(conn.execute('SELECT * FROM input_custody_copies WHERE copy_id=?', (copy['copy_id'],)).fetchone())
 
 
-def release_native_media(db, admission_id):
-    from hermes_state_runtime import get_session_admission
-
-    row = get_session_admission(db, admission_id=admission_id)
-    if row is None or row['status'] != 'terminal':
-        return 0
-    references = media.admission_media_references(row['payload'])
+def release_unheld_native_media(db, references):
+    """Journal verified native/API candidates, preserving every current physical holder."""
     if not references:
         return 0
 
