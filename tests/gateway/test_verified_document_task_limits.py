@@ -67,59 +67,51 @@ def test_task_documents_bind_all_ordinals_and_final_api_digest(tmp_path, monkeyp
         close(db, tmp_path)
 
 
-@pytest.mark.parametrize('case', [
-    '17-documents', 'zero-size', 'boolean-size', 'wrong-size', 'wrong-hash', 'per-file-bytes',
-    'task-bytes', 'platform-bytes', 'message-count', 'message-bytes', 'mixed-task-bytes',
+def _document_batch(count, size):
+    data = b'x' * size
+    return [document(i, data) for i in range(count)]
+
+
+@pytest.mark.parametrize('make_inputs,error,limit', [
+    pytest.param(lambda: [document(i) for i in range(17)], 'invalid_params', None, id='17-documents'),
+    pytest.param(lambda: [document(0) | {'size': 0}], 'permission_denied', None, id='zero-size'),
+    pytest.param(lambda: [document(0) | {'size': True}], 'permission_denied', None, id='boolean-size'),
+    pytest.param(lambda: [document(0) | {'size': 1}], 'permission_denied', None, id='wrong-size'),
+    pytest.param(lambda: [document(0) | {'sha256': '0' * 64}], 'permission_denied', None, id='wrong-hash'),
+    pytest.param(lambda: [document(0) | {'size': 15_000_001}], 'permission_denied', None, id='per-file-bytes'),
+    pytest.param(lambda: _document_batch(4, 12_500_001), 'invalid_params', 0, id='task-bytes'),
+    pytest.param(lambda: _document_batch(2, 16), 'invalid_params', 31, id='platform-bytes'),
 ])
-def test_task_preflight_preserves_message_and_byte_limits(tmp_path, monkeypatch, case):
+def test_task_preflight_rejects_invalid_documents_before_custody(tmp_path, monkeypatch, make_inputs, error, limit):
     db, authority = owned(tmp_path, monkeypatch)
     try:
         def forbidden(*args, **kwargs):
             pytest.fail('rejected batch began custody preparation or copied bytes')
         monkeypatch.setattr('gateway.hosted_room_input_preparation.begin_preparation', forbidden)
         monkeypatch.setattr('gateway.hosted_room_input_preparation._copy', forbidden)
-        inputs = [document(0)]
-        error = 'permission_denied'
-        if case == '17-documents':
-            inputs = [document(i) for i in range(17)]
-            error = 'invalid_params'
-        elif case in {'zero-size', 'boolean-size', 'wrong-size', 'per-file-bytes'}:
-            inputs[0]['size'] = {'zero-size': 0, 'boolean-size': True, 'wrong-size': 1,
-                                 'per-file-bytes': 15_000_001}[case]
-        elif case == 'wrong-hash':
-            inputs[0]['sha256'] = '0' * 64
-        elif case == 'task-bytes':
-            # One real buffer, four distinct names: valid hashes/sizes, no huge copies.
-            data = b'x' * 12_500_001
-            inputs = [document(i, data) for i in range(4)]
-            assert all(item['data'] is data for item in inputs)
-            (tmp_path / 'config.yaml').write_text('gateway:\n  max_inbound_media_bytes: 0\n')
-            error = 'invalid_params'
-        elif case == 'platform-bytes':
-            inputs = [document(i, b'x' * 16) for i in range(2)]
-            (tmp_path / 'config.yaml').write_text('gateway:\n  max_inbound_media_bytes: 31\n')
-            error = 'invalid_params'
-        else:
-            # Real source-message and whole mixed-task validators retain their own budgets.
-            sizes = {'message-count': [1] * 9, 'message-bytes': [12_500_000, 12_500_001],
-                     'mixed-task-bytes': [12_500_000] * 4 + [1]}[case]
-            manifest = [dict(attachment_id=f'att_{i:032x}', name=f'{i}.txt', kind='file',
-                             mime='text/plain', size=size) for i, size in enumerate(sizes)]
-            if case == 'mixed-task-bytes':
-                manifest[-1].update(name='image.png', kind='image', mime='image/png')
-                assert validate_task_manifest(manifest[:-1]) == manifest[:-1]
-                validator = validate_task_manifest
-            else:
-                assert validate_manifest(manifest[:-1]) == manifest[:-1]
-                validator = validate_manifest
-            with pytest.raises(ValueError):
-                validator(manifest)
-        if case not in {'message-count', 'message-bytes', 'mixed-task-bytes'}:
-            with pytest.raises(RuntimeStoreError, match=error):
-                prepare_verified_documents(authority, principal_id='api', session_id='s',
-                    request_id='refused', documents=inputs, build_payload=forbidden)
+        if limit is not None:
+            (tmp_path / 'config.yaml').write_text(f'gateway:\n  max_inbound_media_bytes: {limit}\n')
+        with pytest.raises(RuntimeStoreError, match=error):
+            prepare_verified_documents(authority, principal_id='api', session_id='s',
+                request_id='refused', documents=make_inputs(), build_payload=forbidden)
         for table in ('input_custody_preparations', 'input_custody_copies', 'input_custody_items',
                       'input_custody_refs', 'session_admissions'):
             assert db._conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0] == 0
     finally:
         close(db, tmp_path)
+
+
+@pytest.mark.parametrize('sizes,mixed', [
+    pytest.param([1] * 9, False, id='message-count'),
+    pytest.param([12_500_000, 12_500_001], False, id='message-bytes'),
+    pytest.param([12_500_000] * 4 + [1], True, id='mixed-task-bytes'),
+])
+def test_task_and_message_manifest_limits(sizes, mixed):
+    manifest = [dict(attachment_id=f'att_{i:032x}', name=f'{i}.txt', kind='file',
+                     mime='text/plain', size=size) for i, size in enumerate(sizes)]
+    if mixed:
+        manifest[-1].update(name='image.png', kind='image', mime='image/png')
+    validator = validate_task_manifest if mixed else validate_manifest
+    assert validator(manifest[:-1]) == manifest[:-1]
+    with pytest.raises(ValueError):
+        validator(manifest)
