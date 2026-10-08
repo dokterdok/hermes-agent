@@ -51,23 +51,18 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
         rejected = {}
         if mode == 'recover':
             # Each mutation is fixture-owned; restoration precedes the positive control.
-            for case in ('removed-adapter', 'ambiguous-adapter', 'removed-home', 'ambiguous-route',
-                         'removed-route', 'changed-credential', 'revoked-sender'):
+            mutations = {
+                'removed-adapter': lambda: setattr(runner, '_profile_adapters', {}),
+                'ambiguous-adapter': lambda: runner._profile_adapters.update(alias={Platform.TELEGRAM: adapter}),
+                'removed-home': lambda: setattr(runner.config, '_runtime_profile_homes', [('default', state)]),
+                'ambiguous-route': lambda: setattr(runner.config, 'profile_routes', [route, route]),
+                'removed-route': lambda: setattr(runner.config, 'profile_routes', []),
+                'changed-credential': lambda: setattr(adapter.config, 'token', 'new-connector'),
+                'revoked-sender': lambda: (transport / '.env').write_text('TELEGRAM_ALLOWED_USERS=revoked\n'),
+            }
+            for case, mutate in mutations.items():
                 old_token = adapter.config.token
-                if case == 'removed-adapter':
-                    runner._profile_adapters = {}
-                elif case == 'ambiguous-adapter':
-                    runner._profile_adapters['alias'] = {Platform.TELEGRAM: adapter}
-                elif case == 'removed-home':
-                    runner.config._runtime_profile_homes = [('default', state)]
-                elif case == 'ambiguous-route':
-                    runner.config.profile_routes = [route, route]
-                elif case == 'removed-route':
-                    runner.config.profile_routes = []
-                elif case == 'changed-credential':
-                    adapter.config.token = 'new-connector'
-                elif case == 'revoked-sender':
-                    (transport / '.env').write_text('TELEGRAM_ALLOWED_USERS=revoked\n')
+                mutate()
                 result = await authority.recover_native_sessions([(sid, source, adapter)])
                 assert result[sid] != 'ready', (case, result)
                 assert rows(sid) == before, (case, rows(sid))
@@ -126,7 +121,10 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
         queued = MessageEvent(text='MULTIPLEX_QUEUED', source=source, message_id='busy-2')
         task = asyncio.create_task(adapter.handle_message(queued))
         try:
-            async with asyncio.timeout(3):
+            # A durable FIFO row, not an adapter-local queue: the bound is wall-clock only (the
+            # admission commits on the owner's writer, which a loaded runner can delay), like the
+            # model-gate and drain waits above.
+            async with asyncio.timeout(10):
                 while not any(row['request_id'] == 'busy-2' for row in rows(entry.session_id)):
                     await asyncio.sleep(0.01)
             assert not adapter._pending_messages, 'callback wrapper restored adapter-local queue'

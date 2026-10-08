@@ -5,8 +5,6 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from tests.gateway.test_api_cutover_contract import api  # noqa: F401
-from tests.gateway.test_api_source_binding import owner  # noqa: F401
 
 
 def _events(text):
@@ -42,3 +40,36 @@ async def test_exact_streaming_retry_on_named_conversation_replays_the_recorded_
     assert first[-1]['type'] == retry[-1]['type'] == 'response.completed'
     assert retry[-1]['response'] == first[-1]['response'] == plain_body
     assert calls == ['stream named']
+
+
+@pytest.mark.asyncio
+async def test_changed_explicit_history_conflicts_with_same_responses_idempotency_key(api, owner):
+    calls = []
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        calls.append(event.text)
+        execution_result.get()['result'] = {'final_response': 'reply', 'messages': []}
+        return 'reply'
+
+    owner.runner._handle_message = handle
+    app = web.Application()
+    app.router.add_post('/v1/responses', api._handle_responses)
+    body = {
+        'input': 'question',
+        'conversation_history': [{'role': 'user', 'content': 'history A'}],
+    }
+    headers = {'Idempotency-Key': 'history-sensitive-retry'}
+
+    async with TestClient(TestServer(app)) as client:
+        first = await client.post('/v1/responses', json=body, headers=headers)
+        assert first.status == 200
+        changed = await client.post('/v1/responses', json={
+            **body,
+            'conversation_history': [{'role': 'user', 'content': 'history B'}],
+        }, headers=headers)
+        payload = await changed.json()
+
+    assert changed.status == 409
+    assert payload['error']['code'] == 'admission_conflict'
+    assert calls == ['question']
