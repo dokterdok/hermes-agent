@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -15,7 +16,10 @@ from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 
 
 @pytest.fixture
-def checkpoint(tmp_path):
+def checkpoint(tmp_path, monkeypatch, request):
+    if getattr(request, 'param', 'configured') == 'delete':
+        import hermes_state_wal
+        monkeypatch.setattr(hermes_state_wal, 'resolve_journal_mode', lambda: 'delete')
     path = tmp_path / "policy.db"
     rooms.create_room(path, room_id="room", name="Policy", members=[],
                       authority_gateway_id="home", now=1)
@@ -29,6 +33,9 @@ def checkpoint(tmp_path):
             payload={"thread_id": thread, "text": event_id},
             authority_gateway_id="home", authority_epoch=1, now=2))
     policy = HostedRoomPolicyCheckpoint(path)
+    if getattr(request, "param", "configured") == "delete":
+        with closing(sqlite3.connect(path)) as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
     return policy, events
 
 
@@ -62,14 +69,18 @@ def test_snapshot_preserves_fifo_and_excludes_whole_held_threads(checkpoint, mod
     assert again.events == tuple(events[:2])
 
 
+@pytest.mark.parametrize("checkpoint", ["configured", "delete"], indirect=True)
 @pytest.mark.parametrize("outcome", ["selected", "empty", "refusal"])
 def test_snapshot_uses_one_view_and_ends_transaction_before_connection_exit(checkpoint, outcome):
     policy, events = checkpoint
     latest = events[-1]["seq"]
     exited = []
     callbacks = []
-    with closing(sqlite3.connect(policy.db_path, timeout=5)) as reader:
+    staged = threading.Event()
+    pending = None
+    with ThreadPoolExecutor(max_workers=1) as pool, closing(sqlite3.connect(policy.db_path, timeout=5)) as reader:
         reader.row_factory = sqlite3.Row
+        journal = reader.execute("PRAGMA journal_mode").fetchone()[0]
 
         @contextmanager
         def supplied():
@@ -80,6 +91,8 @@ def test_snapshot_uses_one_view_and_ends_transaction_before_connection_exit(chec
                 yield reader
             finally:
                 assert not reader.in_transaction
+                if pending is not None:
+                    pending.result(timeout=5)
                 # This fresh read must see the writer, not the old selection view.
                 exited.append(reader.execute("SELECT stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id='room'").fetchone()[0])
 
@@ -90,12 +103,19 @@ def test_snapshot_uses_one_view_and_ends_transaction_before_connection_exit(chec
                 writer.execute("UPDATE hosted_room_policy_events SET event_json=? WHERE room_id='room' AND discussion_event_id='independent'",
                                (json.dumps(dict(events[2], payload={"text": "new view"})),))
                 writer.execute("INSERT INTO hosted_room_policy_watermarks VALUES ('room','free','reader',999)")
+                staged.set()
 
         def held(conn):
+            nonlocal pending
             assert conn is reader and conn.in_transaction
             callbacks.append(conn)
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                pool.submit(commit_different_view).result(timeout=5)
+            pending = pool.submit(commit_different_view)
+            assert staged.wait(5), 'writer did not stage its updates'
+            # Guarded SQLite builds and supported rollback-journal configurations
+            # block COMMIT until this read transaction ends. WAL can commit now,
+            # and must still leave every selection read on the original snapshot.
+            if journal == 'wal':
+                pending.result(timeout=5)
             assert conn.execute("SELECT completed FROM hosted_room_policy_threads WHERE room_id='room' AND thread_id='free'").fetchone()[0] == 0
             if outcome == "refusal":
                 raise RuntimeError("held-thread evidence unavailable")
