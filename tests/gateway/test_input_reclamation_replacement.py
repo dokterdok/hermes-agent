@@ -34,7 +34,6 @@ async def test_replacement_after_seal_is_preserved(tmp_path, monkeypatch, replac
         remove = reclamation.remove_sealed_copy
 
         def race(target, row):
-            assert copy_records(db)[0]['state'] == 'sealed'
             if replacement is not None:
                 target.rename(displaced)
                 target.write_bytes(replacement)

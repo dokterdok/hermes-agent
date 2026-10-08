@@ -107,8 +107,13 @@ async def test_native_release_journal_survives_restart_and_finishes(tmp_path, mo
             else:
                 patch.setattr(db, '_execute_write', writer)
             assert media.release_admission_media(db, row['admission_id']) == 0
-        assert copy_records(db)[0]['state'] == 'sealed'
-        assert path.exists() is (boundary == 'before_removal')
+        record, = copy_records(db)
+        assert record['state'] == 'sealed'
+        if boundary == 'before_removal':
+            retained = path if path.exists() else path.parent / cleanup._quarantine_name(record) / 'copy'
+            assert retained.read_bytes() == b'Native release to recover'
+        else:
+            assert not path.exists()
         db.close()
         db = SessionDB(tmp_path / 'state.db')
         begin_runtime_epoch(db, instance_id='restarted-native-owner')
