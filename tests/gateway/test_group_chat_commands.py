@@ -8,7 +8,7 @@ from gateway import group_chat_access as access
 from gateway import group_chat_slash as slash
 from gateway import hosted_rooms
 from hermes_state import SessionDB
-from tests.gateway.group_chat_fixtures import OWNER, Bot, authority_for, message, runner_for
+from tests.gateway.group_chat_fixtures import OWNER, Bot, authority_for, message, runner_for, start_approval_task
 
 MEMBERS = [{'member_id': 'ada', 'profile': 'default', 'handle': 'ada', 'display_name': 'Ada'},
            {'member_id': 'bob', 'profile': 'helper', 'handle': 'bob'}]
@@ -232,6 +232,7 @@ def test_stop_fences_the_room_and_reports_the_tasks(setup):
 
 
 def pending(setup, request='req-1', command='rm -rf ./build', *, key=None, task='task-1'):
+    start_approval_task(setup.service, 'mine', 'ada', task)
     action = {'kind': 'approval', 'task_id': task, 'execution_generation': 1, 'run_id': None,
               'session_id': 'session-1', 'request_id': request,
               'approval': {'kind': 'approval', 'prompt_id': request, 'command': command,
@@ -245,11 +246,12 @@ def test_approve_once_and_deny_answer_the_exact_request(setup):
     connected(setup)
     code = pending(setup)
     detail = run(setup, '/group 1')
-    assert 'Idle · 1 approval waiting' in detail
+    assert 'Working · 1 approval waiting' in detail
     assert f'Approval {code} · Ada asks to run:\n```\nrm -rf ./build\n```\ndelete build output' in detail
     assert f'Answer: /group 1 approve {code} once|deny' in detail
     assert run(setup, f'/group 1 approve {code} once') == 'Allowed once for Ada.'
-    assert setup.service.approvals == [{'session_id': 'session-1', 'request_id': 'req-1', 'choice': 'once'}]
+    assert setup.service.approvals == [{'session_id': 'session-1', 'request_id': 'req-1', 'choice': 'once',
+                                       'expected_task_id': 'task-1', 'expected_execution_generation': 1}]
     assert 'isn’t waiting any more' in run(setup, f'/group 1 approve {code} once')
     code = pending(setup, request='req-2')
     assert run(setup, f'/group 1 APPROVE {code.upper()} Deny') == 'Denied for Ada.'
@@ -303,7 +305,8 @@ def test_always_warns_then_remembers_for_this_chat_until_forgotten(setup):
     allowed = run(setup, f'/group 1 approve {code} always confirm')
     assert allowed.startswith('Allowed. Ada may run this exact command again in Group 1 without asking')
     rule_code = allowed.rsplit(' ', 1)[-1]
-    assert setup.service.approvals == [{'session_id': 'session-1', 'request_id': 'req-1', 'choice': 'once'}]
+    assert setup.service.approvals == [{'session_id': 'session-1', 'request_id': 'req-1', 'choice': 'once',
+                                       'expected_task_id': 'task-1', 'expected_execution_generation': 1}]
     pending(setup, 'req-2', key='a' * 64, task='task-2')
     assert setup.service.approvals[-1]['request_id'] == 'req-2'
     detail = run(setup, '/group 1')
