@@ -79,8 +79,7 @@ const revealPane = (id: string) => {
   })
 }
 
-const overlayTab = (paneId: string) =>
-  window.document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
+const overlayTab = (paneId: string) => window.document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
 describe('narrow overlay of a stacked zone', () => {
   it('mirrors the zone tab strip so every stacked collapsible stays reachable', () => {

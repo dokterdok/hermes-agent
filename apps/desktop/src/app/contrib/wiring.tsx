@@ -12,7 +12,6 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
-import { useUnreadNavigation } from '@/app/contrib/hooks/use-unread-navigation'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -164,6 +163,7 @@ import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
+import { useUnreadNavigation } from './hooks/use-unread-navigation'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { type KickoffSlashCommand, useOnboardingKickoff } from './onboarding-kickoff'
 import { useTitlebarToolContributions } from './panes'
@@ -196,9 +196,10 @@ export { WiredPane } from './context'
 
 // Generic in-app route intents raised by toast recovery buttons (Open Keys,
 // Open Gateways, Maintenance …) fired from stores with no router context.
-function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): void {
+function useUserNavigationRequests(navigate: ReturnType<typeof useNavigate>): void {
   const location = useLocation()
   useUnreadNavigation(navigate, `${location.key}:${location.pathname}:${location.search}:${location.hash}`)
+
   const routeRequest = useStore($routeRequest)
   const routeRequestSeenRef = useRef(0)
 
@@ -291,7 +292,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
 
-  useRouteRequestNavigation(navigate)
+  useUserNavigationRequests(navigate)
   useRecoveryRequestToasts()
 
   const freshDraftReady = useStore($freshDraftReady)
