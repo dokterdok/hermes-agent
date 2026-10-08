@@ -48,8 +48,10 @@ import type { CreateBackendSessionForSend } from '../use-session-actions/create-
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
 import {
+  adoptPreparedSubmission,
+  type PreparedSubmission,
   preparedSubmissionKey,
-  readPreparedSubmission,
+  preparedSubmissionSlot,
   removePreparedSubmission,
   writePreparedSubmission
 } from './prepared-submissions'
@@ -438,10 +440,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         )
 
       let startingRouteToken = getRouteToken()
-      let retained: Awaited<ReturnType<typeof readPreparedSubmission>>
+      let retained: PreparedSubmission | undefined
+      let retainedKey: string | undefined
 
       try {
-        retained = await readPreparedSubmission(retryKeyForTarget())
+        const adopted = await adoptPreparedSubmission(retryKeyForTarget())
+        retained = adopted?.entry
+        retainedKey = adopted?.key
 
         // A legacy send has no deduplication identity. After an ambiguous ACK
         // even an upgraded server cannot safely admit it under the saved ID.
@@ -1068,7 +1073,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           params: submitParams(liveSessionId)
         }
 
-        const retryKey = retryKeyForTarget()
+        const retryKey = retainedKey ?? (await preparedSubmissionSlot(retryKeyForTarget()))
         await writePreparedSubmission(retryKey, prepared)
 
         if (sessionDriftReason()) {
@@ -1259,7 +1264,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           throw submitErr
         }
 
-        await removePreparedSubmission(retryKey)
+        // The gateway admitted it: a failed journal retirement (ENOSPC/EIO) must not report a
+        // delivered prompt as failed and invite a resend. The identity is retired in memory.
+        await removePreparedSubmission(retryKey).catch(error => console.warn('[prepared-submission-retire]', error))
 
         // The prompt is now accepted. Report the EXACT identity it landed on
         // (recovered id included) so a caller that must prove delivery — the
