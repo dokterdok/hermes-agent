@@ -37,6 +37,7 @@ async def owner(tmp_path, monkeypatch, *, members=None):
                              config=GatewayConfig(), _cached_agent_for=lambda _: None)
     adapter = lambda source: runner.adapters.get(source.platform)  # noqa: E731
     runner._adapter_for_source = runner._intake_adapter_for = runner._delivery_adapter_for = adapter
+    runner._adapters_for_profile = lambda profile: runner.adapters if profile in (None, "", "default") else {}
     epoch = begin_runtime_epoch(store._db, instance_id="test")
     authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id="test", db=store._db, epoch=epoch)
     runner.session_authority = authority
