@@ -145,19 +145,23 @@ async def test_learned_same_epoch_winner_preserves_retained_attempt_and_controls
             assert len(execution) == 2
 
 
-def test_equal_epochs_without_a_target_origin_binding_never_transfer_controls_or_claim_absence(tmp_path):
+@pytest.mark.parametrize('previous_epoch,fenced_through', [(2, 1), (2, 2), (3, 3)])
+def test_equal_or_older_authority_never_borrows_unbound_origin_controls(tmp_path, previous_epoch, fenced_through):
     previous = {'room_id': 'room', 'home_install_id': 'loser', 'authority_gateway_id': 'loser',
-                'authority_epoch': 2, 'member_id': 'member', 'target_install_id': 'target', 'target_profile': 'default'}
-    successor = {**previous, 'home_install_id': 'winner', 'authority_gateway_id': 'winner'}
+                'authority_epoch': previous_epoch, 'member_id': 'member', 'target_install_id': 'target', 'target_profile': 'default'}
+    successor = {**previous, 'home_install_id': 'winner', 'authority_gateway_id': 'winner', 'authority_epoch': 2}
     scope = room_run_scope_key(previous)
     with closing(RunIdempotencyStore(str(tmp_path / 'runs.db'))) as store:
         store.reserve(scope, 'room:executed:1', 'accepted', 'old-run', {'status': 'completed'}, identity=previous)
         fence.fence_and_promise(store.path, room_id='room', fence_epoch=1, promise_epoch=2, candidate_install_id='loser')
         fence.learn_authority(store.path, room_id='room', epoch=2, install_id='winner')
+        if fenced_through > 1:
+            fence.fence_room(store.path, room_id='room', fence_epoch=fenced_through)
         assert store.successor_run_scope('old-run', successor=successor) is None
-        with pytest.raises(RunCancellationUnknown):
-            store.cancellation_state(successor, 'room:executed:1')
-        with pytest.raises(RunCancellationUnknown):
+        if previous_epoch == 2:
+            with pytest.raises(RunCancellationUnknown):
+                store.cancellation_state(successor, 'room:executed:1')
+        with pytest.raises(RunCancellationUnknown if fenced_through == 1 else fence.RoomAuthorityFenced):
             store.reserve(room_run_scope_key(successor), 'room:executed:1', 'new', 'new-run',
                           {'status': 'queued'}, identity=successor)
         own, _, _ = store.cancellation_state(previous, 'room:executed:1')
