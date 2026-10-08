@@ -11,7 +11,7 @@ import pytest
 
 @pytest.mark.parametrize('member_target', [{}, {'target': None}], ids=['missing-target', 'null-target'])
 @pytest.mark.parametrize('revocation', [None, 'member', 'room_epoch', 'owner', 'task_generation', 'stopping', 'disbanded', 'malformed_target'])
-def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, monkeypatch, revocation, member_target):
+def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_owner, monkeypatch, revocation, member_target):
     """Revocation must fence admission, not merely pause execution afterward."""
     import concurrent.futures
     import json
@@ -24,7 +24,7 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, m
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions
     from tui_gateway.hosted_room_driver import HostedRoomBinding
 
-    authority, loop, _, _ = owner
+    authority, loop, _, _ = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)
     # The component fixture uses a synthetic profile identifier, not a daemon home.
     monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
@@ -93,7 +93,7 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, m
     assert len(rows) == (1 if revocation is None else 0)
 
 
-def test_same_home_custody_guard_keeps_shared_room_refusal_and_exact_controls(owner, monkeypatch):
+def test_same_home_custody_guard_keeps_shared_room_refusal_and_exact_controls(hosted_owner, monkeypatch):
     """New work honors the shared room fence on its writer; status and exact Stop remain readable."""
     from pathlib import Path
     import time
@@ -102,7 +102,7 @@ def test_same_home_custody_guard_keeps_shared_room_refusal_and_exact_controls(ow
     from hermes_state_runtime import RuntimeStoreError
     from tui_gateway.hosted_room_driver import HostedRoomBinding
 
-    authority, loop, _, _ = owner
+    authority, loop, _, _ = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)
     monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
     service.authorize_room('alice', 'room', create=True)
@@ -137,46 +137,11 @@ def test_same_home_custody_guard_keeps_shared_room_refusal_and_exact_controls(ow
     assert len(seen) == 2
 
 
-@pytest.fixture
-def owner(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
-    from gateway import run, session_policy
-    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
-    monkeypatch.setattr(run, '_resolve_gateway_model', lambda cfg: 'fixture')
-    # Parent-owned private restore hook, explicitly not an ordinary-daemon proof.
-    original = session_policy.restore_policy
-    def restore(data):
-        from dataclasses import replace
-        if data['source'] == 'bot_room':
-            return replace(original({**data, 'source': 'gui', 'platform': 'desktop'}), source='bot_room', platform='bot_room')
-        return original(data)
-    monkeypatch.setattr(session_policy, 'restore_policy', restore)
-    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    agent = SimpleNamespace(interrupted=False)
-    agent.interrupt = lambda: setattr(agent, 'interrupted', True)
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
-                             _cached_agent_for=lambda route: agent)
-    loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=loop.run_forever)
-    thread.start()
-    authority = asyncio.run_coroutine_threadsafe(initialize_session_authority(runner, profile_id='owned', instance_id='first'), loop).result()
-    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    principal = Principal('durable-room-owner', 'owned', frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}), 'room-worker')
-    yield authority, loop, principal, agent
-    loop.call_soon_threadsafe(loop.stop)
-    thread.join()
-    loop.close()
-    store._db.close()
-
-
-def test_room_binding_exact_retry_terminal_history_and_unknown(owner):
+def test_room_binding_exact_retry_terminal_history_and_unknown(hosted_owner):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions, claim_session_input, settle_session_input, begin_runtime_epoch, recover_session_inputs
-    authority, loop, principal, _ = owner
+    authority, loop, principal, _ = hosted_owner
     allowed = [True]
     seen = []
     def authorize(operation, task, generation):
@@ -224,14 +189,14 @@ def test_room_binding_exact_retry_terminal_history_and_unknown(owner):
     assert seen and all(t != threading.get_ident() for t in seen)
 
 
-def test_local_submit_rechecks_owner_after_real_preparation(owner, monkeypatch):
+def test_local_submit_rechecks_owner_after_real_preparation(hosted_owner, monkeypatch):
     """A revoked producer cannot cross the preparation-to-admission boundary."""
     from gateway import hosted_room_input_preparation as preparation
     from gateway.hosted_room_driver import TaskIdentity
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
-    authority, loop, principal, _ = owner
+    authority, loop, principal, _ = hosted_owner
     admitted = [True]
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member',
         profile='default', principal=principal,
@@ -262,11 +227,11 @@ def test_local_submit_rechecks_owner_after_real_preparation(owner, monkeypatch):
     assert rpc.callbacks == {}
 
 
-def test_controls_are_exact_current_admission_and_loop_safe(owner):
+def test_controls_are_exact_current_admission_and_loop_safe(hosted_owner):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import RuntimeStoreError, claim_session_input
-    authority, loop, principal, agent = owner
+    authority, loop, principal, agent = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')
     sid = rpc.create(**coords, title='Group: room')['session_id']
@@ -316,13 +281,13 @@ def test_controls_are_exact_current_admission_and_loop_safe(owner):
     asyncio.run_coroutine_threadsafe(same_loop(), loop).result()
 
 
-def test_terminal_callback_follows_canonical_drain_without_polling(owner, monkeypatch):
+def test_terminal_callback_follows_canonical_drain_without_polling(hosted_owner, monkeypatch):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.session_authority import SessionAuthority
     from gateway.hosted_room_driver import TaskIdentity
     from gateway import session_finite
     from hermes_state_runtime import list_session_admissions
-    authority, loop, principal, _ = owner
+    authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')
     sid = rpc.create(**coords, title='Group: room')['session_id']
@@ -346,11 +311,11 @@ def test_terminal_callback_follows_canonical_drain_without_polling(owner, monkey
     assert rows[0]['status'] == 'terminal'
 
 
-def test_unknown_info_is_inactive_with_hosted_not_canonical_generation(owner):
+def test_unknown_info_is_inactive_with_hosted_not_canonical_generation(hosted_owner):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import claim_session_input, begin_runtime_epoch, recover_session_inputs
-    authority, loop, principal, _ = owner
+    authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')
     coords['session_id'] = rpc.create(**coords, title='Group: room')['session_id']
@@ -366,11 +331,11 @@ def test_unknown_info_is_inactive_with_hosted_not_canonical_generation(owner):
     assert info['execution_generation'] == 17
 
 
-def test_discard_requires_exact_owned_unknown_tuple_without_replay(owner, monkeypatch):
+def test_discard_requires_exact_owned_unknown_tuple_without_replay(hosted_owner, monkeypatch):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions, claim_session_input, begin_runtime_epoch, recover_session_inputs
-    authority, loop, principal, _ = owner
+    authority, loop, principal, _ = hosted_owner
     allowed = [True]
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: allowed[0])
     coords = dict(profile='default', source='bot_room')
@@ -419,14 +384,14 @@ def test_discard_requires_exact_owned_unknown_tuple_without_replay(owner, monkey
     assert rpc.history(**coords)[-1]['status'] == 'cancelled'
 
 
-def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(owner):
+def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(hosted_owner):
     """A queued task that is stopped never ran, so it has no execution result; history/info
     must project it as cancelled instead of failing the whole room read. A completed row with
     a missing result is still storage corruption."""
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import RuntimeStoreError, claim_session_input, settle_session_input
-    authority, loop, principal, _ = owner
+    authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')
     sid = rpc.create(**coords, title='Group: room')['session_id']
@@ -446,11 +411,11 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(owne
         rpc.history(**coords, session_id=sid)
 
 
-def _hosted_retry_attempt(owner, monkeypatch):
+def _hosted_retry_attempt(hosted_owner, monkeypatch):
     from gateway import hosted_room_driver as tasks, hosted_rooms
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from tui_gateway.hosted_room_driver import HostedRoomBinding
-    authority, loop, _, agent = owner
+    authority, loop, _, agent = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)
     monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
     service.authorize_room('alice', 'room', create=True)
@@ -472,9 +437,9 @@ def _hosted_retry_attempt(owner, monkeypatch):
 
 
 @pytest.mark.parametrize('new_state',['queued','started'])
-def test_old_producer_stop_does_not_target_a_later_explicit_retry(owner, monkeypatch, new_state):
+def test_old_producer_stop_does_not_target_a_later_explicit_retry(hosted_owner, monkeypatch, new_state):
     from hermes_state_runtime import claim_session_input, settle_session_input, list_session_admissions
-    authority, service, agent, tasks, identity, attempt, rpc, coords, receipt, gateway = _hosted_retry_attempt(owner,monkeypatch)
+    authority, service, agent, tasks, identity, attempt, rpc, coords, receipt, gateway = _hosted_retry_attempt(hosted_owner,monkeypatch)
     old = claim_session_input(authority.db,epoch=authority.epoch,session_id=coords['session_id'])
     observed = rpc.info(**coords)
     assert (observed['task_id'],observed['execution_generation']) == (identity.task_id,1)
@@ -518,11 +483,11 @@ def test_old_producer_stop_does_not_target_a_later_explicit_retry(owner, monkeyp
         assert current['status'] == 'started' and agent.interrupted
 
 
-def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(owner, monkeypatch):
+def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(hosted_owner, monkeypatch):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import claim_session_input
-    authority, loop, principal, agent = owner
+    authority, loop, principal, agent = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
                                  principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')

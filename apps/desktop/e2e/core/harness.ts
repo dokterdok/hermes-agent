@@ -71,6 +71,10 @@ export function createCoreSandbox(label: string): CoreSandbox {
     hermesHome,
     userDataDir,
     cleanup: () => {
+      // Attach-mode Desktop never stops the gateway it dialled, so without this
+      // every spec left its sandbox `gateway run` behind (~20 per suite run).
+      stopSandboxGatewayDaemons(root, hermesHome)
+
       if (!process.env.HERMES_E2E_CORE_KEEP) {
         fs.rmSync(root, { recursive: true, force: true })
       }
@@ -78,12 +82,72 @@ export function createCoreSandbox(label: string): CoreSandbox {
   }
 }
 
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function processHomeUnder(pid: number, root: string): boolean {
+  const info = readProc(pid)
+
+  return Boolean(info?.cmdline) && info!.environ.split('\0').some(entry => entry.startsWith(`HERMES_HOME=${root}`))
+}
+
 /**
- * Sandbox config: only the scripted provider. The external tirith scanner is
- * off: with none on PATH the backend downloads it from GitHub on the first
- * terminal command (network in a required lane), and with one on PATH it
- * fetched a 12 MB threat DB that was still being written after quit. The
- * approval prompts under test come from Hermes's own detector.
+ * SIGTERM (then SIGKILL after 15 s) every daemon recorded in a sandbox
+ * `gateway.lock` (launch home and each profile home). The pid is only
+ * signalled while its environment still names this sandbox, so a recycled pid
+ * is never touched.
+ */
+function stopSandboxGatewayDaemons(root: string, hermesHome: string): void {
+  const profilesDir = path.join(hermesHome, 'profiles')
+
+  const homes = [
+    hermesHome,
+    ...(fs.existsSync(profilesDir) ? fs.readdirSync(profilesDir).map(name => path.join(profilesDir, name)) : [])
+  ]
+
+  const pids = new Set<number>()
+
+  for (const home of homes) {
+    try {
+      const pid = Number(JSON.parse(fs.readFileSync(path.join(home, 'gateway.lock'), 'utf8'))?.pid)
+
+      if (Number.isInteger(pid) && pid > 0 && processHomeUnder(pid, root)) {
+        pids.add(pid)
+      }
+    } catch {
+      // No lock (remote-only spec, never booted) or an empty one: nothing to stop.
+    }
+  }
+
+  const signal = (sig: NodeJS.Signals) => {
+    for (const pid of pids) {
+      try {
+        process.kill(pid, sig)
+      } catch {
+        pids.delete(pid)
+      }
+    }
+  }
+
+  signal('SIGTERM')
+
+  for (const deadline = Date.now() + 15_000; pids.size && Date.now() < deadline; ) {
+    sleepSync(100)
+
+    for (const pid of [...pids]) {
+      if (!processHomeUnder(pid, root)) {
+        pids.delete(pid)
+      }
+    }
+  }
+
+  signal('SIGKILL')
+}
+
+/**
+ * Sandbox config: only the scripted provider. The approval prompts under test
+ * come from Hermes's own detector.
  */
 export function providerConfigYaml(providerUrl: string, extra = '', approvals: 'manual' | 'off' = 'off'): string {
   return `model:
@@ -101,8 +165,6 @@ providers:
 auxiliary:
   title_generation:
     enabled: false
-security:
-  tirith_enabled: false
 approvals:
   mode: "${approvals}"
 ${extra}`
@@ -519,7 +581,7 @@ export async function waitForInteractive(app: ElectronApplication, page: Page, t
           if (cs.position === 'fixed') {
             const r = node.getBoundingClientRect()
 
-            if (r.left <= 0 && r.top <= 0 && r.right >= window.innerWidth && r.bottom >= window.innerHeight) {
+            if (r.left <= 1 && r.top <= 1 && r.right >= window.innerWidth - 1 && r.bottom >= window.innerHeight - 1) {
               return false
             }
           }
@@ -615,6 +677,8 @@ export async function currentSessionId(page: Page): Promise<string> {
 export interface PersistedMessage {
   role: string
   content: string
+  /** Set on synthetic rows (a process notification, a model switch) the renderer draws as notices. */
+  displayKind?: string
 }
 
 /**
@@ -664,7 +728,8 @@ export async function persistedTranscript(
 
   return (result?.messages ?? []).map((m: any) => ({
     role: String(m.role ?? ''),
-    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')
+    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? ''),
+    ...(typeof m.display_kind === 'string' && m.display_kind ? { displayKind: m.display_kind } : {})
   }))
 }
 

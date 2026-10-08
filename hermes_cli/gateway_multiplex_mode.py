@@ -76,6 +76,23 @@ def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
     return bool(value)
 
 
+def settled_explicit_flag(value: Optional[bool]) -> Optional[bool]:
+    """How boot reads an explicit ``multiplex_profiles``: ``true`` is final; the retired ``false``
+    settles exactly like an unset key (``None``: the boot preflight decides)."""
+    return True if value else None
+
+
+def host_serves_named_profile(default_home: Path, home: Path) -> Optional[bool]:
+    """Offline twin of the boot verdict for named profile *home* under *default_home*'s gateway:
+    ``False`` for a ``gateway.standalone: true`` secondary (``profiles_to_serve`` never serves it),
+    ``True`` for an explicit ``true`` on the default, ``None`` when boot settles it (unset or the
+    retired ``false``, see :func:`resolve_multiplex_mode`)."""
+    from hermes_cli.profiles import profile_is_standalone
+    if profile_is_standalone(home):
+        return False
+    return settled_explicit_flag(explicit_multiplex_flag(default_home))
+
+
 def default_gateway_multiplexes(default_home: Optional[Path] = None) -> bool:
     """Does the default profile's gateway serve every profile? For CLI/dashboard processes: the LIVE
     gateway's ``served_profiles`` record when one runs (it settled the unset default itself), else
@@ -240,7 +257,7 @@ def resolve_multiplex_mode(config) -> MultiplexDecision:
     standalone = standalone_launcher_decision(config)
     if standalone is not None:
         return standalone
-    if current:
+    if settled_explicit_flag(current):
         return MultiplexDecision(True, "config")
     retired_opt_out = current is False
     try:
@@ -326,8 +343,15 @@ def recorded_standalone_warning_lines() -> list[str]:
     """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
     make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
     try:
-        from gateway.status import read_runtime_status
-        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        record = read_runtime_status() or {}
+        if record.get("gateway_state") in (None, "stopped", "startup_failed"):
+            return []
+        # Liveness is the state + a live PID, never the heartbeat: a paused or wedged gateway is
+        # still the standalone process the box warns about (#120991).
+        if not runtime_status_pid_is_live(record):
+            return []
+        reason = record.get("multiplex_standalone_reason")
     except Exception:
         return []
     if not reason:
