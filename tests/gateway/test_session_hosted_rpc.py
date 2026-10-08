@@ -310,11 +310,11 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(host
         rpc.history(**coords, session_id=sid)
 
 
-def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(owner, monkeypatch):
+def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(hosted_owner, monkeypatch):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import claim_session_input
-    authority, loop, principal, agent = owner
+    authority, loop, principal, agent = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
                                  principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')
