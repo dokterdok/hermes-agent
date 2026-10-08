@@ -256,4 +256,3 @@ def peer_action(service, task, binding):
             return 'retry'
         return 'discard' if discard_available(service, task, binding) else None
     return None
-
