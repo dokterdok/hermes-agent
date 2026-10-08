@@ -7,8 +7,11 @@ OpenRouter/bare-custom, Bedrock and external-process builders in
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
@@ -35,11 +38,32 @@ from hermes_cli.providers import determine_api_mode, get_provider, is_actual_rou
 from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
 
 
+# A frozen session route's config (``frozen_runtime_config``); None = the live profile config.
+_FROZEN_RUNTIME_CONFIG: ContextVar[Optional[Dict[str, Any]]] = ContextVar("_FROZEN_RUNTIME_CONFIG", default=None)
+
+
+@contextmanager
+def frozen_runtime_config(config: Dict[str, Any]):
+    """Resolve against a session's frozen config instead of the live config.yaml.
+
+    Every rung reads its endpoint through ``load_config``/``_get_model_config``, so a frozen route's
+    credential stays paired with the endpoint it was frozen with after a live ``model.base_url``
+    edit (R2-M2). The auth store (credential pool) is not config and still refreshes/rotates.
+    """
+    merged = _config_mod._deep_merge(copy.deepcopy(_config_mod.DEFAULT_CONFIG), config)
+    token = _FROZEN_RUNTIME_CONFIG.set(merged)
+    try:
+        yield
+    finally:
+        _FROZEN_RUNTIME_CONFIG.reset(token)
+
+
 # Late-bound delegates, deliberately NOT module-level from-imports: this module is often imported
 # lazily, so its first import can happen while a test has ``hermes_cli.config.load_config`` patched
 # — a from-import would bind the MagicMock permanently and poison every later caller.
 def load_config():
-    return _config_mod.load_config()
+    frozen = _FROZEN_RUNTIME_CONFIG.get()
+    return copy.deepcopy(frozen) if frozen is not None else _config_mod.load_config()
 
 
 def get_compatible_custom_providers(config=None):
@@ -224,6 +248,18 @@ def _effective_model(model_cfg: Dict[str, Any], target_model: Optional[str]) -> 
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str, *, target_model: Optional[str] = None) -> str:
     configured_mode = _configured_api_mode("copilot", model_cfg)
     if configured_mode:
+        # A stale/incompatible explicit ``codex_responses`` must not override Copilot's hard
+        # per-model requirement. Copilot serves ``gpt-5-mini`` on chat completions only; a
+        # Responses-API request there silently succeeds but returns no reasoning/thinking
+        # content (#46527). The stale value commonly survives an ordinary flow: the Copilot
+        # OAuth setup writes ``api_mode: codex_responses`` (correct for the gpt-5.4-mini it
+        # initially selects), then the user switches to gpt-5-mini without the mode being
+        # recomputed. The check is the pure-regex Copilot exception — no network call; a
+        # legitimate ``codex_responses`` for GPT-5 variants like gpt-5.4-mini is still honored.
+        model_name = str(_effective_model(model_cfg, target_model)).strip()
+        if (configured_mode == "codex_responses" and model_name
+                and not _models._should_use_copilot_responses_api(model_name)):
+            return "chat_completions"
         return configured_mode
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting
     # codex_responses from a GPT-5 default fails with "model ... does not support Responses API".
@@ -866,7 +902,7 @@ _LOCAL_BYPASS_CLOUD_HOSTS = ("openrouter.ai", "anthropic.com", "openai.com")
 def _raise_if_provider_disabled(requested_provider: str) -> None:
     """Honour ``providers.<name>.enabled: false`` for built-ins too (the custom lookup gate only
     covers custom blocks); a typed error lets the fallback chain advance."""
-    full_cfg = _config_mod.load_config()
+    full_cfg = load_config()
     provs_cfg = full_cfg.get("providers") if isinstance(full_cfg, dict) else None
     block = provs_cfg.get(requested_provider) if isinstance(provs_cfg, dict) else None
     if isinstance(block, dict) and not _config_mod.is_provider_enabled(block):
@@ -1088,30 +1124,6 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
 
 def format_runtime_provider_error(error: Exception) -> str:
     return format_auth_error(error) if isinstance(error, AuthError) else str(error)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'custom_provider_aliases': ('hermes_cli.providers', 'custom_provider_aliases'),
-    'custom_provider_slug': ('hermes_cli.providers', 'custom_provider_slug'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
 
 
 def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested: Optional[str] = None,

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
 import socket
 import stat
+import sys
 from typing import Literal
 import time
 
@@ -17,7 +19,20 @@ class DiscoveryError(ValueError):
         self.reason = reason
 
 
-def home_mode_unsafe(node: os.stat_result) -> bool:
+def _may_have_access_acl(path: Path) -> bool:
+    """A Linux POSIX access ACL is present, or its absence cannot be established. Python has no
+    os.listxattr on macOS (whose chmod +a ACLs are separate); mode bits stay the policy there."""
+    if not hasattr(os, "listxattr"):
+        return False
+    try:
+        return "system.posix_acl_access" in os.listxattr(path, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+            return False  # filesystem without xattrs cannot carry an ACL
+        return True
+
+
+def home_mode_unsafe(node: os.stat_result, path: Path) -> bool:
     """The profile home keeps the operator's mode (main's home policy: symlinked homes,
     HERMES_HOME_MODE 0701/0750). Only write by another user lets them swap the socket; read/search
     bits grant nothing against our 0600 socket, and group-write is harmless when the group is the
@@ -27,14 +42,21 @@ def home_mode_unsafe(node: os.stat_result) -> bool:
         return True
     if not mode & 0o020:
         return False
+    # With an access ACL the group bits are the mask: a named user (setfacl u:other:rwx) may
+    # hold write even though the owning group is private.
+    if _may_have_access_acl(path):
+        return True
+    # ``gr_mem`` never lists accounts whose PRIMARY gid is the group, so privacy also needs the
+    # passwd scan; membership we cannot establish is treated as shared.
     try:
         import grp
         import pwd
         user, group = pwd.getpwuid(node.st_uid), grp.getgrgid(node.st_gid)
-    except (ImportError, KeyError):
+        primary_members = {p.pw_uid for p in pwd.getpwall() if p.pw_gid == group.gr_gid}
+    except (ImportError, KeyError, OSError):
         return True
     return not (group.gr_gid == user.pw_gid and group.gr_name == user.pw_name
-                and set(group.gr_mem) <= {user.pw_name})
+                and set(group.gr_mem) <= {user.pw_name} and primary_members <= {node.st_uid})
 
 
 def _private_node(path: Path, *, kind: str, home: bool = False) -> os.stat_result:
@@ -42,9 +64,46 @@ def _private_node(path: Path, *, kind: str, home: bool = False) -> os.stat_resul
     predicates = {"socket": stat.S_ISSOCK, "file": stat.S_ISREG, "directory": stat.S_ISDIR}
     if not predicates[kind](node.st_mode) or node.st_uid != os.getuid():  # windows-footgun: ok — POSIX socket path only
         raise DiscoveryError("unsafe_control_path")
-    if home_mode_unsafe(node) if home else stat.S_IMODE(node.st_mode) & 0o077:
+    if home_mode_unsafe(node, path) if home else stat.S_IMODE(node.st_mode) & 0o077:
         raise DiscoveryError("unsafe_control_permissions")
     return node
+
+
+def socket_peer_uid(sock: socket.socket) -> int | None:
+    """Kernel-reported uid of the process on the other end of a connected AF_UNIX socket
+    (SO_PEERCRED on Linux, getpeereid on macOS); None where neither exists."""
+    if hasattr(socket, "SO_PEERCRED"):
+        import struct
+        return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+    uid, gid = ctypes.c_uint(), ctypes.c_uint()
+    getpeereid = ctypes.CDLL(None, use_errno=True).getpeereid
+    getpeereid.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+    getpeereid.restype = ctypes.c_int
+    if getpeereid(sock.fileno(), ctypes.byref(uid), ctypes.byref(gid)) != 0:
+        raise OSError(ctypes.get_errno(), "getpeereid failed")
+    return uid.value
+
+
+def connect_private(home: Path, timeout: float) -> socket.socket:
+    """Connected control socket for *home* whose listener runs as this user (caller closes it).
+    The path is validated by lstat first, but connect() follows a symlink swapped in afterwards,
+    so the listening process itself is authenticated. Platforms without a peer-credential API
+    (neither SO_PEERCRED nor getpeereid) fall back to the path checks alone."""
+    path = _socket_path(home)
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        peer.settimeout(timeout)
+        peer.connect(str(path))
+        uid = socket_peer_uid(peer)
+        if uid is not None and uid != os.getuid():  # windows-footgun: ok — POSIX socket peer only
+            raise DiscoveryError("unsafe_control_peer")
+        return peer
+    except BaseException:
+        peer.close()
+        raise
 
 
 def _socket_path(home: Path) -> Path:
@@ -87,14 +146,8 @@ def query_identify(home: Path, *, timeout: float) -> dict:
         return _identify_response(query_runtime_control(
             home, b'{"protocol":1,"verb":"identify","id":1}\n', timeout))
     deadline = time.monotonic() + timeout
-    path = _socket_path(home)
     request = b'{"protocol":1,"verb":"identify","id":1}\n'
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        budget = deadline - time.monotonic()
-        if budget <= 0:
-            raise TimeoutError
-        client.settimeout(budget)
-        client.connect(str(path))
+    with connect_private(home, timeout) as client:
         budget = deadline - time.monotonic()
         if budget <= 0:
             raise TimeoutError
