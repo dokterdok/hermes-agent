@@ -825,7 +825,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         requested_provider=agent_overrides.get("requested_provider"), route=route)
     if selection_error:
         return _json_error(_openai_error, selection_error, status=400)
-    from gateway.platforms.api_server_room_documents import prepare_run_input
+    from gateway.platforms.api_server_room_documents import prepare_run_input, lookup_run_response
     document_bytes, input_response = await prepare_run_input(
         self, request, scope=idempotency_scope, key=idempotency_key, fingerprint=idempotency_fingerprint,
         session_id=session_id, gateway_session_key=gateway_session_key, room_dispatch=room_dispatch,
