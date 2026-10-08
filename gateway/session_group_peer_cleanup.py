@@ -141,7 +141,7 @@ def drain(service, *, force=False, room_id=None):
                     _retire(client, link.grant)
                 else:
                     try:
-                        client.revoke_grant(grant=link.grant)
+                        client.revoke_grant(grant=link.grant, retire_authority=True)
                     except PeerRunsHTTPError as exc:
                         if not _grant_revoke_is_terminal(exc):
                             raise
