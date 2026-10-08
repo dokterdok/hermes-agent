@@ -167,8 +167,8 @@ def _authority_tasks(authority):
 async def _retire_profile_authority(authority):
     """Stop profile-local services/tasks before its ownership is released."""
     from gateway.session_cron import unbind_owner
-
     from gateway.session_logical_preparation import stop_logical_preparation
+
     await stop_logical_preparation(authority)
     service = getattr(authority, 'hosted_room_service', None)
     if service is not None:
