@@ -243,6 +243,7 @@ class RoomDriverStatus(Result):
     pending_actions: list[dict[str, JsonValue]]
     peer_routes: list[PeerRouteStatus]
     peer_cleanup: list[dict[str, JsonValue]] | None = None
+    peer_retirements: list[dict[str, JsonValue]] | None = None
     retiring: bool | None = None
     replication: dict[str, JsonValue] | None = None
     #: Turns waiting for another computer: ``{task_id, member_id, state: "waiting_for_host", resource,
@@ -335,6 +336,7 @@ class RoomTombstone(Result):
 
 class GroupsDisbandResult(Result):
     tombstone: RoomTombstone
+    retirements: list[dict[str, JsonValue]] = []
 
 
 method("groups.disband", params=GroupsDisbandParams, result=GroupsDisbandResult,
@@ -606,6 +608,9 @@ class GroupsPeerInviteParams(ProfileParams):
     custody_only: bool | None = None
     # The same grant is re-issued to a verified successor of the room unless this is ``false``.
     continuation: bool | None = None
+
+    retirement_only: bool | None = None
+    previous_authority: dict[str, JsonValue] | None = None
 
 
 class GroupsPeerInviteResult(Result):
@@ -1351,3 +1356,22 @@ __all__ = [
     "GroupsLogResult", "RelayEnvelope", "Room", "RoomAuthority", "RoomEvent", "RoomLinkCatalog",
     "RoomMember", "RoomMemberInput",
 ]
+
+
+class GroupsPeerRetirementsParams(ProfileParams):
+    room_id: str | None = None
+
+
+class GroupsPeerRetireParams(RoomParams):
+    retirement_id: str
+    grant: str | None = None
+
+
+class GroupsPeerRetireResult(Result):
+    retirements: list[dict[str, JsonValue]]
+
+
+method("groups.peer.retirements", params=GroupsPeerRetirementsParams, result=GroupsPeerRetireResult,
+       doc="List retained peer-authority retirement obligations, including ended rooms.")
+method("groups.peer.retire", params=GroupsPeerRetireParams, result=GroupsPeerRetireResult,
+       doc="Retry authority retirement with an optional fresh exact-scope target grant; never reopen execution.")

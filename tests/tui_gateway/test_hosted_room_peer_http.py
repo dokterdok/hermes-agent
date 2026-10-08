@@ -637,6 +637,53 @@ def test_invalid_room_dispatch_http_403_is_definitively_not_admitted(monkeypatch
     assert caught.value.ambiguous is False
 
 
+@pytest.mark.parametrize("status,definite", [
+    (400, True), (401, True), (403, True), (404, True), (408, True), (422, True), (425, True),
+    (429, True), (409, False),
+])
+def test_only_an_idempotency_conflict_leaves_an_admission_refusal_uncertain(
+        monkeypatch, status, definite):
+    def rejected(*args, **kwargs):
+        raise urllib.error.HTTPError("https://peer.example.test/v1/runs", status, "refused", {},
+                                     io.BytesIO(b'{"error":{"code":"fixture_refusal"}}'))
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", rejected)
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client._request("/v1/runs", method="POST", body={"input": "frozen"}, room_grant="signed.room.grant")
+    assert (caught.value.not_admitted, caught.value.ambiguous) == (definite, not definite)
+    assert caught.value.status_code == status
+
+
+def test_first_idempotency_conflict_replays_only_the_same_frozen_request(tmp_path):
+    requests = []
+
+    class RefuseFirst(FakePeer):
+        def do_POST(self):
+            data = self.rfile.read(int(self.headers["Content-Length"]))
+            requests.append((self.path, data, self.headers["Idempotency-Key"], self.headers["Authorization"]))
+            if len(requests) == 1:
+                return self._json({"error": {"code": "idempotency_key_conflict"}}, 409)
+            return self._json({"run_id": "retained-run", "status": "started", "replayed": True}, 202)
+
+    server = HTTPServer(("127.0.0.1", 0), RefuseFirst)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = PeerRunsHTTPClient(base_url=f"http://127.0.0.1:{server.server_port}", api_key="",
+                                    receipt_db_path=tmp_path / "state.db")
+        result = client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+        assert result["run_id"] == "retained-run" and result["replayed"]
+        assert len(requests) == 2 and requests[0] == requests[1]
+        assert requests[0][2] == "room:task-1:1"
+        assert requests[0][3] == "HermesRoom signed.room.grant"
+        saved = client._receipt("task-1", 1)
+        assert saved["run_id"] == "retained-run" and saved["execution_generation"] == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_capability_mismatch_requires_reauthorization_without_retry(tmp_path):
     client = PeerRunsHTTPClient(
         base_url="https://peer.example.test",

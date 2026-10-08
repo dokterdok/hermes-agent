@@ -659,6 +659,14 @@ class PeerRunsHTTPClient:
                 )
             return result
 
+            if not str(result.get("run_id") or ""):
+                raise PeerRunsHTTPError(
+                    "peer did not return a run id",
+                    retryable=True,
+                    ambiguous=True,
+                )
+            return result
+
         try:
             result = admit()
         except PeerRunsHTTPError as first_error:
@@ -978,7 +986,8 @@ class PeerRunsHTTPClient:
     def issue_invitation(
         self, *, room_id: str, home_install_id: str, authority_gateway_id: str,
         authority_epoch: int, member_id: str, grant_id: str, ttl_seconds: float = 3600,
-        status_ttl_seconds: float | None = None) -> Mapping[str, Any]:
+        status_ttl_seconds: float | None = None, retirement_only: bool = False,
+        previous_authority: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
         """Ask the target gateway to mint a scoped room-member grant."""
         if not self.api_key:
             raise PeerRunsHTTPError("issuing an invitation requires the target gateway API key")
@@ -988,6 +997,8 @@ class PeerRunsHTTPClient:
                 "room_id": room_id, "home_install_id": home_install_id,
                 "authority_gateway_id": authority_gateway_id, "authority_epoch": authority_epoch,
                 "member_id": member_id, "grant_id": grant_id, "ttl_seconds": ttl_seconds,
+                **({"retirement_only": True} if retirement_only else {}),
+                **({"previous_authority": dict(previous_authority)} if previous_authority is not None else {}),
                 **({} if status_ttl_seconds is None else {
                     "status_ttl_seconds": status_ttl_seconds})})
 

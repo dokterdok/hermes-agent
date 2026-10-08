@@ -786,6 +786,7 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         expected_cancel_generation=0,
         clock=clock,
     )
+    assert stopping["status"] == "stopping"
     assert stopping["execution_generation"] == retried.execution_generation
     cancelled = driver.complete_task_cancel(
         db, identity, cancel_id="cancel-deferred",

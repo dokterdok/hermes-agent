@@ -19,7 +19,8 @@ _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
-    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
+    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register",
+    "groups.peer.retirements", "groups.peer.retire")
 LONG_HANDLERS = frozenset(_METHODS)
 
 _service_lock = threading.Lock()
@@ -154,6 +155,19 @@ def _room_link_run_storage_durable() -> bool:
     return bool(getattr(store, "durable", False))
 
 
+def _record_peer_run_authority(claims, *, body=None, db_path=None):
+    from gateway.platforms.api_server_room_grants import _record_invitation, _retirement_only
+    if _bound_server is None:
+        if _retirement_only(claims):
+            raise ValueError("retirement requires retained target authority")
+        # Embedded callers expose no peer execution store; retain their metadata-only reservation.
+        from gateway import hosted_rooms
+        hosted_rooms.reserve_peer_room(db_path or hosted_rooms.default_db_path(), claims=claims,
+                                       expires_at=_grant_expiry(claims))
+        return
+    _record_invitation(_bound_server, claims, body or {}, db_path=db_path)
+
+
 def _local_catalog(installation_id: str, profile: str, execution_policy: dict) -> dict:
     """Advertise this gateway's direct-only, text-only RoomLink catalog."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, local_catalog_mapping
@@ -251,11 +265,12 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
 
 
 @_room_method("groups.peer.invite", code=4120, db=True)
-def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry) -> dict:
+def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry,
+      _record_authority=_record_peer_run_authority) -> dict:
     """Mint one target-issued room/profile grant for a prospective home."""
     from gateway.hosted_room_peer import (
         decode_room_grant, gateway_room_grant_secret, issue_room_grant)
-    from gateway.hosted_rooms import local_authority_gateway_id, reserve_peer_room
+    from gateway.hosted_rooms import local_authority_gateway_id
     if not _room_link_run_storage_durable():
         raise ValueError("durable run idempotency storage is required")
     installation_id = local_authority_gateway_id()
@@ -263,6 +278,9 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
     ttl = float(params.get("ttl_seconds", 3600))
     if not 60 <= ttl <= 24 * 60 * 60:
         raise ValueError("ttl_seconds must be between 60 and 86400")
+    retirement_only = params.get("retirement_only", False)
+    if type(retirement_only) is not bool or (retirement_only and "previous_authority" in params):
+        raise ValueError("invalid retirement invitation")
     grant_secret = gateway_room_grant_secret()
     execution_policy = _profile_execution_policy(profile)
     token = issue_room_grant(
@@ -273,9 +291,9 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
         authority_epoch=int(params.get("authority_epoch") or 0),
         member_id=str(params.get("member_id") or ""), target_install_id=installation_id,
         target_profile=profile, execution_policy_digest=execution_policy["policy_digest"],
-        ttl_seconds=ttl)
+        ttl_seconds=ttl, **({"permissions": ("status", "retire")} if retirement_only else {}))
     claims = decode_room_grant(grant_secret, token, permission="status")
-    reserve_peer_room(db_path, claims=claims, expires_at=_expiry(claims))
+    _record_authority(claims, body=params, db_path=db_path)
     catalog = _catalog(installation_id, profile, execution_policy)
     return _ok(rid, {
         "grant": token, "target_profile": profile, "catalog": catalog,
@@ -315,6 +333,8 @@ def _(rid, params: dict, service) -> dict:
     grant = str(params.get("grant") or "")
     client = PeerRunsHTTPClient(base_url=target_url, api_key="", receipt_db_path=service.db_path)
     probe = client.probe(grant=grant)
+    if probe.get("retirement_only") is True:
+        raise ValueError("retirement authorization cannot register an execution route")
     # Frozen dataclass equality: an equal live catalog already passed the checks above.
     if GatewayRoomCatalog.from_mapping(probe.get("catalog")) != catalog:
         raise ValueError("target capability catalog changed during setup")
@@ -344,6 +364,20 @@ def _(rid, params: dict, service) -> dict:
     return _ok(rid, {
         "registered": True, "mode": "direct", "transport_security": transport_security,
         "target_install_id": catalog.installation_id, "target_profile": target_profile})
+
+
+@_room_method("groups.peer.retirements", code=5124, service_code=4121)
+def _(rid, params: dict, service) -> dict:
+    """List outstanding target-authority cleanup even after room history expires."""
+    from gateway.hosted_room_retirement import status
+    return _ok(rid, {"retirements": status(service.db_path, params.get("room_id"))})
+
+
+@_room_method("groups.peer.retire", code=5125, service_code=4121)
+def _(rid, params: dict, service) -> dict:
+    """Settle one retained authority using a fresh target-owner-authorized grant."""
+    from gateway.hosted_room_retirement import settle_control
+    return _ok(rid, settle_control(service, params))
 
 
 @_room_method("groups.list", code=5110, db=True)
@@ -422,7 +456,8 @@ def _(rid, params: dict, service) -> dict:
             service.db_path, room_id=params.get("room_id"),
             expected_gateway_id=str(local_gateway_id),
             expected_epoch=int(state["authority_epoch"] if state is not None else 1))
-        return _ok(rid, {"tombstone": tombstone})
+        from gateway.hosted_room_retirement import status
+        return _ok(rid, {"tombstone": tombstone, "retirements": status(service.db_path, room_id)})
     try:
         existing = room_state(
             service.db_path, room_id=params.get("room_id"), include_disbanded=True)

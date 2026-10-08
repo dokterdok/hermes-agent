@@ -25,11 +25,40 @@ MAX_REQUEST_BYTES = {"fence": 64 * 1024, "learn": 2 * 1024 * 1024, "query": 16 *
                      "decision": 1024 * 1024, "handover": 64 * 1024}
 
 
-def continuation_minter(adapter, custody_db, *, replace_same_epoch: bool):
+def _continuation_lineage(adapter, room_id, successor, epoch, consent, lineage):
+    """Use only locally verified succession and this target's retained invitation identity."""
+    from gateway import hosted_rooms
+    origins = {item["origin_install_id"] for item in lineage
+               if item["gateway_id"] == successor and item["epoch"] == epoch}
+    if len(origins) != 1 or not next(iter(origins)):
+        raise ValueError("room successor has no verified origin")
+    origin = next(iter(origins))
+    options = consent["options"]
+    if options.get("origin_install_id", origin) != origin:
+        raise ValueError("room continuation consent belongs to another origin")
+    previous = options.get("authority")
+    if previous is None:
+        # Pre-lineage consents kept no coordinates. Bind only an exact home that
+        # both verified history and the target's durable authority store identify.
+        homes = {origin} | {item["gateway_id"] for item in lineage if item["origin_install_id"] == origin}
+        candidates = []
+        for home in homes:
+            known = adapter._run_idempotency_store.retained_room_authority({
+                "room_id": room_id, "home_install_id": home, "authority_gateway_id": home,
+                "authority_epoch": 1, "member_id": consent["member_id"],
+                "target_install_id": hosted_rooms.local_authority_gateway_id(), "target_profile": consent["target_profile"]})
+            if known is not None and known["authority_epoch"] <= epoch:
+                candidates.append(known)
+        if candidates:
+            previous = max(candidates, key=lambda item: item["authority_epoch"])
+    return origin, previous
+
+
+def continuation_minter(adapter, custody_db):
     """Mint the grants this installation's operator consented to, for a successor at its epoch.
 
-    ``replace_same_epoch`` is for a verified authority only: it releases another computer's
-    reservation at that epoch so the verified one's grant becomes current.
+    The Runs writer checks its promise or learned authority before the invitation may
+    replace any reservation, including a promised candidate at the winner's epoch.
     """
     from gateway import hosted_rooms as rooms
     from gateway import hosted_room_succession as succession
@@ -38,21 +67,19 @@ def continuation_minter(adapter, custody_db, *, replace_same_epoch: bool):
     def mint(room_id: str, successor: str, epoch: int) -> list[dict]:
         with rooms._transaction(custody_db, immediate=True) as conn:
             consents = succession.consents_locked(conn, room_id)
-            if replace_same_epoch:
-                for consent in consents:
-                    conn.execute("""DELETE FROM hosted_room_peer_reservations WHERE room_id=? AND member_id=?
-                        AND target_profile=? AND authority_epoch=? AND authority_gateway_id!=?""",
-                        (room_id, consent["member_id"], consent["target_profile"], epoch, successor))
+            lineage = succession.lineage_locked(conn, room_id)
+            bindings = [_continuation_lineage(adapter, room_id, successor, epoch, consent, lineage) for consent in consents]
         grants = []
-        for consent in consents:
+        for consent, (origin, previous) in zip(consents, bindings):
             options = consent["options"]
             invitation = _issue_invitation(adapter, {
                 "room_id": room_id, "home_install_id": successor, "authority_gateway_id": successor,
                 "authority_epoch": epoch, "member_id": consent["member_id"],
                 "grant_id": f"grant-succession-{uuid.uuid4().hex}",
+                **({"previous_authority": previous} if previous is not None else {}),
                 **{key: options[key] for key in ("replication", "work_records", "passive_only", "successor",
                                                  "ttl_seconds", "status_ttl_seconds") if key in options}},
-                consent["target_profile"])
+                consent["target_profile"], _verified_origin=origin)
             grants.append({"member_id": consent["member_id"], "target_profile": invitation["target_profile"],
                            "grant": invitation["grant"], "catalog": invitation["catalog"]})
         return grants
@@ -86,10 +113,10 @@ def backup_context(adapter):
     from gateway.hosted_room_succession_backup import BackupContext
     from gateway.platforms.api_server_room_grants import _grant_db
     custody_db = Path(_grant_db(adapter))
+    mint = continuation_minter(adapter, custody_db)
     return BackupContext(
         custody_db=custody_db, runs_store=adapter._run_idempotency_store,
-        mint_grants=continuation_minter(adapter, custody_db, replace_same_epoch=False),
-        replace_grants=continuation_minter(adapter, custody_db, replace_same_epoch=True), service=_service(adapter))
+        mint_grants=mint, replace_grants=mint, service=_service(adapter))
 
 
 def _answer_handover(context, body):

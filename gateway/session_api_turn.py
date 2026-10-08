@@ -133,9 +133,11 @@ def admit_api_turn(adapter, **kwargs):
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
     from hermes_state_terminal import retry_terminal_admission
     prepared = None
+    dispatch = kwargs.get("room_dispatch")
+    origin_home = adapter._run_idempotency_store.room_origin_home(dispatch) if dispatch is not None else None
     if (settings.get('room_dispatch') or {}).get('document_inputs'):
         # Session binding is private and fixed by the verified dispatch; no path supplied by a peer.
-        bind_api_session(authority, sid, hosted_dispatch=kwargs['room_dispatch'])
+        bind_api_session(authority, sid, hosted_dispatch=dispatch, hosted_origin_home=origin_home)
         from gateway.session_peer_documents import prepare
         prepared = prepare(authority, session_id=sid, request_id=request_id, payload=payload,
                            documents=kwargs.get('_room_document_bytes'))
@@ -146,7 +148,8 @@ def admit_api_turn(adapter, **kwargs):
         check_api_settings(adapter, settings)
         from gateway.session_contract import SessionRef
         return authority, SessionRef(authority.profile_id, sid), row
-    ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
+    ref = bind_api_session(authority, sid, hosted_dispatch=dispatch, hosted_origin_home=origin_home,
+                           declared_key=declared_key)
     check_api_turn(authority, ref, payload)
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
                               session_id=sid, request_id=request_id, payload=payload,
