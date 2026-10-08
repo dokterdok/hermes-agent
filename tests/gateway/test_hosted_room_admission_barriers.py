@@ -185,7 +185,7 @@ def test_retained_receipt_replays_but_old_work_cannot_be_claimed(hosted_owner, m
             with pytest.raises(RuntimeStoreError, match='permission_denied'):
                 c.service.check_admission(c.member.ref, admitted)
             assert c.member.interrupt(profile='default', source='bot_room', session_id=c.sid,
-                expected_task_id=c.identity.task_id)['interrupted']
+                expected_task_id=c.identity.task_id, expected_execution_generation=1)['interrupted']
         return
 
     checked, release = threading.Event(), threading.Event()

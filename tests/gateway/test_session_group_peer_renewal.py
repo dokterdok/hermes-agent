@@ -117,6 +117,8 @@ def renewal(tmp_path, monkeypatch):
             'authority_epoch': 1, 'member_id': 'reviewer', 'ttl_seconds': 3600,
             'status_ttl_seconds': 30 * 24 * 3600}, 'default')
         catalog = GatewayRoomCatalog.from_mapping(invitation['catalog'])
+        member.proof_install_id = catalog.installation_id
+        member.receipt_db_path = home / 'state.db'
         pin = {'kind': 'peer', 'peer_id': 'member', 'installation_id': catalog.installation_id,
                'profile': 'default', 'capability_digest': catalog.catalog_digest}
         service.create_room(room_id='room', name='Renewal', members=[
