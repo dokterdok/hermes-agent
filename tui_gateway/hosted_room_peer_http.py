@@ -9,6 +9,7 @@ import logging
 import math
 import re
 import socket
+import sqlite3
 import threading
 import time
 import urllib.error
@@ -489,8 +490,10 @@ class PeerRunsHTTPClient:
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
         return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
 
-    def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
-        """Recover one exact admission by receipt or idempotent POST replay."""
+    def recover_dispatch(
+        self, *, dispatch: Mapping[str, Any], grant: str, admit_if_missing: bool = True,
+    ) -> Mapping[str, Any] | None:
+        """Recover an exact receipt; admission replay requires the caller's separate permission."""
         checked = self._checked_dispatch(dispatch, grant)
         existing = self._receipt(checked.task_id, checked.execution_generation)
         if existing is not None:
@@ -499,6 +502,8 @@ class PeerRunsHTTPClient:
             return self._accepted(
                 checked, run_id=str(existing["run_id"]), session_id=str(existing["session_id"]),
                 replayed=True)
+        if not admit_if_missing:
+            return None
         key, now = (checked.task_id, checked.execution_generation), self.clock()
         backoff = self._recovery_backoff.get(key)
         if backoff is not None and now < float(backoff["next_attempt_at"]):
@@ -513,6 +518,37 @@ class PeerRunsHTTPClient:
             raise
         self._recovery_backoff.pop(key, None)
         return recovered
+
+    def cancel_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
+        """Cancel the generation without an admission replay, including an absent target run."""
+        checked = self._checked_dispatch(dispatch, grant)
+        existing = self._receipt(checked.task_id, checked.execution_generation)
+        if existing is not None:
+            return self.stop_receipt(
+                task_id=checked.task_id, execution_generation=checked.execution_generation, grant=grant)
+        key, now = (checked.task_id, checked.execution_generation), self.clock()
+        backoff = self._recovery_backoff.get(key)
+        if backoff is not None and now < float(backoff["next_attempt_at"]):
+            raise PeerRunsHTTPError("peer admission cancellation is backing off", retryable=True, ambiguous=True)
+        try:
+            result = self._request(
+                "/v1/runs/stop", method="POST",
+                body={"input": checked.prompt, "hosted_room_dispatch": checked.as_mapping()},
+                headers={"Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
+                room_grant=grant)
+            if not str(result.get("run_id") or "") or result.get("status") not in _KNOWN_RUN_STATES:
+                raise PeerRunsHTTPError("peer returned no exact cancellation receipt", retryable=True, ambiguous=True)
+        except PeerRunsHTTPError as exc:
+            delay = self._next_poll_delay(backoff)
+            self._recovery_backoff = {key: {"delay": delay, "next_attempt_at": now + delay}}
+            if exc.status_code in {404, 405}:
+                raise PeerRunsHTTPError(
+                    "peer cannot cancel an uncertain admission; update the target gateway",
+                    ambiguous=True, status_code=exc.status_code) from exc
+            raise
+        self._recovery_backoff.pop(key, None)
+        self._remember_run(checked, result, session_id=self._session_id(checked, grant=grant))
+        return result
 
     @staticmethod
     def _accepted(
@@ -558,6 +594,11 @@ class PeerRunsHTTPClient:
                     status_code=replay_error.status_code,
                     error_code=replay_error.error_code,
                 ) from replay_error
+        return self._remember_run(checked, result, session_id=session_id)
+
+    def _remember_run(
+        self, checked: HostedMemberDispatch, result: Mapping[str, Any], *, session_id: str,
+    ) -> Mapping[str, Any]:
         run_id = str(result.get("run_id") or "")
         receipt = {
             "run_id": run_id, "session_id": session_id,
@@ -584,8 +625,15 @@ class PeerRunsHTTPClient:
         return str(prepared.get("session_id") or prepared.get("id") or "")
 
     def _observation_receipt(
-        self, *, room_id: str, profile: str, session_id: str) -> dict[str, Any] | None:
-        record = None if self._observation_key is None else self._receipt(*self._observation_key)
+        self, *, room_id: str, profile: str, session_id: str,
+        task_id: str | None = None, execution_generation: int | None = None,
+    ) -> dict[str, Any] | None:
+        key = self._observation_key
+        if task_id is not None or execution_generation is not None:
+            key = (str(task_id or ""), int(execution_generation or 0))
+            if not key[0] or key[1] < 1:
+                raise PeerRunsHTTPError("peer observation identity is invalid")
+        record = None if key is None else self._receipt(*key)
         if record is None:
             return None
         scope = (record["room_id"], record["target_profile"], record["session_id"])
@@ -634,8 +682,11 @@ class PeerRunsHTTPClient:
 
     def history(
         self, *, room_id: str, profile: str, session_id: str, grant: str,
+        task_id: str | None = None, execution_generation: int | None = None,
     ) -> Sequence[Mapping[str, Any]]:
-        receipt = self._observation_receipt(room_id=room_id, profile=profile, session_id=session_id)
+        receipt = self._observation_receipt(
+            room_id=room_id, profile=profile, session_id=session_id,
+            task_id=task_id, execution_generation=execution_generation)
         if receipt is None:
             return []
         status = self._poll_receipt(receipt, grant=grant)
@@ -650,8 +701,12 @@ class PeerRunsHTTPClient:
             "content": status.get("output") or status.get("error") or ""}]
 
     def status(
-        self, *, room_id: str, profile: str, session_id: str, grant: str) -> Mapping[str, Any]:
-        receipt = self._observation_receipt(room_id=room_id, profile=profile, session_id=session_id)
+        self, *, room_id: str, profile: str, session_id: str, grant: str,
+        task_id: str | None = None, execution_generation: int | None = None,
+    ) -> Mapping[str, Any]:
+        receipt = self._observation_receipt(
+            room_id=room_id, profile=profile, session_id=session_id,
+            task_id=task_id, execution_generation=execution_generation)
         if receipt is None:
             return {"active": False, "task_id": None}
         status = self._poll_receipt(receipt, grant=grant)
@@ -752,7 +807,7 @@ class PeerRunsHTTPClient:
             # A replacement nobody will use is retired, not left live until it expires.
             try:
                 self.revoke_grant_exact(grant=replacement)
-            except Exception:
+            except (OSError, RuntimeError, sqlite3.Error, ValueError):
                 logger.warning("Could not retire an unused refreshed room grant")
             raise
         return {**refreshed, "catalog": probe.get("catalog")}

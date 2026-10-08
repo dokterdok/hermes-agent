@@ -1050,16 +1050,6 @@ class _SessionEventQueue:
                 self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
 
 
-def _room_grant_delegate(name: str):
-    """Adapter method forwarding to ``api_server_room_grants.<name>`` (looked up at call time so
-    test patches on that module take effect) with this module's error/profile bindings."""
-    async def _handler(self, request: "web.Request") -> "web.Response":
-        return await getattr(_room_grants, name)(
-            self, request, _openai_error=_openai_error, _api_request_profile=_api_request_profile)
-    _handler.__name__ = name
-    return _handler
-
-
 def _run_route_delegate(name: str):
     """Adapter method forwarding to ``api_server_runs.<name>`` (call-time lookup) with this
     module's namespace as ``_api_server``."""
@@ -4335,11 +4325,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _normalize_room_dispatch(self, request: "web.Request", body: Any) -> tuple[Any, "web.Response | None"]:
         return await _room_dispatch._normalize_room_dispatch(self, request, body, _api_server=sys.modules[__name__])
 
-    _handle_room_member_invitation = _room_grant_delegate("_handle_room_member_invitation")
-    _handle_room_member_capabilities = _room_grant_delegate("_handle_room_member_capabilities")
-    _handle_room_member_grant_refresh = _room_grant_delegate("_handle_room_member_grant_refresh")
-    _handle_room_member_grant_revoke = _room_grant_delegate("_handle_room_member_grant_revoke")
-    _handle_room_member_grant_revoke_exact = _room_grant_delegate("_handle_room_member_grant_revoke_exact")
+    _handle_room_member_invitation = _room_grants.adapter_handler("_handle_room_member_invitation", sys.modules[__name__])
+    _handle_room_member_capabilities = _room_grants.adapter_handler("_handle_room_member_capabilities", sys.modules[__name__])
+    _handle_room_member_grant_refresh = _room_grants.adapter_handler("_handle_room_member_grant_refresh", sys.modules[__name__])
+    _handle_room_member_grant_revoke = _room_grants.adapter_handler("_handle_room_member_grant_revoke", sys.modules[__name__])
+    _handle_room_member_grant_revoke_exact = _room_grants.adapter_handler("_handle_room_member_grant_revoke_exact", sys.modules[__name__])
 
     def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, Any] | None:
         return _api_runs._durable_run_status(self, request, run_id)

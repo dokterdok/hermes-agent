@@ -18,7 +18,8 @@ from gateway.hosted_room_peer import (
     HostedRoomGrantError, decode_room_grant, gateway_room_grant_secret, issue_room_grant)
 from gateway.platforms import api_server_room_grants
 from gateway.session_group_peer_routes import CanonicalPeerClient, before_sending, set_route_status
-from tests.gateway.test_session_group_peers import call, gateway, invite, linked_room  # noqa: F401
+from hermes_state_runtime import RuntimeStoreError
+from tests.gateway.test_session_group_peers import call, gateway as gateway, invite, linked_room  # noqa: F401
 from gateway.session_group_peers import room_link
 from tui_gateway.hosted_room_driver import HostedRoomBinding
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
@@ -274,6 +275,8 @@ async def test_accepted_work_is_read_and_stopped_with_its_routes_current_grant(g
         status = await asyncio.to_thread(tracked.status, room_id='linked', profile='default',
                                          session_id=accepted['session_id'], grant=route.grant)
         assert status['active'] and sent == [(f"/v1/runs/{accepted['run_id']}", second)]
+        cancelled = await asyncio.to_thread(tracked.cancel_dispatch, dispatch=dispatch, grant=route.grant)
+        assert cancelled is not None and sent[-1] == (f"/v1/runs/{accepted['run_id']}/stop", second)
         stopped = await asyncio.to_thread(tracked.stop_receipt, task_id=dispatch['task_id'],
                                           execution_generation=1, grant=route.grant)
         assert stopped is not None and sent[-1][1] == second
@@ -281,6 +284,34 @@ async def test_accepted_work_is_read_and_stopped_with_its_routes_current_grant(g
         await asyncio.to_thread(tracked.revoke_grant_exact, grant=first)
         assert sent[-1] == ('/v1/room-members/grants/revoke-exact', first)
         assert await asyncio.to_thread(capabilities, url, second) == (200, None)
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_retiring_room_recovers_only_retained_receipts_for_exact_stop(gateway, monkeypatch, inert_runs):
+    server, url, room, catalog, grant = await joined(gateway, monkeypatch)
+    try:
+        tracked, route, dispatch = attempt(gateway, room)
+        accepted = await asyncio.to_thread(tracked.dispatch, dispatch=dispatch, grant=route.grant)
+        gateway.service.begin_disband('linked')
+        sent, request = [], tracked._client._request
+        def recording(path, **kwargs):
+            sent.append(path)
+            return request(path, **kwargs)
+        monkeypatch.setattr(tracked._client, '_request', recording)
+        recovered = await asyncio.to_thread(tracked.recover_dispatch, dispatch=dispatch, grant=route.grant)
+        assert recovered['run_id'] == accepted['run_id'] and recovered['replayed']
+        assert sent == []
+        with pytest.raises(RuntimeStoreError, match='room_retiring') as caught:
+            await asyncio.to_thread(tracked.recover_dispatch,
+                dispatch={**dispatch, 'task_id': 'dtask:missing'}, grant=route.grant)
+        assert caught.value.ambiguous is True and not caught.value.not_admitted
+        assert sent == []
+        stopped = await asyncio.to_thread(tracked.stop_receipt,
+            task_id=dispatch['task_id'], execution_generation=1, grant=route.grant)
+        assert stopped is not None and sent == [f"/v1/runs/{accepted['run_id']}/stop"]
+        assert len(await runs(gateway)) == 1
     finally:
         await server.close()
 
@@ -294,23 +325,22 @@ async def test_an_observer_refuses_a_route_that_changed_under_it(gateway, monkey
         accepted = await asyncio.to_thread(tracked.dispatch, dispatch=dispatch, grant=route.grant)
         await reregister(gateway, room, url, catalog)
         service = gateway.service
-        if change == 'trace':
-            service.peer_routes[KEY] = replace(service.peer_routes[KEY], trace_id='trace-other')
-        elif change == 'url':
-            service.peer_clients[KEY] = PeerRunsHTTPClient(base_url='http://127.0.0.1:9', api_key='')
-        elif change == 'membership':
+        def change_members():
             members = service._room('linked')['members']
             members[1]['handle'] = 'renamed'
             with sqlite3.connect(gateway.db.db_path) as db:
                 db.execute('UPDATE hosted_rooms SET members_json=? WHERE room_id=?', (json.dumps(members), 'linked'))
-        elif change == 'epoch':
-            hosted_rooms.claim_authority(gateway.db.db_path, room_id='linked',
-                                         expected_gateway_id=room['authority_gateway_id'], expected_epoch=1,
-                                         new_gateway_id=room['authority_gateway_id'], event_id='reclaim')
-        elif change == 'removed':
-            service.peer_routes.pop(KEY)
-        else:
-            service._peer_route_status[KEY] = 'needs_reauthorization'
+        actions = {
+            'trace': lambda: service.peer_routes.update({KEY: replace(service.peer_routes[KEY], trace_id='trace-other')}),
+            'url': lambda: service.peer_clients.update({KEY: PeerRunsHTTPClient(base_url='http://127.0.0.1:9', api_key='')}),
+            'membership': change_members,
+            'epoch': lambda: hosted_rooms.claim_authority(gateway.db.db_path, room_id='linked',
+                expected_gateway_id=room['authority_gateway_id'], expected_epoch=1,
+                new_gateway_id=room['authority_gateway_id'], event_id='reclaim'),
+            'removed': lambda: service.peer_routes.pop(KEY),
+            'reauthorization': lambda: service._peer_route_status.update({KEY: 'needs_reauthorization'}),
+        }
+        actions[change]()
         sent = []
         monkeypatch.setattr(tracked._client, '_request', lambda path, **kwargs: sent.append(path))
         with pytest.raises(RuntimeError, match='observer'):
@@ -472,6 +502,8 @@ class _Refreshing:
         return {'status': 'accepted'}
 
     def recover_dispatch(self, **kwargs):
+        if kwargs.get('admit_if_missing') is False:
+            return None
         self.calls.append('recover_dispatch')
         return {'status': 'accepted'}
 

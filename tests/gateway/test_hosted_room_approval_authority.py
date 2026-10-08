@@ -11,8 +11,8 @@ import pytest
 from gateway import hosted_room_driver as tasks, hosted_rooms as rooms
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state_runtime import RuntimeStoreError, claim_session_input, settle_session_input
-from tests.gateway.test_session_hosted_rpc import owner  # noqa: F401
-from tests.gateway.test_session_group_peer_controls import case, rpc, selector  # noqa: F401
+from tests.gateway.test_session_hosted_rpc import owner as owner  # noqa: F401
+from tests.gateway.test_session_group_peer_controls import case as case, rpc, selector  # noqa: F401
 from tui_gateway.hosted_room_driver import HostedRoomBinding
 
 
@@ -26,6 +26,24 @@ def _quarantine_room(authority):
         "INSERT INTO hosted_room_quarantine VALUES('room','unsafe_authority_demotion',?)", (time.time(),)))
     with pytest.raises(rooms.RoomQuarantinedError):
         rooms.room_state(authority.db.db_path, room_id='room')
+
+
+def _apply_barrier(authority, service, identity, gateway, clock, barrier):
+    if barrier in {'stop', 'stop_event'}:
+        rooms.request_room_stop(authority.db.db_path, room_id='room', cancel_id='audit-stop',
+            expected_gateway_id=gateway, expected_epoch=1)
+    actions = {
+        'stop': lambda: tasks.begin_task_cancel(authority.db.db_path, identity, cancel_id='audit-stop',
+            expected_cancel_generation=0, clock=clock),
+        'epoch': lambda: authority.db._execute_write(lambda conn: conn.execute(
+            "UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id='room'")),
+        'retiring': lambda: service.begin_disband('room'),
+        'quarantine': lambda: _quarantine_room(authority),
+    }
+    if action := actions.get(barrier):
+        action()
+    if barrier == 'stop':
+        assert tasks.get_task(authority.db.db_path, identity)['status'] == 'stopping'
 
 
 def _approval_waiting_for_writer(authority, loop, member_rpc, sid, monkeypatch):
@@ -153,20 +171,7 @@ def test_local_pending_approval_after_durable_barrier(owner, monkeypatch, tmp_pa
     action = member_rpc.info(**coords, session_id=sid)['pending_approval']
     service._pending_actions[('room', 'one')] = dict(kind='approval', task_id='task',
         execution_generation=1, request_id=action['request_id'], approval=action, session_id=sid)
-    if barrier in {'stop', 'stop_event'}:
-        rooms.request_room_stop(authority.db.db_path, room_id='room', cancel_id='audit-stop',
-            expected_gateway_id=gateway, expected_epoch=1)
-    if barrier == 'stop':
-        tasks.begin_task_cancel(authority.db.db_path, identity, cancel_id='audit-stop',
-            expected_cancel_generation=0, clock=time.time)
-        assert tasks.get_task(authority.db.db_path, identity)['status'] == 'stopping'
-    elif barrier == 'epoch':
-        authority.db._execute_write(lambda conn: conn.execute(
-            "UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id='room'"))
-    elif barrier == 'retiring':
-        service.begin_disband('room')
-    elif barrier == 'quarantine':
-        _quarantine_room(authority)
+    _apply_barrier(authority, service, identity, gateway, time.time, barrier)
     result = None
     try:
         if barrier == 'writer_stop':
@@ -208,20 +213,8 @@ def test_canonical_peer_rpc_after_durable_barrier(case, tmp_path, barrier, choic
     c.service._pending_actions[('room', 'peer')] = dict(kind='approval',
         task_id=exact['task_id'], execution_generation=exact['execution_generation'],
         request_id='real-pending-control', approval={'choices': ['once', 'deny']})
-    if barrier in {'stop', 'stop_event'}:
-        rooms.request_room_stop(c.service.db_path, room_id='room', cancel_id='audit-stop',
-            expected_gateway_id=binding.gateway_id, expected_epoch=1)
-    if barrier == 'stop':
-        tasks.begin_task_cancel(c.service.db_path, c.original['identity'], cancel_id='audit-stop',
-            expected_cancel_generation=0, clock=c.service.runtime.clock)
-        assert tasks.get_task(c.service.db_path, c.original['identity'])['status'] == 'stopping'
-    elif barrier == 'epoch':
-        c.authority.db._execute_write(lambda conn: conn.execute(
-            "UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id='room'"))
-    elif barrier == 'retiring':
-        c.service.begin_disband('room')
-    elif barrier == 'quarantine':
-        _quarantine_room(c.authority)
+    _apply_barrier(c.authority, c.service, c.original['identity'], binding.gateway_id,
+                   c.service.runtime.clock, barrier)
     reply = rpc(c, 'groups.approve', dict(**exact, request_id='real-pending-control', choice=choice))
     if barrier == 'healthy' or choice == 'deny':
         assert 'result' in reply and effect.is_file()

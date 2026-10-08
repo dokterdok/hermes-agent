@@ -18,7 +18,7 @@ def _server(home):
     return GatewayControlServer(home, verb_handlers={'identify': lambda: descriptor})
 
 
-def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_owner, tmp_path):
+def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_owner, tmp_path, monkeypatch):
     from gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
         owner_request,

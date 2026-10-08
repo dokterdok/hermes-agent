@@ -10,7 +10,7 @@ import pytest
 
 from gateway import hosted_room_driver as state, hosted_rooms
 from tests.tui_gateway.test_hosted_room_driver_runtime import (
-    BINDING, FakeSessionRPC, _admit, _identity, _runtime, db)
+    BINDING, FakeSessionRPC, _admit, _identity, _runtime, db as db)
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 

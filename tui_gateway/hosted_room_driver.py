@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 import uuid
@@ -222,7 +223,8 @@ class HostedRoomRuntime:
             if before["status"] in state.TERMINAL_STATUSES:
                 raise state.InvalidTaskTransitionError(
                     f"cannot cancel task in state '{before['status']}'")
-            direct = before["status"] in {"queued", "deferred"}
+            # Releasing the room queue does not prove the peer never accepted the attempt.
+            direct = before["status"] == "queued" or state.is_proven_nonadmission(before)
             try:
                 result = (state.cancel_task if direct else state.begin_task_cancel)(
                     self.db_path, identity, cancel_id=cancel_id,
@@ -260,7 +262,7 @@ class HostedRoomRuntime:
             raise state.RoomUnavailableError("hosted room is unavailable")
         lease = self._ensure_lease(binding)
         if task["status"] == "deferred":
-            return self._requeue(state.requeue_deferred_task, task, lease, identity.room_id)
+            return self._retry_deferred(binding, task, lease)
         # Explicit Retry may resume the exact stored session; the automatic abandoned-attempt
         # scan stays non-resuming for local sessions.
         inspection = self._inspect_recovery_session(binding, task)
@@ -275,6 +277,24 @@ class HostedRoomRuntime:
             raise state.InvalidTaskTransitionError(
                 "cannot retry while the original task attempt is still active")
         return self._requeue(state.requeue_indeterminate_task, task, lease, identity.room_id)
+
+    def _retry_deferred(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+    ) -> dict[str, Any]:
+        """Only proven nonadmission earns a new peer generation; uncertainty recovers the old one."""
+        room_id = task["identity"].room_id
+        if state.is_proven_nonadmission(task) or self._transport_for(binding, task) is self.rpc:
+            return self._requeue(state.requeue_deferred_task, task, lease, room_id)
+        inspection = self._inspect_recovery_session(binding, task)
+        reopened = self._fenced(state.reopen_deferred_task, None, task, lease)
+        if inspection.terminal is not None:
+            return self._resolve_indeterminate(binding, reopened, lease, inspection.terminal)
+        if inspection.status == "cancelled":
+            return self._fenced(
+                state.resolve_indeterminate_cancellation, binding, reopened, lease,
+                cancel_id=f"remote-cancel:{reopened['execution_generation']}")
+        self.wakeup()
+        return reopened
 
     def _publish(self, binding: HostedRoomBinding, task: dict[str, Any]) -> dict[str, Any]:
         if self.publish_terminal is not None:
@@ -469,7 +489,7 @@ class HostedRoomRuntime:
         if self.maintain_service is not None:
             try:
                 self.maintain_service()
-            except Exception as exc:
+            except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
                 self._record_error(f"peer lifecycle maintenance pending: {exc}")
         with self._status_lock:
             supervisor = self._thread
@@ -566,7 +586,7 @@ class HostedRoomRuntime:
                 self.maintain_leased_room(binding, lease)
             except (state.StaleLeaseError, state.RoomUnavailableError):
                 raise  # the room's own fences decide, as for any leased work
-            except Exception as exc:  # upkeep never decides the fate of a turn
+            except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
                 self._record_error(f"room {binding.room_id} upkeep failed: {exc}")
         return lease
 
@@ -871,7 +891,11 @@ class HostedRoomRuntime:
         for task in unresolved:
             attempt_key = (
                 binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
-            is_local = self._transport_for(binding, task) is self.rpc
+            try:
+                is_local = self._transport_for(binding, task) is self.rpc
+            except (RuntimeError, ValueError, OSError) as exc:
+                self._record_error(f"task {task['identity'].task_id} recovery probe failed: {exc}")
+                is_local = False
             if is_local and attempt_key not in inspected:
                 inspection = self._inspect_local_recovery_session(task)
                 inspected.add(attempt_key)
@@ -886,7 +910,8 @@ class HostedRoomRuntime:
                 task.get("indeterminate_at") or task.get("updated_at") or task.get("created_at")
                 or self.clock())
             inspection = _NO_INSPECTION
-            if attempt_key not in inspected or self.clock() >= deadline:
+            # Only local session recovery is one-shot; the peer client owns HTTP backoff.
+            if not is_local or attempt_key not in inspected or self.clock() >= deadline:
                 try:
                     if self._transport_for(binding, task) is not self.rpc:
                         inspection = self._inspect_recovery_session(binding, task)
@@ -906,7 +931,7 @@ class HostedRoomRuntime:
                     binding, task, lease, inspection.terminal, publish=False)
                 inspected.discard(attempt_key)
                 continue
-            if self.clock() < deadline:
+            if self.clock() < deadline or inspection.active:
                 self._set_blocked(binding.room_id, True)
                 return True
             deferred = self._fenced(

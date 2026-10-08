@@ -373,7 +373,8 @@ def _(rid, params: dict, db_path) -> dict:
         include_disbanded=params.get("include_disbanded") is True)
     service = get_hosted_room_service()
     result = {"room": room}
-    if service is not None and room.get("disbanded_at") is None:
+    # Tombstoning stops admission; the process owner may still owe peer cleanup.
+    if service is not None:
         result["driver_status"] = service.status(str(room["room_id"]))
     return _ok(rid, result)
 

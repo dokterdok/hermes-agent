@@ -199,11 +199,19 @@ async def run_api_turn(adapter, **kwargs):
 
 async def observe_api_turn(admitted, **kwargs):
     authority, ref, row = admitted
+    from hermes_state_runtime import get_session_admission
+    # A queued snapshot may have been cancelled before this observer task got its
+    # first tick. Re-read before registering a waiter for work that will not run.
+    row = get_session_admission(authority.db, admission_id=row['admission_id'])
+    if row is None or row['target_session_id'] != ref.session_id:
+        raise RuntimeStoreError('not_found')
     if row['status'] == 'unknown':
         raise RuntimeStoreError('unknown_execution')
     if row['status'] == 'terminal':
         result = admission_result(authority.db, row['admission_id'])
         if result is None:
+            if row['outcome'] == 'cancelled':
+                return {'final_response': '', 'interrupted': True, 'completed': False}, {}
             raise RuntimeStoreError('unknown_execution')
         callback = kwargs.get('stream_delta_callback')
         if callback:

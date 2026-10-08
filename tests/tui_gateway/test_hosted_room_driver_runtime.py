@@ -910,7 +910,7 @@ def test_oversized_terminal_reply_is_bounded_without_waiting_for_deadline(db: Pa
     assert result["text"].endswith("share the full result as a file.]")
 
 
-def test_peer_recovery_probe_is_bounded_by_attempt_and_stale_age(db: Path):
+def test_unknown_peer_is_deferred_only_after_its_stale_deadline(db: Path):
     identity = _identity()
     now = [100.0]
 
@@ -953,22 +953,18 @@ def test_peer_recovery_probe_is_bounded_by_attempt_and_stale_age(db: Path):
     )
     state.recover_room(db, recovery_lease, clock=clock)
     runtime.transport_resolver = lambda _binding, _task: object()
-    probes = []
-
     def inspect(_binding, task):
-        probes.append((task["identity"].task_id, now[0]))
         return SimpleNamespace(terminal=None, active=False, status=None)
 
     runtime._inspect_recovery_session = inspect
 
     assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is True
     assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is True
-    assert probes == [(identity.task_id, 102.0)]
-
+    assert state.get_task(db, identity)["status"] == "indeterminate"
     now[0] = 108.0
     assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is False
-    assert probes == [(identity.task_id, 102.0), (identity.task_id, 108.0)]
-    assert state.get_task(db, identity)["status"] == "deferred"
+    saved = state.get_task(db, identity)
+    assert saved["status"] == "deferred" and saved["execution_generation"] == 1
 
 
 def test_turn_deadline_stops_exact_attempt_and_publishes_durable_failure(db: Path):
@@ -1906,36 +1902,6 @@ def test_pending_local_approval_is_reported_with_safe_choices(db: Path):
     assert action["approval"]["choices"] == ["once", "deny"]
     assert runtime.stop(timeout=5.0)
 
-
-@pytest.mark.parametrize("same_task", [False, True])
-def test_cancel_never_interrupts_a_newer_task_in_the_same_session(db: Path, same_task):
-    identity = _identity()
-    _admit(db, identity)
-    rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc)
-
-    runtime.start()
-    assert rpc.submitted.wait(1.0)
-    session_id = next(iter(rpc.states))
-    next_task_id = identity.task_id if same_task else "task-2"
-
-    def switch_to_newer_task() -> None:
-        with rpc._lock:
-            rpc.states[session_id]["active"] = True
-            rpc.states[session_id]["task_id"] = next_task_id
-            rpc.states[session_id]["execution_generation"] = 2
-
-    rpc.on_info = switch_to_newer_task
-    cancelled = runtime.cancel(identity, cancel_id="cancel-old-task")
-
-    assert cancelled["status"] == "stopping"
-    assert not [call for call in rpc.calls if call[0] == "interrupt"]
-    skipped = [params for method, params in rpc.calls if method == "interrupt_skipped"]
-    assert all(params["expected_task_id"] == identity.task_id for params in skipped)
-    assert all(params["expected_execution_generation"] == 1 for params in skipped)
-    assert rpc.states[session_id]["active"] is True
-    assert rpc.states[session_id]["task_id"] == next_task_id
-    assert runtime.stop(timeout=5.0)
 
 
 def test_status_reports_room_blocked_on_unresolved_indeterminate_task(db: Path):

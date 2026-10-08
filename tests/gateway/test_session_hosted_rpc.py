@@ -326,11 +326,11 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(host
         rpc.history(**coords, session_id=sid)
 
 
-def _hosted_retry_attempt(owner, monkeypatch):
+def _hosted_retry_attempt(hosted_owner, monkeypatch):
     from gateway import hosted_room_driver as tasks, hosted_rooms
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from tui_gateway.hosted_room_driver import HostedRoomBinding
-    authority, loop, _, agent = owner
+    authority, loop, _, agent = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)
     monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
     service.authorize_room('alice', 'room', create=True)
@@ -352,9 +352,9 @@ def _hosted_retry_attempt(owner, monkeypatch):
 
 
 @pytest.mark.parametrize('new_state',['queued','started'])
-def test_old_producer_stop_does_not_target_a_later_explicit_retry(owner, monkeypatch, new_state):
+def test_old_producer_stop_does_not_target_a_later_explicit_retry(hosted_owner, monkeypatch, new_state):
     from hermes_state_runtime import claim_session_input, settle_session_input, list_session_admissions
-    authority, service, agent, tasks, identity, attempt, rpc, coords, receipt, gateway = _hosted_retry_attempt(owner,monkeypatch)
+    authority, service, agent, tasks, identity, attempt, rpc, coords, receipt, gateway = _hosted_retry_attempt(hosted_owner,monkeypatch)
     old = claim_session_input(authority.db,epoch=authority.epoch,session_id=coords['session_id'])
     observed = rpc.info(**coords)
     assert (observed['task_id'],observed['execution_generation']) == (identity.task_id,1)

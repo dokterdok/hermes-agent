@@ -19,10 +19,11 @@ a small per-cycle budget, so a member keeps working until the horizon its gatewa
 chose at invitation (``status_ttl_seconds``), without being invited again.
 """
 from contextlib import contextmanager
-from copy import copy
+from copy import Error as CopyError, copy
 from dataclasses import replace
 import hashlib
 import logging
+import sqlite3
 
 from gateway import hosted_room_links as links
 from gateway import session_group_peer_cleanup as cleanup
@@ -38,7 +39,7 @@ _ATTEMPT_SECONDS = 60.0  # at most one renewal attempt per route per minute
 _RETRY_SECONDS, _MAX_RETRY_SECONDS = 30.0, 120.0
 _RENEWED_TTL_SECONDS = 3600.0
 _NEW_WORK = frozenset({'dispatch', 'recover_dispatch', 'probe'})
-_OBSERVATION = frozenset({'history', 'status', 'stop', 'stop_receipt'})
+_OBSERVATION = frozenset({'history', 'status', 'stop', 'stop_receipt', 'cancel_dispatch'})
 
 
 def _retire(client, grant):
@@ -106,7 +107,7 @@ def publish_route(service, *, room_id, member_id, route, client, target_url, cat
         if replaced is not None and renewal:
             try:
                 _retire(client, replaced)
-            except Exception:
+            except (OSError, RuntimeError, sqlite3.Error, ValueError):
                 logger.warning('A renewed peer grant replaced one that could not be retired: room=%s member=%s',
                                room_id, member_id)
     service.runtime.wakeup()
@@ -144,7 +145,7 @@ def before_sending(method):
             failure.dispatch_not_attempted = dispatch
             if not dispatch:
                 failure.ambiguous = True
-        except Exception:
+        except (AttributeError, CopyError, TypeError, ValueError):
             failure = PeerRunsHTTPError(
                 'peer admission preflight failed', not_admitted=False,
                 ambiguous=not dispatch or bool(getattr(exc, 'ambiguous', False)),
@@ -170,6 +171,8 @@ class CanonicalPeerClient:
         value = getattr(self._client, name)
         if not callable(value):
             return value
+        if name == 'recover_dispatch':
+            return lambda **kwargs: self._recover(value, kwargs)
         if name in _NEW_WORK:
             return lambda **kwargs: self._new_work(name, value, kwargs)
         if name in _OBSERVATION:
@@ -195,6 +198,16 @@ class CanonicalPeerClient:
     def _same_route(self, current, client):
         return (current is not None and replace(current, grant=self._route.grant) == self._route
                 and getattr(client, 'base_url', None) == getattr(self._client, 'base_url', None))
+
+    def _recover(self, call, kwargs):
+        # Disband fences new effects, not the retained receipt needed to Stop existing work.
+        # A receipt miss must still pass the original route's admission fence below.
+        with before_sending('recover_dispatch'):
+            grant = self._observer_grant(adopt=False)
+            accepted = call(**{**kwargs, 'grant': grant, 'admit_if_missing': False})
+        if accepted is not None:
+            return accepted
+        return self._new_work('recover_dispatch', call, kwargs)
 
     def _new_work(self, name, call, kwargs):
         with before_sending(name):
@@ -224,7 +237,7 @@ class CanonicalPeerClient:
             # One read-only retry closes a grant replacement that raced this read.
             return self._report(call, {**kwargs, 'grant': replacement})
 
-    def _observer_grant(self):
+    def _observer_grant(self, *, adopt=True):
         service, binding = self._service, self._binding
         with service._policy_lock:
             room = service._room(binding.room_id)
@@ -235,7 +248,8 @@ class CanonicalPeerClient:
                 raise RuntimeError('peer room observer authority or membership changed')
             if current.grant != self._grant and service._peer_route_status.get(self._key) == 'needs_reauthorization':
                 raise RuntimeError('peer room observer replacement needs reauthorization')
-            self._grant = current.grant
+            if adopt:
+                self._grant = current.grant
             return current.grant
 
     def _refresh_if_due(self, name, grant, kwargs):
@@ -326,8 +340,8 @@ class CanonicalPeerClient:
         except Exception:
             try:
                 _retire(self._client, replacement)
-            except Exception:
-                pass  # the durable obligation retries after restart as well
+            except (OSError, RuntimeError, sqlite3.Error, ValueError):
+                logger.warning('Unused peer grant retirement remains pending: room=%s member=%s', *self._key)
             raise
         self._grant = replacement
         return replacement
@@ -407,7 +421,7 @@ def _renew_room(service, binding, lease, now):
             CanonicalPeerClient(service, binding, key, route, client, renewal_lease=lease).probe(grant=route.grant)
         except (driver.StaleLeaseError, driver.RoomUnavailableError):
             raise
-        except Exception:
+        except (OSError, RuntimeError, sqlite3.Error, ValueError):
             service._peer_renewals[key] = (fingerprint, now + delay, min(_MAX_RETRY_SECONDS, delay * 2))
             logger.warning('Peer grant renewal pending: room=%s member=%s', *key)
     due = [service._peer_renewals.get((link.room_id, link.member_id), ('', now + _SCAN_SECONDS, 0.0))[1]
