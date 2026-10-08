@@ -17,8 +17,9 @@ def journal_path(job_id, request_id):
 
 def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
     from gateway.session_cron import owner_for_home, operation
-    from hermes_cli.gateway_client import connect_gateway
+    from hermes_cli.gateway_client import GatewayClientError, connect_gateway
     from hermes_constants import get_hermes_home
+    from hermes_state_runtime import RuntimeStoreError
     from utils import atomic_json_write
 
     params = {'job_id': job['id'], 'request_id': execution_id or job.get('execution_id') or uuid.uuid4().hex,
@@ -35,15 +36,32 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
 
     def save():
         root.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(journal, record, mode=0o600)
+        # The journal is the only evidence a lost reply was admitted: survive power loss.
+        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+
+    async def refused(call, exc):
+        # A lost reply may still have been admitted. Only the owner's own verdict (a bounded
+        # reason code, never a disconnect/timeout) that its ledger holds no admission for this
+        # fire is a refusal: book it as an ordinary failed run, never unknown.
+        verdict = isinstance(exc, RuntimeStoreError) or (
+            isinstance(exc, GatewayClientError) and str(exc).replace('_', '').isalnum())
+        return verdict and (await call('recover', params))['status'] == 'missing'
 
     async def observe(call):
         nonlocal attempted
         attempted = True
         save()
-        receipt = await call('submit', params)
+        try:
+            receipt = await call('submit', params)
+        except (RuntimeStoreError, GatewayClientError) as exc:
+            if await refused(call, exc):
+                journal.unlink(missing_ok=True)
+                attempted = False
+            raise
         record['receipt'] = receipt
         save()
+        # Cron turns run for minutes: back the status read off to 2 s instead of 10 reads/s.
+        delay = .1
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 await call('cancel', receipt)
@@ -53,7 +71,8 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 return tuple(state['result'])
             if state['status'] == 'unknown':
                 raise CronExecutionUnknown('unknown_execution: cron admission was not replayed')
-            await asyncio.sleep(.1)
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 2.0)
 
     async def remote():
         async with connect_gateway() as client:
@@ -89,6 +108,7 @@ def reconcile_pending(*, allow_connect=True):
     from cron.jobs import pause_job, mark_job_run, save_job_output
     from cron.scheduler import _compose_run_delivery, _is_cron_silence_response
     from cron.delivery_queue import enqueue
+    from cron.executions import finish_execution
     import logging
 
     root = get_hermes_home() / 'cron' / 'admissions'
@@ -125,8 +145,13 @@ def reconcile_pending(*, allow_connect=True):
                 enqueue(params['request_id'], job, content, for_failure=not success)
             mark_job_run(job['id'], success, error, status='delivery_queued' if deliver else None,
                          execution_id=params['request_id'])
+            # The journal is the only link from the firer's ledger row to this receipt: settle
+            # the row (when its firer exited before its own bookkeeping) before deleting it.
+            from cron.delivery_outcome import settle_quietly, settled_outcome
+            finish_execution(params['request_id'], success=success, error=error, departed_owner=True,
+                             delivery_outcome=(settled_outcome(params['request_id']) or 'queued')
+                             if deliver else 'suppressed')
             if deliver:
-                from cron.delivery_outcome import settle_quietly
                 settle_quietly(job['id'], params['request_id'])
             journal.unlink(missing_ok=True)
         except Exception:

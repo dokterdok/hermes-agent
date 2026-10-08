@@ -128,6 +128,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
+    from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
     for key in ('provider', 'base_url'):
         if key in params:
@@ -144,10 +145,13 @@ def _apply_launch_overrides(params, config):
         if flag in params and type(params[flag]) is not bool:
             raise RuntimeStoreError('invalid_params')
     if 'max_turns' in params:
+        # The spellings `--max-turns` always took: a positive cap, or 0 / -1 / "none" / "unlimited"
+        # for no cap (resolve_turn_limit). Frozen normalized; anything unreadable is refused.
         value = params['max_turns']
-        if type(value) is not int or value <= 0:
+        limit = resolve_turn_limit(value, default=0) if isinstance(value, (int, str)) else 0
+        if not limit:
             raise RuntimeStoreError('invalid_params')
-        config.setdefault('agent', {})['max_turns'] = value
+        config.setdefault('agent', {})['max_turns'] = limit
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
             raise RuntimeStoreError('invalid_params')
@@ -229,7 +233,9 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
         keys = authority._local_launch_keys = {}
     ref = f'{authority.instance_id}:{authority.epoch}:{session_id}'
     old = keys.get(ref)
-    if old is not None and (api_key is None or not hmac.compare_digest(old, api_key)):
+    # Only a key that IS being bound can conflict: binding config secrets alone (a provider
+    # change drops the launch key) must not be refused by the key the session already holds.
+    if api_key is not None and old is not None and not hmac.compare_digest(old, api_key):
         raise RuntimeStoreError('admission_conflict')
     configs = getattr(authority, '_local_config_secrets', None)
     if configs is None:
