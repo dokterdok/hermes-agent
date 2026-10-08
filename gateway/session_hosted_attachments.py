@@ -2,7 +2,9 @@
 import base64
 import binascii
 
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
+from gateway.hosted_room_attachments import (
+    AttachmentIntegrityError, AttachmentNotFoundError, HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES,
+)
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -37,14 +39,22 @@ def download(service, actor, params):
     if not params.get('event_id'):
         raise RuntimeStoreError('invalid_params')
     gateway_id, epoch = service._owned_authority(room_id)
-    saved = HostedRoomAttachmentStore(service.db_path).read_viewer(
-        room_id=room_id, attachment_id=params.get('attachment_id'), event_id=params['event_id'],
-        authority_gateway_id=gateway_id, authority_epoch=epoch)
+    try:
+        saved = HostedRoomAttachmentStore(service.db_path).read_viewer(
+            room_id=room_id, attachment_id=params.get('attachment_id'), event_id=params['event_id'],
+            authority_gateway_id=gateway_id, authority_epoch=epoch)
+    except (AttachmentNotFoundError, AttachmentIntegrityError):
+        from gateway.hosted_room_attachment_catalog import published_reference
+        if published_reference(service.db_path, room_id=room_id, event_id=params['event_id'],
+                               attachment_id=params.get('attachment_id'),
+                               authority_gateway_id=gateway_id, authority_epoch=epoch):
+            raise RuntimeStoreError('attachment_unavailable') from None
+        raise
     return {**saved.attachment, 'data_base64': base64.b64encode(saved.data).decode('ascii')}
 
 
 def list_files(service, actor, params):
-    """``groups.attachment.list``: one catalog page of the files ``download`` serves."""
+    """``groups.attachment.list``: published references and their local availability."""
     from gateway.hosted_room_attachment_catalog import list_published
     room_id = _authorize(service, actor, params, 'session:read')
     gateway_id, epoch = service._owned_authority(room_id)

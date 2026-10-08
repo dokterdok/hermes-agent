@@ -1123,60 +1123,6 @@
       }
     },
     {
-      "name": "groups.attachment.download",
-      "summary": "Read bytes bound to a canonical room event, subject to current viewer authorization.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsAttachmentDownloadParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsAttachmentDownloadResult"
-        }
-      }
-    },
-    {
-      "name": "groups.attachment.list",
-      "summary": "List authorized published room-file versions with stable paging, search and producer filtering.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsAttachmentListParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsAttachmentListResult"
-        }
-      }
-    },
-    {
-      "name": "groups.attachment.upload",
-      "summary": "Upload owner-authorized bytes for a canonical room message.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsAttachmentUploadParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsAttachmentResult"
-        }
-      }
-    },
-    {
       "name": "groups.capabilities",
       "summary": "Describe the hosted-room protocol implemented by this gateway.",
       "params": [
@@ -1245,24 +1191,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsDisbandResult"
-        }
-      }
-    },
-    {
-      "name": "groups.discard",
-      "summary": "Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/GroupsDiscardParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/GroupsDiscardResult"
         }
       }
     },
@@ -15397,7 +15325,6 @@
         "title": "GroupsAttachmentDownloadParams",
         "type": "object"
       },
-<<<<<<< HEAD
       "GroupsAttachmentDownloadResult": {
         "additionalProperties": false,
         "properties": {
@@ -15657,8 +15584,6 @@
         "title": "GroupsAttachmentResult",
         "type": "object"
       },
-=======
->>>>>>> d615b6f8035a2a8b5c3adbf99e6512a484d10b44
       "GroupsAttachmentUploadParams": {
         "additionalProperties": false,
         "properties": {
@@ -16008,10 +15933,6 @@
         "additionalProperties": false,
         "properties": {
           "discarded": {
-<<<<<<< HEAD
-=======
-            "default": true,
->>>>>>> d615b6f8035a2a8b5c3adbf99e6512a484d10b44
             "title": "Discarded",
             "type": "boolean"
           },
@@ -16020,10 +15941,7 @@
           }
         },
         "required": [
-<<<<<<< HEAD
           "discarded",
-=======
->>>>>>> d615b6f8035a2a8b5c3adbf99e6512a484d10b44
           "task"
         ],
         "title": "GroupsDiscardResult",
@@ -29331,143 +29249,6 @@
         "title": "RoomActor",
         "type": "object"
       },
-      "RoomAttachment": {
-        "additionalProperties": true,
-        "properties": {
-          "attachment_id": {
-            "title": "Attachment Id",
-            "type": "string"
-          },
-          "kind": {
-            "title": "Kind",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "size": {
-            "title": "Size",
-            "type": "integer"
-          },
-          "mime": {
-            "title": "Mime",
-            "type": "string"
-          },
-          "sha256": {
-            "title": "Sha256",
-            "type": "string"
-          },
-          "state": {
-            "title": "State",
-            "type": "string"
-          },
-          "created_at": {
-            "title": "Created At",
-            "type": "number"
-          },
-          "idempotent": {
-            "title": "Idempotent",
-            "type": "boolean"
-          },
-          "event_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Event Id"
-          }
-        },
-        "required": [
-          "attachment_id",
-          "kind",
-          "name",
-          "size",
-          "mime",
-          "sha256",
-          "state",
-          "created_at",
-          "idempotent"
-        ],
-        "title": "RoomAttachment",
-        "type": "object"
-      },
-      "RoomAttachmentBytes": {
-        "additionalProperties": true,
-        "properties": {
-          "attachment_id": {
-            "title": "Attachment Id",
-            "type": "string"
-          },
-          "kind": {
-            "title": "Kind",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "size": {
-            "title": "Size",
-            "type": "integer"
-          },
-          "mime": {
-            "title": "Mime",
-            "type": "string"
-          },
-          "sha256": {
-            "title": "Sha256",
-            "type": "string"
-          },
-          "state": {
-            "title": "State",
-            "type": "string"
-          },
-          "created_at": {
-            "title": "Created At",
-            "type": "number"
-          },
-          "idempotent": {
-            "title": "Idempotent",
-            "type": "boolean"
-          },
-          "event_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Event Id"
-          },
-          "data_base64": {
-            "title": "Data Base64",
-            "type": "string"
-          }
-        },
-        "required": [
-          "attachment_id",
-          "kind",
-          "name",
-          "size",
-          "mime",
-          "sha256",
-          "state",
-          "created_at",
-          "idempotent",
-          "data_base64"
-        ],
-        "title": "RoomAttachmentBytes",
-        "type": "object"
-      },
       "RoomAuthority": {
         "additionalProperties": false,
         "properties": {
@@ -29673,6 +29454,11 @@
       "RoomFileItem": {
         "additionalProperties": false,
         "properties": {
+          "available": {
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
           "attachment_id": {
             "title": "Attachment Id",
             "type": "string"
@@ -42089,7 +41875,7 @@
     },
     {
       "name": "groups.attachment.download",
-      "summary": "Read one committed attachment for a live room viewer.",
+      "summary": "Read bytes bound to a canonical room event, subject to current viewer authorization.",
       "params": [
         {
           "name": "params",
@@ -42101,13 +41887,31 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/RoomAttachmentBytes"
+          "$ref": "#/components/schemas/GroupsAttachmentDownloadResult"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.list",
+      "summary": "List authorized published room-file references with stable paging, search and producer filtering. available=false retains a historical reference whose bytes are unavailable here; omitted means locally available.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentListResult"
         }
       }
     },
     {
       "name": "groups.attachment.upload",
-      "summary": "Store one attachment for a later groups.send manifest (idempotent per upload_id).",
+      "summary": "Upload owner-authorized bytes for a canonical room message.",
       "params": [
         {
           "name": "params",
@@ -42119,13 +41923,13 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/RoomAttachment"
+          "$ref": "#/components/schemas/GroupsAttachmentResult"
         }
       }
     },
     {
       "name": "groups.discard",
-      "summary": "Discard one indeterminate room task after explicit user confirmation.",
+      "summary": "Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.",
       "params": [
         {
           "name": "params",

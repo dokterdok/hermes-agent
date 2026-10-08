@@ -1,10 +1,9 @@
 """Read-only Files catalog for a gateway-owned Group Chat.
 
-Lists the file versions a viewer can fetch with ``groups.attachment.download``,
-newest share first, from one read-only SQLite snapshot. Every listed version
-passes the store's own viewer check (committed, published by its message,
-viewer-visible, unexpired) in that snapshot, so the catalog never offers a file
-the download would refuse. Nothing is written and blob bytes are never read.
+Lists authorized published file references, newest share first, from one read-only
+SQLite snapshot. Local versions retain the download store's viewer checks; verified
+log references without usable local storage carry ``available: false``. History
+replication does not copy file bytes. Nothing is written and blob bytes are never read.
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ import binascii
 import hashlib
 import json
 import sqlite3
+import stat
 import time
 from collections.abc import Mapping
 from contextlib import closing
@@ -22,6 +22,8 @@ from typing import Any
 
 from gateway.hosted_room_attachments import (
     AttachmentError,
+    _BLOB_ID_RE,
+    default_attachment_root,
     HostedRoomAttachmentStore,
     fold_catalog_text,
     validate_manifest,
@@ -147,8 +149,8 @@ def _decode_cursor(value: Any, *, scope: str, latest_seq: int) -> dict[str, Any]
 
 
 def _servable(conn: sqlite3.Connection, *, room_id: str, event_id: str, entry: Mapping[str, Any],
-              now: float) -> bool:
-    """The download's own viewer check, plus intact blob metadata, in this snapshot."""
+              now: float, blob_root: Path) -> bool:
+    """The download's viewer check plus blob metadata and file presence, without reading bytes."""
     try:
         row = HostedRoomAttachmentStore._read_committed_row(
             conn, room_id=room_id, attachment_id=entry["attachment_id"], recipient_member_id="",
@@ -157,9 +159,87 @@ def _servable(conn: sqlite3.Connection, *, room_id: str, event_id: str, entry: M
         return False
     blob = conn.execute("SELECT size, sha256 FROM hosted_room_attachment_blobs WHERE blob_id=?",
                         (row["blob_id"],)).fetchone()
-    return (blob is not None and blob["size"] == row["size"] and blob["sha256"] == row["sha256"]
-            and all(row[field] == entry[field] for field in _MANIFEST_FIELDS))
+    if (blob is None or blob["size"] != row["size"] or blob["sha256"] != row["sha256"]
+            or any(row[field] != entry[field] for field in _MANIFEST_FIELDS)
+            or _BLOB_ID_RE.fullmatch(str(row["blob_id"])) is None):
+        return False
+    try:
+        info = (blob_root / row["blob_id"]).lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and info.st_size == row["size"]
 
+
+def _manifest(value: Any) -> list[dict[str, Any]]:
+    try:
+        raw = json.loads(value)
+        manifest = validate_manifest(raw)
+    except (TypeError, ValueError):
+        return []
+    return manifest if manifest == raw else []
+
+
+def _availability(conn, *, room_id, event_id, entry, now, blob_root) -> bool | None:
+    """False is known published metadata without local bytes; None is conflicting/private state."""
+    if not table_exists(conn, "hosted_room_attachments"):
+        return False
+    row = conn.execute("SELECT * FROM hosted_room_attachments WHERE attachment_id=?",
+                       (entry["attachment_id"],)).fetchone()
+    if row is None:
+        return False
+    if (row["room_id"] != room_id or row["event_id"] != event_id or row["state"] != "committed"
+            or row["viewer_access"] != 1 or any(row[key] != entry[key] for key in _MANIFEST_FIELDS)):
+        return None
+    try:
+        json.loads(row["recipient_member_ids_json"])
+    except (TypeError, ValueError):
+        return None
+    return _servable(conn, room_id=room_id, event_id=event_id, entry=entry, now=now, blob_root=blob_root)
+
+
+def published_reference(db_path, *, room_id, event_id, attachment_id,
+                        authority_gateway_id, authority_epoch) -> bool:
+    """Recheck a failed download against public log metadata, never private attachment metadata."""
+    with closing(_snapshot(Path(db_path))) as conn:
+        HostedRoomAttachmentStore._require_viewer_room(
+            conn, room_id=room_id, authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch)
+        event = conn.execute(
+            "SELECT kind, actor_json, payload_json FROM hosted_room_events WHERE room_id=? AND event_id=?",
+            (room_id, event_id)).fetchone()
+        if event is None or _sharer(event["kind"], event["actor_json"], {}) is None:
+            return False
+        try:
+            payload = json.loads(event["payload_json"])
+            raw = json.dumps(payload.get("attachments")) if isinstance(payload, dict) else "null"
+        except (TypeError, ValueError):
+            return False
+        return any(entry["attachment_id"] == attachment_id and _availability(
+            conn, room_id=room_id, event_id=event_id, entry=entry, now=time.time(),
+            blob_root=default_attachment_root(db_path) / "blobs") is not None
+            for entry in _manifest(raw))
+
+
+def _file_events(conn, *, room_id, snapshot, position, roster, query, producer):
+    """Page the authorized room log, including references whose local attachment store is absent."""
+    filters = ""
+    if query or producer:
+        def match(raw, kind, actor_json):
+            sharer = _sharer(kind, actor_json, roster)
+            return int(sharer is not None and any(
+                _matches(entry["name"], sharer, query, producer) for entry in _manifest(raw)))
+        conn.create_function("catalog_match", 3, match, deterministic=True)
+        filters = "AND catalog_match(manifest_json, kind, actor_json)"
+    bound = ("<=", snapshot) if position is None else (
+        "<=" if position["index"] is not None else "<", position["seq"])
+    return conn.execute(
+        f"""SELECT seq, event_id, kind, actor_json, created_at,
+                   CASE WHEN json_valid(payload_json) AND json_type(payload_json, '$.attachments')='array'
+                        THEN json_extract(payload_json, '$.attachments') END AS manifest_json
+              FROM hosted_room_events
+             WHERE room_id=? AND kind IN ('message.user', 'message.member') AND seq {bound[0]} ?
+               AND json_array_length(manifest_json)>0 {filters}
+             ORDER BY seq DESC LIMIT ?""",
+        (room_id, bound[1], EVENT_SCAN_LIMIT + 1)).fetchall()
 
 def list_published(
     db_path: Path | str,
@@ -172,7 +252,7 @@ def list_published(
     query: Any = None,
     producer_member_id: Any = None,
 ) -> dict[str, Any]:
-    """One page of downloadable file versions, newest share first.
+    """One page of published file versions, with missing local bytes marked unavailable.
 
     ``query`` matches file names and sharer labels, ignoring case and accents;
     ``producer_member_id`` keeps one sharer's files. A cursor continues the
@@ -198,70 +278,32 @@ def list_published(
                     "snapshot_seq": snapshot, "items": items, "next_cursor": next_cursor,
                     "has_more": next_cursor is not None}
 
-        if not table_exists(conn, "hosted_room_attachments"):
-            return page([])
         roster = _roster_labels(room["members_json"])
-        # Search and the sharer filter run in SQL so a rare match deep in history needs one page.
-        # CROSS JOIN keeps the room's published files as the outer loop: the work is bounded by
-        # the files in the room, not by the length of its message log.
-        filters = ""
-        if query or producer:
-            sharers: dict[tuple[Any, Any], dict[str, str] | None] = {}
-
-            def match(name: Any, kind: Any, actor_json: Any) -> int:
-                if (kind, actor_json) not in sharers:
-                    sharers[kind, actor_json] = _sharer(kind, actor_json, roster)
-                sharer = sharers[kind, actor_json]
-                return int(sharer is not None and isinstance(name, str) and _matches(name, sharer, query, producer))
-
-            conn.create_function("catalog_match", 3, match, deterministic=True)
-            filters = "AND catalog_match(attachment.name, event.kind, event.actor_json)"
-        if position is None:
-            bound, after = ("<=", snapshot), None
-        else:
-            bound = ("<=" if position["index"] is not None else "<", position["seq"])
-            after = (position["seq"], position["index"])
-        events = conn.execute(
-            f"""WITH shares AS (
-                    SELECT DISTINCT event.seq AS seq
-                      FROM hosted_room_attachments AS attachment
-                     CROSS JOIN hosted_room_events AS event
-                        ON event.room_id=attachment.room_id AND event.event_id=attachment.event_id
-                     WHERE attachment.room_id=? AND attachment.state='committed' AND attachment.viewer_access=1
-                       AND (attachment.expires_at IS NULL OR attachment.expires_at>?)
-                       AND event.kind IN ('message.user', 'message.member') AND event.seq {bound[0]} ? {filters}
-                     ORDER BY event.seq DESC LIMIT ?)
-                SELECT event.seq, event.event_id, event.kind, event.actor_json, event.created_at,
-                       CASE WHEN json_valid(event.payload_json)
-                             AND json_type(event.payload_json, '$.attachments')='array'
-                            THEN json_extract(event.payload_json, '$.attachments') END AS manifest_json
-                  FROM shares CROSS JOIN hosted_room_events AS event ON event.room_id=? AND event.seq=shares.seq
-                 ORDER BY event.seq DESC""",
-            (room_id, now, bound[1], EVENT_SCAN_LIMIT + 1, room_id)).fetchall()
+        after = None if position is None else (position["seq"], position["index"])
+        events = _file_events(conn, room_id=room_id, snapshot=snapshot, position=position,
+                              roster=roster, query=query, producer=producer)
 
         items: list[dict[str, Any]] = []
         for event in events[:EVENT_SCAN_LIMIT]:
             seq, event_id = int(event["seq"]), str(event["event_id"])
             sharer = _sharer(event["kind"], event["actor_json"], roster)
-            try:
-                raw = json.loads(event["manifest_json"])
-                manifest = validate_manifest(raw)
-            except (TypeError, ValueError):
+            if sharer is None:
                 continue
-            if sharer is None or manifest != raw:
-                continue
-            for index, entry in enumerate(manifest):
+            for index, entry in enumerate(_manifest(event["manifest_json"])):
                 if after is not None and seq == after[0] and after[1] is not None and index <= after[1]:
                     continue
                 if not _matches(entry["name"], sharer, query, producer):
                     continue
-                if not _servable(conn, room_id=room_id, event_id=event_id, entry=entry, now=now):
+                available = _availability(conn, room_id=room_id, event_id=event_id, entry=entry, now=now,
+                                          blob_root=default_attachment_root(db_path) / "blobs")
+                if available is None:
                     continue
                 if len(items) == limit:
                     return page(items, items[-1]["seq"], items[-1]["manifest_index"])
                 items.append({**{field: entry[field] for field in _MANIFEST_FIELDS},
                               "event_id": event_id, "seq": seq, "manifest_index": index,
-                              "producer": sharer, "shared_at": float(event["created_at"])})
+                              "producer": sharer, "shared_at": float(event["created_at"]),
+                              **({"available": False} if not available else {})})
         if len(events) > EVENT_SCAN_LIMIT:
             return page(items, int(events[EVENT_SCAN_LIMIT - 1]["seq"]))
         return page(items)
