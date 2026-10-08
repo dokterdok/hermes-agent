@@ -122,9 +122,9 @@ import {
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
-export { composerInputSurface, composerPanelCard, MessageTextContent, PRIMARY_ICON_BTN } from './chat-presentation'
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
+export { composerInputSurface, composerPanelCard, MessageTextContent, PRIMARY_ICON_BTN } from './chat-presentation'
 export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- state: readonly views over the app's live atoms -------------------------
