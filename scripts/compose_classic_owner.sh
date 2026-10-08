@@ -19,10 +19,10 @@ esac
 # The owner is now a complete, history-preserving composition. Verify its
 # prerequisites, then reproduce that exact tree without replaying old patches.
 for dependency in \
-    86e81c44701e9ea43005c9b0d17aad90a36bb449 \
-    31e2af969b9411835c108f1d3f22ef09b94cace5 \
-    2a92bda68730a03c12ec6f36b5f684cc65f5a297 \
-    2103abb4a351cd1a48d6fc514d2823af2057b783; do
+    b4971df21a165dfa7dc32739b9d13dd2f37b103c \
+    b110300eb91d86d13e9735c00d3e71d23d000000 \
+    d615b6f8035a2a8b5c3adbf99e6512a484d10b44 \
+    985a366f69309f2b51b1f22cc371b5fd9a6cd8f8; do
     git -C "$OWNER_ROOT" merge-base --is-ancestor "$dependency" "$OWNER_SHA" || {
         printf 'owner does not contain required dependency: %s\n' "$dependency" >&2
         exit 1
