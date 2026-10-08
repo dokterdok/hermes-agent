@@ -663,11 +663,7 @@ class TestRunEvents:
         adapter._run_streams_created[run_id] = time.time()
         _claim_run(adapter, run_id)
 
-        request = MagicMock()
-        request.match_info = {"run_id": run_id}
-        request.headers = {}
-        request.path = f"/v1/runs/{run_id}/events"
-        request.method = "GET"
+        request = make_mocked_request('GET', f'/v1/runs/{run_id}/events', match_info={'run_id': run_id})
 
         class FailingResponse:
             def __init__(self, *args, **kwargs):

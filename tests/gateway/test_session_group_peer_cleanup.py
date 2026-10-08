@@ -8,7 +8,7 @@ import pytest
 from gateway import hosted_room_links as links
 from gateway import session_group_peer_cleanup as cleanup
 from gateway.session_hosted_service import CanonicalHostedRoomService
-from tests.gateway.test_session_group_peers import gateway  # noqa: F401
+from tests.gateway.test_session_group_peers import gateway as gateway
 from tests.gateway.test_session_group_peer_routes import joined, capabilities, reregister
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 

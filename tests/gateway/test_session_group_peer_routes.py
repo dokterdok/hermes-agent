@@ -18,7 +18,7 @@ from gateway.hosted_room_peer import (
     HostedRoomGrantError, decode_room_grant, gateway_room_grant_secret, issue_room_grant)
 from gateway.platforms import api_server_room_grants
 from gateway.session_group_peer_routes import CanonicalPeerClient, before_sending, set_route_status
-from tests.gateway.test_session_group_peers import call, gateway, invite, linked_room  # noqa: F401
+from tests.gateway.test_session_group_peers import call, gateway as gateway, invite, linked_room
 from gateway.session_group_peers import room_link
 from tui_gateway.hosted_room_driver import HostedRoomBinding
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
