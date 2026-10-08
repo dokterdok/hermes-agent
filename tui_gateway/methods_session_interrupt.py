@@ -1,4 +1,10 @@
-"""Interrupt, steer and redirect handlers, bound through the existing server seam."""
+"""Interrupt / steer / redirect session handlers (``methods_session`` split).
+
+Moved verbatim from ``tui_gateway/methods_session.py`` (file-line ratchet #68779): the
+bodies close over server.py globals through ``method_ctx.bind_module`` exactly as before —
+``@method`` registration, ``_session_arg`` wrapping and module publication all still run
+from the parent's ``register()`` via ``HandlerRegistry``.
+"""
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -24,6 +30,14 @@ def _resume_wake_after_interrupt() -> None:
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────
+def _note_user_input(session: dict) -> None:
+    """Mark the running turn as touched by the user (also covers compute-host turns, whose agent
+    flag never reaches this process); popped by the turn's own finally."""
+    with session["history_lock"]:
+        if session.get("running"):
+            session["_turn_user_input"] = True
+
+
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
     _tts_stream_stop()  # keypress barge-in also silences streaming TTS (voice is process-global)
@@ -43,10 +57,11 @@ def _(rid, params: dict) -> dict:
                     resume_wake = False
                     return _ok(rid, {"status": "not_interrupted", "interrupted": False})
         sid = str(params.get("session_id") or "")
+        _note_user_input(session)
         if _session_uses_compute_host(session):
             try:
                 _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
-            except Exception as exc:  # health: allow BLE001 -- compute-host transports raise implementation-specific errors; return the existing visible RPC failure and rearm wake
+            except Exception as exc:  # health: allow BLE001 -- the bridge raises transport-specific errors unknown here; surfaced verbatim to the client, never swallowed
                 return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
             return _ok(rid, {"status": "interrupted", "turn_isolation": True})
         session, err = _sess(params, rid)
@@ -97,6 +112,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         session, err = _sess_nowait(params, rid)
         if err:
             return err
+        _note_user_input(session)
         agent = session.get("agent")
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
@@ -133,4 +149,5 @@ _correction_method("session.redirect", "redirect", "redirected",
 
 
 def register(server) -> None:
+    """Publish this module's helpers onto ``server`` (rebound to its globals) and install handlers."""
     bind_module(globals(), server, skip=("_",))

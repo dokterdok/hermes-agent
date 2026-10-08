@@ -8,6 +8,9 @@ import hermes_state_runtime as runtime
 
 
 def compressed(db, parent, child):
+    # Native production rows carry their authorized route into each continuation.
+    db._write_sql("UPDATE sessions SET session_key=COALESCE(session_key, ?) WHERE id=?",
+                  ('fixture:' + parent, parent))
     assert db.try_acquire_compression_lock(parent, 'fixture-metadata')
     try:
         db.publish_compression_child(parent_session_id=parent, child_session_id=child,
