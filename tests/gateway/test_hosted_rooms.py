@@ -733,25 +733,28 @@ def test_room_log_pages_are_bounded_by_serialized_event_bytes(tmp_path, monkeypa
             payload={"text": "x" * 180, "index": index},
         )
 
-    one_event = rooms.read_events(db, room_id="room-1", limit=1)
-    budget = len(
-        json.dumps(one_event, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-    ) + 1
+    # Event timestamps can have different serialized lengths. Use every actual
+    # one-event response, including the final page's has_more=false overhead.
+    single_pages = [rooms.read_events(db, room_id="room-1", since_seq=cursor, limit=1)
+                    for cursor in range(4)]
+    sizes = [len(json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+             for page in single_pages]
+    budget = max(sizes)
+    two_events = rooms.read_events(db, room_id="room-1", limit=2)
+    assert len(json.dumps(two_events, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > budget
     monkeypatch.setattr(rooms, "MAX_LOG_PAGE_BYTES", budget)
 
-    first = rooms.read_events(db, room_id="room-1", limit=4)
-    assert len(first["events"]) == 1
-    assert first["has_more"] is True
-    second = rooms.read_events(
-        db,
-        room_id="room-1",
-        since_seq=first["cursor"],
-        limit=4,
-    )
-    assert second["events"][0]["seq"] == first["cursor"] + 1
+    for cursor, expected in enumerate(single_pages):
+        page = rooms.read_events(db, room_id="room-1", since_seq=cursor, limit=4)
+        assert page == expected and len(page["events"]) == 1
+        assert len(json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= budget
+        assert page["cursor"] == cursor + 1
+    assert single_pages[-1]["has_more"] is False
 
+    # A single event is still refused if even its complete response cannot fit.
+    monkeypatch.setattr(rooms, "MAX_LOG_PAGE_BYTES", budget - 1)
+    with pytest.raises(rooms.HostedRoomError, match="event exceeds replay page limit"):
+        rooms.read_events(db, room_id="room-1", since_seq=sizes.index(budget), limit=1)
 
 
 
