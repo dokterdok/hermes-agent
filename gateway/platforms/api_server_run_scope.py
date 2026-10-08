@@ -36,7 +36,6 @@ def validate_room_run_scope(identity: Any) -> dict[str, Any]:
             result[field] = _identifier(value, field=field)
     return result
 
-
 def cancellation_record_sql(alias: str) -> str:
     """Internal SQL predicate: a control-only barrier has no accepting fingerprint or executor."""
     return f"""{alias}.stop_requested=1 AND {alias}.fingerprint=''

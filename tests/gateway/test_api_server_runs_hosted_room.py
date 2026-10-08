@@ -29,8 +29,6 @@ def auth_adapter():
 
 
 class TestHostedRoomRuns:
-
-
     @pytest.mark.asyncio
     async def test_invitation_uses_validated_app_managed_local_catalog(
         self, auth_adapter, monkeypatch

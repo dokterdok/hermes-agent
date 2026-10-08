@@ -1967,7 +1967,6 @@ class TestRunIdempotency:
         assert "run_old" not in adapter._run_idempotency_ids
         assert "run_old" not in adapter._run_owners
 
-
 class TestRunEventsHeadFlush:
     """The SSE head must reach the client before the first event (#80757).
 

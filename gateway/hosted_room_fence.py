@@ -148,6 +148,8 @@ def initialize_fence_schema(conn: sqlite3.Connection) -> None:
         granted_at REAL NOT NULL,
         host_sent_at REAL,
         host_boot TEXT)""")
+    # Back the admission check for every writer sharing the Runs store: a fenced room epoch
+    # records no new scope, and a scope already recorded for it reserves no new run.
     # Keep real admissions fenced while allowing a control-only cancellation
     # record. Its scope can be restored only when every record there is such a barrier.
     if table_exists(conn, "group_run_scopes"):
