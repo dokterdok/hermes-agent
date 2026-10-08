@@ -1885,7 +1885,7 @@ def test_pending_local_approval_is_reported_with_safe_choices(db: Path):
     )
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    _wait_for(rpc.submitted.is_set)
     session_id = next(iter(rpc.states))
     with rpc._lock:
         rpc.states[session_id]["pending_approval"] = {
