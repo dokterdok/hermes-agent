@@ -33,8 +33,8 @@ def _skill_usage_lookup():
     "hub" / "bundled" / "local" (``/api/skills`` ``provenance``, "local" spelled "agent"). Failure → 0 / "local"."""
     try:
         from tools.skill_usage import (
-            _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
-        records, bundled, hub = load_usage(), _read_bundled_manifest_names(), _read_hub_installed_names()
+            _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
+        records, bundled, hub = load_usage(), _read_bundled_names(), _read_hub_installed_names()
     except Exception as e:
         logger.debug("skill usage lookup unavailable: %s", e)
         return (lambda _name: 0), (lambda _name: "local")
@@ -52,10 +52,13 @@ def _skill_usage_lookup():
 _SLASH_COMPLETION_LIMIT = 30
 
 
-def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bool, score_of=None) -> list[dict]:
+def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bool, score_of=None,
+                            registry_command_names: frozenset[str] | None = None) -> list[dict]:
     """Registry commands keep their order; only skills reorder: fuzzy ``score_of`` first, then most-used, then
     A-Z. The limit is spent PER KIND (a flat cut on a large install offered no skill at all). ``browsing``
-    (bare ``/``) drops never-used bundled skills as noise; a typed query is SEARCHING — nothing pruned, only reordered."""
+    (bare ``/``) drops never-used bundled skills as noise; a typed query is SEARCHING — nothing pruned, only reordered.
+    While browsing, only names in ``registry_command_names`` (default ``GATEWAY_KNOWN_COMMANDS``) skip the cap:
+    plugin-registered commands are also ``kind != "skill"`` but unbounded, so they stay capped like skills."""
     def name_of(item: dict) -> str:
         return str(item.get("text", "")).strip().lstrip("/").lower()
     commands = [item for item in items if item.get("kind") != "skill"]
@@ -64,7 +67,16 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
         skills = [item for item in skills if origin_of(name_of(item)) != "bundled" or usage(name_of(item)) > 0]
     skills.sort(key=lambda item: (
         *(() if score_of is None else (score_of(item),)), -usage(name_of(item)), name_of(item)))
-    return commands[:_SLASH_COMPLETION_LIMIT] + skills[:_SLASH_COMPLETION_LIMIT]
+    if browsing:
+        if registry_command_names is None:
+            from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+            registry_command_names = GATEWAY_KNOWN_COMMANDS
+        fixed = [c for c in commands if name_of(c) in registry_command_names]
+        other = [c for c in commands if name_of(c) not in registry_command_names]
+        ranked_commands = fixed + other[:_SLASH_COMPLETION_LIMIT]
+    else:
+        ranked_commands = commands[:_SLASH_COMPLETION_LIMIT]
+    return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
 
 
 _DETAILS_SECTIONS = ("thinking", "tools", "subagents", "activity")
@@ -170,37 +182,58 @@ def _catalog_plugin_commands(cat: _Catalog, module_loader) -> None:
         cat.commands[key] = {"argument_mode": mode, "desktop": None}
 
 
-def _catalog_skills(cat: _Catalog, skills: dict[str, dict], module_loader) -> None:
-    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
+def _catalog_skills(cat: _Catalog, skills: dict[str, dict], module_loader) -> str:
+    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them).
+    Returns the one-line notice for skills whose name is a built-in command (no ``/<name>`` entry;
+    ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
-    for k, info in sorted(module_loader("agent.skill_commands").scan_skill_commands().items()):
+    sc = module_loader("agent.skill_commands")
+    for k, info in sorted(sc.get_interactive_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
+    collision_note = getattr(sc, "skill_command_collision_note", None)
+    if collision_note is None:
+        return ""
+    names = sorted(s["name"] for s in module_loader("tools.skills_tool")._find_all_skills())
+    return "; ".join(filter(None, map(collision_note, names)))
 
 
-def command_catalog(load_cfg=None, module_loader=import_module) -> dict:
+def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins')."""
+    (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Quick
+    command, plugin command and skill discovery are all home-keyed, so ``scope`` (a context manager
+    binding the calling session's profile home and workspace) wraps every loader: project-local skills
+    register for the repo the session is actually in (#114359), and a profile-routed palette never
+    lists the launch profile's quick/plugin commands. A scope that cannot bind (unknown profile)
+    raises out of here — the caller maps it to 4064 like ``complete.slash`` (#124651)."""
     if load_cfg is None:
         from hermes_cli.config import load_config_readonly
         load_cfg = load_config_readonly
     cat = _Catalog()
     _catalog_registry(cat, module_loader)
     warning = ""
-    try:
-        _catalog_quick_commands(cat, load_cfg)
-    except Exception as e:
-        warning = f"quick_commands discovery unavailable: {e}"
-    try:
-        _catalog_plugin_commands(cat, module_loader)
-    except Exception as e:
-        warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
-    try:
-        _catalog_skills(cat, skills, module_loader)
-    except Exception as e:
-        warning = f"skill discovery unavailable: {e}"
+    # Each loader is a degrade boundary: user config, third-party plugin registration and skill
+    # files can raise anything, and one failing source must never blank the whole palette.
+    with scope if scope is not None else contextlib.nullcontext():
+        try:
+            _catalog_quick_commands(cat, load_cfg)
+        except Exception as e:
+            logger.debug("quick_commands discovery failed", exc_info=True)
+            warning = f"quick_commands discovery unavailable: {e}"
+        try:
+            _catalog_plugin_commands(cat, module_loader)
+        except Exception as e:
+            logger.debug("plugin command discovery failed", exc_info=True)
+            warning = warning or f"plugin command discovery unavailable: {e}"
+        try:
+            collision_note = _catalog_skills(cat, skills, module_loader)  # always runs: skills must list even when a loader failed
+            warning = warning or collision_note
+        except Exception as e:
+            logger.debug("skill discovery failed", exc_info=True)
+            warning = f"skill discovery unavailable: {e}"
     return {
         "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
@@ -209,19 +242,24 @@ def command_catalog(load_cfg=None, module_loader=import_module) -> dict:
         "skills": skills, "skill_count": len(skills), "warning": warning}
 
 
-def slash_completions(text: str = "") -> dict:
+def slash_completions(text: str = "", scope=None) -> dict:
+    """``scope`` binds the calling session's profile and workspace around the skill/bundle lookups
+    (home- and cwd-keyed) so the popup offers the project-local skills ``command.dispatch`` accepts
+    for that session (#114359)."""
     if not text.startswith("/"):
         return {"items": []}
     from hermes_cli.commands_completion import SlashCommandCompleter
     from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import to_plain_text
-    from agent.skill_commands import get_skill_commands
+    from agent.skill_commands import get_interactive_skill_commands
     from agent.skill_bundles import get_skill_bundles
+    with scope if scope is not None else contextlib.nullcontext():
+        skill_commands, skill_bundles = dict(get_interactive_skill_commands()), dict(get_skill_bundles())
     completer = SlashCommandCompleter(
-        skill_commands_provider=lambda: get_skill_commands(), skill_bundles_provider=lambda: get_skill_bundles())
+        skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)
     # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):
     # skills/bundles are the only completions for an inline `/skill` typed mid-message.
-    skill_names = {key.lstrip("/").lower() for key in (*get_skill_commands(), *get_skill_bundles())}
+    skill_names = {key.lstrip("/").lower() for key in (*skill_commands, *skill_bundles)}
 
     def to_items(doc: Document) -> list[dict]:
         # display/display_meta are FormattedText; the TUI contract is a plain string

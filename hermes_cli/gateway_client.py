@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager, suppress
 import json
 import os
 from pathlib import Path
-import socket
 import time
 
 
@@ -73,7 +72,7 @@ class GatewayClient:
 
 def _session_ticket(home: Path, endpoint, *, purpose="interactive") -> str:
     from hermes_cli.gateway_runtime import control_home_for
-    from hermes_cli.gateway_runtime_discovery import _socket_path, _identify_response
+    from hermes_cli.gateway_runtime_discovery import connect_private, _identify_response
     # A served secondary's ticket is minted by the multiplexer's socket, bound to the secondary.
     home = control_home_for(home, endpoint)
     request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
@@ -84,9 +83,7 @@ def _session_ticket(home: Path, endpoint, *, purpose="interactive") -> str:
         data = query_runtime_control(home, request, 5)
     else:
         deadline = time.monotonic() + 5
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
-            peer.settimeout(5)
-            peer.connect(str(_socket_path(home)))
+        with connect_private(home, 5) as peer:
             peer.sendall(request)
             data = bytearray()
             while b"\n" not in data:
@@ -131,7 +128,11 @@ async def connect_gateway():
         url = endpoint.api_origin.replace("https:", "wss:").replace("http:", "ws:") + "/api/ws"
         protocols = ["hermes-gateway-v1", "hermes-gateway-ticket." + ticket]
     try:
-        async with connect(url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024) as ws:
+        # The gateway is a loopback (or explicitly named) peer, never something to route through the
+        # user's HTTP(S) proxy; websockets>=14 reads HTTP_PROXY/HTTPS_PROXY by default and a proxy that
+        # cannot reach 127.0.0.1 turns every launch into a 10 s open timeout.
+        async with connect(url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024,
+                           proxy=None) as ws:
             if protocols and ws.subprotocol != "hermes-gateway-v1":
                 raise GatewayClientError("Gateway protocol mismatch; update/restart required")
             async with GatewayClient(ws) as client:

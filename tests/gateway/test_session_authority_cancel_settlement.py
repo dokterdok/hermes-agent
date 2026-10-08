@@ -138,12 +138,14 @@ def _wire_turn_agent(authority, generation, agent):
     """Run the real per-turn agent wiring with this authority as the turn's approval owner."""
     from gateway.run_turn_runner import TurnRunner
     ctx = SimpleNamespace(
+        source=SimpleNamespace(platform=None),  # notification presentation reads ctx.source.platform
+        mute_notification_reply=False,
         progress_callback=None, native_tool_start_callback=None, voice_ack_callback=None,
         _voice_ack_guild=[None], _native_slack_task_cards=False, native_tool_complete_callback=None,
         _step_callback_sync=None, _hooks_ref=SimpleNamespace(loaded_hooks=[]), _status_callback_sync=None,
         _event_callback_sync=None, _status_adapter=None, session_key='route', user_config={},
         _thinking_enabled=False, agent_holder=[None], tools_holder=[None], process_task_id=None,
-        process_baseline=None, run_generation=0)
+        process_baseline=None, run_generation=0, voice_turn=False)
     holder = SimpleNamespace(
         _ctx=ctx, _approval_owner=(authority, 's', generation),
         _runner=SimpleNamespace(_service_tier=None, _consume_pending_turn_sidecar_notes=lambda key: []),

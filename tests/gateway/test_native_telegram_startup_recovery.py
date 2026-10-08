@@ -9,6 +9,8 @@ import threading
 import time
 from urllib.parse import parse_qs
 
+import importlib.machinery
+
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon
@@ -18,6 +20,27 @@ class BotAPI(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def _get_updates(self, body):
+        try:
+            return [self.server.updates.get(timeout=.2)]
+        except queue.Empty:
+            return []
+
+    def _get_me(self, body):
+        return {'id': 987654321, 'is_bot': True, 'first_name': 'Fixture', 'username': 'recovery_fixture_bot'}
+
+    def _get_webhook_info(self, body):
+        return {'url': '', 'pending_update_count': 0}
+
+    def _send_message(self, body):
+        self.server.sent.append(body)
+        return {'message_id': len(self.server.sent) + 1000, 'date': int(time.time()),
+                'chat': {'id': int(body['chat_id']), 'type': 'private'}, 'text': body.get('text', '')}
+
+    # Bot API method -> handler; any other method answers ``True``.
+    _METHODS = {'getUpdates': _get_updates, 'getMe': _get_me, 'getWebhookInfo': _get_webhook_info,
+                'sendMessage': _send_message, 'editMessageText': _send_message}
+
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         body = json.loads(raw) if 'application/json' in self.headers.get('Content-Type', '') else {
@@ -25,21 +48,8 @@ class BotAPI(BaseHTTPRequestHandler):
         }
         method = self.path.rsplit('/', 1)[-1]
         self.server.calls.append(method)
-        if method == 'getUpdates':
-            try:
-                result = [self.server.updates.get(timeout=.2)]
-            except queue.Empty:
-                result = []
-        elif method == 'getMe':
-            result = {'id': 987654321, 'is_bot': True, 'first_name': 'Fixture', 'username': 'recovery_fixture_bot'}
-        elif method == 'getWebhookInfo':
-            result = {'url': '', 'pending_update_count': 0}
-        elif method in ('sendMessage', 'editMessageText'):
-            self.server.sent.append(body)
-            result = {'message_id': len(self.server.sent) + 1000, 'date': int(time.time()),
-                      'chat': {'id': int(body['chat_id']), 'type': 'private'}, 'text': body.get('text', '')}
-        else:
-            result = True
+        handler = self._METHODS.get(method)
+        result = handler(self, body) if handler else True
         payload = json.dumps({'ok': True, 'result': result}).encode()
         try:
             self.send_response(200)
@@ -60,7 +70,8 @@ def wait_for(predicate, detail, timeout=30):
     pytest.fail(detail())
 
 
-@pytest.mark.linux_only
+@pytest.mark.skipif(importlib.machinery.PathFinder.find_spec("telegram") is None, reason="python-telegram-bot not installed (on-demand extra)")
+@pytest.mark.platforms("linux")
 def test_telegram_fifo_unknown_and_current_authorization_survive_sigkill(tmp_path):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -79,6 +90,9 @@ def test_telegram_fifo_unknown_and_current_authorization_survive_sigkill(tmp_pat
            'platforms': {'telegram': {'enabled': True, 'extra': {
                'base_url': f'http://127.0.0.1:{bot.server_port}/bot', 'dm_policy': 'allowlist'}}},
            'auxiliary': {'title_generation': {'enabled': False}},
+           # The default `interrupt` mode redirects a follow-up into the running turn instead of
+           # admitting it; the FIFO contract under test needs follow-ups queued behind the head.
+           'display': {'busy_input_mode': 'queue'},
            'platform_toolsets': {'telegram': []}, 'terminal': {'cwd': str(home)}}
     (home / 'config.yaml').write_text(json.dumps(cfg))
     env = child_env()

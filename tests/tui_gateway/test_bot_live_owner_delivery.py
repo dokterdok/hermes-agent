@@ -1,4 +1,5 @@
 """Imported turns retain their receipt and cannot bypass the local FIFO."""
+import contextlib
 import threading
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     import logging
     import time
     from tui_gateway import prompt_turn
+    from tui_gateway.session_lifecycle import _start_session_work
     from tools import bot_live_delivery as mailbox
 
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
@@ -27,14 +29,17 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     noop = lambda *args, **kwargs: None
     submit = rebind(prompt_turn._run_prompt_submit, {
         "threading": threading, "time": time, "logger": logging.getLogger(__name__),
+        "_start_session_work": _start_session_work,
         "_sessions_lock": threading.RLock(), "_sessions": {},
         "_admit_prompt_turn": lambda *args: ([], agent),
+        "_session_profile_runtime_scope": lambda session: contextlib.nullcontext(),
         "_emit": noop, "bind_transport": noop, "reset_transport": noop,
         "_current_runtime_session_record": contextvars.ContextVar("refused_turn"),
         "_TurnRun": prompt_turn._TurnRun,
         "_record_turn_marker": lambda *args, **kwargs: "marker",
         "_prepare_turn_input": lambda *args: None,
-        "_finish_turn": noop, "_clear_inflight_turn": noop,
+        "_release_turn_scopes": noop, "_post_turn_housekeeping": noop,
+        "_clear_inflight_turn": noop,
         # Hosted room member sessions drop their bot_room slot at turn end (#106847); a canonical chat is not one.
         "_release_hosted_room_turn_slot": noop,
         "_retire_turn_marker": lambda *args: retired.append(args),
@@ -77,12 +82,13 @@ def test_viewer_poller_never_discovers_or_claims_bot_execution(monkeypatch, tmp_
     events.put({'type': 'owned-completion'})
     monkeypatch.setattr(process_registry, 'completion_queue', events)
     delivered = []
-    poll = rebind(session_notifications._notification_poller_loop, {
+    poll = rebind(session_notifications._notification_poller_scoped_loop, {
         'time': time, '_LOOP_POLL_SECONDS': 0, '_KANBAN_POLL_SECONDS': 0,
         '_poll_bot_live_delivery_once': lambda *a: calls.append('legacy-claim'),
         '_maybe_fire_tui_loop_tick': lambda *a: None,
         '_maybe_fire_tui_heartbeat_tick': lambda *a: None,
         '_notif_poll_kanban': lambda *a: None,
+        '_session_profile_runtime_scope': lambda session: contextlib.nullcontext(),
         '_session_home': lambda session: tmp_path,
         '_notif_handle_ready': lambda sid, session, ready, *a, **kw: (delivered.extend(ready), stop.set()),
     })

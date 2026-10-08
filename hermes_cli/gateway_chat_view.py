@@ -1,24 +1,37 @@
 """Classic terminal presentation of authority events and fenced controls."""
 import asyncio
 from contextlib import suppress
+import logging
 import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
 
+logger = logging.getLogger(__name__)
+
+
+_BLOCKING_CONTROL_EVENTS = frozenset({
+    "approval.request", "approval.settled", "clarify.request", "clarify.settled",
+})
+
 
 class GatewayChatView:
-    def __init__(self, client, snapshot, *, quiet=False, emitter=None):
+    def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
+        self.usage_file = usage_file
         self.client = client
         self.session_id = snapshot["stored_session_id"]
         self.generation = snapshot.get("execution_generation", 0)
         self.prompts = {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
         self.pending = snapshot.get("pending", [])
+        self.model = str((snapshot.get("info") or {}).get("model") or "Hermes").split("/")[-1]
         # ``--format stream-json``: stdout belongs to the JSONL protocol, so every human line is
         # replaced by an emitter event and the terminal record carries the exit code.
         self.emitter = emitter
         self.quiet = quiet or emitter is not None
         self.finite = False
+        self.unattended = False  # `-z`: the classic one-shot auto-approves; `-q` stays single-query
+        self.finite_admission = None
+        self._finite_events = []
         self.streams = {}
         self.completions = {}
         self.changed = asyncio.Event()
@@ -61,21 +74,53 @@ class GatewayChatView:
                 continue
             kind, payload = params.get("type"), params.get("payload", {})
             self.generation = params.get("execution_generation", self.generation)
+            if kind == "session.replay_gap":
+                self.failure = GatewayClientError("session_replay_gap")
+                self.changed.set()
+                return
             admission = params.get("admission_id") or payload.get("admission_id")
-            handler = {
-                "message.delta": self._delta, "message.complete": self._complete,
-                "tool.start": self._tool_start, "tool.complete": self._tool_complete,
-                "approval.request": self._request, "clarify.request": self._request,
-                "approval.settled": self._settled, "clarify.settled": self._settled,
-            }.get(kind)
-            if handler:
-                handler(admission, payload)
+            if self.finite and kind in _BLOCKING_CONTROL_EVENTS:
+                # Approval/clarification gates block the session FIFO, not merely one
+                # admission's output. Track them even when another admission owns the
+                # event so a queued one-shot can detach instead of waiting forever.
+                self._dispatch_event(kind, admission, payload)
+                self.changed.set()
+                continue
+            if self.finite and admission:
+                if self.finite_admission is None:
+                    # The owner can publish before prompt.submit's receipt reaches this client.
+                    # Hold admission-scoped output until we know which admission this invocation owns.
+                    self._finite_events.append((kind, admission, payload))
+                    continue
+                if admission != self.finite_admission:
+                    continue
+            self._dispatch_event(kind, admission, payload)
             self.changed.set()
 
+    def _dispatch_event(self, kind, admission, payload):
+        handler = {
+            "message.delta": self._delta, "message.complete": self._complete,
+            "tool.start": self._tool_start, "tool.complete": self._tool_complete,
+            "approval.request": self._request, "clarify.request": self._request,
+            "approval.settled": self._settled, "clarify.settled": self._settled,
+        }.get(kind)
+        if handler:
+            handler(admission, payload)
+
     def _tool_start(self, admission, payload):
+        # Deltas before a tool call are interim commentary the final reply does not repeat;
+        # close that segment so `_complete` measures only the final's own stream.
+        if self.streams.pop(admission, None) and not self.quiet:
+            print(flush=True)
         if self.emitter is not None:
             self.emitter.on_tool_progress("tool.started", payload.get("tool_name"), None, payload.get("args"),
                                           tool_call_id=payload.get("tool_call_id") or None)
+        elif not self.quiet:
+            # Same line shape the in-process CLI prints: the tool's emoji and its primary argument.
+            from agent.display import build_tool_preview, get_tool_emoji
+            name = payload.get("tool_name") or payload.get("name") or "tool"
+            preview = build_tool_preview(name, payload.get("args") or {}, max_len=0)
+            print(f"{get_tool_emoji(name)} {name}{f': {preview}' if preview else ''}", flush=True)
 
     def _tool_complete(self, admission, payload):
         if self.emitter is not None:
@@ -91,23 +136,34 @@ class GatewayChatView:
             self.emitter.on_text_delta(text)
         elif not self.quiet:
             self.streams[admission] = self.streams.get(admission, "") + text
-            print(text, end="", flush=True)
+            # No flush: under the live composer, patch_stdout line-buffers this so a redraw
+            # (a resize mid-stream) never interleaves with a half-written line. Complete lines
+            # still appear as they stream; the last one lands with `_complete`.
+            print(text, end="")
 
     def _complete(self, admission, payload):
         text = payload.get("text") or payload.get("content") or ""
         streamed = self.streams.pop(admission, "")
         if not self.quiet:
+            # The final's deltas carry the agent's segment break (leading blank lines after a
+            # tool call) that the settled text has trimmed; a match modulo that edge whitespace
+            # is the same reply already on screen.
             if not streamed:
                 print(text, flush=True)
             elif text.startswith(streamed):
                 print(text[len(streamed):], flush=True)
+            elif text.strip() == streamed.strip():
+                print(flush=True)
             else:
                 print("\n" + text, flush=True)
         self.completions[admission] = payload
 
     def _request(self, admission, payload):
         self.prompts[payload["prompt_id"]] = payload
-        self.show_prompt(payload)
+        # Finite invocations only need the session-blocking state so they can
+        # detach cleanly; do not print another admission's control details.
+        if not self.finite:
+            self.show_prompt(payload)
 
     def _settled(self, admission, payload):
         self.prompts.pop(payload["prompt_id"], None)
@@ -115,7 +171,8 @@ class GatewayChatView:
     async def submit(self, text):
         return await self.client.rpc("prompt.submit", session_id=self.session_id,
                                      input_id=uuid.uuid4().hex, text=text,
-                                     **({"finite": True} if self.finite else {}))
+                                     **({"finite": True} if self.finite else {}),
+                                     **({"unattended": True} if self.finite and self.unattended else {}))
 
     async def command(self, text):
         command, _, rest = text.partition(" ")
@@ -163,8 +220,17 @@ class GatewayChatView:
             self.mutations.acknowledge(original, operation, payload)
             print(f"{operation}: {target}")
             return True
+        if command == "/yolo":
+            # This session's approval bypass on the owner (same verb as the TUI's /yolo and Desktop).
+            word = rest.strip().lower()
+            if word not in {"", "on", "off"}:
+                raise GatewayClientError("Usage: /yolo [on|off]")
+            result = await self.client.rpc("config.set", session_id=self.session_id, key="yolo",
+                                           **({"value": "1" if word == "on" else "0"} if word else {}))
+            print(f"YOLO {'on' if result.get('value') == '1' else 'off'} for this session")
+            return True
         if command == "/help":
-            print("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during restart), /quit (detach). /branch [title], /model <model> [--provider name], /compress [here [N] | <focus>] [--preview].")
+            print("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during restart), /yolo [on|off], /quit (detach). /branch [title], /model <model> [--provider name], /compress [here [N] | <focus>] [--preview].")
             return True
         raise GatewayClientError("Unsupported gateway CLI command; use /help. No local command was run.")
 
@@ -176,6 +242,25 @@ class GatewayChatView:
         if self.emitter is not None:
             return self.emitter.emit_result({"failed": True, "error": message}, session_id=self.session_id, exit_code=3)
         return 3
+
+    async def _write_usage_file(self, admission, outcome):
+        """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote, read from the
+        result the owner committed with this admission's settlement (best-effort, never raises)."""
+        from websockets.exceptions import WebSocketException
+        from hermes_cli.oneshot import _write_usage_file
+        result = {}
+        try:
+            receipt = await self.client.rpc("prompt.receipt", session_id=self.session_id,
+                                            admission_id=admission, include_result=True)
+            result = dict(receipt.get("result") or {})
+        # Transport loss / refusal, or a receipt whose ``result`` is not a mapping.
+        except (GatewayClientError, OSError, TimeoutError, WebSocketException,
+                AttributeError, TypeError, ValueError) as exc:
+            # The ledger is still written from the outcome alone; a missing receipt is not fatal.
+            logger.debug("usage-file receipt for %s unavailable: %s", admission, exc)
+        result.setdefault("session_id", self.session_id)
+        failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
+        _write_usage_file(self.usage_file, result, failure=failure)
 
     async def run(self, query=None, *, oneshot=False):
         self.quiet = self.quiet or oneshot
@@ -196,6 +281,12 @@ class GatewayChatView:
                 if receipt is None:
                     raise GatewayClientError("One-shot requires a query")
                 admission = receipt["admission_id"]
+                self.finite_admission = admission
+                for kind, event_admission, payload in self._finite_events:
+                    if event_admission == admission:
+                        self._dispatch_event(kind, event_admission, payload)
+                self._finite_events.clear()
+                self.changed.set()
                 while admission not in self.completions:
                     self.changed.clear()
                     if self.failure:
@@ -205,26 +296,41 @@ class GatewayChatView:
                     await self.changed.wait()
                 terminal = self.completions[admission]
                 outcome = terminal.get("outcome")
+                if self.usage_file:
+                    await self._write_usage_file(admission, outcome)
                 if self.emitter is not None:
                     return self.emitter.emit_result(
                         {"final_response": terminal.get("text") or terminal.get("content") or "",
                          "failed": outcome not in ("completed", "cancelled"), "interrupted": outcome == "cancelled"},
                         session_id=self.session_id, exit_code=130 if outcome == "cancelled" else 0)
                 print(terminal.get("text") or terminal.get("content") or "", flush=True)
+                # Same stderr exit contract as the legacy -Q path: automation wrappers read the
+                # durable id from this line, and it names the physical row (a compaction may have
+                # advanced it past the row printed at start).
+                print(f"\nsession_id: {self.session_id}", file=sys.stderr, flush=True)
                 return 0 if outcome == "completed" else 1
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
-            prompt = PromptSession()
+            from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
+            welcome = "Welcome to Hermes Agent! Type your message or /help for commands."
+            print(get_active_skin().get_branding("welcome", welcome), flush=True)
+            # The classic status bar's leading segments: model, then the attached session.
+            prompt = PromptSession(erase_when_done=True,
+                                   bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
+            prompt_symbol = get_active_prompt_symbol("❯ ")
             with patch_stdout():
                 while not self.failure:
                     try:
-                        text = (await prompt.prompt_async("You> ")).strip()
+                        text = (await prompt.prompt_async(prompt_symbol)).strip()
                         if not text:
                             continue
                         if text.startswith("/"):
                             if not await self.command(text):
                                 return 0
                         else:
+                            # Same scrollback shape as the in-process CLI: the typed prompt line is
+                            # erased on submit and the message lands as a `●` preview row.
+                            print(f"\n{'─' * 40}\n● {text}", flush=True)
                             await self.submit(text)
                     except KeyboardInterrupt:
                         print("Use /stop to interrupt execution, /quit to detach.")

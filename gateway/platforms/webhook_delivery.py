@@ -7,8 +7,12 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 def route_digest(adapter, chat_id):
+    from gateway.platforms.webhook import _WebhookDeliveryIdentity
     adapter._reload_dynamic_routes()
-    route_name = chat_id.split(':', 2)[1]
+    try:
+        route_name = _WebhookDeliveryIdentity.route_from_chat_id(chat_id)
+    except (ValueError, TypeError, IndexError):
+        raise RuntimeStoreError('not_found') from None
     route = adapter._routes.get(route_name)
     if route is None:
         raise RuntimeStoreError('not_found')
@@ -19,8 +23,10 @@ def validate_destination(delivery):
     from gateway.platforms.webhook import _is_known_platform, _REPO_RE
     if (not isinstance(delivery, dict)
             or not {'deliver', 'deliver_extra'} <= set(delivery)
-            or set(delivery) - {'deliver', 'deliver_extra', 'profile'}
-            or (delivery.get('profile') is not None and not isinstance(delivery['profile'], str))):
+            or set(delivery) - {'deliver', 'deliver_extra', 'profile', 'mirror', 'route'}
+            or (delivery.get('profile') is not None and not isinstance(delivery['profile'], str))
+            or not isinstance(delivery.get('mirror', False), bool)
+            or (delivery.get('route') is not None and not isinstance(delivery['route'], str))):
         raise RuntimeStoreError('invalid_params')
     target, extra = delivery['deliver'], delivery['deliver_extra']
     if not isinstance(target, str) or not isinstance(extra, dict):
@@ -36,9 +42,15 @@ def validate_destination(delivery):
     fields = {'log': (), 'github_comment': ('repo', 'pr_number')}.get(
         target, ('chat_id', 'message_thread_id', 'thread_id'))
     result = {'deliver': target, 'deliver_extra': deepcopy({key: extra[key] for key in fields if key in extra})}
-    # Omit the unbound default to preserve pre-profile receipt fingerprints.
+    # Omit the unbound defaults to preserve pre-profile receipt fingerprints.
     if delivery.get('profile'):
         result['profile'] = delivery['profile']
+    # Route opt-in (``mirror_to_session: true``): the delivered text is mirrored into the target chat's
+    # session; the destination row carries it so a replayed delivery mirrors exactly like the first.
+    if delivery.get('mirror') is True:
+        result['mirror'] = True
+        if delivery.get('route'):
+            result['route'] = delivery['route']  # the mirror's label only
     return result
 
 

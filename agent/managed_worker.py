@@ -4,11 +4,23 @@ stdin is the owner's bounded bootstrap/control pipe; a duplicate of stdout is
 reserved for framed events before runtime imports redirect ordinary output.
 Neither assignment secrets nor launch credentials appear in argv or logs.
 """
+# Spawned as a bare ``sys.executable -m``: in a PM install that interpreter carries no dependencies
+# until hermes_bootstrap selects the committed environment, so it must be the first import.
+try:
+    import hermes_bootstrap  # noqa: F401
+except ModuleNotFoundError as exc:
+    if exc.name != "hermes_bootstrap":
+        raise
+
 import json
+import logging
 import os
+import re
 from pathlib import Path
 import sys
 import threading
+
+logger = logging.getLogger(__name__)
 
 MAX_FRAME = 4 * 1024 * 1024
 BOOTSTRAP_FIELDS = {'version', 'home', 'scope', 'policy', 'api_key', 'text', 'route', 'user_id', 'chat_id',
@@ -79,6 +91,9 @@ class WorkerChannel:
             self.stream.flush()
 
 
+_INTERRUPTED = object()
+
+
 class WorkerControls:
     def __init__(self, channel, route):
         self.channel, self.route = channel, route
@@ -96,7 +111,7 @@ class WorkerControls:
             self.agent.interrupt()
         with self.lock:
             for state in self.clarifications.values():
-                state['answer'] = '[Interrupted]'
+                state['answer'] = _INTERRUPTED
                 state['event'].set()
 
     def read(self):
@@ -134,13 +149,30 @@ class WorkerControls:
         self.channel.send('approval', data={k: v for k, v in data.items() if k in fields})
         ack_gateway_approval(self.route, data['request_id'])
 
-    def clarify(self, question, choices, multi_select=False):
+    def clarify(self, questions):
+        """clarify_tool's batch contract: ``callback(questions) -> {answers, outcome, notice?}``.
+        One owner prompt per question, stopping at the first that is interrupted or unanswered;
+        an empty answer is a skip (``None``), as on the other surfaces."""
+        answers = {}
+        reply = {'answers': answers, 'outcome': 'submitted'}
+        for entry in questions:
+            answer = self._ask(entry['question'], entry['choices'], entry['multi_select'])
+            if answer is _INTERRUPTED:
+                reply['outcome'] = 'cancelled'
+                break
+            if answer is None:
+                reply['outcome'] = 'timed_out'
+                break
+            answers[entry['qid']] = answer.strip() or None
+        return reply
+
+    def _ask(self, question, choices, multi_select):
         import uuid
         prompt_id = uuid.uuid4().hex
-        state = {'event': threading.Event(), 'answer': '[No response]'}
+        state = {'event': threading.Event(), 'answer': None}
         with self.lock:
             if self.stopped.is_set() or len(self.clarifications) >= 16:
-                return '[Interrupted]'
+                return _INTERRUPTED
             self.clarifications[prompt_id] = state
         try:
             self.channel.send('clarify', prompt_id=prompt_id, question=question,
@@ -153,10 +185,18 @@ class WorkerControls:
             self.channel.send('prompt_settled', prompt_id=prompt_id)
 
 
+_OUTBOX_NAME = re.compile(r'[A-Za-z0-9_-]{1,200}')
+
+
 def outbox_dir(home, execution_id):
     """execution_id is a ledger key ('admission-worker:<hex>'); ':' is not a legal Windows path
     character, so the private outbox directory is a portable spelling of the same identity."""
-    return Path(home) / 'worker-outboxes' / execution_id.replace(':', '-')
+    # A legacy-imported admission id is arbitrary text; never let it name a path outside
+    # worker-outboxes (``../`` on POSIX, ``..\\`` or drive spellings on Windows).
+    name = execution_id.replace(':', '-') if isinstance(execution_id, str) else ''
+    if not _OUTBOX_NAME.fullmatch(name):
+        raise ValueError('invalid_execution_id')
+    return Path(home) / 'worker-outboxes' / name
 
 
 def discover_profile_mcp(policy):
@@ -173,6 +213,11 @@ def retire_agent(agent):
     """A settled admission is a turn boundary, not the end of the session: the owner's
     in-process agent keeps its background processes, sandbox and browser between turns
     (release_clients), so the worker must too. Only memory extraction is turn-final work."""
+    # A boundary task queued this turn (LLM-bound extraction) would be cancelled by the
+    # provider shutdown's short drain; give it the same bounded head start cli_shutdown does.
+    manager = getattr(agent, '_memory_manager', None)
+    if manager is not None:
+        manager.flush_pending(timeout=10)
     messages = getattr(agent, '_session_messages', None)
     agent.shutdown_memory_provider(messages if isinstance(messages, list) else None)
     agent.release_clients()
@@ -209,7 +254,7 @@ def execute(frame, channel):
     agent = None
     try:
         with policy_scope(policy):
-            agent = AIAgent(model=policy.model, provider=policy.provider, base_url=policy.base_url,
+            agent = _construct_agent(frame, AIAgent, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,
                 reasoning_config=policy.reasoning_config, platform=policy.source,
@@ -237,6 +282,10 @@ def execute(frame, channel):
             result = run_worker_turns(agent, frame, history)
             retire_agent(agent)
             agent = None
+            # The auto-title thread bills through this store from a daemon thread; a title landing
+            # after execution.finish is a stale_generation write that fails the close-time flush.
+            from agent.title_generator import wait_for_title_upgrades
+            wait_for_title_upgrades()
             store.flush_token_counts()
             if result.get('final_response') is None and (result.get('interrupted') or result.get('failed')):
                 result['final_response'] = ''
@@ -253,6 +302,17 @@ def execute(frame, channel):
         store.close()
 
 
+def _construct_agent(frame, factory, **kwargs):
+    """Agent construction resolves the provider credentials; a Kanban attempt that fails here
+    still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
+    try:
+        return factory(**kwargs)
+    except Exception as exc:
+        from gateway.session_kanban import record_start_failure
+        record_start_failure(frame, exc)
+        raise
+
+
 def hello():
     """Identity the owner verifies before it reserves: this interpreter's pid and birth plus
     the ancestor chain it observes. Launchers (uv's venv python.exe) put the owner's Popen
@@ -265,12 +325,18 @@ def hello():
 def main():
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    # This process's own stderr only (the owner discards it): never the channel, and never the
+    # profile's log files, which the module contract keeps free of assignment secrets.
+    if not logger.handlers:
+        logger.addHandler(logging.StreamHandler(sys.stderr))
+    logger.propagate = False
     try:
         channel.send('hello', **hello())
         frame = validate_bootstrap(read_frame(sys.stdin.buffer))
         execute(frame, channel)
     except Exception:
         # Runtime exceptions can contain credentials; the owner gets no raw traceback.
+        logger.exception('managed worker failed')
         channel.send('error', reason='managed_worker_failed')
         return 1
     finally:

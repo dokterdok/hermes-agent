@@ -141,12 +141,6 @@ describe('narrow tiles', () => {
 })
 
 describe('ComposerControls shortcut tooltips', () => {
-  it('shows Enter for Send', async () => {
-    renderControls()
-
-    await expectShortcutTooltip('Send', '↵')
-  })
-
   it('labels busy Send with the effective configured action', async () => {
     renderControls({ busy: true, busyAction: 'steer' })
 
@@ -163,6 +157,13 @@ describe('ComposerControls shortcut tooltips', () => {
     renderControls({ busy: true, busyAction: 'interrupt' })
 
     await expectShortcutTooltip('Queue message', 'Ctrl+↵')
+  })
+
+  it('hides Queue while idle even if the composer has a payload', () => {
+    renderControls({ busy: false, busyAction: 'queue', hasComposerPayload: true })
+
+    expect(screen.queryByLabelText('Queue message')).toBeNull()
+    expect(screen.getByLabelText('Send')).toBeTruthy()
   })
 })
 

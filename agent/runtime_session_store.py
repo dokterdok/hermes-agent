@@ -26,6 +26,16 @@ def is_worker_process():
     return _worker_process
 
 
+
+def apply_row_annotations(messages, annotations):
+    """Mirror the owner's in-place row stamps onto the worker's dicts (None = the owner popped it)."""
+    for message, annotation in zip(messages, annotations, strict=True):
+        for key, value in annotation.items():
+            if value is None:
+                message.pop(key, None)
+            else:
+                message[key] = value
+
 class WorkerPersistenceError(RuntimeError):
     pass
 
@@ -121,7 +131,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             if self.path.exists():
                 if self.path.stat().st_size > max_bytes:
                     raise WorkerPersistenceError('outbox_full')
-                self.journal = json.loads(self.path.read_text(encoding="utf-8"))
+                self.journal = json.loads(self.path.read_text(encoding="utf-8-sig"))
                 if self.journal['scope'] != self.scope:
                     raise WorkerPersistenceError('outbox_scope_mismatch')
             else:
@@ -216,8 +226,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             return self._append_compression_messages(session_id, messages, compression_lock_holder,
                 turn_lease_holder, turn_lease_ttl_seconds)
         result = self._apply('transcript.append', {'messages': messages, 'turn_lease_holder': turn_lease_holder})
-        for message, annotation in zip(messages, result['annotations'], strict=True):
-            message.update(annotation)
+        apply_row_annotations(messages, result['annotations'])
         return result['count']
 
     def try_acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0, patience_s=None):
@@ -226,14 +235,17 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
 
     def acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0,
             wait_seconds=1800.0, poll_interval_seconds=1.0, on_wait=None,
-            wait_notice_interval_seconds=15.0, should_abort=None, acquire_patience_s=0.5):
-        # Reuse only the local polling orchestrator, not the SQLite mixin surface.
+            wait_notice_interval_seconds=15.0, should_abort=None, acquire_patience_s=0.5,
+            on_contended=None):
+        # Reuse only the local polling orchestrator, not the SQLite mixin surface. Same signature
+        # as the owner's (``on_contended``: a busy-database notice; the RPC try never raises it).
         from hermes_state_compression import SessionCompressionMixin
         return SessionCompressionMixin.acquire_session_turn_lease(self, session_id, holder,
             ttl_seconds=ttl_seconds, wait_seconds=wait_seconds,
             poll_interval_seconds=poll_interval_seconds, on_wait=on_wait,
             wait_notice_interval_seconds=wait_notice_interval_seconds,
-            should_abort=should_abort, acquire_patience_s=acquire_patience_s)
+            should_abort=should_abort, acquire_patience_s=acquire_patience_s,
+            on_contended=on_contended)
 
     def refresh_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0):
         self._session(session_id)
@@ -305,11 +317,11 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self._session(session_id)
         self._apply('session.sidecars', {'patch': patch})
 
-    def update_session_tool_names(self, session_id, tool_names):
-        # The tools[] freeze pin: without it every fresh worker re-probes check_fns and a
-        # config flip between turns silently forks the cached prefix (in-process stays pinned).
+    def update_session_tool_names(self, session_id, pin):
+        # The tools[] freeze pin ({"version", "tools"}; None clears): without it every fresh worker
+        # re-probes check_fns and a config flip between turns silently forks the cached prefix.
         self._session(session_id)
-        self._apply('session.tools', {'tool_names': None if tool_names is None else list(tool_names)})
+        self._apply('session.tools', {'tool_names': pin})
 
     def finish(self):
         return self._apply('execution.finish', {})

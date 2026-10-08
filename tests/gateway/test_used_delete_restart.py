@@ -15,7 +15,7 @@ from tests.gateway.fixtures.local_recovery_probe import daemon, Model, websocket
 from tests.gateway.test_native_http_auth import ticket, headers as native_headers
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_used_api_and_native_delete_restart_exact_retry(tmp_path):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -121,7 +121,9 @@ def test_used_api_and_native_delete_restart_exact_retry(tmp_path):
                     changed = client.delete(path, params=params | {'expected_revision': 999}, headers=native_headers(ticket(home, desc)))
                     assert changed.status_code == 409 and 'admission_conflict' in changed.text
                     foreign = client.delete(path, params=params, headers={'Authorization': 'Bearer foreign-dashboard-owner'})
-                    assert foreign.status_code != 200, foreign.text
+                    # Another principal never replays this receipt; for the gone id it gets main's
+                    # idempotent ``already_absent`` (Desktop ghost-row contract, #48641) at most.
+                    assert foreign.status_code != 200 or foreign.json() == {'ok': True, 'already_absent': True}, foreign.text
             assert asyncio.run(api_request()) == first
             asyncio.run(stale_native(desc, native_sid))
             with sqlite3.connect(home / 'state.db') as db:

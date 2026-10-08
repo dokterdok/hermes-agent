@@ -18,7 +18,6 @@ import logging
 import os
 import socket
 import stat
-import struct
 import sys
 import tempfile
 import time
@@ -51,13 +50,45 @@ def _fits_sun_path(path: Path) -> bool:
     return len(str(path).encode("utf-8")) <= _MAX_UNIX_PATH
 
 
+def _private_runtime_dir() -> Optional[Path]:
+    """``$XDG_RUNTIME_DIR`` when it is what the spec promises: an absolute directory owned by this
+    user with no group/other access. Other users cannot pre-create names inside it."""
+    raw = os.environ.get("XDG_RUNTIME_DIR", "")
+    if _IS_WINDOWS or not raw or not os.path.isabs(raw):
+        return None
+    with contextlib.suppress(OSError):
+        if _private_directory(Path(raw)):
+            return Path(raw)
+    return None
+
+
 def _fallback_socket_path(home: Path) -> Path:
-    """Short temp-dir path for homes whose direct socket path exceeds sun_path: ``tempfile.gettempdir()``
-    then ``/tmp`` (POSIX); if nothing fits the tempdir candidate is returned anyway — bind fails
-    non-fatally and consumers use the scan layer."""
+    """Short path for homes whose direct socket path exceeds sun_path: the private
+    ``$XDG_RUNTIME_DIR`` first, then ``tempfile.gettempdir()`` and ``/tmp`` (POSIX); if nothing fits
+    the first candidate is returned anyway. A squatted shared-temp name is handled at bind time
+    (``_squat_proof_fallback``)."""
     name = f"hermes-gw-{_home_hash(home)}/control.sock"
-    candidates = [Path(tempfile.gettempdir()) / name] + ([] if _IS_WINDOWS else [Path("/tmp") / name])
+    runtime = _private_runtime_dir()
+    candidates = ([runtime / name] if runtime else []) + [Path(tempfile.gettempdir()) / name] + (
+        [] if _IS_WINDOWS else [Path("/tmp") / name])  # no-tmp: ok — AF_UNIX 104-byte path limit needs the short /tmp candidate
     return next((c for c in candidates if _fits_sun_path(c)), candidates[0])
+
+
+def _private_directory(path: Path) -> bool:
+    info = path.lstat()
+    return stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077  # windows-footgun: ok — POSIX only
+
+
+def _squat_proof_fallback(bind_path: Path) -> Path:
+    """Same ``hermes-gw-<hash>/control.sock`` leaf (what clients authenticate through the private
+    pointer), under a fresh ``mkdtemp`` root no other user can predict or pre-create."""
+    root = Path(tempfile.mkdtemp(prefix="hgw-", dir=bind_path.parent.parent))
+    path = root / bind_path.parent.name / bind_path.name
+    if not _fits_sun_path(path):
+        root.rmdir()
+        raise PermissionError("fallback control directory is squatted and no private path fits sun_path")
+    path.parent.mkdir(mode=0o700)
+    return path
 
 
 def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:
@@ -73,7 +104,7 @@ def resolve_client_socket_path(home: Path) -> Optional[Path]:
         return direct
     with contextlib.suppress(OSError):
         pointer = Path(home) / _POINTER_FILENAME
-        target = pointer.read_text(encoding="utf-8").strip() if pointer.is_file() else ""
+        target = pointer.read_text(encoding="utf-8-sig").strip() if pointer.is_file() else ""
         if target and Path(target).exists():
             return Path(target)
     return None
@@ -89,8 +120,8 @@ def _detect_supervisor() -> str:
     env = os.environ
     if env.get("INVOCATION_ID"):
         return "systemd"
-    if sys.platform == "darwin" and (env.get("XPC_SERVICE_NAME", "").startswith("ai.hermes")
-                                     or env.get("LAUNCHD_SOCKET")):
+    from gateway.restart import launchd_job_label
+    if sys.platform == "darwin" and (launchd_job_label(env) or env.get("LAUNCHD_SOCKET")):
         return "launchd"
     if env.get("HERMES_DESKTOP_MANAGED"):
         return "desktop"
@@ -131,13 +162,16 @@ class GatewayControlServer:
         if home is None:
             from gateway.status import _get_process_hermes_home
             home = _get_process_hermes_home()
-        self._home = Path(home)
+        # The real directory, as clients canonicalize it: the peer check below refuses any
+        # symlinked component, so an unresolved symlinked ~/.hermes would never mint tickets.
+        self._home = Path(home).resolve()
         self.ticket_store = None
         self.private_handlers = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._pipe_server: Any = None  # Windows proactor pipe server
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
+        self._fallback_root: Optional[Path] = None  # mkdtemp root created for a squatted fallback
         self._file_identities = {}
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
             "identify": build_identify_payload, "status": build_status_payload, **(verb_handlers or {})}
@@ -154,11 +188,14 @@ class GatewayControlServer:
     async def _start_posix(self) -> bool:
         bind_path, pointer_file = resolve_server_socket_path(self._home)
         if pointer_file is not None:
-            bind_path.parent.mkdir(mode=0o700, exist_ok=True)
-            info = bind_path.parent.lstat()
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()  # windows-footgun: ok — POSIX listener
-                    or info.st_mode & 0o077):
-                raise PermissionError("unsafe fallback control directory")
+            with contextlib.suppress(FileExistsError):
+                bind_path.parent.mkdir(mode=0o700)
+            if not _private_directory(bind_path.parent):
+                # Another local user pre-created the predictable shared-temp name; bootstrap treats
+                # a missing listener as fatal, so move to an unpredictable private root instead.
+                logger.warning("Fallback control directory %s is not private; using a fresh one", bind_path.parent)
+                bind_path = _squat_proof_fallback(bind_path)
+                self._fallback_root = bind_path.parent.parent
         if bind_path.is_symlink():
             raise PermissionError("control socket cannot be a symlink")
         # We only get here after winning the PID-file O_EXCL race, so any existing
@@ -180,6 +217,9 @@ class GatewayControlServer:
         self._file_identities[bind_path] = (info.st_dev, info.st_ino)
         if pointer_file is not None:
             fd = os.open(pointer_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            # O_CREAT's mode only applies to a NEW file; an older gateway's leftover pointer is 0644
+            # and clients refuse it, so restarting must heal the mode.
+            os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as pointer:
                 pointer.write(str(bind_path))
             self._pointer_file = pointer_file
@@ -216,6 +256,11 @@ class GatewayControlServer:
                 if self._file_identities.get(path) == (info.st_dev, info.st_ino):
                     path.unlink()
         self._file_identities.clear()
+        if self._fallback_root is not None:
+            with contextlib.suppress(OSError):
+                (self._fallback_root / f"hermes-gw-{_home_hash(self._home)}").rmdir()
+                self._fallback_root.rmdir()
+            self._fallback_root = None
 
     def handle_request_line(self, raw: bytes, peer_subject: Optional[str] = None) -> bytes:
         """One JSON request line -> one JSON response line. Never raises (shared by POSIX + pipe)."""
@@ -279,25 +324,13 @@ class GatewayControlServer:
         if os.name == "nt":
             return None
         try:
+            from hermes_cli.gateway_runtime_discovery import home_mode_unsafe, socket_peer_uid
             home = self._home
             info = home.lstat()
             if (home.absolute() != home.resolve() or not stat.S_ISDIR(info.st_mode)
-                    or info.st_uid != os.getuid() or info.st_mode & 0o077):  # windows-footgun: ok — POSIX-only helper
+                    or info.st_uid != os.getuid() or home_mode_unsafe(info, home)):  # windows-footgun: ok — POSIX-only helper
                 return None
-            sock = writer.get_extra_info("socket")
-            if hasattr(socket, "SO_PEERCRED"):
-                _, uid, _ = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-            elif sys.platform == "darwin":
-                import ctypes
-                uid_value, gid_value = ctypes.c_uint(), ctypes.c_uint()
-                getpeereid = ctypes.CDLL(None, use_errno=True).getpeereid
-                getpeereid.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
-                getpeereid.restype = ctypes.c_int
-                if getpeereid(sock.fileno(), ctypes.byref(uid_value), ctypes.byref(gid_value)) != 0:
-                    return None
-                uid = uid_value.value
-            else:
-                return None
+            uid = socket_peer_uid(writer.get_extra_info("socket"))
             return f"uid:{uid}" if uid == os.getuid() else None  # windows-footgun: ok — POSIX-only helper
         except OSError:
             return None
@@ -388,26 +421,22 @@ def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[b
     return None
 
 
-def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
-    pipe_name = windows_pipe_name(home)
-    deadline = time.monotonic() + timeout
-    handle = None
-    while handle is None:
-        try:
-            handle = open(pipe_name, "r+b", buffering=0)
-        except FileNotFoundError:
-            return None
-        except OSError:
-            # Pipe busy (another client mid-handshake) — brief retry window.
-            if time.monotonic() >= deadline:
-                return None
-            time.sleep(0.05)
-    try:
-        handle.write(request)
-        return _read_response_line(lambda: handle.read(65536), deadline)
-    finally:
-        with contextlib.suppress(Exception):
-            handle.close()
+def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:
+    """The native overlapped client checks its deadline per I/O step, but SID verification and the
+    connect/peer handshake are still synchronous calls into the pipe. Run the exchange on an
+    abandoned-at-deadline worker so a peer that never answers costs ``timeout``, never forever —
+    the bound ``_query_unix_socket`` already gets from ``sock.settimeout`` (#132547)."""
+    from agent.deadline import run_bounded_sync
+    outcome = run_bounded_sync(lambda: _windows_pipe_exchange(home, request, timeout), timeout, label="control-pipe")
+    return None if outcome.timed_out else outcome.value
+
+
+def _windows_pipe_exchange(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
+    # The server is the native overlapped pipe worker; its client verifies the server's SID and
+    # speaks the same framing (a plain open() got no answer in the live Windows pipe test).
+    from gateway.runtime_bootstrap_windows import query_runtime_control
+
+    return query_runtime_control(Path(home), request, timeout)
 
 
 def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
@@ -433,6 +462,14 @@ def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dic
     return query_gateway_control(home, "rescan-profiles", timeout=timeout)
 
 
+def request_unserve_profile(home: Path, name: str) -> Optional[dict[str, Any]]:
+    return query_gateway_control(home, "unserve-profile", params={"name": name}, timeout=8.0)
+
+
+def request_serve_profile_hot(home: Path, name: str) -> Optional[dict[str, Any]]:
+    return query_gateway_control(home, "serve-profile", params={"name": name}, timeout=8.0)
+
+
 def migrate_gateway_profile_identity(home: Path, old_name: str, new_name: str, *,
                                      timeout: float = 8.0) -> Optional[dict[str, Any]]:
     """Ask the multiplexer serving ``home`` to rekey a renamed profile's in-memory + on-disk routing
@@ -451,3 +488,14 @@ def purge_gateway_profile_identity(home: Path, name: str, *,
     ``{"ok": True, "dropped": N, ...}`` answer, or None when no gateway answers / the gateway predates
     the verb."""
     return query_gateway_control(home, "purge-profile-identity", params={"name": name}, timeout=timeout)
+
+
+def reload_gateway_plugins(home: Path, *, profile_home: Optional[Path] = None,
+                           timeout: float = 30.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to force plugin re-discovery for ``profile_home`` (default: ``home``)
+    and re-wire its live adapters' plugin handlers now (#87770). Returns ``{"reloaded", "plugins",
+    "adapters_rewired", ...}`` or None when no gateway answers / it predates the verb — callers then
+    fall back to the restart hint. Tools and prompt sections of the reloaded plugin still apply next
+    session; only handlers go live."""
+    params = {"home": str(profile_home or home)}
+    return query_gateway_control(home, "reload-plugins", params=params, timeout=timeout)

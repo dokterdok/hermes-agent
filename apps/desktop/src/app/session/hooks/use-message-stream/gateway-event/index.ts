@@ -14,9 +14,11 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { replayPendingApproval } from '@/store/prompts'
 import { setSessionProviderWait } from '@/store/provider-wait'
 import { isSessionGone } from '@/store/session-gone-latch'
+import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
 import { handleDesktopBridgeEvent } from './desktop-bridge'
+import { handleFreeTierEvent } from './free-tier'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageStreamEvent } from './message-stream'
@@ -81,6 +83,7 @@ const PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES = new Set([
 // whether it did, so dispatch stops at the first taker.
 const HANDLERS: GatewayEventHandler[] = [
   handleLifecycleEvent,
+  handleFreeTierEvent,
   handleSessionInfoEvent,
   handleControlEvent,
   handleMessageStreamEvent,
@@ -90,12 +93,57 @@ const HANDLERS: GatewayEventHandler[] = [
   handleStatusEvent
 ]
 
+type ExecutionAuthorities = Parameters<typeof acceptExecutionEvent>[0]
+
+/** The event's own timestamp (epoch seconds) when finite, else now. */
+function gatewayEventOccurredAt(payload: GatewayEventPayload | undefined): number {
+  return typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
+    ? payload.timestamp
+    : Date.now() / 1000
+}
+
+/** Fence the event against the session's claimed execution. Returns false
+ *  when a stamped late frame must be dropped; an accepted newer owner
+ *  start/snapshot retires the previous execution's interrupted latch. */
+function admitExecutionEvent(
+  authorities: ExecutionAuthorities,
+  event: GatewayEvent,
+  sessionId: null | string,
+  deps: GatewayEventDeps
+): boolean {
+  const authorityKey = `${registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null)}\u0000${sessionId}`
+
+  const previousAuthority = authorities.get(authorityKey)
+
+  if (sessionId && !acceptExecutionEvent(authorities, authorityKey, event.type, event)) {
+    return false
+  }
+
+  const authority = authorities.get(authorityKey)
+
+  if (
+    sessionId &&
+    previousAuthority &&
+    authority &&
+    !authority.terminal &&
+    (authority.epoch !== previousAuthority.epoch || authority.generation > previousAuthority.generation)
+  ) {
+    // Stop belongs to the cancelled execution, not the shared session.
+    // Only an accepted newer owner start/snapshot may retire its latch.
+    deps.updateSessionState(sessionId, state => (state.interrupted ? { ...state, interrupted: false } : state))
+  }
+
+  return true
+}
+
 /** The gateway-event dispatcher, extracted from useMessageStream. */
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const executionAuthorities = useRef(new Map())
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
-  const unscopedStreamSessionIdRef = useRef<string | null>(null)
+  // One pin per concurrent unscoped stream, not a single shared slot: two chats
+  // streaming at once used to clobber each other's pin (#46194 / #62823).
+  const unscopedStreamSessionIdsRef = useRef<readonly string[]>([])
 
   // session.info arrives in bursts (agent build ready + turn end + title /
   // MCP / compress edges within the same second). Each used to fire its own
@@ -147,10 +195,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
           registryBackendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
 
-      const occurredAt =
-        typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
-          ? payload.timestamp
-          : Date.now() / 1000
+      const occurredAt = gatewayEventOccurredAt(payload)
 
       const explicitSid = event.session_id || ''
 
@@ -158,29 +203,19 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         activeSessionId: activeSessionIdRef.current,
         eventType: event.type,
         explicitSessionId: explicitSid,
-        unscopedStreamSessionId: unscopedStreamSessionIdRef.current
+        unscopedStreamSessionIds: unscopedStreamSessionIdsRef.current
       })
 
-      unscopedStreamSessionIdRef.current = route.nextUnscopedStreamSessionId
+      unscopedStreamSessionIdsRef.current = route.nextUnscopedStreamSessionIds
 
       if (route.drop) {
         return
       }
 
       const sessionId = route.sessionId
-      const authorityKey = `${registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null)}\u0000${sessionId}`
 
-      const previousAuthority = executionAuthorities.current.get(authorityKey)
-
-      if (sessionId && !acceptExecutionEvent(executionAuthorities.current, authorityKey, event.type, event)) {return}
-
-      const authority = executionAuthorities.current.get(authorityKey)
-
-      if (sessionId && previousAuthority && authority && !authority.terminal &&
-          (authority.epoch !== previousAuthority.epoch || authority.generation > previousAuthority.generation)) {
-        // Stop belongs to the cancelled execution, not the shared session.
-        // Only an accepted newer owner start/snapshot may retire its latch.
-        deps.updateSessionState(sessionId, state => state.interrupted ? { ...state, interrupted: false } : state)
+      if (!admitExecutionEvent(executionAuthorities.current, event, sessionId, deps)) {
+        return
       }
 
       // Late stragglers: an unscoped stream event attributed via the
@@ -247,9 +282,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         scheduleConfigRefresh
       }
 
-      for (const handler of HANDLERS) {
-        if (handler(ctx)) {
-          return
+      try {
+        for (const handler of HANDLERS) {
+          if (handler(ctx)) {
+            return
+          }
+        }
+      } finally {
+        // Any attributed event — including a heartbeat that does not change
+        // state — proves this session is still producing. Silence after the
+        // last one force-settles a dead turn, partial payload included.
+        if (sessionId) {
+          noteSessionEvent(sessionId)
         }
       }
     },
@@ -267,6 +311,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       deps.failAssistantMessage,
       deps.finalizeInterimAssistantMessage,
       deps.flushQueuedDeltas,
+      deps.dropQueuedDeltas,
       deps.hydrateFromStoredSession,
       deps.lastCwdInfoSessionRef,
       deps.nativeSubagentSessionsRef,

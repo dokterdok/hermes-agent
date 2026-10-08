@@ -116,6 +116,11 @@ def admit_api_turn(adapter, **kwargs):
         # This opaque namespace is persisted in the same row/transaction as
         # admission. It is never a bearer credential or execution input.
         payload['api_turn_v1']['run_owner_scope'] = run_owner_scope
+    # Refuse a foreign-surface target before committing any media for it (a refused
+    # admission otherwise retains its image bytes under native-inputs/ forever).
+    existing = authority.db.get_session(sid)
+    if existing is not None and existing['source'] not in ('api_server', 'bot_room'):
+        raise RuntimeStoreError('permission_denied')
     if isinstance(kwargs['user_message'], list):
         from gateway.session_api_media import commit_api_images
         payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
@@ -281,20 +286,25 @@ def _api_observers(authority, session_id):
 
 def _notify_observers(authority, session_id, key, *args):
     """Observer callbacks are request-owned sinks; one that raises (closed socket, torn-down
-    loop) must not abort canonical execution or starve the other observers."""
+    loop) must not abort canonical execution or starve the other observers. Returns whether
+    any observer accepted the event."""
     import logging
+    accepted = False
     for observer in _api_observers(authority, session_id):
         callback = observer.get(key)
         if callback:
             try:
                 callback(*args)
+                accepted = True
             except Exception:
                 logging.getLogger(__name__).warning('API observer %s failed for %s', key, session_id, exc_info=True)
+    return accepted
 
 
 def publish_api_event(authority, session_id, event_type, payload):
     if event_type == 'message.delta':
-        _notify_observers(authority, session_id, 'stream_delta_callback', payload['text'])
+        return _notify_observers(authority, session_id, 'stream_delta_callback', payload['text'])
+    return False
 
 
 def publish_api_tool_event(authority, session_id, generation, event_type, call_id, tool_name, args, result=None):

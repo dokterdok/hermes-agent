@@ -163,7 +163,7 @@ class SessionAuthority:
                 del live.subscribers[subscription]
 
     async def detach(self, actor, subscription_id):
-        for live in self.sessions.values():
+        for session_id, live in self.sessions.items():
             if subscription_id in live.subscribers:
                 if live.subscribers[subscription_id] != actor:
                     raise RuntimeStoreError('permission_denied')
@@ -171,6 +171,9 @@ class SessionAuthority:
                 transport = self.events.get(actor.transport_id)
                 if transport is not None:
                     live.event_stream.fanout.detach(transport)
+                if not live.subscribers:
+                    from gateway.session_acp_lifecycle import end_idle_acp_session
+                    end_idle_acp_session(self, session_id)
                 return
         raise RuntimeStoreError('not_found')
 
@@ -268,10 +271,18 @@ class SessionAuthority:
                 source, route = await check_native_route(self.runner, native[-1]['payload'], target,
                                                     available_source, adapter)
                 for row in rows:
-                    if row['status'] == 'queued':
-                        if 'native_text_v1' not in row['payload']:
-                            raise RuntimeStoreError('invalid_params')
+                    if row['status'] != 'queued':
+                        continue
+                    if 'native_text_v1' in row['payload']:
                         await check_native_route(self.runner, row['payload'], target, available_source, adapter)
+                    elif 'local_automation_v1' in row['payload']:
+                        from gateway.session_automation import check_local_automation
+                        check_local_automation(
+                            self, SessionRef(self.profile_id, sid), row, route=route)
+                    else:
+                        from gateway.session_operator import check_local_input
+                        check_local_input(
+                            self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
                 self.sessions.setdefault(sid, LiveSession(source, route))
                 if any(row['status'] == 'unknown' for row in rows):
@@ -282,12 +293,12 @@ class SessionAuthority:
                 results[sid] = exc.reason
         return results
 
-    async def submit(self, actor: Principal, request: Submission, *, _payload_capture=None):
+    async def submit(self, actor: Principal, request: Submission, *, _authorize_write=None, _payload_capture=None):
         self.authorize(actor, request.ref, 'session:submit')
         self._require_admission_open()
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
-                'text', 'attachments', 'finite', 'surface', 'voice_context', 'interrupted',
-                'classic_export_v1'}
+                'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
+                'voice_turn', 'classic_export_v1'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_ingress_media import admit_attachments
@@ -311,11 +322,12 @@ class SessionAuthority:
                     or marker['binding_version'] != CANONICAL_BINDING_VERSION):
                 raise RuntimeStoreError('invalid_params')
             payload['classic_export_v1'] = dict(marker)
-        from gateway.config import Platform
         source = self.sessions[request.ref.session_id].source
-        if source is not None and source.platform == Platform.LOCAL and source.user_id != actor.subject:
+        if source is not None and source.user_id != actor.subject:
             # Durable server authorization, not a client payload field. The original
             # principal remains the admission/retry identity across owner restarts.
+            # Operator provenance is about who was authorized at this boundary, not
+            # whether the bound session happens to use the LOCAL transport.
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
@@ -323,7 +335,8 @@ class SessionAuthority:
             _payload_capture(payload)
         row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                   session_id=request.ref.session_id, request_id=request.request_id,
-                                  payload=payload, intent=request.intent)
+                                  payload=payload, intent=request.intent,
+                                  _authorize_write=_authorize_write)
         self._publish_pending(request.ref)
         self._schedule(request.ref)
         return self._receipt(row)
@@ -396,6 +409,10 @@ class SessionAuthority:
             _terminal_write=terminal_write(self, admission),
         )
         cleanup_terminal(self, admission, row)
+        # Before the follower is scheduled: its request must not carry the discarded text merged in.
+        from gateway.session_local_recovery import transcript_target
+        from gateway.session_results import close_discarded_turn
+        close_discarded_turn(self.db, transcript_target(self, ref))
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)
@@ -435,10 +452,10 @@ class SessionAuthority:
                 self.check_approval_generation(session_id, generation)
             except RuntimeStoreError:
                 return False
-            live.event_stream.publish(session_id, payload, event_type=event_type)
+            delivered = live.event_stream.publish(session_id, payload, event_type=event_type)
             from gateway.session_api_turn import publish_api_event
-            publish_api_event(self, session_id, event_type, payload)
-            return True
+            observed = publish_api_event(self, session_id, event_type, payload)
+            return bool(delivered or observed)
 
     def register_approval(self, session_id, generation, route, data):
         live = self.sessions[session_id]
@@ -500,6 +517,10 @@ class SessionAuthority:
                     else:
                         from gateway.session_operator import check_local_input
                         check_local_input(self, ref, first)
+                    # The first real turn reopens a finalized row (#85303): mounts are reads, and
+                    # SessionStore would route a stamped row as stale onto a FRESH session.
+                    from gateway.session_local_recovery import reopen_local_session
+                    reopen_local_session(self, ref)
                 if first is not None and 'native_text_v1' in first['payload']:
                     from gateway.session_envelope import check_native_route
                     await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
@@ -542,18 +563,39 @@ class SessionAuthority:
                 with live.event_stream.lock:
                     from gateway.session_results import finish_result
                     from gateway.session_classic_output import cleanup_terminal, terminal_write
+                    captured = self.pending_results.pop(admission_id, None)
                     settled, response = finish_result(self.db, epoch=self.epoch, row=row,
                         response=response, outcome=outcome,
-                        result=self.pending_results.pop(admission_id, None),
+                        result=captured,
                         _terminal_write=terminal_write(self, row))
                     cleanup_terminal(self, row, settled)
                     live.controls.snapshot(ref.session_id, None)
                     from gateway.session_ingress_media import release_admission_media
                     release_admission_media(self.db, admission_id)
-                    self._publish_pending(ref)
-                    live.event_stream.publish(ref.session_id, {
+                    # ``status`` is the message.complete contract's TurnStatus: the Desktop
+                    # extends a Stopped bubble to the persisted partial only on 'interrupted'.
+                    complete = {
                         'text': response, 'content': response, 'admission_id': admission_id,
-                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
+                        'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
+                            settled['outcome'], 'error')}
+                    # Only the agent's reuse site sets this (never inferred from equal text): the
+                    # final repeats a reply the viewer already painted, so it settles in place.
+                    captured_result = (captured or {}).get('result') or {}
+                    if response and captured_result.get('response_reused'):
+                        complete['response_reused'] = True
+                    # The committed row addresses of the turn: a viewer binds the streamed reply to
+                    # its stored row, so a transcript read racing this frame never paints it twice.
+                    # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
+                    # prompt (``user-<submission_id>``), which the queued admission ack could not name.
+                    if isinstance(captured_result.get('persisted_turn'), dict):
+                        complete['persisted_turn'] = {**captured_result['persisted_turn'],
+                                                      'submission_id': row['request_id']}
+                    live.event_stream.publish(ref.session_id, complete)
+                    # The idle snapshot (running=false) follows the completion, as on every other
+                    # host: a viewer that read running=false first settled the reply as a turn whose
+                    # terminal frame was lost and raced its own transcript read against the real one.
+                    self._publish_pending(ref)
             except Exception:
                 # The settle fence lost (a reset/compression moved runtime_generation under
                 # the turn). The row stays `started` for recovery -> `unknown`; re-settling
@@ -583,6 +625,10 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     """
     if db is None:
         db = getattr(runner._session_db, '_db', runner._session_db)
+    # Resolved off-loop before any state is published: the rest of the bring-up runs without
+    # yielding, so no other task observes a half-registered authority.
+    from pathlib import Path
+    db_key = await asyncio.to_thread(Path(db.db_path).resolve)
     epoch = begin_runtime_epoch(db, instance_id=instance_id)
     recover_session_inputs(db, epoch=epoch)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
@@ -597,8 +643,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     epochs = getattr(store, '_local_authority_epochs', None)
     if epochs is None:
         epochs = store._local_authority_epochs = {}
-    from pathlib import Path
-    epochs[Path(db.db_path).resolve()] = epoch
+    epochs[db_key] = epoch
     from gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)
     return authority

@@ -3,7 +3,6 @@ import contextlib
 import json
 import os
 from pathlib import Path
-import socket
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -11,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 def bootstrap(start: bool) -> dict:
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint, ensure_gateway_runtime
-    from hermes_cli.gateway_runtime_discovery import _socket_path
+    from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
+    from hermes_cli.gateway_runtime_discovery import connect_private
 
     home = get_hermes_home().resolve()
     # Launch policy travels in session.create, not into daemon-wide defaults.
@@ -25,16 +24,16 @@ def bootstrap(start: bool) -> dict:
     if receipt.state != "ready" or receipt.endpoint is None:
         raise RuntimeError(f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}")
     endpoint = receipt.endpoint
+    # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
+    control = control_home_for(home, endpoint)
     request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
         "profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id,
         "purpose": "interactive"}}).encode() + b"\n"
     if os.name == "nt":
         from gateway.runtime_bootstrap_windows import query_runtime_control
-        raw = query_runtime_control(home, request, 5)
+        raw = query_runtime_control(control, request, 5)
     else:
-        with socket.socket(socket.AF_UNIX) as peer:
-            peer.settimeout(5)
-            peer.connect(str(_socket_path(home)))
+        with connect_private(control, 5) as peer:
             peer.sendall(request)
             with peer.makefile("rb") as stream:
                 raw = stream.readline(65537)
@@ -55,6 +54,9 @@ if __name__ == "__main__":
         with contextlib.redirect_stdout(sys.stderr):
             result = bootstrap("--start" in sys.argv)
         print(json.dumps(result))
-    except Exception as exc:
+    # Discovery/ticket failures: missing modules, socket/pipe I/O (incl. timeouts), DiscoveryError and
+    # bad JSON (ValueError), rejected grants (RuntimeError), malformed reply shapes. Anything else
+    # still exits 1, with a traceback.
+    except (ImportError, OSError, RuntimeError, ValueError, LookupError, AttributeError, TypeError) as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1)

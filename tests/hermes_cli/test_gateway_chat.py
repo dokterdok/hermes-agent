@@ -8,7 +8,7 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
     from hermes_cli import gateway_chat
     calls = []
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: calls.append(True))
-    for option in ("yolo", "worktree", "usage_file", "run_budget"):
+    for option in ("checkpoints", "worktree", "run_budget"):
         args = argparse.Namespace(**{option: True})
         assert gateway_chat.launch_from_args(args) == 2
         assert option.replace("_", "-") in capsys.readouterr().err
@@ -18,9 +18,15 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
     assert "--continue" in capsys.readouterr().err
     assert gateway_chat.launch_from_args(argparse.Namespace(create_if_missing=True)) == 2
     assert "create-if-missing" in capsys.readouterr().err
-    assert gateway_chat.launch_from_args(argparse.Namespace(continue_last="named", model="m", query="x")) == 2
-    assert calls == []
-    assert gateway_chat.launch_from_args(argparse.Namespace(resume="stored", source="tui", query="x")) == 2
+    # Creation flags on resume are judged against the frozen route: repeating the launch
+    # flags is fine (scripts re-run one command line), changing one is refused.
+    frozen = {"info": {"launch_request": {"source": "cli", "model": "m", "toolsets": ["file"], "reasoning": "high"},
+                       "cwd": "/w"}}
+    gateway_chat.check_resume_policy(argparse.Namespace(resume="stored", model="m", toolsets="file",
+                                                        reasoning="high", query="x"), frozen)
+    for override in ({"model": "other"}, {"source": "tui"}, {"toolsets": "browser"}, {"in_dir": "/elsewhere"}):
+        with pytest.raises(gateway_chat.GatewayClientError):
+            gateway_chat.check_resume_policy(argparse.Namespace(resume="stored", query="x", **override), frozen)
     # Bypass launches read no profile default model, so one must be explicit.
     assert gateway_chat.launch_from_args(argparse.Namespace(safe_mode=True, query="x")) == 1
     assert "--model" in capsys.readouterr().err
@@ -32,9 +38,9 @@ def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypa
     refusal prints a command they can run as-is."""
     from hermes_cli import gateway_chat
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
-    assert gateway_chat.launch_from_args(argparse.Namespace(yolo=True, run_budget=30.0)) == 2
+    assert gateway_chat.launch_from_args(argparse.Namespace(checkpoints=True, run_budget=30.0)) == 2
     err = capsys.readouterr().err
-    assert "--yolo: use" in err and "approvals.mode" in err
+    assert "--checkpoints: use" in err and "checkpoints.enabled" in err
     assert "--run-budget: use" in err and "run_budget_seconds" in err
     for name in gateway_chat._UNSUPPORTED:
         assert name in gateway_chat._RELOCATED, f"{name} refused without saying where it went"
@@ -103,3 +109,23 @@ async def test_rpc_preserves_notifications_and_errors():
                     await client.rpc("session.interrupt", session_id="stored", execution_generation=4)
                 event = await asyncio.wait_for(client.events.get(), 2)
                 assert event["params"]["text"] == "reply"
+
+
+@pytest.mark.asyncio
+async def test_yolo_slash_toggles_the_session_bypass_on_the_owner(capsys):
+    """`/yolo` in an attached `hermes chat` was refused as an unsupported command, so a `--yolo`
+    launch could not be revoked from the classic CLI; it is the owner's session-scoped config.set."""
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    calls = []
+
+    class Peer:
+        async def rpc(self, method, **params):
+            calls.append((method, params))
+            return {"key": "yolo", "value": params.get("value", "0"), "scope": "session"}
+
+    view = GatewayChatView(Peer(), {"stored_session_id": "sid"})
+    assert await view.command("/yolo off") is True
+    assert await view.command("/yolo") is True
+    assert calls == [("config.set", {"session_id": "sid", "key": "yolo", "value": "0"}),
+                     ("config.set", {"session_id": "sid", "key": "yolo"})]
+    assert "YOLO off for this session" in capsys.readouterr().out

@@ -108,15 +108,39 @@ def restore_local_session(authority, sid):
     return SessionRef(authority.profile_id, sid)
 
 
-def local_history(authority, ref):
-    """Display history from the current physical transcript; *ref* stays the logical root."""
+def transcript_target(authority, ref):
+    """The current physical transcript of logical *ref* (a local receipt's entry, else the tip)."""
     live = authority.sessions[ref.session_id]
     if live.source is not None and live.source.platform == Platform.LOCAL:
         restore_local_session(authority, ref.session_id)
-        target = local_receipt(authority.db, ref.session_id)['entry']['session_id']
-    else:
-        target = authority.physical_target(ref)
-    return authority.db.get_messages_as_conversation(target)
+        return local_receipt(authority.db, ref.session_id)['entry']['session_id']
+    return authority.physical_target(ref)
+
+
+def local_history(authority, ref):
+    """Display history from the current physical transcript; *ref* stays the logical root."""
+    return authority.db.get_messages_as_conversation(transcript_target(authority, ref))
+
+
+def reopen_local_session(authority, ref):
+    """The first admitted turn makes a finalized local session live again (#85303).
+
+    Mounting (``session.resume``) is a read and leaves ``ended_at``/``end_reason`` alone; the drain
+    calls this after the turn's local preflight, before execution routes it. A TUI shutdown / WS
+    disconnect / idle eviction stamps ``end_reason`` on the physical row. ``SessionStore`` reads any
+    stamped row as a stale route (#54878) and, since those reasons are not recoverable, answers the
+    turn with a FRESH session — the client keeps waiting on an id that never emits again. The classic
+    surfaces clear the stamp on the first real turn (tui_gateway ``_reopen_if_finalized``); the
+    authority must too. Only the lineage tip is reopened: a
+    compression parent or reset predecessor is never the physical target.
+    """
+    live = authority.sessions.get(ref.session_id)
+    if live is None or live.source is None or live.source.platform != Platform.LOCAL:
+        return
+    target = local_receipt(authority.db, ref.session_id)['entry']['session_id']
+    row = authority.db.get_session(target)
+    if row is not None and row.get('end_reason') is not None:
+        authority.db.reopen_session(target)
 
 
 def reset_local_session(store, old_entry, session_id, now, display_name):

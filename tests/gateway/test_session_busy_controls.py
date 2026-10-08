@@ -95,7 +95,7 @@ async def settled(home):
             await asyncio.sleep(.05)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_busy_policy_is_authorized_session_scoped_and_not_inference(tmp_path):
     with owner(tmp_path) as (home, peer, desc):
         async def probe():
@@ -129,12 +129,18 @@ def test_busy_policy_is_authorized_session_scoped_and_not_inference(tmp_path):
                             'key': 'busy', 'value': 'queue', 'scope': 'session'}, result
                 assert (await rpc(ws, 'config.get', session_id=ids[0], key='busy'))['result']['value'] == 'queue'
                 assert (await rpc(ws, 'config.get', session_id=ids[1], key='busy'))['result']['value'] == 'steer'
+                # /verbose is the same kind of session-scoped display negotiation.
+                result = await rpc(ws, 'config.set', session_id=ids[0], key='verbose', value='cycle')
+                assert result.get('result') == {'key': 'verbose', 'value': 'verbose', 'scope': 'session'}, result
+                assert (await rpc(ws, 'config.get', session_id=ids[1], key='verbose'))['result']['value'] == 'all'
+                assert (await rpc(ws, 'config.set', session_id=ids[0], key='verbose', value='loud')
+                        )['error']['message'] == 'invalid_params'
                 assert (home / 'config.yaml').read_bytes() == config_before
                 assert not admissions(home) and not peer.requests
         asyncio.run(probe())
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_corrections_are_generation_fenced_and_consumed_by_same_provider_loop(tmp_path):
     with owner(tmp_path) as (home, peer, desc):
         async def probe():
@@ -182,4 +188,29 @@ def test_corrections_are_generation_fenced_and_consumed_by_same_provider_loop(tm
                 assert all(t == tools[0] for t in tools)
                 print(json.dumps({'ledger': admissions(home), 'model_requests': len(peer.requests),
                                   'same_prefix': True, 'corrections_consumed': True}))
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_session_yolo_toggle_is_session_scoped_and_revokes_launch_yolo(tmp_path):
+    """TUI `/yolo` / Shift+Tab and the Desktop toggle send `config.set key=yolo`; the canonical owner
+    answered invalid_params, so `/yolo` could never revoke a `--yolo` launch. It is this session's
+    bypass only (never config.yaml / HERMES_YOLO_MODE) and a launch YOLO reads as on until revoked."""
+    with owner(tmp_path) as (home, peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                launch = (await rpc(ws, 'session.create', request_id='y', source='tui', toolsets=[], yolo=True))['result']['session_id']
+                plain = (await rpc(ws, 'session.create', request_id='n', source='tui', toolsets=[]))['result']['session_id']
+                config_before = (home / 'config.yaml').read_bytes()
+                assert (await rpc(ws, 'config.get', session_id=launch, key='yolo')).get('result') == {
+                    'key': 'yolo', 'value': '1', 'scope': 'session'}
+                assert (await rpc(ws, 'config.set', session_id=launch, key='yolo', value='0'))['result']['value'] == '0'
+                assert (await rpc(ws, 'config.get', session_id=launch, key='yolo'))['result']['value'] == '0'
+                assert (await rpc(ws, 'config.get', session_id=plain, key='yolo'))['result']['value'] == '0'
+                assert (await rpc(ws, 'config.set', session_id=plain, key='yolo'))['result']['value'] == '1'
+                assert (await rpc(ws, 'config.get', session_id=launch, key='yolo'))['result']['value'] == '0'
+                assert (await rpc(ws, 'config.set', session_id=plain, key='yolo', value='maybe')
+                        )['error']['message'] == 'invalid_params'
+                assert (home / 'config.yaml').read_bytes() == config_before
+                assert not admissions(home) and not peer.requests
         asyncio.run(probe())

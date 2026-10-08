@@ -23,7 +23,7 @@ from websockets.asyncio.client import connect
 ROOT = Path(__file__).resolve().parents[2]
 # The daemon is a foreground child of the test (never detached), boots a disposable custom root
 # with HOME redirected (no systemd unit, no webhook port) and is reaped in every path below.
-pytestmark = [pytest.mark.linux_only, pytest.mark.spawns_gateway_lookalike]
+pytestmark = [pytest.mark.platforms("linux"), pytest.mark.spawns_gateway_lookalike]
 
 
 def control(home, verb, params=None, timeout=10):
@@ -259,5 +259,45 @@ def test_broken_secondary_state_db_parks_only_that_profile(mux):
         assert 'unusable' in (payload.get('detail') or ''), payload
         assert ensured.returncode == 7 and time.monotonic() - started < 20, (ensured.returncode, ensured.stderr)
         stop(proc)
+    finally:
+        stop(proc, expect=None)
+
+
+def test_invalid_hot_profile_config_is_parked_and_unserved(mux):
+    """A runtime MultiplexConfigError withdraws both new and previously served secondaries.
+
+    This exercises the real gateway runtime: authority/ticket publication happens before adapter
+    config validation, so the regression left an invalid profile routable even though its adapters
+    never started.
+    """
+    root = mux['root']
+    proc, desc = start_daemon(mux)
+    try:
+        invalid = json.loads(json.dumps(mux['config']))
+        invalid['whatsapp'] = {'enabled': True, 'dm_policy': 'open'}
+
+        added = root / 'profiles' / 'invalid-hot'
+        added.mkdir(parents=True, mode=0o700)
+        (added / 'config.yaml').write_text(json.dumps(invalid), encoding='utf-8')
+        result = control(root, 'rescan-profiles')
+        desc = control(root, 'identify')
+        assert result['parked'] == ['invalid-hot'], (result, tail(mux))
+        assert added.resolve() not in served_homes(desc), desc
+        assert 'invalid-hot' in desc.get('parked_profiles', {}), desc
+        assert 'invalid-hot' not in recorded_served(root)
+
+        # The same contract applies to a secondary that was already published and then edited
+        # into an invalid configuration.
+        assert mux['boot'].resolve() in served_homes(desc)
+        (mux['boot'] / 'config.yaml').write_text(json.dumps(invalid), encoding='utf-8')
+        result = control(root, 'rescan-profiles')
+        desc = control(root, 'identify')
+        # An explicit control-socket rescan retries parked profiles by design, so the still-invalid
+        # 'invalid-hot' is re-parked alongside 'boot' (never served in between).
+        assert sorted(result['parked']) == ['boot', 'invalid-hot'], (result, tail(mux))
+        assert added.resolve() not in served_homes(desc), desc
+        assert mux['boot'].resolve() not in served_homes(desc), desc
+        assert 'boot' in desc.get('parked_profiles', {}), desc
+        assert 'boot' not in recorded_served(root)
     finally:
         stop(proc, expect=None)

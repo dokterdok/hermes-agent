@@ -18,12 +18,17 @@ async def producer_scope(adapter, event):
     if not registered or home is None:
         raise RuntimeStoreError('profile_mismatch')
     source = event.source
+    # Identity is pinned through the runner's single canonicalization seam (a secondary's own
+    # bot, or the primary's routed profile); a rejected primary route is refused downstream.
     if profile:
-        runner._stamp_event_profile(event, profile)
-    elif not source.profile and not runner._stamp_routed_profile(source):
-        source.profile_route_rejected = True
+        runner._canonicalize(source, transport_profile=profile)
+        runtime_home = runner._resolve_profile_home_for_source(source) if source.profile else home
+    else:
+        runtime_home = runner._admit_primary_source(source, home)
+        if runtime_home is None:
+            source.profile_route_rejected = True
+            runtime_home = home
     source._authorization_profile_home = home
-    runtime_home = runner._resolve_profile_home_for_source(source) if source.profile else home
     # The routed profile's own ledger admits the delivery; an unserved route is refused.
     authority = authority_for_home(runner, runtime_home)
     if authority is None:
@@ -34,27 +39,50 @@ async def producer_scope(adapter, event):
 
 
 async def admit_producer(adapter, event):
+    """Commit a producer delivery; ``None`` when a ``post_gateway_admission`` plugin consumed it.
+
+    The hook (#129958) fires once per admission, like ``GatewayInboundMixin._handle_message``:
+    after authorization and before the commit (a consumed delivery is never admitted; its reply,
+    if any, rides ``event._consumer_reply`` for the caller's own reply leg), and never for a
+    replay of an already-committed delivery (provider retry, relay re-send) nor at execution."""
     async with producer_scope(adapter, event) as authority:
         from gateway.config import Platform
-        if adapter.platform == Platform.WEBHOOK:
+        from gateway.run_inbound_consumer import POST_ADMISSION_HOOK
+        from hermes_cli.lifecycle import has_hook
+        webhook = adapter.platform == Platform.WEBHOOK
+        if webhook:
             prior = await _webhook_retry(authority, event)
             if prior is not None:
                 return prior
+        if has_hook(POST_ADMISSION_HOOK) and (webhook or not (await _committed(authority, event))[1]):
+            from gateway.run_inbound_consumer import run_post_admission_hook
+            runner = authority.runner
+            consumed, event._consumer_reply = await run_post_admission_hook(
+                runner, event, event.source, runner._session_key_for_source(event.source))
+            if consumed:
+                return None
         return await authority.admit_native(event)
 
 
-async def _webhook_retry(authority, event):
-    # One-shot finalization ends the route. Resolve an existing provider receipt
-    # before SessionStore would rotate it into a new physical session.
+async def _committed(authority, event):
+    """``(validated payload, rows)`` of this delivery's identity in the FIFO. Preparing the payload
+    runs the same authorization as admission, so a refused sender raises here."""
     import json
     from gateway.session_envelope import prepare_native, restore_native
-    from hermes_state_runtime import get_session_admission
     payload = await prepare_native(authority.runner, event)
     source = restore_native(payload).source
     identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                            source.thread_id, source.user_id], separators=(',', ':'))
     rows = authority.db._read_all('SELECT admission_id FROM session_admissions '
         'WHERE principal_id=? AND request_id=?', ('messaging:' + identity, event.message_id))
+    return payload, rows
+
+
+async def _webhook_retry(authority, event):
+    # One-shot finalization ends the route. Resolve an existing provider receipt
+    # before SessionStore would rotate it into a new physical session.
+    from hermes_state_runtime import get_session_admission
+    payload, rows = await _committed(authority, event)
     if not rows:
         return None
     row = get_session_admission(authority.db, admission_id=rows[0]['admission_id'])

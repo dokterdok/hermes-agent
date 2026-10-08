@@ -39,6 +39,75 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
+    """``_resolve_session_agent_runtime`` for a session bound to a launch policy: the route's FROZEN
+    config and launch credential, walking its own fallback chain on an AuthError. Module-level so
+    tests that bind the method onto bare namespaces still reach it."""
+    from gateway.run import _runtime_agent_kwargs
+    from gateway.session_policy import launch_key
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_with_fallback
+    from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    frozen = policy.config(authority)
+    key = launch_key(authority, policy)
+    launch_url = json.loads(policy.request_json).get('base_url')
+    # Every rung reads the session's FROZEN config, never live config.yaml: a later
+    # ``model.base_url`` edit must not carry this route's frozen credential to the new host
+    # (R2-M2). The auth-store pool is not config, so refresh/rotation still applies.
+    with frozen_runtime_config(frozen):
+        runtime = _resolve_named_custom_runtime(requested_provider=policy.provider,
+            explicit_api_key=key, explicit_base_url=launch_url,
+            target_model=policy.model, config=frozen)
+        if runtime is None:
+            # Only a bound launch key is explicit: the frozen ``model.api_key`` is config, which the
+            # resolver already reads from the frozen scope, so a URL-matched credential pool still
+            # serves (and rotates on) the frozen endpoint.
+            # Same resolution-time walker the in-process one-shot used (#81209): an AuthError
+            # from the frozen primary (expired token, Portal down, exhausted pool) tries the
+            # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is
+            # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
+            # the provider chain, which keeps the credential pool an explicit URL would drop.
+            runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=policy.provider,
+                explicit_api_key=key, explicit_base_url=launch_url, target_model=policy.model)
+        else:
+            fallback_entry = None
+    if fallback_entry is not None:
+        from hermes_cli.fallback_config import pre_agent_fallback_notice
+        runner._pre_agent_fallback_notice = pre_agent_fallback_notice(
+            policy.provider or '', policy.model or '',
+            runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
+            fallback_entry.get('model') or 'default')
+        return fallback_entry['model'], _runtime_agent_kwargs(runtime)
+    return policy.model, _runtime_agent_kwargs(runtime)
+
+
+def _recover_or_remember_model(runner, skey, model):
+    """Last step of ``_resolve_session_agent_runtime``: remember a good model, recover an empty one."""
+    # Final safety net: an empty model (transient config-cache miss) makes every API call 400 and
+    # the session goes silent — reuse the last model resolved for this session, else process-wide.
+    if not model:
+        _lr_state = runner._peek_session_state(skey) if skey else None
+        _lr_star = runner._peek_session_state("*")
+        _recovered = (
+            (_lr_state.conversation.last_resolved_model if _lr_state else "")
+            or (_lr_star.conversation.last_resolved_model if _lr_star else "")
+        )
+        if _recovered:
+            logger.warning(
+                "Empty model resolved for session=%s — recovering "
+                "last-known-good model %s (config read likely returned "
+                "empty; see #35314)", skey or "", _recovered,
+            )
+            model = _recovered
+    else:
+        # Cache the good resolution for future recovery turns.
+        if skey:
+            runner._session_state(skey).conversation.last_resolved_model = model
+        runner._session_state("*").conversation.last_resolved_model = model
+    return model
+
+
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -53,28 +122,13 @@ class GatewayTurnPrepareMixin:
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
         from gateway.session_policy import policy_for_source
+        # Every exit path starts clean: a stale notice must never attach to another session's next
+        # turn (#74349). Set again below only when THIS resolution fell back.
+        self._pre_agent_fallback_notice = None
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-            from gateway.run import _runtime_agent_kwargs
-            from gateway.session_policy import launch_key
-            from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
-            from gateway.session_authorities import active_authority
-            authority = active_authority(self)
-            frozen = policy.config(authority)
-            key = launch_key(authority, policy)
-            import json
-            runtime = _resolve_named_custom_runtime(requested_provider=policy.provider,
-                explicit_api_key=key, explicit_base_url=json.loads(policy.request_json).get('base_url'),
-                target_model=policy.model, config=frozen)
-            if runtime is None:
-                if key is None:
-                    key = frozen.get('model', {}).get('api_key')
-                runtime = resolve_runtime_provider(requested=policy.provider,
-                    explicit_api_key=key, explicit_base_url=policy.base_url, target_model=policy.model)
-            return policy.model, _runtime_agent_kwargs(runtime)
+            return _resolve_policy_agent_runtime(self, policy)
         skey = self._resolve_session_key_or_none(source, session_key)
-
         model = _resolve_gateway_model(user_config)
         if skey:
             self._rehydrate_session_model_override(skey)
@@ -97,12 +151,14 @@ class GatewayTurnPrepareMixin:
                     skey or "", model, override_model, override_runtime.get("provider"),
                 )
                 return override_model, override_runtime
-            # No api_key on the override: env-based resolution below, override model/provider on top.
+            # No api_key on the override (credentials failed to re-resolve at rehydrate): resolve them
+            # for the override's own provider below, never layer it over the default provider's runtime.
             logger.debug(
                 "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
                 skey or "", model, override_model,
             )
-        else:
+        elif logger.isEnabledFor(logging.DEBUG):
+            # The override_keys scan walks every session; only pay for it when DEBUG is on.
             logger.debug(
                 "No session model override: session=%s config_model=%s override_keys=%s",
                 skey or "", model,
@@ -112,11 +168,31 @@ class GatewayTurnPrepareMixin:
                 ][:5] or "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_kwargs, unavailable_override = None, None
+        if override and override.get("provider"):
+            try:
+                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                    override["provider"], target_model=override.get("model") or None)
+            except Exception as exc:
+                # Layering the override on the default runtime sent its model to the default provider's
+                # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say
+                # so; the persisted override is kept, so the next turn retries it.
+                logger.warning("Session /model override provider %s unavailable: %s", override["provider"], exc,
+                               exc_info=True)
+                unavailable_override, override = override, None
+        if runtime_kwargs is None:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
+        # runner surfaces it through the agent's one-shot fallback notice (#74349).
+        self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
+        if unavailable_override and not self._pre_agent_fallback_notice:
+            from hermes_cli.fallback_config import pre_agent_fallback_notice
+            self._pre_agent_fallback_notice = pre_agent_fallback_notice(
+                unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
 
         cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
         if cfg and source is not None:
@@ -129,7 +205,7 @@ class GatewayTurnPrepareMixin:
                 if ch.model:
                     model = ch.model
                 if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
                     ch_runtime_model = runtime_kwargs.pop("model", None)
                     # Adopt the provider's bundled model only when the override named none.
                     if ch_runtime_model and not ch.model:
@@ -149,34 +225,13 @@ class GatewayTurnPrepareMixin:
                         "No model configured — defaulting to %s for provider %s", model, runtime_kwargs["provider"],
                     )
 
-        # Final safety net: an empty model (transient config-cache miss) makes every API call 400 and
-        # the session goes silent — reuse the last model resolved for this session, else process-wide.
-        if not model:
-            _lr_state = self._peek_session_state(skey) if skey else None
-            _lr_star = self._peek_session_state("*")
-            _recovered = (
-                (_lr_state.conversation.last_resolved_model if _lr_state else "")
-                or (_lr_star.conversation.last_resolved_model if _lr_star else "")
-            )
-            if _recovered:
-                logger.warning(
-                    "Empty model resolved for session=%s — recovering "
-                    "last-known-good model %s (config read likely returned "
-                    "empty; see #35314)", skey or "", _recovered,
-                )
-                model = _recovered
-        else:
-            # Cache the good resolution for future recovery turns.
-            if skey:
-                self._session_state(skey).conversation.last_resolved_model = model
-            self._session_state("*").conversation.last_resolved_model = model
-
-        return model, runtime_kwargs
+        return _recover_or_remember_model(self, skey, model), runtime_kwargs
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
         ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
         from gateway.run import _deep_merge_request_overrides
+        from agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
         # Tests bind this method onto bare namespaces, so no class-level tables here.
         runtime = {
@@ -196,13 +251,14 @@ class GatewayTurnPrepareMixin:
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
-        if getattr(self, "_service_tier", None) != "priority":
+        tier = getattr(self, "_service_tier", None)
+        if tier not in STATIC_TIERS:
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
             return route
         try:
             overrides = resolve_fast_mode_overrides(
-                route["model"], provider=runtime["provider"], base_url=runtime["base_url"],
+                route["model"], provider=runtime["provider"], base_url=runtime["base_url"], tier=tier,
             )
         except Exception:
             overrides = None
@@ -339,8 +395,12 @@ class GatewayTurnPrepareMixin:
                 bound_session_id = canonical_session_id
         if bound_session_id and bound_session_id != session_entry.session_id:
             # Route through SessionStore so the key → id mapping persists and the previous lane
-            # session ends cleanly (in-place mutation split-brained the JSON index).
-            switched = await self.async_session_store.switch_session(session_key, bound_session_id)
+            # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
+            # awaits above are a window for /new or /resume to move the route; the CAS on the
+            # snapshot id lets that win instead of being clobbered by a stale binding.
+            switched = await self.async_session_store.switch_session(
+                session_key, bound_session_id, expected_session_id=session_entry.session_id,
+            )
             if switched is not None:
                 session_entry = switched
         if bound_session_id and bound_session_id != stored_session_id:
@@ -353,7 +413,6 @@ class GatewayTurnPrepareMixin:
     async def _hmwa_open_session(self, session_entry, session_key, source):
         """Consume auto-reset / fresh-reset flags and emit ``session:start`` for new sessions.
         Returns ``(_was_auto_reset, _is_new_session)``."""
-        # Consume was_auto_reset immediately so it cannot re-fire and wipe overrides set between turns.
         # Capture and immediately consume was_auto_reset so it does not re-fire on subsequent messages —
         # preventing the cleanup from wiping model/reasoning overrides set between turns (Closes #48031).
         _was_auto_reset = getattr(session_entry, "was_auto_reset", False)
@@ -401,13 +460,9 @@ class GatewayTurnPrepareMixin:
 
         try:
             should_notify = reset_reason == "suspended"
-            adapter = self._adapter_for_source(source) if should_notify else None
+            adapter = self._delivery_adapter_for(source) if should_notify else None
             if adapter:
-                notice = (
-                    "◐ Session reset after being stopped. "
-                    f"Conversation history cleared.\n"
-                    f"Use /resume to browse and restore a previous session.\n"
-                )
+                notice = t("gateway.session.auto_reset_notice")
                 with suppress(Exception):
                     session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
                     if session_info:
@@ -468,38 +523,30 @@ class GatewayTurnPrepareMixin:
         if _lease_token is not None:
             self._session_state(_quick_key).turn.lease_tokens[run_generation] = _lease_token
 
-    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
+    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, message, internal=False):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
-        from gateway.run import _hermes_home, _home_target_env_var, _load_gateway_config
-        if history:
+        from gateway.run import _gateway_config_home, _home_target_env_var, _load_gateway_config
+        if history or internal:  # internal = plugin/system turn: no human made first contact
             return
-        if not await self.async_session_store.has_any_sessions():
-            _intro_note = (
-                "[System note: This is the user's very first message ever. "
-                "Briefly introduce yourself and mention that /help shows available commands. "
-                "Keep the introduction concise -- one or two sentences max.]"
-            )
-            # onboarding.profile_build == "ask" (default) and not yet offered: swap the plain intro for
-            # a consent-gated profile-build directive. Fires at most once.
-            try:
-                from agent.onboarding import (
-                    PROFILE_BUILD_FLAG, is_seen, mark_seen, profile_build_directive,
-                    profile_build_mode,
-                )
-                _onb_cfg = _load_gateway_config()
-                if profile_build_mode(_onb_cfg) == "ask" and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG):
-                    turn_sidecar_notes.append(profile_build_directive().strip())
-                    mark_seen(_hermes_home / "config.yaml", PROFILE_BUILD_FLAG)
-                else:
-                    turn_sidecar_notes.append(_intro_note)
-            except Exception as _pb_err:
-                logger.debug("Profile-build onboarding directive failed, using plain intro: %s", _pb_err)
-                turn_sidecar_notes.append(_intro_note)
+        # LOCAL sessions (one-shot, chat -q, ACP, TUI attach) are the classic in-process CLI's
+        # surfaces: it never appended this note, and mark_seen would rewrite config.yaml under
+        # an ordinary launch that promises to leave the profile's files untouched.
+        human_platform = bool(source.platform) and source.platform not in (Platform.LOCAL, Platform.WEBHOOK)
+        if human_platform and source.chat_type == "dm" and not await self.async_session_store.has_any_sessions():
+            # Same branch logic as the TUI (offer once when "ask", else plain intro);
+            # first_contact_turn_note already falls back to the plain intro on error.
+            from agent.onboarding import first_contact_turn_note, setup_command
+            note = first_contact_turn_note(
+                _load_gateway_config(), _gateway_config_home() / "config.yaml",
+                session_history_empty=True, install_has_prior_sessions=False, message=message,
+                command=setup_command(source.platform.value))
+            if note:
+                turn_sidecar_notes.append(note)
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
-        if not source.platform or source.platform in (Platform.LOCAL, Platform.WEBHOOK):
+        if not human_platform:
             return
         platform_name = source.platform.value
         env_key = _home_target_env_var(platform_name)
@@ -514,6 +561,7 @@ class GatewayTurnPrepareMixin:
             except UnscopedSecretError:
                 home_env = (os.getenv(env_key) or "").strip()
             except Exception:
+                logger.debug("Home-channel secret %s unreadable; treating it as unset", env_key, exc_info=True)
                 home_env = ""
         # Also honor in-memory / yaml home_channel on this platform.
         with suppress(Exception):
@@ -530,17 +578,16 @@ class GatewayTurnPrepareMixin:
             # Slack routes every command through the parent `/hermes`; bare `/sethome` would fail.
             sethome_cmd = "/hermes sethome" if source.platform == Platform.SLACK else "/sethome"
             await self._deliver_platform_notice(
-                source, f"📬 No home channel is set for {platform_name.title()}. "
-                f"A home channel is where Hermes delivers cron job results and cross-platform "
-                f"messages.\n\nType {sethome_cmd} to make this chat your home channel, or ignore "
-                f"to skip.",
+                source, t("gateway.notify.no_home_channel", platform=platform_name.title(), sethome_cmd=sethome_cmd),
             )
 
     def _hmwa_apply_message_timestamp(self, event, message_text):
         """Capture the platform event time as message metadata and keep the persisted transcript
-        clean (strip any leading timestamp prefix) regardless of the toggle; only the in-context
+        clean — strip any leading timestamp prefix and the Discord triggering-message note (a
+        model instruction, not authored text) — regardless of the toggle; only the in-context
         RENDER is gated behind gateway.message_timestamps.enabled (default OFF)."""
         from gateway.run import _load_gateway_config, _message_timestamps_enabled
+        from gateway.run_inbound import strip_discord_triggering_note
         persist_user_message = None
         persist_user_timestamp = None
         try:
@@ -553,7 +600,7 @@ class GatewayTurnPrepareMixin:
             _evt_tz = _get_evt_tz()
             if message_text and isinstance(message_text, str):
                 _clean_message_text, _embedded_ts = _strip_msg_ts(message_text, tz=_evt_tz)
-                persist_user_message = _clean_message_text
+                persist_user_message = strip_discord_triggering_note(event, _clean_message_text)
                 _event_epoch = _coerce_msg_ts(getattr(event, "timestamp", None), tz=_evt_tz)
                 persist_user_timestamp = _event_epoch if _event_epoch is not None else _embedded_ts
                 if _message_timestamps_enabled(_load_gateway_config()):
@@ -577,6 +624,7 @@ class GatewayTurnPrepareMixin:
         persist_user_display_kind: Optional[str]
         persistence_session_id: Optional[str] = None
         persistence_owner: Optional[str] = None
+        title_user_message: Optional[str] = None
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
@@ -585,6 +633,7 @@ class GatewayTurnPrepareMixin:
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
+        self._restore_session_yolo(session_key, session_entry)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -598,13 +647,25 @@ class GatewayTurnPrepareMixin:
 
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
         # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
-        context_prompt = self._pinned_session_context_prompt(context, _redact_pii, session_key)
+        # A LOCAL session (CLI one-shot, ACP, cron run-now, TUI attach) is the operator's own machine:
+        # the messaging block ("Source: Local", connected platforms, cron delivery targets) was never
+        # part of the classic in-process prompt, and the TUI gateway still builds that prompt in-process.
+        # Rendering it here would make every surface hop of one durable session a system-prompt
+        # (and prompt-cache) break.
+        if source.platform != Platform.LOCAL and event.internal and session_key:
+            await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
+        context_prompt = "" if source.platform == Platform.LOCAL else \
+            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=event.internal)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
         turn_sidecar_notes: List[str] = []
         if _was_auto_reset:
             await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
+
+        # Keep human text separate from skills, sender metadata, and other model context.
+        # With no text (e.g. voice-only), retain the existing enriched-message title fallback.
+        title_user_message = event.text or None
 
         # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
         _auto = getattr(event, "auto_skill", None)
@@ -626,13 +687,9 @@ class GatewayTurnPrepareMixin:
             )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
-            return (
-                "⚠️ This session's history is temporarily unavailable, so this message was not "
-                "processed. Ask the operator to inspect state.db, then resend after it is healthy. "
-                "Use /reset only if you intentionally want to start a new conversation."
-            ), _session_env_tokens
+            return t("gateway.errors.history_unavailable"), _session_env_tokens
 
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
+        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, event.text, internal=event.internal)
 
         # Voice channel state rides the user message ONLY when changed (in the system prompt it
         # forced a rebuild + prompt-cache re-key per message).
@@ -658,7 +715,7 @@ class GatewayTurnPrepareMixin:
 
         # Bind this run generation to the adapter so deferred post-delivery callbacks are released
         # by the run that registered them.
-        self._bind_adapter_run_generation(self._adapter_for_source(source), session_key, run_generation)
+        self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
         # Delivery IDs are only unique in their transport namespace. Keyless turns
         # need their own identity, even when another process writes to this session.
         import uuid
@@ -669,4 +726,5 @@ class GatewayTurnPrepareMixin:
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
             persist_user_display_kind, session_entry.session_id, owner,
+            title_user_message=title_user_message,
         ), _session_env_tokens

@@ -38,7 +38,12 @@ function mutationSummary(operation: string, value: Record<string, unknown>): str
 }
 
 // Explicit desktop methods that travel as canonical `session.mutate`.
-const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.branch', 'session.compress'])
+// `session.branch_stored` / `session.branch_whole` are legacy whole-history branches keyed by a
+// stored parent id; the authority has ONE branch, a `branch` mutation on the parent, whose child
+// is a local route the authority can restore (a legacy-minted child has no local policy and every
+// resume on it answers not_found).
+const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
+const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', ...BRANCH_METHODS])
 
 export class CanonicalDesktopProtocol {
   private creates = new Map<string, string>()
@@ -66,6 +71,10 @@ export class CanonicalDesktopProtocol {
   wire(method: string, prepared: Record<string, unknown> = {}): string {
     if (MUTATION_METHODS.has(method)) { return 'session.mutate' }
 
+    // The warm-cache re-attach: canonical attach is `session.resume`, which
+    // rebinds the live event transport and returns the same snapshot shape.
+    if (method === 'session.activate') { return 'session.resume' }
+
     return method === 'slash.exec' && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
@@ -90,35 +99,14 @@ export class CanonicalDesktopProtocol {
   }
 
   prepare(method: string, params: Record<string, unknown>): Record<string, unknown> {
-    const field = ({ 'session.title': 'title', 'session.archive': 'archived' } as Record<string, string>)[method]
+    const mutation = this.prepareMutation(method, params)
 
-    if (field) { return this.retainedMutation(params.session_id, field === 'title' ? 'rename' : 'archive', { [field]: params[field] }, false) }
+    if (mutation) { return mutation }
 
-    // Branch and compress fence the execution generation like the slash directives.
-    const fenced = ({
-      'session.branch': () => ({ operation: 'branch', payload: {} }),
-      'session.compress': () => ({ operation: 'compress', payload: params.focus_topic ? { focus: String(params.focus_topic) } : {} })
-    } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
+    if (method === 'session.create') { return this.prepareCreate(params) }
 
-    if (fenced) { return this.retainedMutation(params.session_id, fenced.operation, fenced.payload, true) }
-
-    if (method === 'slash.exec') {
-      const directive = slashMutation(String(params.command ?? ''))
-
-      if (directive) { return this.retainedMutation(params.session_id, directive.operation, directive.payload, true) }
-    }
-
-    if (method === 'session.create') {
-      const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols'])
-      const unsupported = Object.keys(params).filter(key => !allowed.has(key) && !(key === 'fast' && params[key] === false))
-
-      if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
-      const result = Object.fromEntries(Object.entries(params).filter(([key]) => ['request_id', 'cwd', 'model', 'toolsets'].includes(key)))
-      const key = JSON.stringify(result)
-      const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
-      this.creates.set(key, String(requestId))
-
-      return { ...result, request_id: requestId, source: 'gui' }
+    if (method === 'session.activate') {
+      return { session_id: params.session_id, source: 'desktop', ...(params.profile ? { profile: params.profile } : {}) }
     }
 
     if (method === 'session.interrupt' || method === 'session.redirect' || method === 'session.steer') {
@@ -137,21 +125,71 @@ export class CanonicalDesktopProtocol {
       return { session_id: params.session_id, admission_id: params.admission_id, execution_generation: lost.generation }
     }
 
-    if (method === 'approval.respond' || method === 'clarify.respond') {
-      const id = String(params.prompt_id ?? params.request_id ?? '')
-      const prompt = this.prompts.get(id)
-      const sessionId = params.session_id ?? prompt?.session_id
-
-      if (!prompt || prompt.session_id !== sessionId || prompt.execution_generation !== this.generations.get(String(sessionId))) {
-        throw new Error('Prompt is stale or unavailable; reconnect before responding')
-      }
-
-      const field = method === 'approval.respond' ? 'choice' : 'answer'
-
-      return { session_id: sessionId, execution_generation: prompt.execution_generation, prompt_id: id, [field]: params[field] }
-    }
+    if (method === 'approval.respond' || method === 'clarify.respond') { return this.preparePromptResponse(method, params) }
 
     return params
+  }
+
+  // Metadata, branch and typed slash directives that travel as canonical `session.mutate`; null otherwise.
+  private prepareMutation(method: string, params: Record<string, unknown>): Record<string, unknown> | null {
+    const field = ({ 'session.title': 'title', 'session.archive': 'archived' } as Record<string, string>)[method]
+
+    if (field) { return this.retainedMutation(params.session_id, field === 'title' ? 'rename' : 'archive', { [field]: params[field] }, false) }
+
+    // Branch and compress fence the execution generation like the slash directives.
+    const fenced = ({
+      'session.branch': () => ({ operation: 'branch', payload: {} }),
+      'session.compress': () => ({ operation: 'compress', payload: params.focus_topic ? { focus: String(params.focus_topic) } : {} })
+    } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
+
+    if (fenced) { return this.retainedMutation(params.session_id, fenced.operation, fenced.payload, true) }
+
+    if (method === 'session.branch_stored' || method === 'session.branch_whole') {
+      // The stored-parent form names the parent as `parent_session_id`; the live form as `session_id`.
+      const parent = params.parent_session_id ?? params.session_id
+      const payload = typeof params.title === 'string' && params.title ? { title: params.title } : {}
+
+      return this.retainedMutation(parent, 'branch', payload, true)
+    }
+
+    if (method === 'slash.exec') {
+      const directive = slashMutation(String(params.command ?? ''))
+
+      if (directive) { return this.retainedMutation(params.session_id, directive.operation, directive.payload, true) }
+    }
+
+    return null
+  }
+
+  private prepareCreate(params: Record<string, unknown>): Record<string, unknown> {
+    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config'])
+    const unsupported = Object.keys(params).filter(key => !allowed.has(key) && !(key === 'fast' && params[key] === false))
+
+    if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
+
+    // The socket is bound to a profile already; only a sibling the host multiplexes rides as `profile`.
+    const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
+      ['request_id', 'cwd', 'model', 'toolsets', 'title', 'hidden'].includes(key) || (key === 'profile' && value && value !== 'default')))
+
+    const key = JSON.stringify(result)
+    const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
+    this.creates.set(key, String(requestId))
+
+    return { ...result, request_id: requestId, source: 'gui' }
+  }
+
+  private preparePromptResponse(method: string, params: Record<string, unknown>): Record<string, unknown> {
+    const id = String(params.prompt_id ?? params.request_id ?? '')
+    const prompt = this.prompts.get(id)
+    const sessionId = params.session_id ?? prompt?.session_id
+
+    if (!prompt || prompt.session_id !== sessionId || prompt.execution_generation !== this.generations.get(String(sessionId))) {
+      throw new Error('Prompt is stale or unavailable; reconnect before responding')
+    }
+
+    const field = method === 'approval.respond' ? 'choice' : 'answer'
+
+    return { session_id: sessionId, execution_generation: prompt.execution_generation, prompt_id: id, [field]: params[field] }
   }
 
   event(event: { type: string; session_id?: string; payload?: unknown }) {
@@ -203,23 +241,25 @@ export class CanonicalDesktopProtocol {
     }
 
     if (MUTATION_METHODS.has(method) || (method === 'slash.exec' && typeof params.operation === 'string')) {
-      if (value.session_id !== params.session_id) { throw new Error('Metadata receipt destination mismatch') }
-
-      for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
-
-      if (method === 'session.branch') {
-        return { ...value, session_id: value.branched_session_id, stored_session_id: value.branched_session_id, parent_session_id: params.session_id, message_count: value.copied_messages }
-      }
-
-      if (method === 'slash.exec') { return { type: 'exec', output: mutationSummary(params.operation as string, value) } }
-
-      return { ...value, ok: true }
+      return this.mutationReceipt(method, params, value)
     }
 
     if (method === 'session.create') {
       for (const [key, id] of this.creates) { if (id === params.request_id) { this.creates.delete(key) } }
     }
 
+    if (method === 'prompt.submit' || method === 'prompt.resolve_unknown') { return this.admissionReceipt(method, params, value) }
+
+    if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') { return this.snapshotResult(value) }
+
+    if (method === 'session.events.since') {
+      for (const event of value.events ?? []) { this.event(event) }
+    }
+
+    return value
+  }
+
+  private admissionReceipt(method: string, params: Record<string, unknown>, value: any): any {
     if (method === 'prompt.submit') {
       if (value.ref?.session_id !== params.session_id || typeof value.admission_id !== 'string') {
         throw new Error('Canonical admission receipt destination mismatch')
@@ -228,35 +268,41 @@ export class CanonicalDesktopProtocol {
       return { ...value, session_id: value.ref.session_id, submission_id: params.submission_id ?? params.input_id }
     }
 
-    if (method === 'prompt.resolve_unknown') {
-      if (value.ref?.session_id !== params.session_id || value.admission_id !== params.admission_id) {
-        throw new Error('Canonical admission receipt destination mismatch')
-      }
-
-      this.unknownAdmissions.delete(String(params.admission_id))
-
-      return { ...value, session_id: value.ref.session_id }
+    if (value.ref?.session_id !== params.session_id || value.admission_id !== params.admission_id) {
+      throw new Error('Canonical admission receipt destination mismatch')
     }
 
-    if (method === 'session.resume' || method === 'session.create') {
-      const sid = value.session_id
-      this.event({ type: 'session.info', session_id: sid, payload: value })
+    this.unknownAdmissions.delete(String(params.admission_id))
 
-      const prompts = (value.prompts ?? []).map((prompt: Record<string, unknown>) => {
-        const projected = { ...prompt, request_id: prompt.prompt_id }
-        this.event({ type: `${prompt.kind}.request`, session_id: sid, payload: projected })
+    return { ...value, session_id: value.ref.session_id }
+  }
 
-        return projected
-      })
+  private mutationReceipt(method: string, params: Record<string, unknown>, value: any): any {
+    if (value.session_id !== params.session_id) { throw new Error('Metadata receipt destination mismatch') }
 
-      return { ...value, pending_approval: prompts.find((p: any) => p.kind === 'approval'), pending_clarify: prompts.find((p: any) => p.kind === 'clarify'), info: { ...value.info, stored_session_id: value.stored_session_id, pending_submissions: value.pending_submissions, execution_generation: value.execution_generation, running: value.running } }
+    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+
+    if (BRANCH_METHODS.has(method)) {
+      return { ...value, session_id: value.branched_session_id, stored_session_id: value.branched_session_id, parent_session_id: params.session_id, message_count: value.copied_messages }
     }
 
-    if (method === 'session.events.since') {
-      for (const event of value.events ?? []) { this.event(event) }
-    }
+    if (method === 'slash.exec') { return { type: 'exec', output: mutationSummary(params.operation as string, value) } }
 
-    return value
+    return { ...value, ok: true }
+  }
+
+  private snapshotResult(value: any): any {
+    const sid = value.session_id
+    this.event({ type: 'session.info', session_id: sid, payload: value })
+
+    const prompts = (value.prompts ?? []).map((prompt: Record<string, unknown>) => {
+      const projected = { ...prompt, request_id: prompt.prompt_id }
+      this.event({ type: `${prompt.kind}.request`, session_id: sid, payload: projected })
+
+      return projected
+    })
+
+    return { ...value, pending_approval: prompts.find((p: any) => p.kind === 'approval'), pending_clarify: prompts.find((p: any) => p.kind === 'clarify'), info: { ...value.info, stored_session_id: value.stored_session_id, pending_submissions: value.pending_submissions, execution_generation: value.execution_generation, running: value.running } }
   }
 
   // The canonical compress receipt carries counts, not the retained transcript;

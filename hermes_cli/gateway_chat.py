@@ -15,13 +15,13 @@ from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 # the authority. Reject them, rather than mutate process-wide gateway settings.
 _UNSUPPORTED = (
     "image", "skills", "worktree", "w", "checkpoints", "pass_session_id",
-    "yolo", "accept_hooks",
-    "no_restore_cwd", "usage_file",
+    "accept_hooks",
+    "no_restore_cwd",
     "run_budget", "verbose", "compact",
     "list_tools", "list_toolsets",
 )
 _POLICY = ("model", "provider", "reasoning", "toolsets", "max_turns", "base_url", "ignore_rules", "api_key",
-           "safe_mode", "ignore_user_config")
+           "yolo", "safe_mode", "ignore_user_config")
 # Where each refused option lives now; the refusal names it so the user is not left guessing.
 _RELOCATED = {
     "image": "attach the image in `hermes --tui` or the Desktop app",
@@ -30,10 +30,8 @@ _RELOCATED = {
     "w": "`hermes --tui -w`",
     "checkpoints": "`checkpoints.enabled: true` in config.yaml, or `hermes --tui --checkpoints`",
     "pass_session_id": "`hermes --tui --pass-session-id`",
-    "yolo": "`approvals.mode: off` in config.yaml, or `/yolo` inside the session",
     "accept_hooks": "`hooks_auto_accept: true` in config.yaml, or `hermes --tui --accept-hooks`",
     "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
-    "usage_file": "`hermes sessions stats` / `hermes insights` after the run",
     "run_budget": "`agent.run_budget_seconds` in config.yaml",
     "verbose": "`hermes logs --follow`, or `hermes --tui -v`",
     "compact": "`display.compact: true` in config.yaml",
@@ -71,13 +69,16 @@ def validate_options(args):
         where = "".join(f"\n  --{name.replace('_', '-')}: use {_RELOCATED[name]}" for name in unsupported)
         raise GatewayClientError(
             f"Unsupported gateway CLI options: {flags}. No local fallback or policy changes were made.{where}")
-    resuming = getattr(args, "resume", None) or (continue_title(args) and not getattr(args, "create_if_missing", False))
-    if resuming and (getattr(args, "in_dir", None) or getattr(args, "source", None) or
-            any(getattr(args, name, None) not in (None, False) for name in _POLICY)):
-        raise GatewayClientError("Resume retains gateway session policy; creation overrides are unsupported on resume.")
+    # Creation flags repeated on resume are checked against the frozen route once the snapshot is
+    # back (`check_resume_policy`): the same flags again are fine, a different value is refused.
     if bypass_launch(args) and not getattr(args, "model", None):
         raise GatewayClientError("--safe-mode / --ignore-user-config read no profile default: pass --model explicitly."
                                  f"\n  Example: {_SAFE_MODE_EXAMPLE}")
+
+
+def _caller_cwd(args) -> str:
+    """The caller's working directory (``--in`` wins), resolved; filesystem work, so off the loop."""
+    return str(Path(getattr(args, "in_dir", None) or os.getcwd()).expanduser().resolve())
 
 
 async def run_gateway_chat(args, emitter=None):
@@ -102,6 +103,7 @@ async def run_gateway_chat(args, emitter=None):
                     raise GatewayClientError(
                         f"No session found matching '{name}'. Use 'hermes sessions list' to see available "
                         "sessions, or pass -c <name> --create-if-missing to start a new session with that title.")
+            check_resume_policy(args, snapshot)
         else:
             contract = description.get("session_create", {})
             source = getattr(args, "source", None) or "cli"
@@ -113,7 +115,7 @@ async def run_gateway_chat(args, emitter=None):
                 policy["title"] = title
             if isinstance(policy.get("toolsets"), str):
                 policy["toolsets"] = [name.strip() for name in policy["toolsets"].split(",") if name.strip()]
-            cwd = str(Path(getattr(args, "in_dir", None) or os.getcwd()).expanduser().resolve())
+            cwd = await asyncio.to_thread(_caller_cwd, args)
             if "cwd" in parameters:
                 policy["cwd"] = cwd
             elif getattr(args, "in_dir", None):
@@ -134,12 +136,57 @@ async def run_gateway_chat(args, emitter=None):
         quiet = bool(getattr(args, "quiet", False) or oneshot_prompt or emitter is not None)
         oneshot = bool(oneshot_prompt or getattr(args, "oneshot_exit", False) or quiet or
                        (query and not (sys.stdin.isatty() and sys.stdout.isatty())))
-        view = GatewayChatView(client, snapshot, quiet=quiet, emitter=emitter)
+        view = GatewayChatView(client, snapshot, quiet=quiet, emitter=emitter,
+                               usage_file=getattr(args, "usage_file", None))
+        view.unattended = isinstance(oneshot_prompt, str)
         if (getattr(args, "resume", None) or title) and not quiet:
             for row in snapshot.get("messages", []):
                 if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str):
                     print(f"{row['role']}: {row['content']}")
         return await view.run(query, oneshot=oneshot)
+
+
+_RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."
+
+
+def _requested_policy(args):
+    policy = {key: getattr(args, key) for key in _POLICY if getattr(args, key, None) not in (None, False)}
+    if isinstance(policy.get("toolsets"), str):
+        policy["toolsets"] = [name.strip() for name in policy["toolsets"].split(",") if name.strip()]
+    if getattr(args, "source", None):
+        policy["source"] = args.source
+    return policy
+
+
+def check_resume_policy(args, snapshot):
+    """A resume may repeat the flags the session was created with (scripts re-run one command
+    line); anything that would CHANGE the frozen route is refused, as before."""
+    requested = _requested_policy(args)
+    if getattr(args, "in_dir", None):
+        requested["cwd"] = str(Path(args.in_dir).expanduser().resolve())
+    if not requested:
+        return
+    info = snapshot.get("info") if isinstance(snapshot, dict) else None
+    frozen = dict((info or {}).get("launch_request") or {})
+    if info and "cwd" in info:
+        frozen["cwd"] = info["cwd"]
+    for key, value in requested.items():
+        if key == "api_key":
+            continue  # never durable; a repeated key is not a policy change
+        if frozen.get(key) != value:
+            raise GatewayClientError(_RESUME_POLICY_MISMATCH)
+
+
+def _register_terminal_process() -> None:
+    """The chat client is still a terminal on this HERMES_HOME: record it in the process ledger
+    (purpose ``cli`` is never update-reapable) and warn once when another install shares the home."""
+    from hermes_cli.process_identity import register_self
+    from hermes_cli.shared_profile_warning import shared_profile_warning
+
+    register_self("cli")
+    warning = shared_profile_warning()
+    if warning:
+        print(f"Warning: {warning}", file=sys.stderr)
 
 
 def launch_from_args(args) -> int:
@@ -159,6 +206,7 @@ def launch_from_args(args) -> int:
 
     try:
         validate_options(args)
+        _register_terminal_process()
         from hermes_cli.gateway_chat_startup import ensure_launch_provider
         if emitter is None:
             if not ensure_launch_provider(args):
@@ -175,7 +223,7 @@ def launch_from_args(args) -> int:
                 return failed("credentials or agent init failed", 1)
         query_file = getattr(args, "query_file", None)
         if query_file:
-            args.query = sys.stdin.read() if query_file == "-" else Path(query_file).read_text(encoding="utf-8")
+            args.query = sys.stdin.read() if query_file == "-" else Path(query_file).read_text(encoding="utf-8-sig")
             if not args.query.strip():
                 raise GatewayClientError("--query-file is empty")
         if not (getattr(args, "query", None) or getattr(args, "q", None) or getattr(args, "oneshot", None) or sys.stdin.isatty()):

@@ -51,7 +51,8 @@ async def dispatch_group_control(connection, method, params):
     if method not in _FIELDS or not isinstance(params, dict) or set(params) - (_FIELDS[method] | {'profile'}):
         raise RuntimeStoreError('invalid_params')
     home = Path(authority.profile_id)
-    if Path(authority.db.db_path).resolve().parent != home.resolve():
+    db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
+    if db_path.parent != await asyncio.to_thread(home.resolve):
         raise RuntimeStoreError('profile_mismatch')
     from hermes_cli.profiles import profile_matches_home
     profile = params.get('profile')
@@ -230,7 +231,7 @@ def _execution_control(service, method, params):
 
 def _profiles(authority, actor, home, params):
     from hermes_cli.profiles import _profile_info, read_profile_meta
-    import yaml
+    import hermes_yaml as yaml
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
         raise RuntimeStoreError('invalid_params')
@@ -242,7 +243,7 @@ def _profiles(authority, actor, home, params):
            'description': profile.description or '', 'display_name': profile.display_name or '',
            'skill_count': profile.skill_count or 0}
     path = home / 'profile.yaml'
-    meta = yaml.safe_load(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    meta = yaml.safe_load(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
     meta = meta if isinstance(meta, dict) else {}
     revisions = meta.get('_ui_meta_revisions')
     row['ui_meta_revisions'] = {str(k): max(0, v) for k, v in revisions.items()
@@ -287,13 +288,34 @@ def _profiles(authority, actor, home, params):
         if latest:
             row['last_session'] = summary(authority.db.get_session(latest[0]))
     profiles = [row]
+    seen = {home.resolve()}
+
+    def discovered(configured, target):
+        # Discovery metadata only: never a licence to read another owner's state/configuration.
+        if target.resolve() in seen:
+            return
+        seen.add(target.resolve())
+        entry = {'name': configured, 'path': str(target), 'is_default': configured == 'default',
+                 'model': '', 'provider': '', 'description': '', 'display_name': configured,
+                 'skill_count': 0}
+        meta_path = target / 'profile.yaml'
+        try:
+            meta = yaml.safe_load(meta_path.read_text(encoding='utf-8-sig')) if meta_path.is_file() else {}
+        except (OSError, yaml.YAMLError):
+            meta = {}
+        if isinstance(meta, dict):
+            entry['display_name'] = str(meta.get('display_name') or configured)
+            if isinstance(meta.get('ui_meta'), dict):
+                entry['ui_meta'] = meta['ui_meta']
+        profiles.append(entry)
+
+    # Sibling profiles this process multiplexes: the roster lists them with the same
+    # standing as a hosted-room destination, and the client routes their sessions by name.
+    registry = getattr(getattr(authority, 'runner', None), 'session_authorities', None)
+    for sibling in (registry or ()):
+        discovered(served_profile_name(Path(sibling.profile_id)), Path(sibling.profile_id))
     service = getattr(authority, 'hosted_room_service', None)
     if service is not None:
         for configured, target in service.profile_homes().items():
-            if target != home:
-                # Configured execution destinations are discovery metadata, not
-                # permission to read another owner's state/configuration.
-                profiles.append({'name': configured, 'path': str(target), 'is_default': False,
-                                 'model': '', 'provider': '', 'description': '',
-                                 'display_name': configured, 'skill_count': 0})
+            discovered(configured, target)
     return {'profiles': profiles, 'bot_mode_protocol': True}

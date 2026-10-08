@@ -1,5 +1,7 @@
 import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } from '@hermes/shared'
 
+import { applyAccountConnectionUpdate } from '@/app/capabilities/connectors/data/account-operations'
+import { abortPreviewTyping } from '@/app/chat/right-rail/preview-typing-abort'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
@@ -39,6 +41,47 @@ const isConnectionRequestEvent = (event: GatewayEvent): event is ConnectionReque
 const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdateEvent =>
   event.type === 'connection.update' && event.payload !== undefined
 
+/** `approval.settled` / `clarify.settled {prompt_id}`: take down the card
+ *  parked under that server request id. Returns false for other events. */
+function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
+  const { deps, event, payload, sessionId } = ctx
+
+  if (event.type !== 'approval.settled' && event.type !== 'clarify.settled') {
+    return false
+  }
+
+  const promptId = (payload as { prompt_id?: unknown } | undefined)?.prompt_id
+
+  if (typeof promptId !== 'string' || !promptId) {
+    return true
+  }
+
+  forgetServerRequest(promptId)
+  const key = sessionId ?? ''
+
+  if (event.type === 'clarify.settled') {
+    if ($clarifyRequests.get()[key]?.requestId === promptId) {
+      clearClarifyRequest(promptId, sessionId)
+
+      if (sessionId) {
+        deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+      }
+    }
+
+    return true
+  }
+
+  const approval = sessionApprovalRequests(sessionId ?? null)
+    .get()
+    .find(request => request.serverRequestId === promptId)
+
+  if (approval) {
+    clearApprovalRequest(sessionId, approval.requestId)
+  }
+
+  return true
+}
+
 /** The blocking-input family arrives as server→client REQUESTS (see
  *  `server-requests.ts`); the one EVENT in the family is `request.cancel`, the
  *  backend withdrawing an open request (timeout / interrupt / session close):
@@ -49,6 +92,13 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
 
   if (isConnectionRequestEvent(event)) {
+    // An interrupted/deleted session's runtime has no turn left to consent to a
+    // connection; the backend withdraws its request on the same boundary. Drop
+    // the frame rather than parking a stale consent card (#75587).
+    if (sessionId && deps.sessionInterrupted(sessionId)) {
+      return true
+    }
+
     // Park per-session and upsert a stable tool row so the card renders even if tool.start was missed.
     const request = normalizeConnectionRequest(event.payload, sessionId ?? null)
 
@@ -72,12 +122,27 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (isConnectionUpdateEvent(event)) {
+    if (event.payload.owner.type === 'account') {
+      applyAccountConnectionUpdate(event.payload)
+
+      return true
+    }
+
     updateConnectionRequest(sessionId ?? null, event.payload)
 
     if (event.payload.settled && sessionId) {
       deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
     }
 
+    return true
+  }
+
+  // Canonical gateways settle a shared prompt with `approval.settled` /
+  // `clarify.settled {prompt_id}` once ANY attached viewer answered it (or the
+  // turn ended). The prompt id is the server request id this window parked the
+  // card under. Only the parked card comes down: the answer itself reaches the
+  // transcript through the tool's own completion, so no "skipped" projection.
+  if (handlePromptSettledEvent(ctx)) {
     return true
   }
 
@@ -90,6 +155,10 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   if (!id) {
     return true
   }
+
+  // preview.act has no card. A timeout or interrupt still has to stop keystrokes
+  // already queued for that type.
+  abortPreviewTyping(id, typeof payload?.reason === 'string' ? payload.reason : 'interrupted')
 
   forgetServerRequest(id)
 
@@ -151,8 +220,19 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         }
       })
     }
-  } else if ($sudoRequests.get()[key]?.requestId === id) {
+  } else {
+    cancelParkedCredentialRequest(key, sessionId, id)
+  }
+
+  return true
+}
+
+/** Withdraw the sudo / secret / vault card parked under `id`, first match wins. */
+function cancelParkedCredentialRequest(key: string, sessionId: GatewayEventContext['sessionId'], id: string): void {
+  if ($sudoRequests.get()[key]?.requestId === id) {
     clearSudoRequest(sessionId, id)
+  } else if ($sudoRequests.get()['']?.requestId === id) {
+    clearSudoRequest(null, id) // the app-level Bot Screen install card: not owned by any chat
   } else if ($secretRequests.get()[key]?.requestId === id) {
     clearSecretRequest(sessionId, id)
   } else if ($vaultCodeRequests.get()[key]?.requestId === id) {
@@ -162,6 +242,4 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   } else if ($vaultUnlockRequests.get()[key]?.requestId === id) {
     clearVaultUnlockRequest(sessionId, id)
   }
-
-  return true
 }

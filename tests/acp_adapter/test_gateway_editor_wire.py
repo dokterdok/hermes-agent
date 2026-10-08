@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from tests.acp_adapter.test_gateway_sessions import daemon, editor, viewer, model_peer  # noqa: F401
+from tests.acp_adapter.test_gateway_sessions import editor, viewer
 
 
 class EditPeer(BaseHTTPRequestHandler):
@@ -48,7 +48,7 @@ class EditPeer(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_acp_load_checks_authoritative_cwd(daemon, tmp_path):
     other = tmp_path / 'other'
@@ -65,7 +65,7 @@ async def test_acp_load_checks_authoritative_cwd(daemon, tmp_path):
             assert 'result' in loaded
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_real_editor_diff_requires_native_consent_before_write(daemon, tmp_path, model_peer):
     target = tmp_path / 'owned.txt'

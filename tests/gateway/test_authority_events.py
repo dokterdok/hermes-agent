@@ -7,7 +7,7 @@ import sys
 import pytest
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_full_observer_cannot_block_real_authority_execution(tmp_path):
     repo = Path(__file__).resolve().parents[2]
     home, state = tmp_path / 'home', tmp_path / 'state'
@@ -79,6 +79,10 @@ async def test_replay_matches_subscription_watermark_or_requires_snapshot(tmp_pa
             observed = []
             while not observed or observed[-1]['params']['type'] != 'message.complete':
                 observed.append(await asyncio.to_thread(peer.frames.get, True, 5))
+            # The idle snapshot follows the completion, never precedes it.
+            observed.append(await asyncio.to_thread(peer.frames.get, True, 5))
+            assert (observed[-1]['params']['type'], observed[-1]['params']['payload']['running']) == (
+                'session.info', False)
             frames.append(observed)
         assert frames[0] == frames[1]
         replay = (await since(initial['replay_epoch'], initial['last_sequence']))['result']
@@ -104,8 +108,8 @@ async def test_replay_matches_subscription_watermark_or_requires_snapshot(tmp_pa
         await turn(5)
         after = (await since(refreshed['replay_epoch'], refreshed['last_sequence']))['result']
         assert not after['snapshot_required']
-        assert after['events'][-1]['type'] == 'message.complete'
-        assert after['events'][-1]['payload']['text'] == '5'
+        assert [e['type'] for e in after['events'][-2:]] == ['message.complete', 'session.info']
+        assert after['events'][-2]['payload']['text'] == '5'
         before_race = await b.resume(ref, {})
         stamp = event_replay._stamp_event
         def evict_then_stamp(frame):
@@ -116,7 +120,10 @@ async def test_replay_matches_subscription_watermark_or_requires_snapshot(tmp_pa
             await turn(6)
         raced = (await since(before_race['replay_epoch'], before_race['last_sequence']))['result']
         assert raced['snapshot_required'], 'eviction during stamp reused an old epoch/sequence'
-        assert raced['replay_epoch'] != before_race['replay_epoch']
+        # No (epoch, sequence) is ever reused: the replay ring keeps a session's sequence
+        # monotonic across eviction (#126988), else the epoch must rotate.
+        assert (raced['replay_epoch'] != before_race['replay_epoch']
+                or raced['last_sequence'] > before_race['last_sequence'])
     finally:
         await a.close()
         await b.close()
