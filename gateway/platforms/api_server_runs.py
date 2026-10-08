@@ -961,6 +961,11 @@ def _canonical_run_admission(self, request, launch, *, admitted, idempotency_sco
                     _authorize_write=authorize_run_admission(self, request, launch.run_id),
                     _room_document_bytes=document_bytes,
                     **launch.agent_kwargs)
+                if launch.room_scope:
+                    from gateway.platforms.api_server_run_history import canonical_proof
+                    evidence = canonical_proof(launch.admission[0].db, launch.run_id, launch.room_scope)
+                    if evidence is not None:
+                        self._run_idempotency_store.certify_canonical_history(launch.room_scope, launch.run_id, evidence)
         except RuntimeStoreError as exc:
             stopping = self._run_idempotency_store.stop_requested(launch.run_id)
             if peer_files or stopping:
@@ -1675,8 +1680,7 @@ def _check_cancellation_predecessors(self, request, dispatch):
     identity, scope = _room_identity(request), self._run_idempotency_scope(request)
     key = f'room:{dispatch.task_id}:{dispatch.execution_generation}'
     own, predecessors, snapshot = self._run_idempotency_store.cancellation_state(identity, key)
-    if identity['authority_epoch'] <= 1:
-        return snapshot, None
+    history = snapshot[2]
     known = {old_scope: entry['record']['run_id'] for old_scope, entry in predecessors.items()
              if entry['record'] is not None}
     if own is not None:
@@ -1685,8 +1689,12 @@ def _check_cancellation_predecessors(self, request, dispatch):
         raise RunCancellationUnknown()
     authority = active_authority(self.gateway_runner)
     if authority is None:
-        if any(entry['record'] is None for entry in predecessors.values()):
+        if not known and (history is not None or any(entry['record'] is None for entry in predecessors.values())):
             raise RunCancellationUnknown()
+        return snapshot, None
+    from gateway.platforms.api_server_run_history import certified_session
+    history_session = certified_session(authority.db, history) if history is not None else None
+    if identity['authority_epoch'] <= 1 and (history is None or known):
         return snapshot, None
     from gateway.platforms.api_server_room_documents import cancellation_session_id
     from hermes_state_logical_attempts import lookup_logical_attempt
@@ -1694,6 +1702,8 @@ def _check_cancellation_predecessors(self, request, dispatch):
                 for value in [identity, *(entry['identity'] for entry in predecessors.values())]}
     sessions.update(record['status']['session_id'] for record in [own, *(entry['record'] for entry in predecessors.values())]
                     if record is not None and isinstance(record['status'].get('session_id'), str))
+    if history_session is not None:
+        sessions.add(history_session)
     own_canonical_id = None
     for session_id in sessions:
         with authority.db._read_ctx() as conn:
@@ -1707,6 +1717,8 @@ def _check_cancellation_predecessors(self, request, dispatch):
                 if owner_scope != scope or known or own_canonical_id not in (None, indexed['request_id']):
                     raise RunCancellationUnknown()
                 own_canonical_id = indexed['request_id']
+    if history is not None and history_session is None and not known and own_canonical_id is None:
+        raise RunCancellationUnknown()
     return snapshot, own_canonical_id
 
 

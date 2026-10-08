@@ -58,7 +58,8 @@ async def test_successor_cancels_only_one_proven_exact_attempt(canonical, tmp_pa
         assert prepare_logical_attempt_index(authority.db, batch_size=128, epoch=authority.epoch)['complete']
         epoch = 3 if case == 'ambiguous' else 2
         promise(adapter, epoch=epoch)
-        successor = await invite(cli, SUCCESSOR, epoch)
+        successor = await invite(cli, SUCCESSOR, epoch, previous={
+            'home_install_id': HOME, 'authority_gateway_id': HOME, 'authority_epoch': 1})
         from gateway.hosted_room_succession import record_lineage_locked
         authority.db._execute_write(lambda conn: record_lineage_locked(conn, ROOM,
             origin_install_id=HOME, gateway_id=SUCCESSOR, epoch=epoch, role='attested', proof_digest='a' * 64))

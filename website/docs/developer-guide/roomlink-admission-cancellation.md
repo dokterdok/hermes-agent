@@ -39,19 +39,44 @@ Older records lacking authenticated predecessor coordinates remain conservative.
 
 Peer reservations supersede every member of a room on the target profile, so a
 shared room/target/profile origin and epoch record fences all those members too.
-The invitation commits its reservation and consent before publishing that floor;
-the committed reservation already refuses old captured requests if floor publication
-is interrupted. A member without a successor invitation still refuses captured
-work from the old epoch, and its terminal
+Ordinary invitations validate it before changing reservations and publish it
+after the grant transaction commits; final admission also rechecks that grant.
+Already verified succession fences retain their own durable authority. A member without a successor
+invitation still refuses captured work from the old epoch, and its terminal
 cancellations can compact. Retirement remains per member: retiring one member
-does not disable another at the same epoch. New members may join the current home;
-their first hidden session keeps that home as its own anchor for future moves.
+does not disable another at the same epoch. New members may join the current home.
+
+The succession minter carries the exact target invitation coordinates in its
+local continuation consent. It binds a new home only after verified custody
+lineage matches that consent's origin and the Runs writer confirms the retained
+promise or learned authority. Legacy consents may bind coordinates recovered from
+both verified lineage and an exact retained target watermark; opaque records do
+not acquire guessed task history.
+
+A learned winner may replace a different promised candidate at the same epoch.
+That exception is internal to verified succession: ordinary invitations still
+require a higher epoch. The target records the authenticating gateway alongside
+attempt metadata so it can compact the loser's terminal cancellation records
+without deleting the winner's. The learned authority cannot change again at the
+same epoch, enforced by the existing fence API and SQLite trigger. Returning to
+a former host requires a later epoch, so earlier captured requests stay refused.
 
 The watermark proves that an old authority cannot admit new work. It does **not**
 prove that an individual old task never executed. When a request reaches this
 boundary after its exact receipt was compacted, `run_history_retired` is an
 ambiguous 409, not a fabricated cancelled/non-admitted task receipt. Consumers
 must not use it as attachment-release or execution evidence.
+
+Receipt compaction and ordinary terminal pruning also retain one history summary
+per room/member lineage. Genuine non-admission cancellations need no ambiguity
+marker. Other forgotten receipts remain unknown unless their immutable canonical
+projection was certified before retirement, under the same index generation and
+session. An empty index after upgrading a source-only gateway cannot certify
+absence for its earlier execution history. Pre-existing authority records without
+this summary migrate conservatively. The summary survives scope-inventory pruning
+and restart; it does not grow per task or disable new Sends and known exact run
+controls. A missing-key Stop remains unknown when the older execution history
+cannot establish non-admission.
 
 New full grants include `retire`; narrower grants do not acquire it from a request
 flag. Older endpoints and grants keep ordinary revocation through a narrowly

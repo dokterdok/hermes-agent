@@ -22,10 +22,11 @@ HOME = "install:unavailable-home"
 SUCCESSOR = "install:successor"
 
 
-async def invite(cli, authority=HOME, epoch=1, member_id="writer"):
+async def invite(cli, authority=HOME, epoch=1, member_id="writer", *, previous=None):
     response = await cli.post("/v1/room-members/invitations", headers=OWNER, json={
         "room_id": ROOM, "home_install_id": authority, "authority_gateway_id": authority,
-        "authority_epoch": epoch, "member_id": member_id})
+        "authority_epoch": epoch, "member_id": member_id,
+        **({"previous_authority": previous} if previous is not None else {})})
     result = await response.json()
     assert response.status == 201, result
     return result

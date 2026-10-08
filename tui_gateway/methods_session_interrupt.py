@@ -1,10 +1,4 @@
-"""Interrupt / steer / redirect session handlers (``methods_session`` split).
-
-Moved verbatim from ``tui_gateway/methods_session.py`` (file-line ratchet #68779): the
-bodies close over server.py globals through ``method_ctx.bind_module`` exactly as before —
-``@method`` registration, ``_session_arg`` wrapping and module publication all still run
-from the parent's ``register()`` via ``HandlerRegistry``.
-"""
+"""Interrupt, steer and redirect handlers, bound through the existing server seam."""
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -61,7 +55,7 @@ def _(rid, params: dict) -> dict:
         if _session_uses_compute_host(session):
             try:
                 _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
-            except Exception as exc:  # health: allow BLE001 -- the bridge raises transport-specific errors unknown here; surfaced verbatim to the client, never swallowed
+            except Exception as exc:  # health: allow BLE001 -- compute-host transports raise implementation-specific errors; return the existing visible RPC failure and rearm wake
                 return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
             return _ok(rid, {"status": "interrupted", "turn_isolation": True})
         session, err = _sess(params, rid)
