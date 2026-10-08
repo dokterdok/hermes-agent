@@ -375,7 +375,8 @@ async def _handle_room_member_capabilities(
         **({"document_output": output} if output is not None else {}),
         **({"document_inputs": documents} if documents is not None else {}),
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
-        "target_profile": profile, "catalog": catalog, "passive_replication": passive_capabilities(),
+        "target_profile": profile, "catalog": catalog,
+        **({"retirement_only": True} if _retirement_only(claims) else {}), "passive_replication": passive_capabilities(),
         "room_identity": room_identity, "permissions": list(claims.get("permissions", ())),
         **({"retirement_enrollment": enrollment} if enrollment is not None else {})})
 
