@@ -337,7 +337,11 @@ def test_accepted_lost_reply_then_preconnect_failure_keeps_original_attempt(tmp_
             assert changed['result']['registered'], changed
             proxy.drop = True
             await _send(hw, 'lost', '@reviewer LOST_REPLY')
-            assert await asyncio.to_thread(proxy.accepted.wait, 30)
+            assert await asyncio.to_thread(proxy.accepted.wait, 30), {
+                'state': await rpc(hw, 'groups.state', room_id='linked'),
+                'home_log': (home / 'restart.log').read_text(encoding='utf-8')[-5000:],
+                'target_log': (target / 'restart.log').read_text(encoding='utf-8')[-5000:],
+            }
             assert await asyncio.to_thread(target_model.gates['LOST_REPLY'][0].wait, 30)
             observation_started = time.time()
             with sqlite3.connect(home / 'state.db') as db:
