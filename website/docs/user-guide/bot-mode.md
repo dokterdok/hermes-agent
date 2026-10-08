@@ -16,6 +16,19 @@ See [Profiles, agents, and bots](./profiles.md#profiles-agents-and-bots) for how
 Bot Mode relates to messaging bots and delegated subagents.
 :::
 
+## Coming from profiles?
+
+Your profiles keep working exactly as they did; Bot Mode adds the parts a profile alone does not have:
+
+| With plain profiles | With Bot Mode |
+|---|---|
+| A pile of sessions per profile; you pick one or start another | One permanent **Bot Chat** per Bot. Click the Bot and you are back in the same conversation; `/new` compacts it instead of forking it |
+| Switch profiles to talk to a different specialist | Every Bot sits in one roster with its avatar, latest message, and unread state |
+| Profiles never talk to each other | Bots [message each other](#bot-to-bot-messaging) and share [group chats](#groups-and-group-chats) |
+| Scheduled jobs live in `hermes cron`, apart from any chat | Each Bot's [routines](#routines) are scheduled and edited beside its chat |
+
+Nothing moves: config, memory, skills, and credentials stay in `~/.hermes/profiles/<name>/`, and `hermes -p <bot> chat` still opens the same agent.
+
 ## The Bots pane
 
 The roster shows one row per agent profile: avatar, latest-message preview, and timestamp.
@@ -119,8 +132,7 @@ Unresolved member failures remain visible in the collapsed Activity summary afte
 the room settles — including a turn the member's backend itself failed (bad
 credentials, provider errors), which is reported the moment the gateway
 reports it instead of looking like twenty minutes of thinking. A failure row names its cause: `builder hit an error — <first line of
-the error>` (secret-shaped tokens redacted, long lines truncated), or `builder couldn't start — too many bots running` when the local
-backend pool had no free slot. Expand Activity for the turn sequence; re-address the member to
+the error>` (secret-shaped tokens redacted, long lines truncated). Expand Activity for the turn sequence; re-address the member to
 try again. An ambiguous submit failure is not automatically resubmitted.
 
 
@@ -355,11 +367,13 @@ Clicking a Connections Bot does **not** hop your window onto that machine — st
 
 See [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md) for the full multi-connection guide.
 
-## Warm Bot Backends (how many bots run at once)
+## Local Bots and the gateway (how many bots run at once)
 
-Each local Bot runs in its own backend process, and Desktop keeps at most **Settings → Advanced → Warm Bot Backends** of them alive at once (default 3, ~60 MB each). Idle backends are reaped after the idle timeout next to that setting (default 10 minutes); the `Hermes backend for profile "<name>" exited (1)` line in `desktop.log` that follows an idle-reap message is that cleanup, not a crash. A Bot you open while every slot is busy waits up to 30 seconds for a slot, then fails with *timed out waiting for a free local slot*.
+Desktop does not run a backend per Bot. One gateway process per host owns every local profile's sessions: when you open a local Bot, Desktop runs `hermes gateway ensure --json` for that profile, which attaches to the running gateway or starts it if nothing serves the profile yet, and then dials it over WebSocket (`/api/ws`) with a one-use ticket. There is no Desktop-side backend pool, no limit setting for how many Bots can be warm, and no idle reaper — opening another Bot never waits for a slot, and reading another Bot's history costs only a request to the same gateway.
 
-Reads of another Bot's chat history and background transcript refreshes do **not** take a slot — only an interactive open or a running turn does. If you drive a large fleet (group chats with many members, or Kanban dispatch across many profiles), raise Warm Bot Backends toward the number of Bots you expect to be active at the same time and give the machine the memory to match. Setting it higher than the profiles you actually use only adds startup work.
+The gateway's lifetime is independent of Desktop windows. Closing a window or quitting Desktop only forgets the connection; it never stops the gateway, so your messaging bots, routines, and in-flight turns keep running, and Desktop re-attaches on the next open. Stop it deliberately with `hermes gateway stop`. If the gateway restarts underneath Desktop (an update, a crash, `hermes gateway stop` followed by a later open), Desktop re-runs `gateway ensure` once and reconnects. A profile marked `gateway.standalone: true` keeps a gateway of its own; Desktop attaches to it the same way.
+
+Remote gateways, SSH hosts, and Hermes Cloud instances in **Settings → Connections** are separate hosts with their own processes; their Bots run on that machine (see *Bots across machines* above), not on this host's gateway.
 
 ## Turning it off
 

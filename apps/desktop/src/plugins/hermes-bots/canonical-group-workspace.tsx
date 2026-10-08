@@ -235,6 +235,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
       if (alive.current) {setStopping(false)}
     }
   }
+  const composerLocked = !restored || busy || !!pending
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <header className="flex items-center gap-2">
@@ -273,8 +274,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
     {sendHint && <p aria-live="polite">{sendHint}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
-      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={!restored || busy || !!pending} onChange={setAttachments} />
-      <textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={!restored || busy || !!pending} onChange={e => setDraft(e.target.value)} value={draft} />
+      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} />
+      <textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} onChange={e => setDraft(e.target.value)} value={draft} />
       <Button disabled={!restored || busy || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>
   </section>

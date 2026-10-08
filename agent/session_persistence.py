@@ -23,7 +23,9 @@ from agent.memory_manager import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
-from agent.message_metadata import DB_ROW_SNAPSHOT, REPAIR_BOOKKEEPING_FIELDS
+from agent.message_metadata import (
+    DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS, TOOL_CALL_UID, copy_identity_fields,
+    tool_call_uid_from_history)
 from agent.transcript_repair import sync_flushed_message_markers
 
 
@@ -79,6 +81,16 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
     )
 
 
+def _content_with_turn_override(msg: Dict, content: Any, override: Any) -> Any:
+    """Replace only the absorbed current turn, leaving unanswered history intact. The join matches
+    ``_merge_consecutive_users``; a row that no longer holds the prefix takes the plain override."""
+    prefix = msg.get(MERGED_TURN_PREFIX)
+    if isinstance(content, str) and isinstance(override, str) and isinstance(prefix, str):
+        if content == prefix or content.startswith(prefix + "\n\n"):
+            return prefix + "\n\n" + override if override else prefix
+    return override
+
+
 def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -> Tuple[Any, Any]:
     """``(content, api_content)`` as the current turn's user row is written: the persist override is the
     clean transcript, the live content is what the wire sent — so when they differ and nothing else was
@@ -88,7 +100,7 @@ def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -
     if _override_replaces_content(msg, content, override):
         if api_content is None and isinstance(content, str) and content != override:
             api_content = content
-        content = override
+        content = _content_with_turn_override(msg, content, override)
     return content, api_content
 
 
@@ -137,13 +149,11 @@ def adopt_unanswered_turn(history: List[Dict[str, Any]], query: Any, agent: Any)
     A dispatcher's re-run of a failed delivery turn resumes the DM its first attempt already persisted
     instead of appending it again. Rows loaded from the store are born durable (``_rows_to_conversation``),
     so handing the tail row back as ``agent._pending_cli_user_message`` makes ``_stage_turn_user_message``
-    reuse it as this turn's user dict and the flush writes no second row. What differs per lane is only HOW
-    the dispatcher knows the DM is unanswered:
-
-    * ``hermes_cli.quiet_single_query.adopt_unanswered_turn`` — the delivery lanes' re-run is a fresh CLI
-      process, told so through ``tools.bot_relay.RESUME_UNANSWERED_TURN_ENV``.
-    * ``gateway.platforms.api_server`` — the peer-DM lane re-runs the turn in-process and calls this
-      directly on the agent it just built for the re-run (#115325).
+    reuse it as this turn's user dict and the flush writes no second row. The one caller is
+    ``gateway.platforms.api_server`` (``resume_unanswered_turn``): the peer-DM lane re-runs the turn
+    in-process and calls this on the agent it just built for the re-run (#115325). The owner-side Bot
+    Chat retry (``gateway.session_bot._maybe_retry``) does not adopt: its failed turn is already closed
+    by the durable failed-turn boundary, which this function declines by design.
 
     The DM is not always the literal tail: a turn that died mid-way persisted its tool scaffolding — assistant
     ``tool_calls`` rows and their ``tool`` results — behind the DM before the failure text was built, and the
@@ -226,6 +236,9 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
+    # The merge witness rides on the survivor's row (an owned column: a row-addressed rewrite of the
+    # survivor writes it too), so a restart sees which rows the composite folded.
+    copy_identity_fields(msg, row)
     if isinstance(msg.get(DB_ROW_SNAPSHOT), str):
         row[DB_ROW_SNAPSHOT] = msg[DB_ROW_SNAPSHOT]
     return row
@@ -243,6 +256,7 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
     pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
     batch_rows: List[Dict[str, Any]] = []
     batch_msgs: List[Dict] = []
+    tool_uid_owners: dict = {}  # tool_call_uid_from_history memo; the scanned dicts outlive this loop
     for msg_idx in range(_db_flush_scan_start(agent, messages), len(messages)):
         msg = messages[msg_idx]
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
@@ -261,6 +275,11 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
             # context intact while transcript pollers omit unsolicited presentation.
             msg["display_kind"] = "hidden"
             msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "notification_category": "diagnostic"}
+        if msg.get("role") == "tool" and not msg.get(TOOL_CALL_UID):
+            # A result whose call was flushed in an earlier batch: pair it with the uid that assistant row
+            # minted (same-batch pairing happens inside the insert).
+            if (tool_uid := tool_call_uid_from_history(messages, msg_idx, tool_uid_owners)) is not None:
+                msg[TOOL_CALL_UID] = tool_uid
         batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
         batch_msgs.append(msg)
     return batch_rows, batch_msgs
@@ -405,7 +424,7 @@ class SessionPersistenceMixin:
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             return
         if _override_replaces_content(msg, msg.get("content"), override):
-            msg["content"] = override
+            msg["content"] = _content_with_turn_override(msg, msg.get("content"), override)
         if timestamp is not None:
             msg["timestamp"] = timestamp
         if platform_id is not None:  # load-bearing for restart drain-window recovery dedup (has_platform_message_id)

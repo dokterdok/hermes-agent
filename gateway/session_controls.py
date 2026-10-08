@@ -316,11 +316,10 @@ class AuthorityConnection:
             self.authority.authorize(self.actor, ref, 'session:control')
             from gateway.session_local_mcp import resume_editor_mcp
             resume_editor_mcp(self.authority, ref, params['editor'])
-        # A resume by id/title is the user asking for THIS conversation to continue; a stamped
-        # tui_shutdown / ws_disconnect row would otherwise be routed as stale on the next submit.
+        # Read-only mount (#85303): an ended row stays ended until the first admitted turn
+        # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
+        # never re-lights DB-derived liveness with no new activity.
         self.authority.authorize(self.actor, ref, 'session:read')
-        from gateway.session_local_recovery import reopen_local_session
-        reopen_local_session(self.authority, ref)
         from gateway.session_local_plumbing import refresh_on_resume
         refresh_on_resume(self.authority, self.actor, ref)
         snapshot = await self.authority.attach(self.actor, ref)
@@ -370,7 +369,7 @@ class AuthorityConnection:
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
-                                   'surface', 'voice_context', 'interrupted'}
+                                   'surface', 'voice_context', 'interrupted', 'voice_turn'}
         if forbidden:
             raise RuntimeStoreError('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
@@ -386,7 +385,13 @@ class AuthorityConnection:
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
-        result = await mutate_session(self.authority, self.actor, ref, params)
+        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+        try:
+            result = await mutate_session(self.authority, self.actor, ref, params)
+        except MUTATION_GUARD_REFUSALS as exc:
+            # A live turn lease / compression lock is the same retryable busy verdict a
+            # running admission gets (REST maps it to 409), not an internal error.
+            raise RuntimeStoreError('session_busy') from exc
         # The branching viewer navigates straight into its new child; attach it
         # here (create parity) so the first submit is not refused as a stranger.
         child = result.get('branched_session_id') if isinstance(result, dict) else None
