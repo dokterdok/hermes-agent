@@ -124,6 +124,7 @@ import { desktopSettings } from './settings'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
+export { composerInputSurface, composerPanelCard, MessageTextContent, PRIMARY_ICON_BTN } from './chat-presentation'
 export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- state: readonly views over the app's live atoms -------------------------
@@ -1712,10 +1713,6 @@ export {
 } from '@/app/shell/model-menu-row-decorations'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
-/** Canonical raw message renderer: applies Desktop message transforms (including
- * `MEDIA:` delivery directives) and the same rich Markdown/media components as
- * core chat. Prefer this over raw Streamdown for transcript-style messages. */
-export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'

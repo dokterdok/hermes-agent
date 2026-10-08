@@ -98,15 +98,13 @@ reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-ch
 
 ### Group Chats: gateway rooms and classic rooms
 
-A Group Chat is either a **gateway room** (the gateway owns its log and runs its turns; `canonical-group-*`) or a **classic room** (Desktop runs its rounds; `group-*`). Keep the boundary sharp:
-
-- `groupExecutionMode` in `canonical-group-capabilities.ts` is the single resolver. Canonical means `groups.capabilities.methods` includes `groups.discard`; anything else (current `main`, standalone `hermes serve` or `hermes dashboard`, `-32601`) is classic. Don't key on `driver`, `persistent_process` or `room_link.reason`.
-- Only call methods the connection advertises, with exactly the fields in `gateway/session_group_controls.py`; `canonical-groups-contract.test.ts` checks every captured request.
-- Never auto-replay a gateway-room action. Send resends only on the user's Retry, with the same journaled `event_id`; Retry, Discard and approvals send the exact identity from `driver_status.pending_actions`.
-- A 4001 with `invalid_params`, `permission_denied`, `unknown_execution` or `stale_generation` retires a Send; every other failure keeps it. A failed Send returns only to the room it was sent from.
-- Live status, Stop and polling come from the current `driver_status`, never from the last replayed event; unresolved members are listed beside live work, not instead of it.
-- Files is offered only when `groups.attachment.list` is advertised. A row names one exact version (`event_id` + `attachment_id`); Download fetches it with `groups.attachment.download` and saves only after its size and SHA-256 match.
-- A gateway room never falls back to classic execution, and a classic room is never converted silently: **Start gateway group** creates a fresh gateway room without replaying history.
+Read [the group contract](../docs/canonical-groups.md) before changing either path.
+`groupExecutionMode` alone classifies capabilities; use only advertised methods and the exact
+`session_group_controls.py` fields. Gateway rooms never fall back to classic execution; upgrading
+creates a fresh room without replaying history. Persist attempted Send identity before dispatch;
+only explicit Retry resends it, and a later refusal never erases earlier uncertainty. Bind every
+continuation and draft restoration to its original room. Status, Stop and polling come from live
+`driver_status`, independently of prior failures.
 
 ## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)
 

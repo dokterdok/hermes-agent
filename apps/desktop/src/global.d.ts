@@ -430,8 +430,11 @@ declare global {
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
       preparedSubmissions?: {
+        owner?: () => Promise<string>
+        compareAndSet?: (key: string, expected: string | null, entry: string | null) => Promise<boolean>
         read: () => Promise<string>
         update: (key: string, entry: string | null) => Promise<void>
+        compareSend?: (key: string, expected: string | null, entry: string | null) => Promise<boolean>
       }
       zoom?: {
         get: () => Promise<{ level: number; percent: number }>
