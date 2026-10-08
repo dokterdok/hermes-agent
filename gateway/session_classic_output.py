@@ -21,7 +21,7 @@ from gateway.classic_output_exports import (
 from gateway.config import Platform
 from gateway.hosted_room_artifacts import RoomArtifactError, RoomArtifactOutbox
 from gateway.hosted_room_artifacts_classic import ClassicExportScope, identifier
-from gateway.classic_output_cleanup import ClassicCleanupUnavailable, require_live_outbox, unlink_classic_blobs
+from gateway.classic_output_cleanup import ClassicCleanupUnavailable, require_live_outbox, seal_classic_blobs, unlink_classic_blobs
 from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError, _epoch, get_session_admission
 
@@ -322,7 +322,7 @@ def terminal_write(authority, row: dict):
 
 def _cleanup_retired_scopes(authority, scopes, *, authorize=None):
     """Remove only committed retired custody on the still-current owner."""
-    def cleanup(conn):
+    def cleanup(conn, *, seal=False):
         _epoch(conn, authority.epoch)
         if authorize is not None:
             authorize(conn)
@@ -333,7 +333,7 @@ def _cleanup_retired_scopes(authority, scopes, *, authorize=None):
                 (scope.export_id, scope.execution_generation),
             ).fetchone()
             rows = conn.execute(
-                "SELECT blob_name,cleanup_required_at FROM hosted_room_output_artifacts WHERE scope_key=?",
+                "SELECT * FROM hosted_room_output_artifacts WHERE scope_key=?",
                 (scope.key,),
             ).fetchall()
             if export is None and not rows:
@@ -343,9 +343,12 @@ def _cleanup_retired_scopes(authority, scopes, *, authorize=None):
             if any(row["cleanup_required_at"] is None for row in rows):
                 raise RoomArtifactError("Classic cleanup obligation is unavailable")
             RoomArtifactOutbox._retire_generation(conn, scope)
-            if rows:
-                unlink_classic_blobs(blob_root, [row["blob_name"] for row in rows])
-            conn.execute("DELETE FROM hosted_room_output_artifacts WHERE scope_key=?", (scope.key,))
+            if seal:
+                seal_classic_blobs(conn, blob_root, rows)
+            else:
+                unlink_classic_blobs(blob_root, rows)
+                conn.execute("DELETE FROM hosted_room_output_artifacts WHERE scope_key=?", (scope.key,))
+    authority.db._execute_write(lambda conn: cleanup(conn, seal=True))
     authority.db._execute_write(cleanup)
 
 
