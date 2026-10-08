@@ -83,6 +83,9 @@ _ROOM_IDENTITY_REQUEST_KEY = (
     RequestKey("hermes.room_run_identity", object) if RequestKey is not None
     else "hermes.room_run_identity")
 # Forwarded subagent lifecycle fields; free-text ones are secret-redacted.
+_ROOM_AUTHORITY_REQUEST_KEY = (
+    RequestKey("hermes.room_run_authority", tuple) if RequestKey is not None
+    else "hermes.room_run_authority")
 _SUBAGENT_EVENT_KEYS = (
     "goal", "task_count", "task_index", "subagent_id", "child_session_id", "delegation_id", "parent_id",
     "depth", "model", "tool_count", "status", "summary", "duration_seconds", "input_tokens",
@@ -422,7 +425,15 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
         _remember_room_identity(request, claims)
-        return room_run_scope_key(claims)
+        from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+        authority = room_authority(claims)
+        try:
+            request[_ROOM_AUTHORITY_REQUEST_KEY] = authority
+        except (AttributeError, TypeError):
+            setattr(request, "_hermes_room_run_authority", authority)
+        scope = room_run_scope(claims)
+        self._run_idempotency_store.observe_room_authority(scope, authority)
+        return scope
     else:
         parts = (_api_server._api_request_profile.get() or "default",
                  self._expected_api_key() or "unauthenticated-test-listener")
@@ -542,6 +553,10 @@ def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _op
     gateway already admitted under an earlier epoch; the existing run is the answer, so the
     host observes it instead of running the task twice.
     """
+    if outcome == "authority_retired":
+        return _json_error(
+            _openai_error, "Room authority has advanced; this attempt cannot be admitted.",
+            code="run_history_retired", status=409)
     if outcome == "conflict":
         return _json_error(
             _openai_error, "Idempotency-Key was already used with a different request payload",
@@ -732,7 +747,8 @@ def _reserve_run_request(self, request, *, run_id, status, key, scope, fingerpri
         outcome, record = self._run_idempotency_store.reserve(
             scope, key, fingerprint, run_id, status,
             owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request), identity=_room_identity(request))
+            retention_until=_room_retention_until(request), identity=_room_identity(request),
+            room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
     except (GroupRunFreezeError, RoomFenceError) as exc:
         _forget_run(
             self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
@@ -1707,12 +1723,16 @@ async def _handle_stop_run_admission(self, request: "web.Request", *, _api_serve
             pending_cancellation(dispatch, scope, session_id=session_id, key_absent=True)} if peer_files
            else {'status': 'cancelled', 'admission_cancelled': True})}
     try:
-        _, record = self._run_idempotency_store.reserve(
+        outcome, record = self._run_idempotency_store.reserve(
             scope, key, "", run_id, cancelled,
             retention_until=_room_retention_until(request), identity=_room_identity(request), cancel_if_missing=True,
-            cancellation_snapshot=cancellation_snapshot)
+            cancellation_snapshot=cancellation_snapshot,
+            room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
     except (GroupRunFreezeError, RoomFenceError) as exc:
         return _json_error(_api_server._openai_error, str(exc), code=exc.code, status=exc.status)
+    if outcome == "authority_retired":
+        return _json_error(_api_server._openai_error, "Room authority has advanced.",
+                           code="run_history_retired", status=409)
     run_id = str(record["run_id"])
     if record.get('scope', scope) != scope:
         predecessor_scope = _successor_run_scope(self, request, run_id, 'stop')
