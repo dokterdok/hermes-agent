@@ -264,8 +264,6 @@ hermes groups move "Weekend plans" "Home VPS"
 
 除非其运营者选择退出，每台成员计算机都会保存群聊历史的完整副本；所有者还可以添加一台不带 Bot、只保存副本的备份计算机。之后从他人计算机加入的 Bot 也是如此：该计算机会收到群聊的完整历史，包括它加入之前的消息；添加此类 Bot 时，Hermes Desktop 会提醒你。主机会记录哪些计算机保存副本、哪些可以继续群聊，以及哪些可以投票决定群聊是否自动迁移；`groups.custody.status` 显示每份副本覆盖到哪里，以及迁移时仍可能丢失的最近消息。带电池的计算机从不投票，除非其配置写明 `group_chat.always_on: true`。副本、投票者和迁移如何协同工作，请参阅 [群聊主机丢失](../developer-guide/group-chat-host-loss.md)。
 
-除非其运营者选择退出，每台成员计算机都会保存群聊历史的完整副本；所有者还可以添加一台不带 Bot、只保存副本的备份计算机。之后从他人计算机加入的 Bot 也是如此：该计算机会收到群聊的完整历史，包括它加入之前的消息；添加此类 Bot 时，Hermes Desktop 会提醒你。主机会记录哪些计算机保存副本、哪些可以继续群聊，以及哪些可以投票决定群聊是否自动迁移；`groups.custody.status` 显示每份副本覆盖到哪里，以及迁移时仍可能丢失的最近消息。带电池的计算机从不投票，除非其配置写明 `group_chat.always_on: true`。副本、投票者和迁移如何协同工作，请参阅 [群聊主机丢失](../developer-guide/group-chat-host-loss.md)。
-
 要在这个 gateway 上结束这样的房间，请调用 `groups.disband` 并传入 `confirm_quarantined: true`；不带该参数时，调用会以原因 `room_authority_quarantined` 被拒绝。确认后的解散只会在本 gateway 上为房间留下墓碑：它会从房间列表中移除，其 ID 永远不会被复用，其历史仍可通过 `groups.log`（带 `include_disbanded: true`）读取，并且依然永远不会被清理。它不会解除隔离，不会停止或启动任何工作，不会改变房间记录的权威，也不会联系其他 gateway：对端路由不会被撤销，其他 gateway 为该房间签发的授权会自行过期。
 
 **仅供参考。** `groups.promote` 和 `groups.demote` 会一直处于停用状态；群聊只会通过经过验证的 `groups.succession.*` 调用更换主机。下面的旧接管流程是一项**运维恢复流程**，而不是原子化的交接，需要在相应的 gateway 上使用这些 JSON-RPC 方法。不存在 `groups.peer.promote` 或 `groups.peer.demote` 方法；`groups.capabilities` 会列出你的 gateway 支持的方法。
