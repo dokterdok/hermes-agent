@@ -302,11 +302,9 @@ class RoomArtifactOutbox:
         self.root = Path(root or self.db_path.parent / "hosted-room-artifact-outbox")
         self.blob_root = self.root / "blobs"
         self._lock = threading.RLock()
-        from gateway.hosted_room_output_cleanup import ensure_directory
-        ensure_directory(self.blob_root)
         now = time.time()
         with self._connect() as conn:
-            self._initialize(conn)
+            self._initialize(conn, root=self.blob_root)
         self.retry_scheduled_cleanups()
         self._reclaim_pending_acknowledged_blobs(now=now)
         self.prune_acknowledged_receipts(now=now)
@@ -467,8 +465,11 @@ class RoomArtifactOutbox:
         return len(rows)
 
     @staticmethod
-    def _initialize(conn: sqlite3.Connection) -> None:
+    def _initialize(conn: sqlite3.Connection, *, root: Path | None = None) -> None:
         conn.execute("BEGIN IMMEDIATE")
+        if root is not None:
+            from gateway.hosted_room_output_cleanup import ensure_directory
+            ensure_directory(root)
         conn.execute(
             """CREATE TABLE IF NOT EXISTS hosted_room_output_artifacts (
                 artifact_id TEXT PRIMARY KEY,
@@ -807,7 +808,7 @@ class RoomArtifactOutbox:
         artifact_id = f"rart_{hashlib.sha256((scope.key + digest + safe_name).encode()).hexdigest()[:32]}"
         blob_name = f"blob_{secrets.token_hex(16)}"
 
-        from gateway.hosted_room_output_cleanup import promote, staged_blob
+        from gateway.hosted_room_output_cleanup import promote, publication_blob, staged_blob
         with self._lock, staged_blob(self, blob_name) as (handle, parent):
             with self._lock, self._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
@@ -839,39 +840,40 @@ class RoomArtifactOutbox:
                 ).fetchone()[0])
                 if gateway_bytes + len(data) > MAX_GATEWAY_BLOB_BYTES:
                     raise RoomArtifactError("gateway room artifact quota exceeded")
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-                blob_identity = promote(conn, handle, parent, blob_name)
-                if self.authorize_write is not None:
-                    self.authorize_write(conn, scope)
-                conn.execute(
-                    """INSERT INTO hosted_room_output_artifacts
-                       (artifact_id, scope_key, scope_json, name, kind, mime, size,
-                        sha256, blob_name, created_at, acknowledged_at, blob_identity)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
-                    (
-                        artifact_id,
-                        scope.key,
-                        json.dumps(scope.as_mapping(), sort_keys=True, separators=(",", ":")),
-                        safe_name,
-                        kind,
-                        mime,
-                        len(data),
-                        digest,
-                        blob_name,
-                        time.time(),
-                        blob_identity,
-                    ),
-                )
-                conn.commit()
-                row = conn.execute(
-                    "SELECT * FROM hosted_room_output_artifacts WHERE artifact_id=?",
-                    (artifact_id,),
-                ).fetchone()
-                if row is None:
-                    raise RuntimeError("stored room artifact could not be reloaded")
-                return self._manifest(row)
+                with publication_blob(self, blob_name, handle, parent):
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    blob_identity = promote(conn, handle, parent, blob_name)
+                    if self.authorize_write is not None:
+                        self.authorize_write(conn, scope)
+                    conn.execute(
+                        """INSERT INTO hosted_room_output_artifacts
+                           (artifact_id, scope_key, scope_json, name, kind, mime, size,
+                            sha256, blob_name, created_at, acknowledged_at, blob_identity)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+                        (
+                            artifact_id,
+                            scope.key,
+                            json.dumps(scope.as_mapping(), sort_keys=True, separators=(",", ":")),
+                            safe_name,
+                            kind,
+                            mime,
+                            len(data),
+                            digest,
+                            blob_name,
+                            time.time(),
+                            blob_identity,
+                        ),
+                    )
+                    conn.commit()
+                    row = conn.execute(
+                        "SELECT * FROM hosted_room_output_artifacts WHERE artifact_id=?",
+                        (artifact_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise RuntimeError("stored room artifact could not be reloaded")
+                    return self._manifest(row)
 
     def list(self, scope: RoomArtifactScope) -> list[dict[str, Any]]:
         """Return the open (unacknowledged, not discarded) output of one attempt.

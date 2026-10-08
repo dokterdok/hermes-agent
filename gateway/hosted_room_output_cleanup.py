@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import stat
 import sqlite3
+import time
 
 from gateway import hosted_room_input_cleanup as cleanup
 
@@ -47,14 +48,12 @@ def _windows_parent(root, *, create=False):
                 access = (win32con.GENERIC_READ | win32con.GENERIC_WRITE
                           if part == root else ntsecuritycon.FILE_READ_ATTRIBUTES)
                 try:
-                    handle = win32file.CreateFile(str(part), access, win32con.FILE_SHARE_READ,
-                                                  None, win32con.OPEN_EXISTING, flags, None)
+                    handle = _open_windows_directory(part, access, flags)
                 except pywintypes.error as exc:
                     if not create or exc.winerror not in {2, 3}:
                         raise
                     os.mkdir(part, mode=0o700)
-                    handle = win32file.CreateFile(str(part), access, win32con.FILE_SHARE_READ,
-                                                  None, win32con.OPEN_EXISTING, flags, None)
+                    handle = _open_windows_directory(part, access, flags)
                 held.callback(handle.Close)
                 attributes = win32file.GetFileInformationByHandle(handle)[0]
                 if attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT or not attributes & win32con.FILE_ATTRIBUTE_DIRECTORY:
@@ -62,6 +61,23 @@ def _windows_parent(root, *, create=False):
             yield handle
     except pywintypes.error as exc:
         raise OSError(exc.winerror, exc.strerror) from exc
+
+
+def _open_windows_directory(path, access, flags):
+    """Allow another short pinned cleanup to finish, within the SQLite wait bound."""
+    import pywintypes
+    import win32con
+    import win32file
+
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            return win32file.CreateFile(str(path), access, win32con.FILE_SHARE_READ,
+                                        None, win32con.OPEN_EXISTING, flags, None)
+        except pywintypes.error as exc:
+            if exc.winerror != 32 or time.monotonic() >= deadline:
+                raise
+            time.sleep(.01)
 
 
 def ensure_directory(root):
@@ -87,14 +103,15 @@ def ensure_directory(root):
 
 
 @contextmanager
-def _windows_file(root, name, *, create):
+def _windows_file(root, name, *, create, lifetime=None):
     import msvcrt
     import ntsecuritycon
     import win32api
     import win32con
     import win32file
 
-    with _windows_parent(root) as parent, ExitStack() as held:
+    with _windows_parent(root) as parent, ExitStack() as scoped:
+        held = lifetime if lifetime is not None else scoped
         access = win32con.GENERIC_READ | ntsecuritycon.DELETE
         if create:
             access |= win32con.GENERIC_WRITE
@@ -108,31 +125,32 @@ def _windows_file(root, name, *, create):
         process = win32api.GetCurrentProcess()
         duplicate = win32api.DuplicateHandle(process, leaf, process, 0, False, win32con.DUPLICATE_SAME_ACCESS)
         descriptor = msvcrt.open_osfhandle(duplicate.Detach(), os.O_BINARY | (os.O_RDWR if create else os.O_RDONLY))
-        with os.fdopen(descriptor, 'r+b' if create else 'rb') as source:
-            if create:
-                win32file.FlushFileBuffers(parent)
-            yield source, cleanup._windows_handle_stat(parent)
+        source = held.enter_context(os.fdopen(descriptor, 'r+b' if create else 'rb'))
+        if create:
+            win32file.FlushFileBuffers(parent)
+        yield source, cleanup._windows_handle_stat(parent)
         win32file.FlushFileBuffers(parent)
 
 
 @contextmanager
-def _held_file(root, name, *, create=False):
+def _held_file(root, name, *, create=False, lifetime=None):
     if not re.fullmatch(r'blob_[0-9a-f]{32}', name):
         raise ValueError('output blob identity changed')
     root = Path(os.path.abspath(root))
     if os.name == 'nt':
-        with _windows_file(root, name, create=create) as opened:
+        with _windows_file(root, name, create=create, lifetime=lifetime) as opened:
             yield opened
         return
     import fcntl
-    with cleanup._parent_fd(root) as parent:
+    with cleanup._parent_fd(root) as parent, ExitStack() as scoped:
+        held = lifetime if lifetime is not None else scoped
         flags = os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_RDWR | os.O_CREAT | os.O_EXCL if create else os.O_RDONLY)
         descriptor = os.open(name, flags, 0o600, dir_fd=parent)
-        with os.fdopen(descriptor, 'r+b' if create else 'rb') as source:
-            fcntl.flock(source.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if create:
-                os.fsync(parent)
-            yield source, os.fstat(parent)
+        source = held.enter_context(os.fdopen(descriptor, 'r+b' if create else 'rb'))
+        fcntl.flock(source.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if create:
+            os.fsync(parent)
+        yield source, os.fstat(parent)
         os.fsync(parent)
 
 
@@ -144,30 +162,52 @@ def _save(conn, name, identity):
 
 @contextmanager
 def staged_blob(outbox, name):
-    """The open producer excludes cleanup until promotion or writer termination."""
+    """Keep the leaf live, but pin its parent only inside an outbox SQL writer."""
     try:
-        with _held_file(outbox.blob_root, name, create=True) as (source, parent):
-            identity = _identity(source, parent, name, complete=False)
+        with ExitStack() as live:
             with outbox._connect() as conn:
-                _save(conn, name, identity)
+                conn.execute('BEGIN IMMEDIATE')
+                with _held_file(outbox.blob_root, name, create=True, lifetime=live) as (source, parent):
+                    _save(conn, name, _identity(source, parent, name, complete=False))
+                # Release parent pins BEFORE handing the SQL writer to another
+                # producer or classic cleanup. The leaf still excludes cleanup.
                 conn.commit()
             try:
                 yield source, parent
             finally:
-                # A handled write failure can tighten its original creation seal
-                # to the exact partial bytes before releasing the producer lock.
+                # A handled failure seals the exact partial bytes. Abrupt process
+                # death instead leaves the initial, still-owned creation identity.
                 with outbox._connect() as conn:
                     if conn.execute('SELECT 1 FROM hosted_room_output_blob_cleanup WHERE blob_name=?', (name,)).fetchone():
                         source.flush()
                         _save(conn, name, _identity(source, parent, name, complete=True))
                         conn.commit()
     finally:
-        # The row may already have transferred ownership to the artifact. A fault
-        # here leaves the physical journal for a later constructor; never erase it.
         try:
             reclaim_pending(outbox, names=[name])
         except (OSError, ValueError, sqlite3.Error):
-            pass
+            pass  # Its committed identity remains available to a later constructor.
+
+
+@contextmanager
+def publication_blob(outbox, name, source, parent):
+    """Rebind the live staging leaf to its name under the publication writer."""
+    root = Path(os.path.abspath(outbox.blob_root))
+    expected = {'parent_device': str(parent.st_dev), 'parent_inode': str(parent.st_ino)}
+    if os.name == 'nt':
+        with _windows_parent(root) as directory:
+            cleanup._verify_parent(cleanup._windows_handle_stat(directory), expected)
+            named = os.stat(root / name, follow_symlinks=False)
+            if not os.path.samestat(named, os.fstat(source.fileno())):
+                raise ValueError('staged output identity changed')
+            yield
+    else:
+        with cleanup._parent_fd(root) as directory:
+            cleanup._verify_parent(os.fstat(directory), expected)
+            named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if not os.path.samestat(named, os.fstat(source.fileno())):
+                raise ValueError('staged output identity changed')
+            yield
 
 
 def promote(conn, source, parent, name):
