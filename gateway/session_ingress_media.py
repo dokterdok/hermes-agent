@@ -258,34 +258,8 @@ def release_admission_media(db, admission_id):
     collect independently; physical aliases and uncertain stat results retain
     conservatively. A shared hardlink can consequently retain an extra old alias.
     """
-    from hermes_state_runtime import get_session_admission
-    row = get_session_admission(db, admission_id=admission_id)
-    if row is None or row['status'] != 'terminal':
-        return 0
-    mine = admission_media_references(row['payload'])
-    if not mine:
-        return 0
-    root = _media_root()
-    def collect(conn):
-        held = _held_media_paths(conn)
-        identities = _held_file_identities(held, root)
-        if identities is None:
-            return 0
-        released = 0
-        for reference in mine:
-            path = Path(reference['path'])
-            if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
-                continue
-            try:
-                if path.parent.resolve() != path.parent or _file_identity(path) in identities:
-                    continue
-                path.unlink()
-                released += 1
-                path.parent.rmdir()
-            except (OSError, ValueError):
-                continue
-        return released
-    return db._execute_write(collect)
+    from gateway.session_native_release import release_native_media
+    return release_native_media(db, admission_id)
 
 
 def restore_native_media(references):
