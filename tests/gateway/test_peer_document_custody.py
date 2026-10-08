@@ -106,8 +106,10 @@ async def test_dead_unaccepted_reservation_can_resume_but_live_or_accepted_work_
     owner.runner.session_authority = owner
     store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
     adapter = SimpleNamespace(gateway_runner=owner.runner, _run_idempotency_store=store)
-    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+    child = subprocess.Popen([sys._base_executable, '-c',
+        'import os,time; print(os.getpid(), flush=True); time.sleep(30)'], stdout=subprocess.PIPE, text=True)
     try:
+        assert int(child.stdout.readline()) == child.pid
         started = int(get_process_start_time(child.pid))
         _, record = store.reserve('scope', 'key', 'fingerprint', 'run', {'status': 'queued'}, owner_pid=child.pid, owner_started=started)
         with pytest.raises(RuntimeStoreError, match='preparing'):
@@ -133,5 +135,6 @@ async def test_dead_unaccepted_reservation_can_resume_but_live_or_accepted_work_
     finally:
         if child.poll() is None:
             child.kill(); child.wait(timeout=5)
+        child.stdout.close()
         store.close()
         close(db, tmp_path)
