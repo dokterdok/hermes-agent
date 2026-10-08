@@ -97,7 +97,10 @@ def renewal(tmp_path, monkeypatch):
     adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
     adapter._profile_scope = lambda _profile: _profile_runtime_scope(home)  # the member's own config
     member = Member(adapter, clock)
-    with SessionDB(home / 'state.db') as db:
+    from contextlib import closing
+    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+    with SessionDB(home / 'state.db') as db, closing(RunIdempotencyStore(str(home / 'runs.db'))) as run_store:
+        adapter._run_idempotency_store = run_store
         runner = SimpleNamespace(_draining=False, session_authorities=SessionAuthorities(home))
         authority = SessionAuthority(runner, db=db, profile_id=str(home), instance_id='fixture',
                                      epoch=begin_runtime_epoch(db, instance_id='fixture'))
