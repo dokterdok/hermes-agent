@@ -658,12 +658,13 @@ async def test_an_owner_restart_finishes_a_committed_cleanup(tmp_path, monkeypat
         assert replay_output_cleanups(authority) is False  # no outbox: nothing is created
         results = []
         runner._handle_message = _sharing_handler(write_file(tmp_path), results, fail=RuntimeError("model down"))
-        unlink = __import__("pathlib").Path.unlink
-        monkeypatch.setattr(__import__("pathlib").Path, "unlink", lambda self, *a, **k: (_ for _ in ()).throw(
+        from gateway import hosted_room_input_cleanup as cleanup
+        unlink = cleanup.remove_sealed_copy
+        monkeypatch.setattr(cleanup, "remove_sealed_copy", lambda self, *a, **k: (_ for _ in ()).throw(
             OSError("disk busy")) if "hosted-room-artifact-outbox" in str(self) else unlink(self, *a, **k))
         await run_turn(authority, service, publish=False)
         row, = outbox_rows(service)
         assert row["cleanup_required_at"] is not None  # the intent committed, the bytes did not go
-        monkeypatch.setattr(__import__("pathlib").Path, "unlink", unlink)
+        monkeypatch.setattr(cleanup, "remove_sealed_copy", unlink)
         assert replay_output_cleanups(authority) is True
         assert outbox_rows(service) == []

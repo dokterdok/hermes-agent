@@ -166,7 +166,7 @@ def test_a_lost_named_ack_replays_through_the_transport(mux, monkeypatch):
 
 @pytest.mark.live_system_guard_bypass
 def test_a_named_profiles_interrupted_cleanup_finishes_when_its_service_starts(mux, monkeypatch):
-    from pathlib import Path
+    from gateway import hosted_room_input_cleanup as cleanup
     from gateway.hosted_room_artifacts import RoomArtifactOutbox, RoomArtifactScope
     from gateway.session_hosted_service import ensure_hosted_service
 
@@ -175,14 +175,14 @@ def test_a_named_profiles_interrupted_cleanup_finishes_when_its_service_starts(m
     scope = RoomArtifactScope.from_mapping(SCOPE)
     outbox = RoomArtifactOutbox(target.db.db_path)
     outbox.put_bytes(scope=scope, data=b"never published\n", source_name="report.txt")
-    unlink = Path.unlink
+    unlink = cleanup.remove_sealed_copy
 
     def busy(self, *args, **kwargs):
         if "hosted-room-artifact-outbox" in str(self):
             raise OSError("disk busy")
         return unlink(self, *args, **kwargs)
     with monkeypatch.context() as interrupted, pytest.raises(OSError, match="disk busy"):
-        interrupted.setattr(Path, "unlink", busy)
+        interrupted.setattr(cleanup, "remove_sealed_copy", busy)
         outbox.discard_durably(scope)
     row, = _rows(target, "hosted_room_output_artifacts")
     assert row["cleanup_required_at"] is not None  # the intent committed, the bytes did not go
