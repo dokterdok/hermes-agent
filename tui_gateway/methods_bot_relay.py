@@ -6,6 +6,7 @@ Chat delivery on the TARGET gateway, returns the reply), ``reply`` (write the re
 the SENDER gateway for its waiter). Plumbing: ``tools/bot_relay.py``; handlers are rebound onto
 server.py's globals (method_ctx.py) and reference ``_ok``/``_err`` bare."""
 
+import logging
 from pathlib import Path
 
 from .method_ctx import HandlerRegistry
@@ -22,18 +23,32 @@ def _relay_root() -> Path:
     return _hermes_root(Path(_default_home()))
 
 
-# Historical Desktop deadline mirrors; no subprocess retry is performed here.
-# Remove with the renderer relay deadline/receipt migration.
-TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
+# Desktop deadline mirror; no retry runs here. The owner gateway retries a transiently failed
+# admission once (``gateway.session_bot._maybe_retry``). Remove with the renderer relay deadline migration.
+TURN_MAX_ATTEMPTS = 2  # first admission + the owner's one transient-failure retry (gateway.session_bot)
 
 
 @method("bot_relay.roster.sync")
 def _(rid, params: dict, _root=_relay_root) -> dict:
     """Replace this gateway's view of agents on OTHER connections → ``{count}`` accepted rows
-    (``agents`` rows ``{profile, handle, connection_id, ...}``; invalid rows are dropped)."""
+    (``agents`` rows ``{profile, handle, connection_id, ...}``; invalid rows are dropped).
+    A roster that changes is logged with its rows: a peer connection listed with this machine's
+    own profiles, or two publishers alternating, shows up as a flapping line (the pushing window
+    is in the Desktop's desktop.log ``[bot-relay win=…]`` lines at the same time)."""
     try:
-        from tools.bot_relay import write_remote_roster
-        return _ok(rid, {"count": write_remote_roster(_root(), params.get("agents"))})
+        from tools.bot_relay import read_remote_roster, write_remote_roster
+
+        def trace() -> str:
+            rows = read_remote_roster(_root())
+            return f"n={len(rows)} [" + " ".join(
+                f"{r.get('connection_id')}/{r.get('profile')}={r.get('title')!r}" for r in rows) + "]"
+
+        before = trace()
+        count = write_remote_roster(_root(), params.get("agents"))
+        after = trace()
+        if after != before:
+            logging.getLogger(__name__).info("bot_relay roster changed: %s -> %s", before, after)
+        return _ok(rid, {"count": count})
     except Exception as e:
         return _err(rid, 5090, str(e))
 
@@ -100,6 +115,9 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     try:
         return _ok(rid, authority_delivery(home, {**forwarded, 'profile': resolved}))
     except Exception as exc:
+        # Boundary: every way the target authority can be unreachable (discovery, ticket, WS,
+        # RPC refusal) is the same typed ``runtime_unavailable`` refusal the sender retries on.
+        logging.getLogger(__name__).debug("bot_relay.deliver to %s refused", resolved, exc_info=True)
         return _err(rid, 5094, str(exc), data={'reason': 'runtime_unavailable'})
 
 

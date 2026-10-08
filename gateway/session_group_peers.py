@@ -75,8 +75,14 @@ def _invite(authority, params, *, actor_subject=None):
         raise RuntimeStoreError('room_link_unavailable')
     if 'request_id' in params or 'requested_at' in params:
         from gateway.session_group_invitations import issue
-        invitation = issue(authority, actor_subject, params,
+        invitation, issued = issue(authority, actor_subject, params,
             lambda conn: _issue_invitation(_api_server(authority), params, 'default', conn=conn))
+        if issued:
+            from gateway.hosted_room_peer import decode_room_grant
+            from gateway.platforms.api_server_room_grants import _observe_invitation_authority
+            adapter = _api_server(authority)
+            claims = decode_room_grant(adapter._room_grant_secret(), invitation['grant'], permission='status')
+            _observe_invitation_authority(adapter, claims)
     else:
         invitation = _issue_invitation(_api_server(authority), params, 'default')
     return {'grant': invitation['grant'], 'target_profile': invitation['target_profile'],

@@ -96,41 +96,51 @@ describe('session resolution', () => {
     const prior = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
     const calls: Array<{ method: string; params: Record<string, unknown> }> = []
     host.request = async (method: string, params: Record<string, unknown>) => {
-      calls.push({method,params})
+      calls.push({ method, params })
       if (method === 'session.resume') {
-        throw Object.assign(new Error('not_found'), {code:4001,data:{reason:'not_found'}})
+        throw Object.assign(new Error('not_found'), { code: 4001, data: { reason: 'not_found' } })
       }
-      return prior(method,params)
+      return prior(method, params)
     }
     const created = await room.turns.ensureGroupChatSession('Classic', member, 'new-thread')
     expect(created.runtime).toBeTruthy()
-    expect(calls.filter(call=>call.method==='session.resume').at(-1)?.params).toMatchObject({title:'Group: Classic · new-thread',profile:'research'})
-    expect(calls.filter(call=>call.method==='session.create')).toHaveLength(1)
+    expect(calls.filter(call => call.method === 'session.resume').at(-1)?.params).toMatchObject({
+      title: 'Group: Classic · new-thread',
+      profile: 'research'
+    })
+    expect(calls.filter(call => call.method === 'session.create')).toHaveLength(1)
     // A lost client pointer resolves the existing owner title rather than minting another session.
-    room.chat.updateGroupChat('Classic', current => ({...current,sessions:{}}))
+    room.chat.updateGroupChat('Classic', current => ({ ...current, sessions: {} }))
     host.request = async (method: string, params: Record<string, unknown>) => {
-      calls.push({method,params})
+      calls.push({ method, params })
       if (method === 'session.resume' && params.title === 'Group: Classic · new-thread') {
-        return {session_id:created.runtime,stored_session_id:created.stored}
+        return { session_id: created.runtime, stored_session_id: created.stored }
       }
-      throw Object.assign(new Error('not_found'), {code:4001,data:{reason:'not_found'}})
+      throw Object.assign(new Error('not_found'), { code: 4001, data: { reason: 'not_found' } })
     }
-    expect((await room.turns.ensureGroupChatSession('Classic',member,'new-thread')).stored).toBe(created.stored)
-    expect(calls.filter(call=>call.method==='session.create')).toHaveLength(1)
+    expect((await room.turns.ensureGroupChatSession('Classic', member, 'new-thread')).stored).toBe(created.stored)
+    expect(calls.filter(call => call.method === 'session.create')).toHaveLength(1)
   })
 
   it('does not mint another session for a refused known canonical identity or ambiguous lookup', async () => {
     for (const failure of [
-      {code:4001,data:{reason:'not_found'}}, {code:4001,data:{reason:'permission_denied'}},
-      {code:4001,data:{reason:'profile_mismatch'}}, {code:4001}, {code:5001,data:{reason:'not_found'}}
+      { code: 4001, data: { reason: 'not_found' } },
+      { code: 4001, data: { reason: 'permission_denied' } },
+      { code: 4001, data: { reason: 'profile_mismatch' } },
+      { code: 4001 },
+      { code: 5001, data: { reason: 'not_found' } }
     ]) {
       const room = await loadRoom()
-      const member: GroupMember = { name:'research',title:'' }
-      const original = await room.turns.ensureGroupChatSession('Classic',member,'existing-thread')
-      const saved = {...room.chat.$groupChats.get().Classic.sessions}
+      const member: GroupMember = { name: 'research', title: '' }
+      const original = await room.turns.ensureGroupChatSession('Classic', member, 'existing-thread')
+      const saved = { ...room.chat.$groupChats.get().Classic.sessions }
       const count = room.gateway.sessions.size
-      host.request = async () => {throw Object.assign(new Error('lookup refused'),failure)}
-      await expect(room.turns.ensureGroupChatSession('Classic',member,'existing-thread')).rejects.toThrow(/not starting a new/)
+      host.request = async () => {
+        throw Object.assign(new Error('lookup refused'), failure)
+      }
+      await expect(room.turns.ensureGroupChatSession('Classic', member, 'existing-thread')).rejects.toThrow(
+        /not starting a new/
+      )
       expect(room.gateway.sessions.size).toBe(count)
       expect(room.chat.$groupChats.get().Classic.sessions).toEqual(saved)
       expect(original.stored).toBeTruthy()
@@ -351,31 +361,41 @@ describe('session-gone classification', () => {
     expect(turns.isSessionGoneError(Object.assign(new Error('x'), { code: 4001 }))).toBe(true)
     expect(turns.isSessionGoneError(new Error('session_id=rt-1 not in memory'))).toBe(true)
     expect(turns.isSessionGoneError(Object.assign(new Error('session not found'), { code: 4007 }))).toBe(false)
-    for (const reason of ['invalid_params','permission_denied','profile_mismatch','stale_generation','unknown_execution']) {
-      expect(turns.isSessionGoneError(Object.assign(new Error(reason),{code:4001,data:{reason}}))).toBe(false)
+    for (const reason of [
+      'invalid_params',
+      'permission_denied',
+      'profile_mismatch',
+      'stale_generation',
+      'unknown_execution'
+    ]) {
+      expect(turns.isSessionGoneError(Object.assign(new Error(reason), { code: 4001, data: { reason } }))).toBe(false)
     }
-    expect(turns.isSessionGoneError(Object.assign(new Error('not_found'),{code:4001,data:{reason:'not_found'}}))).toBe(true)
+    expect(
+      turns.isSessionGoneError(Object.assign(new Error('not_found'), { code: 4001, data: { reason: 'not_found' } }))
+    ).toBe(true)
     expect(turns.isSessionGoneError(null)).toBe(false)
     expect(turns.isSessionGoneError(new Error('network blip'))).toBe(false)
   })
 
   it('submits classic member work with the identity required by the canonical wire contract', async () => {
-    const room = await loadRoom({turn: () => 'received with exact identity'})
+    const room = await loadRoom({ turn: () => 'received with exact identity' })
     const original = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
-    const {CanonicalDesktopProtocol} = await import('@/api/canonical-protocol')
+    const { CanonicalDesktopProtocol } = await import('@/api/canonical-protocol')
     const protocol = new CanonicalDesktopProtocol()
     let id = ''
     host.request = async (method: string, params: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
         const wire = protocol.prepare(method, params)
         if (typeof wire.submission_id !== 'string' || !wire.submission_id) {
-          throw Object.assign(new Error('invalid_params'), {code:4001,data:{reason:'invalid_params'}})
+          throw Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })
         }
         id = wire.submission_id
       }
       return original(method, params)
     }
-    expect(await room.turns.runGroupChatMemberTurn('Room',LOCAL_MEMBER,'hello','t1',[])).toBe('received with exact identity')
+    expect(await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hello', 't1', [])).toBe(
+      'received with exact identity'
+    )
     expect(id).toBeTruthy()
     expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(1)
   })
@@ -416,7 +436,10 @@ describe('session-gone classification', () => {
           submitted.push(params)
 
           if ('submission_id' in params) {
-            throw Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'), { code: 4000 })
+            throw Object.assign(
+              new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'),
+              { code: 4000 }
+            )
           }
         }
 
@@ -434,13 +457,26 @@ describe('session-gone classification', () => {
   })
 
   it('never downgrades an ambiguous rejection or replays an attempted identityless submission', async () => {
-    const refusal = Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'), { code: 4000 })
+    const refusal = Object.assign(
+      new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted'),
+      { code: 4000 }
+    )
     const timeout = new Error('submission_id acknowledgement timed out')
     const gone = Object.assign(new Error('session not found'), { code: 4001 })
-    const unrelated = Object.assign(new Error('invalid params for prompt.submit: text: Extra inputs are not permitted'), { code: 4000 })
+    const unrelated = Object.assign(
+      new Error('invalid params for prompt.submit: text: Extra inputs are not permitted'),
+      { code: 4000 }
+    )
     const generic = Object.assign(new Error('submission_id failed'), { code: 4000 })
 
-    for (const failures of [[timeout], [unrelated], [generic], [refusal, timeout], [refusal, gone], [refusal, refusal]]) {
+    for (const failures of [
+      [timeout],
+      [unrelated],
+      [generic],
+      [refusal, timeout],
+      [refusal, gone],
+      [refusal, refusal]
+    ]) {
       const room = await loadRoom()
       const original = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
       let attempts = 0
@@ -453,7 +489,9 @@ describe('session-gone classification', () => {
         return original(method, params)
       }
 
-      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hello', 't1', [])).rejects.toThrow(failures.at(-1)!.message)
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hello', 't1', [])).rejects.toThrow(
+        failures.at(-1)!.message
+      )
       expect(attempts).toBe(failures.length)
       expect(room.gateway.calls).toHaveLength(0)
     }
@@ -771,7 +809,11 @@ describe('clarify and approvals (#90694)', () => {
   const CLARIFY = {
     id: 'req-clarify-1',
     method: 'clarify',
-    params: { choices: ['staging', 'prod'], multi_select: false, question: 'Which env should I target?' }
+    params: {
+      questions: [
+        { choices: ['staging', 'prod'], multi_select: false, qid: 'q0', question: 'Which env should I target?' }
+      ]
+    }
   }
 
   const APPROVAL = {
@@ -830,8 +872,7 @@ describe('clarify and approvals (#90694)', () => {
 
     expect(mirrored).toHaveLength(1)
     expect(mirrored[0].requestId).toBe('req-clarify-1')
-    expect(mirrored[0].question).toBe('Which env should I target?')
-    expect(mirrored[0].choices).toEqual(['staging', 'prod'])
+    expect(mirrored[0]).toMatchObject({ kind: 'clarify', questions: CLARIFY.params.questions })
     // Badge is derived from $groupClarify, not a copy — nothing writes
     // $groupNeedsYou here, so there is nothing to keep in sync.
     expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(true)
@@ -853,19 +894,6 @@ describe('clarify and approvals (#90694)', () => {
 
     expect(turns.syncGroupClarify('Core', { name: 'research' }, 't1', { messages: [] })).toBe(false)
     expect(Object.keys(chat.$groupClarify.get())).toHaveLength(0)
-  })
-
-  it('answers the open request by id through request.answer and clears the mirror', async () => {
-    const room = await loadRoom()
-    const member: GroupMember = { name: 'research', title: '' }
-
-    room.turns.syncGroupClarify('Core', member, 't1', { open_requests: [CLARIFY] })
-    await room.turns.answerGroupClarify(Object.values(room.chat.$groupClarify.get())[0], member, 'staging')
-
-    expect(room.gateway.rpcFor('request.answer').map(call => call.params)).toEqual([
-      { id: 'req-clarify-1', result: { answer: 'staging' } }
-    ])
-    expect(Object.keys(room.chat.$groupClarify.get())).toHaveLength(0)
   })
 
   it('locks one batch question per clarify.lock call, in order', async () => {
@@ -968,7 +996,7 @@ describe('clarify and approvals (#90694)', () => {
             submitted = true
           }
 
-          if (method === 'request.answer') {
+          if (method === 'clarify.lock') {
             answered = true
           }
 
@@ -989,13 +1017,14 @@ describe('clarify and approvals (#90694)', () => {
 
         if (disband) {
           await view.disbandGroupChat('Core', [])
+          expect(room.chat.$groupChats.get().Core?.log || [], `before late poll: ${roomId ?? 'legacy'}`).toHaveLength(0)
           release()
           await drive
           expect(Object.values(room.chat.$groupClarify.get())).toHaveLength(0)
           expect(room.chat.$groupChats.get().Core === undefined || room.chat.$groupChats.get().Core.tombstone).toBe(
             true
           )
-          expect(room.chat.$groupChats.get().Core?.log || []).toHaveLength(0)
+          expect(room.chat.$groupChats.get().Core?.log || [], `after late poll: ${roomId ?? 'legacy'}`).toHaveLength(0)
         } else {
           await view.renameGroupChat('Core', 'Renamed', [])
 
@@ -1012,7 +1041,7 @@ describe('clarify and approvals (#90694)', () => {
           await mirrored
           const [prompt] = Object.values(room.chat.$groupClarify.get())
           const correctRoom = prompt.group
-          await room.turns.answerGroupClarify(prompt, member, 'staging')
+          await room.turns.answerGroupClarify(prompt, member, { q0: 'staging' })
           await drive
           expect(correctRoom).toBe('Renamed')
           expect(Object.keys(room.chat.$groupChats.get())).toEqual(['Renamed'])
@@ -1288,11 +1317,13 @@ describe('clarify and approvals (#90694)', () => {
 
     const entry = Object.values(chat.$groupClarify.get())[0]
 
-    expect(entry.kind).toBe('approval')
-    expect(entry.command).toBe('rm -rf ./build')
-    expect(entry.question).toBe('Clean the build directory')
-    expect(entry.choices).toEqual(['once', 'session', 'deny'])
-    expect(entry.sessionId).toBe('rt-research-1')
+    expect(entry).toMatchObject({
+      choices: ['once', 'session', 'deny'],
+      command: 'rm -rf ./build',
+      kind: 'approval',
+      question: 'Clean the build directory',
+      sessionId: 'rt-research-1'
+    })
   })
 
   it('falls back to once/deny when the server sends no choice set', async () => {
@@ -1302,7 +1333,7 @@ describe('clarify and approvals (#90694)', () => {
       pending_approval: { command: 'ls', request_id: 'req-a2' }
     })
 
-    expect(Object.values(chat.$groupClarify.get())[0].choices).toEqual(['once', 'deny'])
+    expect(Object.values(chat.$groupClarify.get())[0]).toMatchObject({ choices: ['once', 'deny'] })
   })
 
   it('routes approvals through approval.respond with the session and choice', async () => {
@@ -1342,19 +1373,35 @@ describe('in-flight marker', () => {
     const room = await loadRoom({ turn: () => 'obsolete answer' })
     const replacement = { before: 7, thread: 'replacement-thread', turn: 'replacement-turn' }
     room.chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'input', 't1')
-    room.chat.updateGroupChat('Room', current => ({ ...current, watermarks: { 't1::helper': 0 },
-      heldMessages: { helper: [current.log[0].id!] } }))
-    room.chat.updateGroupChat('Keep', current => ({ ...current, roomId: 'keep', sectionId: 'section',
-      stranded: { helper: { before: 9, thread: 'other', turn: 'keep-turn' } } }))
+    room.chat.updateGroupChat('Room', current => ({
+      ...current,
+      watermarks: { 't1::helper': 0 },
+      heldMessages: { helper: [current.log[0].id!] }
+    }))
+    room.chat.updateGroupChat('Keep', current => ({
+      ...current,
+      roomId: 'keep',
+      sectionId: 'section',
+      stranded: { helper: { before: 9, thread: 'other', turn: 'keep-turn' } }
+    }))
     const kept = structuredClone(room.chat.durableGroupChatRooms().Keep)
 
     if (mode === 'recovery') {
-      room.chat.updateGroupChat('Room', current => ({ ...current, sessions: { helper: 'sid-helper' },
-        stranded: { helper: { before: 0, thread: 't1', turn: 'old-turn' } } }))
-      room.gateway.sessions.set('sid-helper', { profile: 'helper', stored: 'sid-helper', runtime: 'rt-helper',
-        title: 'Group: Room · t1', messages: [
-          { role: 'user', content: roomPrompt('Room') }, { role: 'assistant', content: 'obsolete answer' }
-        ] })
+      room.chat.updateGroupChat('Room', current => ({
+        ...current,
+        sessions: { helper: 'sid-helper' },
+        stranded: { helper: { before: 0, thread: 't1', turn: 'old-turn' } }
+      }))
+      room.gateway.sessions.set('sid-helper', {
+        profile: 'helper',
+        stored: 'sid-helper',
+        runtime: 'rt-helper',
+        title: 'Group: Room · t1',
+        messages: [
+          { role: 'user', content: roomPrompt('Room') },
+          { role: 'assistant', content: 'obsolete answer' }
+        ]
+      })
     }
 
     const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
@@ -1373,8 +1420,17 @@ describe('in-flight marker', () => {
 
     if (mode === 'normal') {
       const { runGroupRoundMember } = await import('./group-round-members')
-      await runGroupRoundMember({ group: 'Room', members: [LOCAL_MEMBER], thread: 't1', startEpoch: 0,
-        binding: { isLive: () => true }, isCurrent: () => true }, LOCAL_MEMBER)
+      await runGroupRoundMember(
+        {
+          group: 'Room',
+          members: [LOCAL_MEMBER],
+          thread: 't1',
+          startEpoch: 0,
+          binding: { isLive: () => true },
+          isCurrent: () => true
+        },
+        LOCAL_MEMBER
+      )
     } else {
       await room.turns.harvestStrandedGroupReply('Room', LOCAL_MEMBER)
     }
@@ -1411,14 +1467,25 @@ describe('in-flight marker', () => {
     const writes: Record<string, GroupChat>[] = []
     const set = room.gateway.storage.set.bind(room.gateway.storage)
     vi.spyOn(room.gateway.storage, 'set').mockImplementation((key, value) => {
-      if (key === 'group-chats') {writes.push(structuredClone(value) as Record<string, GroupChat>)}
+      if (key === 'group-chats') {
+        writes.push(structuredClone(value) as Record<string, GroupChat>)
+      }
 
       return set(key, value)
     })
     const { runGroupRoundMember } = await import('./group-round-members')
 
-    const spoke = await runGroupRoundMember({ group: 'Room', members: [LOCAL_MEMBER], thread: 't1', startEpoch: 0,
-      binding: { isLive: () => true }, isCurrent: () => true }, LOCAL_MEMBER)
+    const spoke = await runGroupRoundMember(
+      {
+        group: 'Room',
+        members: [LOCAL_MEMBER],
+        thread: 't1',
+        startEpoch: 0,
+        binding: { isLive: () => true },
+        isCurrent: () => true
+      },
+      LOCAL_MEMBER
+    )
 
     expect(spoke).toBe(true)
     expect(seen.marker).toMatchObject({ before: 0, thread: 't1' })
@@ -1476,8 +1543,13 @@ describe('in-flight marker', () => {
 
     room.chat.appendGroupChatEntry('Fleet', { kind: 'user', name: 'You' }, 'input', 't1')
     room.chat.updateGroupChat('Fleet', current => ({ ...current, watermarks: { 't1::mini::helper': 1 } }))
-    room.chat.updateGroupChat('Keep', current => ({ ...current, roomId: 'keep', sectionId: 'section',
-      stranded: { helper: { before: 9, thread: 'other', turn: 'keep-turn' } }, heldMessages: { helper: ['held'] } }))
+    room.chat.updateGroupChat('Keep', current => ({
+      ...current,
+      roomId: 'keep',
+      sectionId: 'section',
+      stranded: { helper: { before: 9, thread: 'other', turn: 'keep-turn' } },
+      heldMessages: { helper: ['held'] }
+    }))
     const kept = structuredClone(room.chat.durableGroupChatRooms().Keep)
     const saved = structuredClone(room.gateway.storage.get('group-chats'))
     room.chat.$groupChats.set({})
@@ -1485,7 +1557,9 @@ describe('in-flight marker', () => {
     const writes: Record<string, GroupChat>[] = []
     const set = room.gateway.storage.set.bind(room.gateway.storage)
     vi.spyOn(room.gateway.storage, 'set').mockImplementation((key, value) => {
-      if (key === 'group-chats') {writes.push(structuredClone(value) as Record<string, GroupChat>)}
+      if (key === 'group-chats') {
+        writes.push(structuredClone(value) as Record<string, GroupChat>)
+      }
 
       return set(key, value)
     })
@@ -1537,8 +1611,19 @@ describe('stranded harvest', () => {
       room.chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'deploy', 't1')
       const { runGroupRoundMember } = await import('./group-round-members')
 
-      expect(await runGroupRoundMember({ group: 'Room', members: [LOCAL_MEMBER], thread: 't1', startEpoch: 0,
-        binding: { isLive: () => true }, isCurrent: () => true }, LOCAL_MEMBER)).toBe(true)
+      expect(
+        await runGroupRoundMember(
+          {
+            group: 'Room',
+            members: [LOCAL_MEMBER],
+            thread: 't1',
+            startEpoch: 0,
+            binding: { isLive: () => true },
+            isCurrent: () => true
+          },
+          LOCAL_MEMBER
+        )
+      ).toBe(true)
       expect(log(room, 'Room').at(-1)?.text).toBe('long deploy done')
       expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
       expect(activity.$groupActivity.get().Room?.events.map(event => event.kind)).not.toContain('timed-out')

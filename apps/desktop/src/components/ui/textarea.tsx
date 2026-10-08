@@ -4,7 +4,9 @@ import { cn } from '@/lib/utils'
 
 import { type ControlVariantProps, controlVariants } from './control'
 
-function Textarea({ className, size,
+function Textarea({
+  className,
+  size,
   variant = 'default',
   ...props
 }: React.ComponentProps<'textarea'> &
@@ -22,7 +24,10 @@ function Textarea({ className, size,
       className={cn(
         variant === 'plain'
           ? 'w-full min-w-0 border-0 bg-transparent text-foreground shadow-none outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50'
-          : controlVariants({ size }), 'min-h-16', className)}
+          : controlVariants({ size }),
+        'min-h-16',
+        className
+      )}
       data-slot="textarea"
       data-variant={variant}
       spellCheck={false}

@@ -16,7 +16,10 @@ vi.mock('./canonical-group-labels', () => ({
 
 import { CanonicalGroupComposerInput } from './canonical-group-composer'
 
-afterEach(() => {cleanup(); vi.unstubAllGlobals()})
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 const members = [
   { member_id: 'opaque-owner-one', profile: 'default', handle: 'owner-atlas', display_name: 'Atlas Bot' },
@@ -89,26 +92,37 @@ it('updates completion when the caret moves and refuses an old selection before 
 
 it('does not move focus or the newer draft caret when mention completion runs late', () => {
   const frames: FrameRequestCallback[] = []
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {frames.push(callback);
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frames.push(callback)
 
- return frames.length})
-  render(<><Composer /><button type="button">Other control</button></>)
+    return frames.length
+  })
+  render(
+    <>
+      <Composer />
+      <button type="button">Other control</button>
+    </>
+  )
   const input = screen.getByRole('textbox') as HTMLTextAreaElement
   input.focus()
-  fireEvent.change(input, {target: {value: '@Mir', selectionStart: 4}})
-  fireEvent.keyDown(input, {key: 'Enter'})
+  fireEvent.change(input, { target: { value: '@Mir', selectionStart: 4 } })
+  fireEvent.keyDown(input, { key: 'Enter' })
   expect(input.value).toBe('@peer-mira ')
-  const other = screen.getByRole('button', {name: 'Other control'})
+  const other = screen.getByRole('button', { name: 'Other control' })
   other.focus()
 
-  for (const frame of frames) {frame(0)}
+  for (const frame of frames) {
+    frame(0)
+  }
   expect(document.activeElement).toBe(other)
   input.focus()
-  fireEvent.change(input, {target: {value: '@Mir', selectionStart: 4}})
-  fireEvent.keyDown(input, {key: 'Enter'})
-  fireEvent.change(input, {target: {value: 'My newer draft', selectionStart: 2}})
+  fireEvent.change(input, { target: { value: '@Mir', selectionStart: 4 } })
+  fireEvent.keyDown(input, { key: 'Enter' })
+  fireEvent.change(input, { target: { value: 'My newer draft', selectionStart: 2 } })
 
-  for (const frame of frames) {frame(0)}
+  for (const frame of frames) {
+    frame(0)
+  }
   expect(input.value).toBe('My newer draft')
   expect(input.selectionStart).toBe(2)
 })

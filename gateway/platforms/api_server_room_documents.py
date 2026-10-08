@@ -203,9 +203,10 @@ def lookup_run_response(adapter, request, *, scope, key, fingerprint, session_id
     if not key:
         return None
     from gateway.platforms.api_server_room_grants import _json_error
-    from gateway.platforms.api_server_runs import _replay_or_conflict, _room_retention_until
+    from gateway.platforms.api_server_runs import _replay_or_conflict, _room_retention_until, _ROOM_AUTHORITY_REQUEST_KEY
     outcome, record = adapter._run_idempotency_store.lookup(
-        scope, key, fingerprint, retention_until=_room_retention_until(request))
+        scope, key, fingerprint, retention_until=_room_retention_until(request),
+        room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
     cancelled = record is not None and record['status'].get('status') == 'cancelled'
     if outcome == "reused" and record is not None and peer_files and not cancelled:
         try:
@@ -214,6 +215,19 @@ def lookup_run_response(adapter, request, *, scope, key, fingerprint, session_id
                 outcome, record = "missing", None
         except RuntimeStoreError as exc:
             return _json_error(_openai_error, exc.reason, code=exc.reason, status=503)
-    if outcome == "conflict" or (outcome == "reused" and record is not None):
+    if outcome == "authority_retired" or outcome == "conflict" or (outcome == "reused" and record is not None):
         return _replay_or_conflict(adapter, request, outcome, record, gateway_session_key, _openai_error)
     return None
+
+
+async def prepare_run_input(adapter, request, *, scope, key, fingerprint, session_id,
+                            gateway_session_key, room_dispatch, peer_files, _openai_error):
+    """Replay accepted input before preparing new bytes or spending a concurrency slot."""
+    replay = lookup_run_response(adapter, request, scope=scope, key=key, fingerprint=fingerprint,
+        session_id=session_id, gateway_session_key=gateway_session_key,
+        peer_files=peer_files, _openai_error=_openai_error)
+    if replay is not None or not peer_files:
+        return None, replay
+    return await prepare_peer_files(adapter, request, room_dispatch, idempotency_scope=scope,
+        idempotency_key=key, session_id=session_id, gateway_session_key=gateway_session_key,
+        _openai_error=_openai_error)

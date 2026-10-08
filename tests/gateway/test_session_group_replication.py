@@ -64,13 +64,13 @@ def permissions(grant):
 @pytest.mark.asyncio
 async def test_the_canonical_invitation_keeps_a_copy_unless_the_operator_opts_out(gateway):
     ordinary = await call(gateway.owner, 'groups.peer.invite', **IDENTITY)
-    assert permissions(ordinary['grant']) == ['approve', 'dispatch', 'replicate', 'status', 'stop']
+    assert permissions(ordinary['grant']) == ['approve', 'dispatch', 'replicate', 'retire', 'status', 'stop']
     opted_out = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, replication=False)
-    assert permissions(opted_out['grant']) == ['approve', 'dispatch', 'status', 'stop']
+    assert permissions(opted_out['grant']) == ['approve', 'dispatch', 'retire', 'status', 'stop']
     copying = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, replication=True)
-    assert permissions(copying['grant']) == ['approve', 'dispatch', 'replicate', 'status', 'stop']
+    assert permissions(copying['grant']) == ['approve', 'dispatch', 'replicate', 'retire', 'status', 'stop']
     evidence = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, work_records=True)
-    assert permissions(evidence['grant']) == ['approve', 'dispatch', 'replicate', 'status', 'stop', 'work_records']
+    assert permissions(evidence['grant']) == ['approve', 'dispatch', 'replicate', 'retire', 'status', 'stop', 'work_records']
     passive = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, passive_only=True)
     assert permissions(passive['grant']) == ['replicate', 'status']
     passive = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, replication=True, work_records=True,

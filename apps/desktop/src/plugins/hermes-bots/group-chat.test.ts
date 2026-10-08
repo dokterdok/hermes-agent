@@ -114,13 +114,21 @@ describe('classic reload continuity', () => {
 
     const stored: GroupChat = {
       log: [{ at: 10, from: { kind: 'user', name: 'You' }, id: 'input', text: 'context', thread: 't' }],
-      watermarks: { 't::builder': 1 }, sessions: { builder: 'session' },
+      watermarks: { 't::builder': 1 },
+      sessions: { builder: 'session' },
       sessionOwners: { builder: { name: 'builder', connectionId: 'owner' } },
-      holds: { builder: { at: 2, noted: true } }, heldMessages: { builder: ['input'] },
-      holdDetection: false, stranded: { builder: { before: 2, thread: 't' } },
-      externalCursors: { builder: 4 }, members: [{ name: 'builder' }],
-      roomId: 'room', image: 'data:image/png;base64,room', sectionId: 'section',
-      rosterOrder: 3, pinned: true, syncRevision: 7
+      holds: { builder: { at: 2, noted: true } },
+      heldMessages: { builder: ['input'] },
+      holdDetection: false,
+      stranded: { builder: { before: 2, thread: 't' } },
+      externalCursors: { builder: 4 },
+      members: [{ name: 'builder' }],
+      roomId: 'room',
+      image: 'data:image/png;base64,room',
+      sectionId: 'section',
+      rosterOrder: 3,
+      pinned: true,
+      syncRevision: 7
     }
 
     chat.updateGroupChat('Core', () => ({ ...stored, epoch: 9, running: true }), { sync: false })
@@ -135,9 +143,12 @@ describe('classic reload continuity', () => {
     vi.spyOn(Date, 'now').mockReturnValue(100)
 
     try {
-      chat.$groupChats.set({ Core: { log: [
-        { at: 300, from: { kind: 'user', name: 'You' }, id: 'older', text: 'earlier', thread: 't' }
-      ], watermarks: {} } })
+      chat.$groupChats.set({
+        Core: {
+          log: [{ at: 300, from: { kind: 'user', name: 'You' }, id: 'older', text: 'earlier', thread: 't' }],
+          watermarks: {}
+        }
+      })
       const first = chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, 'first', 't')
       const second = chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, 'second', 't')
       expect(first.at).toBeGreaterThan(300)
@@ -152,9 +163,15 @@ describe('classic reload continuity', () => {
   it('never invents a room id from a legacy name key', async () => {
     const { chat } = await loadRoom()
 
-    const snapshot = chat.mergeGroupChatSyncSnapshots({ version: 3, rooms: {
-      'name:Workshop': { name: 'Workshop', log: [], revision: 1 }
-    } }, { version: 3, rooms: {} })
+    const snapshot = chat.mergeGroupChatSyncSnapshots(
+      {
+        version: 3,
+        rooms: {
+          'name:Workshop': { name: 'Workshop', log: [], revision: 1 }
+        }
+      },
+      { version: 3, rooms: {} }
+    )
 
     expect(snapshot.rooms['name:Workshop'].roomId).toBeUndefined()
     expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(snapshot, {}).Workshop.roomId).toBeUndefined()
@@ -516,39 +533,36 @@ describe('durable projection', () => {
     expect(rooms.Legacy.roomId).toBeNull()
   })
 
-  it('never persists a tombstone that a remote merge forwarded', async () => {
-    const room = await loadRoom()
-    // A drive still mid-turn at disband time leaves a live tombstone.
-    room.chat.$groupChats.set({
-      Live: { epoch: 4, log: [], running: false, tombstone: true, watermarks: {} }
-    } as unknown as Record<string, GroupChat>)
+  it.each([undefined, 'disbanded-room'])(
+    'does not refill or persist a disbanded room from a delayed projection (%s)',
+    async roomId => {
+      const room = await loadRoom()
+      room.chat.$groupChats.set({
+        Live: { epoch: 4, log: [], roomId, running: false, tombstone: true, watermarks: {} }
+      } as unknown as Record<string, GroupChat>)
 
-    // The remote gateway has NOT yet received the delete (plausible now that
-    // sync fans out to every reachable default-profile gateway independently)
-    // — its snapshot still carries a live copy under the same display name.
-    const merged = room.chat.mergeRemoteGroupChatSnapshotIntoRooms(
-      {
-        rooms: {
-          Live: {
-            log: [{ at: 1, from: { kind: 'member', name: 'research' }, text: 'still going' }],
-            members: [{ name: 'research' }]
-          }
+      // A read already in flight can return before the queued delete is visible.
+      // Its old changed-room reservation must not restore the retired room's log.
+      const merged = room.chat.mergeRemoteGroupChatSnapshotIntoRooms(
+        {
+          rooms: {
+            Live: {
+              roomId,
+              log: [{ at: 1, from: { kind: 'member', name: 'research' }, text: 'still going' }],
+              members: [{ name: 'research' }]
+            }
+          },
+          version: 3
         },
-        version: 3
-      },
-      room.chat.$groupChats.get()
-    )
+        room.chat.$groupChats.get(),
+        { preserveRooms: ['Live'] }
+      )
 
-    // The merge spreads `...existing` before its explicit field overrides,
-    // none of which touch `tombstone` — so the flag survives into the merged
-    // room. Without that reachability step durableGroupChatRooms would never
-    // see a tombstoned room from this path at all.
-    expect(merged.Live.tombstone).toBe(true)
-
-    await room.chat.persistGroupChatRooms(merged)
-
-    expect('Live' in durable(room)).toBe(false)
-  })
+      expect(merged.Live).toBeUndefined()
+      await room.chat.persistGroupChatRooms(merged)
+      expect('Live' in durable(room)).toBe(false)
+    }
+  )
 
   it('stranded markers ride the durable map so late replies survive a reload', async () => {
     const room = await loadRoom()

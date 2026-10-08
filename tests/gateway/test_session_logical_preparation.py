@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+import psutil
 
 from gateway.session_authority import initialize_session_authority
 from gateway.session_cron import unbind_owner
@@ -80,18 +81,30 @@ async def test_owner_crash_mid_drain_resumes_the_committed_cursor(tmp_path, monk
     child = subprocess.Popen([sys.executable, str(Path(__file__).parent / 'fixtures/logical_preparation_crash.py'),
                               str(path), str(ready)], cwd=root, env=env,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    launcher = psutil.Process(child.pid)
+    owned = []
     try:
         deadline = time.monotonic() + 30
         while not ready.exists():
             if child.poll() is not None or time.monotonic() > deadline:
                 pytest.fail('preparation child did not commit its first batch')
             await asyncio.sleep(.05)
-        child.kill()
-        await asyncio.to_thread(child.wait, 10)
+        worker = psutil.Process(int(ready.read_text()))
+        assert worker == launcher or launcher in worker.parents()
+        owned = [worker]  # Retain its birth identity before the crash; reject PID reuse.
     finally:
+        if not owned and child.poll() is None:
+            owned = launcher.children(recursive=True)
+        for worker in owned:
+            try:
+                worker.kill()
+                await asyncio.to_thread(worker.wait, 10)
+            except psutil.NoSuchProcess:
+                pass
+            assert not worker.is_running()
         if child.poll() is None:
             child.kill()
-            await asyncio.to_thread(child.wait, 10)
+        await asyncio.to_thread(child.wait, 10)
         if child.stderr:
             child.stderr.close()
     with SessionDB(path) as db:

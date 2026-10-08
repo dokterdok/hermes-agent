@@ -49,10 +49,12 @@ async def execute_finite_admission(authority, ref, row):
     from gateway.session_hosted_output import (
         capture_failed_output, capture_output_result, hosted_output_scope, output_binding,
     )
+    from gateway.session_classic_output import classic_output_scope
     binding = await output_binding(authority, ref, row)
     with finite_turn_scope(row['payload'].get('finite', False), row['payload'].get('unattended') is True), \
             surface_turn_scope(row['payload'].get('surface_v1')), \
-            hosted_output_scope(binding) as output:
+            hosted_output_scope(binding) as output, \
+            classic_output_scope(authority, ref, row):
         if output is None:
             return await execute_admission(authority, ref, row)
         try:

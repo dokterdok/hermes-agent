@@ -151,9 +151,14 @@ it('offers one retry for failed sync using the current name and membership', asy
   $groupChats.set({ Old: { log: [], roomId: 'sync-settings', watermarks: {} } })
   $botMeta.set(Object.fromEntries(members.map(member => [member.name, { groups: ['Old'] }])))
 
+  let failSync = true
   const request = vi.spyOn(host, 'request').mockImplementation(async (method, params) => {
+    if (method === 'profiles.list') {
+      return { profiles: members.map(member => ({ name: member.name, ui_meta: { 'hermes-bots': {} } })) }
+    }
+
     if (method === 'profiles.configure') {
-      return { applied: { ui_meta: params?.name === 'gamma' } }
+      return { applied: { ui_meta: !failSync || params?.name === 'gamma' } }
     }
 
     return {}
@@ -176,7 +181,7 @@ it('offers one retry for failed sync using the current name and membership', asy
     $botMeta.set({ alpha: { groups: ['Latest', 'Other'] }, beta: { groups: [] }, gamma: { groups: ['Latest'] } })
   })
   request.mockClear()
-  request.mockResolvedValue({ applied: { ui_meta: true } })
+  failSync = false
   warning.action!.onClick()
   warning.action!.onClick()
   warning.onDismiss?.()

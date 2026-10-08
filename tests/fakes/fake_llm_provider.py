@@ -32,6 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Union
 
+from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
+
 MODEL_ID = "fake-model"
 
 
@@ -184,6 +186,13 @@ class FakeLLMServer:
     def push(self, *responses: Response) -> None:
         with self._lock:
             self._script.extend(responses)
+
+    def drop_unconsumed(self) -> int:
+        """Discard scripted responses no request consumed; returns how many."""
+        with self._lock:
+            dropped = len(self._script)
+            self._script.clear()
+        return dropped
 
     def _next_main(self, record: dict[str, Any]) -> Response:
         if self._responder is not None:
@@ -430,6 +439,13 @@ def write_hermes_home(
         "  context_length: 128000\n"
         "agent:\n"
         "  api_max_retries: 1\n"
+        # Answered at the current offer version, so an interactive chat never stops on the
+        # shared-metrics offer (a "No thanks" without offer_version is re-asked).
+        "telemetry:\n"
+        "  shared_metrics:\n"
+        "    enabled: false\n"
+        "    send: false\n"
+        f"    offer_version: {OFFER_VERSION}\n"
         + extra_config,
         encoding="utf-8",
     )

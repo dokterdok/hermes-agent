@@ -1,6 +1,5 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
@@ -12,29 +11,54 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const { en } = await import('@/i18n/en')
   const { captureGroupRequests } = await import('./group-test-utils')
 
-  return { ...original, atom, host: { requestProfile: captureGroupRequests(request).request }, useI18n: () => ({ locale: 'en', t: en }),
-    Button: (props: ComponentProps<'button'>) => <button {...props} />,
-    Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
+  return {
+    ...original,
+    atom,
+    host: { requestProfile: captureGroupRequests(request).request },
+    useI18n: () => ({ locale: 'en', t: en })
+  }
 })
 vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 
-  return { useCanonicalGroupLabels: () => ({ ...CANONICAL_GROUP_LOCALES.en, back: 'Back', refresh: 'Refresh', retry: 'Retry',
-    send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel', you: 'You' }) }
+  return {
+    useCanonicalGroupLabels: () => ({
+      ...CANONICAL_GROUP_LOCALES.en,
+      back: 'Back',
+      refresh: 'Refresh',
+      retry: 'Retry',
+      send: 'Send',
+      stop: 'Stop',
+      download: 'Download',
+      discard: 'Discard',
+      cancel: 'Cancel',
+      you: 'You'
+    })
+  }
 })
 
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const binding = { connectionId: 'original-owner', profile: 'reviewer', roomId: 'room-one' }
-const manifest = { attachment_id: 'att_00000000000000000000000000000001', kind: 'file', name: 'notes.txt', mime: 'text/plain', size: 1 }
+
+const manifest = {
+  attachment_id: 'att_00000000000000000000000000000001',
+  kind: 'file',
+  name: 'notes.txt',
+  mime: 'text/plain',
+  size: 1
+}
+
 const originalDesktop = window.hermesDesktop
-afterEach(() => { cleanup()
+afterEach(() => {
+  cleanup()
   request.mockReset()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   localStorage.clear()
-  window.hermesDesktop = originalDesktop })
+  window.hermesDesktop = originalDesktop
+})
 
 it('keeps a committed file downloadable in history after Send clears the composer (F31)', async () => {
   const observed = observeDownloads()
@@ -63,19 +87,41 @@ it('keeps a committed file downloadable in history after Send clears the compose
   } as unknown as typeof window.hermesDesktop
   let sent = false
   request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+    if (method === 'groups.state') {
+      return { room: { name: 'Room' }, driver_status: {} }
+    }
 
-    if (method === 'groups.log') {return { events: sent ? [{ seq: 1, room_id: binding.roomId, event_id: 'committed-user-event',
-      kind: 'message.user', payload: { text: 'Review these notes', attachments: [manifest] } }] : [] }}
+    if (method === 'groups.log') {
+      return {
+        events: sent
+          ? [
+              {
+                seq: 1,
+                room_id: binding.roomId,
+                event_id: 'committed-user-event',
+                kind: 'message.user',
+                payload: { text: 'Review these notes', attachments: [manifest] }
+              }
+            ]
+          : []
+      }
+    }
 
-    if (method === 'groups.attachment.upload') {return { ...manifest, sha256: 'receipt-only' }}
+    if (method === 'groups.attachment.upload') {
+      return { ...manifest, sha256: 'receipt-only' }
+    }
 
-    if (method === 'groups.send') {expect(params.payload.attachments).toEqual([manifest])
+    if (method === 'groups.send') {
+      expect(params.payload.attachments).toEqual([manifest])
       sent = true
 
-      return { accepted: true, client_event_id: params.event_id }}
+      return { accepted: true, client_event_id: params.event_id }
+    }
 
-    if (method === 'groups.attachment.download') {return { ...manifest, event_id: params.event_id, data_base64: 'QQ==' }}
+    if (method === 'groups.attachment.download') {
+      return { ...manifest, event_id: params.event_id, data_base64: 'QQ==' }
+    }
+
     throw new Error(`Unexpected method ${method}`)
   })
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
@@ -105,6 +151,72 @@ it('keeps a committed file downloadable in history after Send clears the compose
     attachment_id: manifest.attachment_id
   })
   expect(request.mock.calls.some(call => call[1] === 'groups.attachment.list')).toBe(false)
+})
+
+it('blocks Send during a chosen file upload, keeps Stop available, and recovers from a failed upload', async () => {
+  let rejectUpload!: (error: Error) => void
+  let releaseUpload!: (value: unknown) => void
+
+  const heldUpload = new Promise((resolve, reject) => {
+    releaseUpload = resolve
+    rejectUpload = reject
+  })
+
+  let uploadResult: Promise<unknown> = heldUpload
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {
+      return { room: { name: 'Autumn launch' }, driver_status: { working: true } }
+    }
+
+    if (method === 'groups.log') {
+      return { events: [] }
+    }
+
+    if (method === 'groups.attachment.upload') {
+      return uploadResult
+    }
+
+    if (method === 'groups.send') {
+      return { accepted: true }
+    }
+
+    return {}
+  })
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  const input = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(input.disabled).toBe(false))
+  fireEvent.change(input, { target: { value: 'Please review this file' } })
+
+  const chooseFile = () =>
+    fireEvent.change(view.container.querySelector('input[type=file]')!, {
+      target: { files: [new File(['A'], manifest.name, { type: manifest.mime })] }
+    })
+
+  chooseFile()
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.attachment.upload')).toBe(true))
+  expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(false)
+  fireEvent.keyDown(input, { key: 'Enter' })
+  fireEvent.submit(view.container.querySelector('form')!)
+  expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+  await act(async () => rejectUpload(new Error('Upload interrupted')))
+  await screen.findByText(/Upload interrupted/)
+  expect(input.value).toBe('Please review this file')
+  expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(false)
+  uploadResult = new Promise(resolve => {
+    releaseUpload = resolve
+  })
+  chooseFile()
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.attachment.upload')).toHaveLength(2))
+  await act(async () => releaseUpload(manifest))
+  await screen.findByText(manifest.name)
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() =>
+    expect(request.mock.calls.find(call => call[1] === 'groups.send')?.[2].payload).toMatchObject({
+      text: 'Please review this file',
+      attachments: [manifest]
+    })
+  )
 })
 
 it('binds user/member history downloads to their real event and refuses missing or foreign room identity', async () => {
@@ -284,6 +396,8 @@ it('hides empty bookkeeping rows, but keeps unknown kinds and bookkeeping that c
   await waitFor(() => expect(history.getByText('hello')).toBeTruthy())
   expect(history.getByText('Stopped by you')).toBeTruthy()
   expect(history.getByText('room.future_kind')).toBeTruthy()
+  expect(history.getByText(CANONICAL_GROUP_LOCALES.en.activityUpdated)).toBeTruthy()
+  expect(history.getByText('room.future_kind').closest('details')?.open).toBe(false)
   expect(history.queryByText('turn.settled')).toBeNull()
   expect(history.queryByText('room.activity')).toBeNull()
 })
@@ -406,9 +520,8 @@ it('keeps Layer 7 bookkeeping quiet and words host changes and waiting work from
   expect(history.queryByText(/install:/)).toBeNull()
   expect(history.getByText('Waiting for Mac mini: this needs a Bot that’s only there.')).toBeTruthy()
   expect(history.getByText('Waiting for another computer: this needs a file that’s only there.')).toBeTruthy()
-  expect(history.getAllByText('turn.deferred').every(node => node.closest('details')?.open === false)).toBe(true)
-  expect(history.getByText(`This group now continues on Home VPS. Mac mini went offline at ${time}.`).closest('p')?.className).toContain('text-(--ui-text-tertiary)')
-  expect(request.mock.calls.every(call => ['groups.capabilities', 'groups.state', 'groups.log'].includes(call[1]))).toBe(true)
+  expect(history.getByText('turn.deferred')).toBeTruthy()
+  expect(request.mock.calls.every(call => ['groups.state', 'groups.log'].includes(call[1]))).toBe(true)
 })
 
 it('keeps every placeholder of the host-change and waiting copy in all nine locales', () => {
@@ -437,15 +550,36 @@ it('keeps every placeholder of the host-change and waiting copy in all nine loca
 
 it('explains actual failed, deferred and stopped replies while keeping technical details optional', async () => {
   const events = [
-    { seq: 1, event_id: 'failure', kind: 'turn.failed', actor: { kind: 'gateway' }, payload: { member_id: 'mira', error: 'tool_process_exit_1' } },
-    { seq: 2, event_id: 'deferred', kind: 'turn.deferred', actor: { kind: 'gateway' }, payload: { member_id: 'mira', reason: 'approval_pending' } },
+    {
+      seq: 1,
+      event_id: 'failure',
+      kind: 'turn.failed',
+      actor: { kind: 'gateway' },
+      payload: { member_id: 'mira', error: 'tool_process_exit_1' }
+    },
+    {
+      seq: 2,
+      event_id: 'deferred',
+      kind: 'turn.deferred',
+      actor: { kind: 'gateway' },
+      payload: { member_id: 'mira', reason: 'approval_pending' }
+    },
     { seq: 3, event_id: 'stop', kind: 'room.stop_requested', actor: { kind: 'gateway' }, payload: {} }
   ]
 
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.state') {return { room: { name: 'Autumn launch', members: [{ member_id: 'mira', profile: 'default', handle: 'peer-mira', display_name: 'Mira Bot' }] } }}
+    if (method === 'groups.state') {
+      return {
+        room: {
+          name: 'Autumn launch',
+          members: [{ member_id: 'mira', profile: 'default', handle: 'peer-mira', display_name: 'Mira Bot' }]
+        }
+      }
+    }
 
-    if (method === 'groups.log') {return { events }}
+    if (method === 'groups.log') {
+      return { events }
+    }
 
     return {}
   })
@@ -453,74 +587,46 @@ it('explains actual failed, deferred and stopped replies while keeping technical
   const history = within(screen.getByRole('log'))
   await history.findByText(CANONICAL_GROUP_LOCALES.en.activityFailed.replace('{name}', 'Mira Bot'))
   expect(history.getByText(CANONICAL_GROUP_LOCALES.en.activityDeferred.replace('{name}', 'Mira Bot'))).toBeTruthy()
-  expect(history.getByText(CANONICAL_GROUP_LOCALES.en.stopped)).toBeTruthy()
+  expect(history.getByText(CANONICAL_GROUP_LOCALES.en.classicActivityStopped)).toBeTruthy()
   expect(history.getByText('tool_process_exit_1').closest('details')?.open).toBe(false)
   expect(history.getByText('approval_pending').closest('details')?.open).toBe(false)
   expect(request.mock.calls.every(call => ['groups.state', 'groups.log'].includes(call[1]))).toBe(true)
 })
 
-it('blocks Send during a chosen file upload, keeps Stop available, and recovers from a failed upload', async () => {
-  let rejectUpload!: (error: Error) => void
-  let releaseUpload!: (value: unknown) => void
-  const heldUpload = new Promise((resolve, reject) => { releaseUpload = resolve; rejectUpload = reject })
-  let uploadResult: Promise<unknown> = heldUpload
-  request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.state') {return { room: { name: 'Autumn launch' }, driver_status: { working: true } }}
-
-    if (method === 'groups.log') {return { events: [] }}
-
-    if (method === 'groups.attachment.upload') {return uploadResult}
-
-    if (method === 'groups.send') {return { accepted: true }}
-
-    return {}
-  })
-  const view = render(<CanonicalGroupWorkspace binding={binding} />)
-  const input = screen.getByRole('textbox') as HTMLTextAreaElement
-  await waitFor(() => expect(input.disabled).toBe(false))
-  fireEvent.change(input, { target: { value: 'Please review this file' } })
-
-  const chooseFile = () => fireEvent.change(view.container.querySelector('input[type=file]')!, {
-    target: { files: [new File(['A'], manifest.name, { type: manifest.mime })] }
-  })
-
-  chooseFile()
-  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.attachment.upload')).toBe(true))
-  expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true)
-  expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(false)
-  fireEvent.keyDown(input, { key: 'Enter' })
-  fireEvent.submit(view.container.querySelector('form')!)
-  expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
-  await act(async () => rejectUpload(new Error('Upload interrupted')))
-  await screen.findByText(/Upload interrupted/)
-  expect(input.value).toBe('Please review this file')
-  expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(false)
-  uploadResult = new Promise(resolve => { releaseUpload = resolve })
-  chooseFile()
-  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.attachment.upload')).toHaveLength(2))
-  await act(async () => releaseUpload(manifest))
-  await screen.findByText(manifest.name)
-  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-  await waitFor(() => expect(request.mock.calls.find(call => call[1] === 'groups.send')?.[2].payload)
-    .toMatchObject({ text: 'Please review this file', attachments: [manifest] }))
-})
-
 it('opens an explicit public HTTP link from actual group history while foreign paths and media stay inert', async () => {
-  const {$previewTabs} = await import('@/store/preview')
+  const { $previewTabs } = await import('@/store/preview')
   $previewTabs.set([])
   const api = vi.fn()
   const fetchLinkTitle = vi.fn()
-  window.hermesDesktop = {...window.hermesDesktop, api, fetchLinkTitle} as never
+  window.hermesDesktop = { ...window.hermesDesktop, api, fetchLinkTitle } as never
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.state') {return {room: {name: 'Public links', members: [{member_id: 'mira', profile: 'default', display_name: 'Mira Bot'}]}}}
+    if (method === 'groups.state') {
+      return {
+        room: { name: 'Public links', members: [{ member_id: 'mira', profile: 'default', display_name: 'Mira Bot' }] }
+      }
+    }
 
-    if (method === 'groups.log') {return {events: [{seq: 1, room_id: binding.roomId, event_id: 'public-link', kind: 'message.member', actor: {kind: 'member', id: 'mira'},
-      payload: {text: '[Release notes](https://example.com/releases/v1) and [local notes](/home/peer/private.md)\n\n![Foreign picture](https://example.com/automatic.png)'}}]}}
+    if (method === 'groups.log') {
+      return {
+        events: [
+          {
+            seq: 1,
+            room_id: binding.roomId,
+            event_id: 'public-link',
+            kind: 'message.member',
+            actor: { kind: 'member', id: 'mira' },
+            payload: {
+              text: '[Release notes](https://example.com/releases/v1) and [local notes](/home/peer/private.md)\n\n![Foreign picture](https://example.com/automatic.png)'
+            }
+          }
+        ]
+      }
+    }
 
     return {}
   })
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
-  const link = await screen.findByRole('link', {name: 'Release notes'})
+  const link = await screen.findByRole('link', { name: 'Release notes' })
   expect(screen.getByText('local notes').closest('a')).toBeNull()
   expect(api).not.toHaveBeenCalled()
   expect(fetchLinkTitle).not.toHaveBeenCalled()
@@ -529,4 +635,120 @@ it('opens an explicit public HTTP link from actual group history while foreign p
   await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/releases/v1'))
   expect(api).not.toHaveBeenCalled()
   $previewTabs.set([])
+})
+
+it('keeps continuation bookkeeping quiet and words host changes and waiting work from display fields, without new reads', async () => {
+  const wentOffline = new Date()
+  wentOffline.setHours(9, 30, 0, 0)
+  const time = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(wentOffline)
+  const english =
+    'This group now continues on install:0123456789abcdef0123456789abcdef (with the operator’s attestation).'
+  const system = { kind: 'system', id: 'room-driver' }
+
+  const events = [
+    {
+      seq: 1,
+      event_id: 'said',
+      kind: 'message.user',
+      actor: { kind: 'user', id: 'desktop' },
+      payload: { text: 'hello' }
+    },
+    {
+      seq: 2,
+      event_id: 'admitted',
+      kind: 'task.admitted',
+      actor: system,
+      payload: { task_id: 'task-1', generation: 1 }
+    },
+    {
+      seq: 3,
+      event_id: 'custody',
+      kind: 'custody.configured',
+      actor: system,
+      payload: { voters: [{ install_id: 'install:a', role: 'custodian' }] }
+    },
+    { seq: 4, event_id: 'state', kind: 'succession.state', actor: system, payload: { state: 'moving' } },
+    {
+      seq: 5,
+      event_id: 'moved',
+      kind: 'authority.transition',
+      actor: system,
+      payload: {
+        text: english,
+        to_name: 'Home VPS',
+        from_name: 'Mac mini',
+        offline_since: wentOffline.getTime() / 1000
+      }
+    },
+    {
+      seq: 6,
+      event_id: 'moved-unnamed',
+      kind: 'authority.transition',
+      actor: system,
+      payload: { text: english, to_name: null, from_name: null, offline_since: null }
+    },
+    {
+      seq: 7,
+      event_id: 'moved-older',
+      kind: 'authority.transition',
+      actor: system,
+      payload: { text: 'Older gateway notice.' }
+    },
+    {
+      seq: 8,
+      event_id: 'waiting-bot',
+      kind: 'turn.deferred',
+      actor: system,
+      payload: {
+        member_id: 'atlas',
+        task_id: 'task-2',
+        reason: 'waiting_for_host',
+        resource: 'bot',
+        host_name: 'Mac mini'
+      }
+    },
+    {
+      seq: 9,
+      event_id: 'waiting-file',
+      kind: 'turn.deferred',
+      actor: system,
+      payload: { member_id: 'atlas', task_id: 'task-3', reason: 'waiting_for_host', resource: 'file', host_name: null }
+    }
+  ]
+
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {
+      return {
+        room: {
+          name: 'Harbor launch',
+          members: [{ member_id: 'atlas', profile: 'default', handle: 'atlas', display_name: 'Atlas Bot' }]
+        }
+      }
+    }
+
+    if (method === 'groups.log') {
+      return { events }
+    }
+    throw new Error(`Unexpected method ${method}`)
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const history = within(screen.getByRole('log'))
+  await history.findByText('hello')
+
+  for (const kind of ['task.admitted', 'custody.configured', 'succession.state']) {
+    expect(history.queryByText(kind)).toBeNull()
+  }
+  expect(history.getByText(`This group now continues on Home VPS. Mac mini went offline at ${time}.`)).toBeTruthy()
+  expect(history.getByText(CANONICAL_GROUP_LOCALES.en.continuedOnUnnamed)).toBeTruthy()
+  expect(history.getByText('Older gateway notice.')).toBeTruthy()
+  expect(history.queryByText(english)).toBeNull()
+  expect(history.getByText('Waiting for Mac mini: this needs a Bot that’s only there.')).toBeTruthy()
+  expect(history.getByText('Waiting for another computer: this needs a file that’s only there.')).toBeTruthy()
+  expect(
+    history.getByText('This group now continues on Home VPS. Mac mini went offline at ' + time + '.').closest('p')
+      ?.className
+  ).toContain('text-(--ui-text-tertiary)')
+  expect(
+    request.mock.calls.every(call => ['groups.capabilities', 'groups.state', 'groups.log'].includes(call[1]))
+  ).toBe(true)
 })

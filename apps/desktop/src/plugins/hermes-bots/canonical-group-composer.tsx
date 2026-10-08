@@ -1,4 +1,13 @@
-import { Button, Codicon, composerInputSurface, composerPanelCard, PRIMARY_ICON_BTN, RowButton, Textarea, Tip } from '@hermes/plugin-sdk'
+import {
+  Button,
+  Codicon,
+  composerInputSurface,
+  composerPanelCard,
+  PRIMARY_ICON_BTN,
+  RowButton,
+  Textarea,
+  Tip
+} from '@hermes/plugin-sdk'
 import { useId, useRef, useState } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
@@ -251,17 +260,19 @@ export function CanonicalGroupComposer({
           onUploadingChange={onUploading}
         />
         <div className="ml-auto flex shrink-0 items-center gap-2">
-          {canStop && <Button
-            disabled={!visible || stopping}
-            loading={stopping}
-            onClick={onStop}
-            size="xs"
-            type="button"
-            variant="ghost"
-          >
-            <Codicon name="debug-stop" />
-            {labels.stop}
-          </Button>}
+          {canStop && (
+            <Button
+              disabled={!visible || stopping}
+              loading={stopping}
+              onClick={onStop}
+              size="xs"
+              type="button"
+              variant="ghost"
+            >
+              <Codicon name="debug-stop" />
+              {labels.stop}
+            </Button>
+          )}
           <Tip label={sendLabel}>
             <Button
               aria-label={sendLabel}

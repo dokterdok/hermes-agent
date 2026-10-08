@@ -85,6 +85,9 @@ class AuthorityConnection:
                 params = {key: value for key, value in params.items() if key != 'profile'}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
+                    'gateway.capabilities': self.classic_capabilities,
+                    'session.export.read': self.classic_export_read,
+                    'session.export.discard': self.classic_export_discard,
                     'commands.catalog': self.command_catalog, 'complete.slash': self.slash_completions,
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
@@ -316,11 +319,10 @@ class AuthorityConnection:
             self.authority.authorize(self.actor, ref, 'session:control')
             from gateway.session_local_mcp import resume_editor_mcp
             resume_editor_mcp(self.authority, ref, params['editor'])
-        # A resume by id/title is the user asking for THIS conversation to continue; a stamped
-        # tui_shutdown / ws_disconnect row would otherwise be routed as stale on the next submit.
+        # Read-only mount (#85303): an ended row stays ended until the first admitted turn
+        # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
+        # never re-lights DB-derived liveness with no new activity.
         self.authority.authorize(self.actor, ref, 'session:read')
-        from gateway.session_local_recovery import reopen_local_session
-        reopen_local_session(self.authority, ref)
         from gateway.session_local_plumbing import refresh_on_resume
         refresh_on_resume(self.authority, self.actor, ref)
         snapshot = await self.authority.attach(self.actor, ref)
@@ -366,27 +368,78 @@ class AuthorityConnection:
             raise RuntimeStoreError('invalid_params')
         return self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
 
+    async def classic_capabilities(self, ref, params):
+        from gateway.session_classic_output import capabilities
+        return capabilities(self, params)
+
+
+    async def classic_export_read(self, ref, params):
+        from gateway.session_classic_output import read
+        return await read(self, ref, params)
+
+
+    async def classic_export_discard(self, ref, params):
+        from gateway.session_classic_output import discard
+        return await discard(self, ref, params)
+
+
     async def submit(self, ref, params):
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
-                                   'surface', 'voice_context', 'interrupted'}
+                                   'surface', 'voice_context', 'interrupted', 'voice_turn', 'classic_export'}
         if forbidden:
             raise RuntimeStoreError('invalid_params')
-        request_id = params.get('submission_id') or params.get('input_id')
+        classic_request = params.get('classic_export')
+        classic_request_id = classic_request.get('request_id') if isinstance(classic_request, dict) else None
+        request_id = params.get('submission_id') or params.get('input_id') or classic_request_id
         if not isinstance(request_id, str) or not request_id:
+            raise RuntimeStoreError('invalid_params')
+        if classic_request is not None and classic_request_id != request_id:
+            raise RuntimeStoreError('invalid_params')
+        if not isinstance(params.get('text'), str):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_finite import admit_finite
         from gateway.session_surface import submit_surface_fields
         payload = {'text': params.get('text'), **admit_finite(params), **submit_surface_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'))
-        return asdict(receipt)
+        prepared = None
+        if classic_request is not None:
+            from gateway.session_classic_output import prepare_submission
+            prepared = prepare_submission(self, ref, classic_request, payload['text'], request_id)
+            payload['classic_export_v1'] = prepared[3]
+        canonical_payload = []
+        try:
+            receipt = await self.authority.submit(
+                self.actor,
+                Submission(request_id, ref, payload, 'queue'),
+                _payload_capture=canonical_payload.append if prepared is not None else None,
+            )
+        except Exception:
+            if prepared is not None:
+                from gateway.session_classic_output import abort_submission
+                abort_submission(
+                    prepared,
+                    self.authority,
+                    canonical_payload[0] if canonical_payload else None,
+                )
+            raise
+        result = asdict(receipt)
+        if prepared is not None:
+            from gateway.session_classic_output import submission_status
+            result['classic_export'] = submission_status(prepared)
+        return result
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
-        result = await mutate_session(self.authority, self.actor, ref, params)
+        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+        try:
+            result = await mutate_session(self.authority, self.actor, ref, params)
+        except MUTATION_GUARD_REFUSALS as exc:
+            # A live turn lease / compression lock is the same retryable busy verdict a
+            # running admission gets (REST maps it to 409), not an internal error.
+            raise RuntimeStoreError('session_busy') from exc
         # The branching viewer navigates straight into its new child; attach it
         # here (create parity) so the first submit is not refused as a stranger.
         child = result.get('branched_session_id') if isinstance(result, dict) else None
@@ -406,6 +459,10 @@ class AuthorityConnection:
             if saved is not None:
                 out['result'] = saved['result']
                 out['usage'] = saved.get('usage') or {}
+        from gateway.session_classic_output import receipt_status
+        classic = receipt_status(self, ref, receipt.admission_id)
+        if classic is not None:
+            out['classic_export'] = classic
         return out
 
     async def cancel(self, ref, params):

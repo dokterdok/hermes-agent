@@ -22,6 +22,12 @@ export function CanonicalMemberFace({
   const appearance = botAppearance(identity, undefined)
 
   return (
-    <BotFace color={avatarColor(appearance.color, identity)} discoverable={false} name={identity} shape={appearance.shape} size={size} />
+    <BotFace
+      color={avatarColor(appearance.color, identity)}
+      discoverable={false}
+      name={identity}
+      shape={appearance.shape}
+      size={size}
+    />
   )
 }

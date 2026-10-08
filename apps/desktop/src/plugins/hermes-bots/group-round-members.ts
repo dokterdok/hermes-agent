@@ -192,7 +192,12 @@ async function runAddressedMemberTurn(
 
   // A directly addressed member gets one bounded nudge after a pass. Both
   // attempts report their own marker, so completion retires only the last one.
-  if (context.isCurrent() && reply !== null && isGroupPassText(reply) && context.addressedKeys?.has(groupMemberKey(member))) {
+  if (
+    context.isCurrent() &&
+    reply !== null &&
+    isGroupPassText(reply) &&
+    context.addressedKeys?.has(groupMemberKey(member))
+  ) {
     return runVisibleMemberTurn(context, member, `${prompt}${GROUP_ADDRESSED_NUDGE_SUFFIX}`, images, onSubmitted)
   }
 

@@ -30,6 +30,7 @@ export const frComposer: NonNullable<TranslationOverrides['composer']> = {
   openDirective: 'Ouvrir',
   queueMessage: "Mettre le message en file d'attente",
   steer: "Diriger l'exécution en cours",
+  redirect: "Rediriger l'exécution en cours",
   stop: 'Arrêter',
   send: 'Envoyer',
   speaking: 'Parle',
@@ -134,7 +135,7 @@ export const frComposer: NonNullable<TranslationOverrides['composer']> = {
     '/init': 'Générer ou mettre à jour les instructions de projet AGENTS.md à partir d’une analyse du dépôt',
     '/suggestions': 'Examiner les automatisations suggérées (accepter/ignorer)',
     '/blueprint': 'Configurer une automatisation à partir d’un modèle',
-    '/browser': 'Gérer la connexion CDP du navigateur [connect|disconnect|status] (gateway local uniquement)',
+    '/browser': 'Gérer le navigateur de l’agent [connect|disconnect|status|use]',
     '/palette': 'Ouvrir la palette de commandes floue (aussi Ctrl+P)',
     '/usage':
       'Afficher l’utilisation des jetons et les limites de débit ; `reset` utilise une réinitialisation de limite Codex en réserve',
@@ -170,13 +171,26 @@ export const frComposer: NonNullable<TranslationOverrides['composer']> = {
   editingQueuedInComposer: "Modification du tour en file d'attente dans le compositeur",
   restoredDraftNotice: 'Votre message non envoyé a été restauré',
   restoredDraftUndo: 'Annuler',
+  localSetup: {
+    title: 'Ceci pourrait tourner sur votre ordinateur',
+    text: (model: string) =>
+      `${model} tient sur cette machine. Gratuit, et les conversations restent sur votre ordinateur.`,
+    action: 'Montrez-moi'
+  },
   queueEdit: 'Modifier',
+  queueExpand: 'Déplier',
+  queueCollapse: 'Replier',
   queueSendNext: 'Suivant',
   queueSteer: 'Diriger — réorienter maintenant le tour en cours',
   queueSend: 'Envoyer',
   queueDelete: 'Supprimer',
   queueResume: 'Reprendre',
   queueResumeTip: "Mis en pause par Arrêter — reprendre l'envoi des tours en file d'attente",
+  queueLostNote: 'Tour perdu pendant le redémarrage',
+  restoreImageDraft: "Restaurer le brouillon d'image",
+  queueLostDiscard: 'Ignorer',
+  queueLostDiscardTip:
+    "La passerelle a redémarré en plein tour et ne peut pas le terminer. Ignorez-le pour que les tours en file d'attente derrière lui s'exécutent.",
   queueStuckTitle: "Message en file d'attente non envoyé",
   queueStuckBody:
     "Un tour en file d'attente a continué à échouer lors de l'envoi. Il est toujours en file d'attente — essayez de l'envoyer à nouveau.",

@@ -37,22 +37,24 @@ class DiscordPromptsMixin:
 
         def _build(_channel):
             # Header-only card (same rule as the exec approval prompt): the question and hint live
-            # in content only, so embed-rendering clients don't see them twice (#114693).
-            embed = facade.discord.Embed(title="❓ Hermes needs your input", color=facade.discord.Color.orange())
+            # in content only, so embed-rendering clients don'facade.t see them twice (#114693).
+            clarify_title = facade.t("platform.discord.prompt.clarify_title")
+            embed = facade.discord.Embed(
+                title=facade._truncate_discord_component_text(f"❓ {clarify_title}", facade._DISCORD_EMBED_TITLE_LIMIT), color=facade.discord.Color.orange())
             # 5 buttons × 5 rows = 25; one slot is reserved for "Other".
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
             if clean_choices:
-                hint = "Pick one below, or click ✏️ Other to type a custom answer."
+                hint = facade.t("platform.discord.prompt.clarify_hint_buttons")
                 view = facade.ClarifyChoiceView(
                     choices=clean_choices, clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                 )
             else:
-                hint = "Reply in this channel with your answer."
+                hint = facade.t("platform.discord.prompt.clarify_hint_text")
                 view = None
             content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(), tail=f"\n\n{hint}",
+                f"❓ **{clarify_title}**", str(question or "").strip(), tail=f"\n\n{hint}",
             )
             send_kwargs = {"content": content, "embed": embed}
             if view:
@@ -91,8 +93,10 @@ class DiscordPromptsMixin:
         custom_id = str(data.get("custom_id") or "") if isinstance(data, dict) else ""
         if not custom_id.startswith("hg:"):
             return
-        if not facade._component_check_auth(interaction, self._allowed_user_ids, self._allowed_role_ids):
-            await interaction.response.send_message(facade._UNAUTHORIZED, ephemeral=True)
+        from plugins.platforms.discord.adapter_component_auth import _component_check_auth
+        if not _component_check_auth(interaction, self._allowed_user_ids, self._allowed_role_ids,
+                                     live_auth=self._component_live_auth):
+            await interaction.response.send_message(facade._unauthorized(), ephemeral=True)
             return
         await interaction.response.defer()  # a choice may take longer than Discord's 3 s to answer
         act = getattr(self.gateway_runner, "_group_chat_action", None)
@@ -104,7 +108,7 @@ class DiscordPromptsMixin:
             except (OSError, RuntimeStoreError):
                 logger.warning("[%s] Group Chat notice choice failed", self.name, exc_info=True)
         if result is None:
-            await interaction.followup.send(facade._UNAUTHORIZED, ephemeral=True)
+            await interaction.followup.send(facade._unauthorized(), ephemeral=True)
             return
         await interaction.edit_original_response(
             content=result["text"][:2000], view=self._group_action_view(result["buttons"]))

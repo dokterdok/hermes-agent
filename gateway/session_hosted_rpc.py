@@ -23,8 +23,8 @@ class HostedRoomAuthorityRPC:
         self.authority, self.loop = authority, loop
         self.room_id, self.member_id, self.profile = room_id, member_id, profile
         self.principal, self.authorizer, self.timeout = principal, authorize, timeout
-        self.authorize_write = authorize_write
         self.approval_authorizer = authorize_approval
+        self.authorize_write = authorize_write
         self.callbacks = {}
         binding = json.dumps([room_id, member_id, profile], separators=(',', ':'))
         self.creation_id = 'hosted:' + hashlib.sha256(binding.encode()).hexdigest()

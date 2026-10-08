@@ -11,6 +11,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 def issue(authority, subject, params, mint):
+    """Return the frozen receipt and whether this call committed a new issuance."""
     from gateway import hosted_rooms as rooms
     from gateway.platforms.api_server_room_grants import _grant_db
     from gateway.session_group_peers import _api_server
@@ -28,7 +29,7 @@ def issue(authority, subject, params, mint):
         if row is not None:
             if row['subject'] != subject or row['request_json'] != frozen:
                 raise RuntimeStoreError('idempotency_conflict')
-            return json.loads(row['response_json'])
+            return json.loads(row['response_json']), False
         now = time.time()
         if not now - 300 <= requested_at <= now + 30:
             raise RuntimeStoreError('invitation_request_expired')
@@ -39,4 +40,4 @@ def issue(authority, subject, params, mint):
         conn.execute('INSERT INTO hosted_room_setup_invitations VALUES (?,?,?,?,?)', (
             request_id, subject, frozen, json.dumps(response, separators=(',', ':')),
             response['status_expires_at']))
-        return response
+        return response, True

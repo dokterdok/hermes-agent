@@ -6,15 +6,18 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from agent import secret_scope
 from tools import approval
 
 
 @contextmanager
 def selected_home(home):
     token = set_hermes_home_override(home)
+    secret_token = secret_scope.set_secret_scope({}, profile_home=home)
     try:
         yield
     finally:
+        secret_scope.reset_secret_scope(secret_token)
         reset_hermes_home_override(token)
 
 
@@ -36,13 +39,19 @@ def homes(tmp_path, monkeypatch):
     write_allowlist(named, ["revoked-op", "kept-op"])
     write_allowlist(other, ["other-only"])
     monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(type(tmp_path), "home", lambda: tmp_path)
     monkeypatch.setattr(approval, "_permanent_approved", set())
     monkeypatch.setattr(approval, "_permanent_approved_by_home", {})
     monkeypatch.setattr(approval, "_permanent_baseline_by_home", {})
     monkeypatch.setattr(approval, "_session_approved", {})
-    with selected_home(None):
-        approval.load_permanent_allowlist()
-        yield launch, named, other
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        with selected_home(None):
+            approval.load_permanent_allowlist()
+            yield launch, named, other
+    finally:
+        secret_scope.set_multiplex_active(previous_multiplex)
 
 
 @pytest.mark.parametrize("initial_load", ["lazy", "explicit"])
@@ -58,7 +67,7 @@ def test_named_home_save_preserves_disk_edits_without_resurrecting_revocation(ho
         write_allowlist(named, ["kept-op", "operator-added"])
         # Revocation is intentionally synchronized on reload/save, not watched.
         assert approval.is_approved("named-session", "revoked-op")
-        approval._persist_choice("named-session", "always", [("new-grant", "Fixture", False)])
+        approval._persist_choice("named-session", "always", ["new-grant"])
         assert disk_allowlist(named) == {"kept-op", "operator-added", "new-grant"}
         assert not approval.is_approved("another-session", "revoked-op")
         assert approval.is_approved("another-session", "new-grant")
@@ -69,6 +78,14 @@ def test_named_home_save_preserves_disk_edits_without_resurrecting_revocation(ho
     with selected_home(other):
         assert approval.is_approved("other-session", "other-only")
         assert not approval.is_approved("other-session", "new-grant")
+    with selected_home(named):
+        assert approval.is_approved("new-session", "new-grant")
+        assert not approval.is_approved("new-session", "revoked-op")
+        # A fresh profile cache after restart sees exactly the durable reconciled list.
+        approval._permanent_approved_by_home.clear()
+        approval._permanent_baseline_by_home.clear()
+        assert approval.is_approved("restarted-session", "new-grant")
+        assert not approval.is_approved("restarted-session", "revoked-op")
 
 
 @pytest.mark.parametrize("scoped", [False, True])
@@ -82,9 +99,24 @@ def test_empty_reload_revokes_then_explicit_new_grant_persists_only_in_selected_
         assert approval.load_permanent_allowlist() == set()
         assert all(not approval.is_approved("fresh-session", key) for key in previous)
         assert approval.is_approved("ongoing-session", "session-only")
-        approval._persist_choice("fresh-session", "always", [("new-grant", "Fixture", False)])
+        approval._persist_choice("fresh-session", "always", ["new-grant"])
         assert disk_allowlist(home) == {"new-grant"}
         assert approval.is_approved("later-session", "new-grant")
+    assert disk_allowlist(other) == {"other-only"}
+
+
+def test_direct_save_after_a_lazy_load_does_not_restore_a_revocation(homes):
+    """``save_permanent_allowlist`` is public; a lazily loaded profile needs its baseline too."""
+    _, named, other = homes
+    with selected_home(named):
+        assert approval.is_approved("named-session", "revoked-op")  # first touch: lazy load
+        write_allowlist(named, ["kept-op"])
+        approval.approve_permanent("new-grant")
+        with approval._lock:
+            snapshot = set(approval._permanent_set())
+        approval.save_permanent_allowlist(snapshot)
+        assert disk_allowlist(named) == {"kept-op", "new-grant"}
+        assert not approval.is_approved("fresh", "revoked-op")
     assert disk_allowlist(other) == {"other-only"}
 
 
@@ -98,7 +130,7 @@ def test_reload_of_one_home_does_not_replace_another_cached_home(homes):
         approval.load_permanent_allowlist()
     with selected_home(other):
         assert approval.is_approved("other-session", "other-only")
-        approval._persist_choice("other-session", "always", [("other-new", "Fixture", False)])
+        approval._persist_choice("other-session", "always", ["other-new"])
         assert disk_allowlist(other) == {"other-only", "other-new"}
     assert disk_allowlist(named) == set()
 
@@ -120,7 +152,7 @@ def test_concurrent_always_choices_do_not_restore_a_revoked_pattern(homes, monke
             with selected_home(named):
                 if second:
                     second_started.set()
-                approval._persist_choice(session, "always", [(pattern, "Fixture", False)])
+                approval._persist_choice(session, "always", [pattern])
         except BaseException as exc:
             failures.append(exc)
         finally:

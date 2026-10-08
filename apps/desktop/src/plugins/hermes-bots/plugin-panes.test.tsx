@@ -338,8 +338,12 @@ describe('direct Bot Chat tab focus', () => {
     const { $pendingBotOpen } = await import('./bot-state')
     const open = vi.mocked(openBotCanonicalChat)
 
-    const bot = { name: 'ops', connectionId: 'focus-race', sourceScoped: true,
-      canonical_session: { id: 'focus-race-chat', last_active: 100 } } as RosterRow
+    const bot = {
+      name: 'ops',
+      connectionId: 'focus-race',
+      sourceScoped: true,
+      canonical_session: { id: 'focus-race-chat', last_active: 100 }
+    } as RosterRow
 
     const paneId = 'session-tile:focus-race-chat'
     const harness = recordingContext()
@@ -350,7 +354,9 @@ describe('direct Bot Chat tab focus', () => {
     session.$selectedStoredSessionId.set(null)
     session.setSessionOwnerHint('focus-race-chat', { connectionId: 'focus-race', profile: 'ops', mode: 'remote' })
     states.openSessionTile('focus-race-chat', 'center', 'workspace', undefined, {
-      workspaceMode: 'bots', workspaceOwnerKey: 'bot:focus-race::ops', workspaceTabTitle: 'Bot Chat',
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:focus-race::ops',
+      workspaceTabTitle: 'Bot Chat',
       ownerRoute: { connectionId: 'focus-race', profile: 'ops', mode: 'remote' }
     })
     tree.$layoutTree.set(model.group(['workspace', paneId], { active: 'workspace', id: 'race-main' }))
@@ -391,7 +397,9 @@ describe('direct Bot Chat tab focus', () => {
     const open = vi.mocked(openBotCanonicalChat)
 
     const bot = {
-      name: 'ops', connectionId: 'focus-source-a', sourceScoped: true,
+      name: 'ops',
+      connectionId: 'focus-source-a',
+      sourceScoped: true,
       canonical_session: { id: 'focus-reg-a', resolved_id: 'focus-tip-a', last_active: 100 }
     } as RosterRow
 
@@ -405,11 +413,19 @@ describe('direct Bot Chat tab focus', () => {
     let resolve!: (value: { openedId: string; registryId: string }) => void
     let reject!: (error: Error) => void
     const result = { openedId: 'focus-tip-a', registryId: 'focus-reg-a' }
-    open.mockImplementation(() => new Promise((yes, no) => { resolve = yes; reject = no }))
+    open.mockImplementation(
+      () =>
+        new Promise((yes, no) => {
+          resolve = yes
+          reject = no
+        })
+    )
     session.$selectedStoredSessionId.set(null)
     session.setSessionOwnerHint('focus-tip-a', { connectionId: bot.connectionId!, profile: bot.name, mode: 'remote' })
     states.openSessionTile('focus-tip-a', 'center', 'workspace', undefined, {
-      workspaceMode: 'bots', workspaceOwnerKey: 'bot:focus-source-a::ops', workspaceTabTitle: 'Bot Chat',
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:focus-source-a::ops',
+      workspaceTabTitle: 'Bot Chat',
       ownerRoute: { connectionId: bot.connectionId!, profile: bot.name, mode: 'remote' }
     })
     tree.$layoutTree.set(model.group(['workspace', paneId], { active: 'workspace', id: 'focus-main' }))
@@ -455,9 +471,12 @@ describe('direct Bot Chat tab focus', () => {
 
       // Ordinary tabs retain focus-to-read and never invoke Bot hydration.
       states.openSessionTile('focus-ordinary', 'center', 'workspace')
-      tree.$layoutTree.set(model.group(['workspace', paneId, 'session-tile:focus-ordinary'], {
-        active: paneId, id: 'focus-main'
-      }))
+      tree.$layoutTree.set(
+        model.group(['workspace', paneId, 'session-tile:focus-ordinary'], {
+          active: paneId,
+          id: 'focus-main'
+        })
+      )
       markSessionUnreadFinished('focus-ordinary')
       tree.activateTreePane('focus-main', 'session-tile:focus-ordinary')
       expect(session.$unreadFinishedSessionIds.get()).not.toContain('focus-ordinary')

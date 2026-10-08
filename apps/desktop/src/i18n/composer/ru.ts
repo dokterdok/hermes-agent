@@ -125,7 +125,7 @@ export const ruComposer: NonNullable<TranslationOverrides['composer']> = {
     '/init': 'Просканировать репозиторий и создать или обновить инструкции AGENTS.md',
     '/suggestions': 'Просмотреть, принять или отклонить предложенные автоматизации',
     '/blueprint': 'Настроить автоматизацию по шаблону',
-    '/browser': 'Управлять CDP-подключением браузера [connect|disconnect|status] (только локальный шлюз)',
+    '/browser': 'Управлять браузером агента [connect|disconnect|status|use]',
     '/palette': 'Открыть палитру команд',
     '/usage': 'Показать расход токенов и лимиты; reset использует накопленный сброс лимита Codex',
     '/subscription': 'Показать план Nous и изменить его в браузере',
@@ -159,7 +159,14 @@ export const ruComposer: NonNullable<TranslationOverrides['composer']> = {
   editingQueuedInComposer: 'Редактирование хода в очереди в композере',
   restoredDraftNotice: 'Восстановлено ваше неотправленное сообщение',
   restoredDraftUndo: 'Отменить',
+  localSetup: {
+    title: 'Это может работать на вашем компьютере',
+    text: (model: string) => `${model} подходит для этого компьютера. Бесплатно, а чаты остаются на вашем компьютере.`,
+    action: 'Показать'
+  },
   queueEdit: 'Изменить',
+  queueExpand: 'Раскрыть',
+  queueCollapse: 'Свернуть',
   queueSendNext: 'Дальше',
   queueSteer: 'Направить — изменить текущий ход сейчас',
   queueSend: 'Отправить',

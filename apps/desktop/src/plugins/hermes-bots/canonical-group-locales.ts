@@ -1,4 +1,12 @@
 export interface CanonicalGroupMessages {
+  approvalAction: string
+  approvalCommand: string
+  approvalChanges: string
+  approvalBefore: string
+  approvalAfter: string
+  approvalEmptyFile: string
+  approvalDetailsMissing: string
+  pendingActionUnconfirmed: string
   legacyRoom: string
   checkingDriver: string
   startGatewayGroup: string
@@ -94,13 +102,6 @@ export interface CanonicalGroupMessages {
   emptyHistory: string
   emptyHistoryHint: string
   pendingApprovalTitle: string
-  approvalAction: string
-  approvalCommand: string
-  approvalChanges: string
-  approvalBefore: string
-  approvalAfter: string
-  approvalEmptyFile: string
-  approvalDetailsMissing: string
   pendingRetryTitle: string
   pendingFilesTitle: string
   pendingFilesCleanupTitle: string
@@ -111,7 +112,6 @@ export interface CanonicalGroupMessages {
   retryReply: string
   skipReply: string
   pendingBot: string
-  pendingActionUnconfirmed: string
   skipUnstartedWarning: string
   activityFailed: string
   activityDeferred: string
@@ -129,11 +129,6 @@ export interface CanonicalGroupMessages {
   waitingForHostFile: string
   waitingForUnnamedHostBot: string
   waitingForUnnamedHostFile: string
-  journalLoadFailed: string
-  journalLoadHint: string
-  journalReload: string
-  classicActivitySettled: string
-  classicActivityStopped: string
   retirementStopping: string
   retirementCleanupPending: string
   retirementCleanupUnreadable: string
@@ -143,6 +138,11 @@ export interface CanonicalGroupMessages {
   twoHostRiskConfirm: string
   twoHostLegacy: string
   twoHostDisable: string
+  journalLoadFailed: string
+  journalLoadHint: string
+  journalReload: string
+  classicActivitySettled: string
+  classicActivityStopped: string
 }
 
 export const HOSTED_PROFILE_OWNERS_URL =
@@ -150,7 +150,16 @@ export const HOSTED_PROFILE_OWNERS_URL =
 
 export const CANONICAL_GROUP_LOCALES = {
   en: {
-    legacyRoom: 'Keep chatting here, or start a new group with the same Bots that can keep working when Desktop is closed. Your earlier messages will stay here.',
+    approvalAction: 'Action',
+    approvalCommand: 'Command',
+    approvalChanges: 'Proposed changes',
+    approvalBefore: 'Before',
+    approvalAfter: 'After',
+    approvalEmptyFile: 'Empty file',
+    approvalDetailsMissing: 'Action details are unavailable. Check again before allowing this.',
+    pendingActionUnconfirmed: 'We couldn’t confirm this action. Refresh the group chat to check its status.',
+    legacyRoom:
+      'Keep chatting here, or start a new group with the same Bots that can keep working when Desktop is closed. Your earlier messages will stay here.',
     checkingDriver: 'Checking group chat…',
     startGatewayGroup: 'Start new group',
     classicCount: 'Shared group chats need 2–6 Bots. This conversation stays in the older Desktop mode.',
@@ -162,7 +171,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'We need to finish an earlier setup first. Reconnect the original host and Bots, then choose Retry.',
     classicMembers: 'Choose different Bots with unique @names. @all and @everyone are reserved.',
-    createRefused: 'The gateway couldn’t create this group chat. Check the group name and selected Bots, then try again.',
+    createRefused:
+      'The gateway couldn’t create this group chat. Check the group name and selected Bots, then try again.',
     hostedProfileOwners: 'Group chat setup guide',
     refreshGroups: 'Refresh group chats',
     loadingGroup: 'Loading group chat…',
@@ -189,7 +199,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusApprovals: '{count} waiting for approval',
     statusAttention: 'Needs attention: {count}',
     stopped: 'Stop requested',
-    nothingRunning: 'No Bots are working right now.',
+    nothingRunning: 'No new replies were cancelled.',
     sendRefused: 'This message wasn’t accepted. Edit it and send again.',
     sendNotYet: 'Not sent yet. Try again to send this same message.',
     sendMaybe: 'Your message may already be sent. Try again safely; it won’t appear twice.',
@@ -208,8 +218,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Files are temporarily unavailable.',
     filesAccess: 'Files are unavailable for this Group Chat.',
     filesEmpty: 'No files shared yet.',
-    filesHistoryNotListed: "Shared file references remain in the conversation, but no files are shown here.",
-    fileVersionUnavailable: "This version cannot be downloaded from the current host.",
+    filesHistoryNotListed: 'Shared file references remain in the conversation, but no files are shown here.',
+    fileVersionUnavailable: 'This version cannot be downloaded from the current host.',
     filesPageEmpty: 'No files on this page.',
     filesNoResults: 'No matching files.',
     filesClearSearch: 'Clear search',
@@ -248,13 +258,6 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyHistory: 'Start the conversation',
     emptyHistoryHint: 'Send a message to the Bots in this group chat.',
     pendingApprovalTitle: '{name} needs your approval',
-    approvalAction: 'Action',
-    approvalCommand: 'Command',
-    approvalChanges: 'Proposed changes',
-    approvalBefore: 'Before',
-    approvalAfter: 'After',
-    approvalEmptyFile: 'Empty file',
-    approvalDetailsMissing: 'Action details are unavailable. Check again before allowing this.',
     pendingRetryTitle: '{name} couldn’t start this reply.',
     pendingFilesTitle: 'Sharing files from {name}…',
     pendingFilesCleanupTitle: 'Finishing file cleanup for {name}…',
@@ -265,7 +268,6 @@ export const CANONICAL_GROUP_LOCALES = {
     retryReply: 'Try again',
     skipReply: 'Skip this reply',
     pendingBot: 'Bot',
-    pendingActionUnconfirmed: 'We couldn’t confirm this action. Refresh the group chat to check its status.',
     skipUnstartedWarning: 'This Bot won’t reply to this message.',
     activityFailed: '{name} couldn’t finish this reply.',
     activityDeferred: '{name}’s reply needs attention.',
@@ -283,24 +285,37 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostFile: 'Waiting for {host}: this needs a file that’s only there.',
     waitingForUnnamedHostBot: 'Waiting for another computer: this needs a Bot that’s only there.',
     waitingForUnnamedHostFile: 'Waiting for another computer: this needs a file that’s only there.',
+    retirementStopping: 'Ending the group chat. Waiting for active work to stop.',
+    retirementCleanupPending:
+      'End is still finishing. Access on other computers is being removed. Hermes will keep trying when they reconnect; you can leave this view.',
+    retirementCleanupUnreadable:
+      'Cleanup could not be confirmed. Its records have been kept. Reconnect the owning computer and check again.',
+    retirementUnconfirmed:
+      'We couldn’t confirm whether this group chat ended. Sending is paused; check its status or retry End.',
+    twoHostRiskTitle: 'Allow automatic moves with two computers?',
+    twoHostRiskBody:
+      'If the connection breaks, both computers may run this group’s work at the same time and perform duplicate actions. Keep asking where to continue unless you accept this risk.',
+    twoHostRiskConfirm: 'Allow two-computer automatic moves',
+    twoHostLegacy:
+      'This older computer can still move the group automatically when its reported switch is on. If the connection breaks, both computers may run work. Turn it off here, or update Hermes before choosing the two-computer risk setting.',
+    twoHostDisable: 'Turn off automatic moves',
     journalLoadFailed: 'Saved messages couldn’t be loaded.',
     journalLoadHint: 'Sending is paused to avoid sending a saved message twice. Your current draft will stay here.',
     journalReload: 'Try loading again',
     classicActivitySettled: 'Replies finished',
-    classicActivityStopped: 'Requested Stop; further replies are paused until you continue',
-    retirementStopping: "Ending the group chat. Waiting for active work to stop.",
-    retirementCleanupPending: "End is still finishing. Access on other computers is being removed. Hermes will keep trying when they reconnect; you can leave this view.",
-    retirementCleanupUnreadable: "Cleanup could not be confirmed. Its records have been kept. Reconnect the owning computer and check again.",
-    retirementUnconfirmed: "We couldn’t confirm whether this group chat ended. Sending is paused; check its status or retry End."
-  ,
-    twoHostRiskTitle: "Allow automatic moves with two computers?",
-    twoHostRiskBody: "If the connection breaks, both computers may run this group’s work at the same time and perform duplicate actions. Keep asking where to continue unless you accept this risk.",
-    twoHostRiskConfirm: "Allow two-computer automatic moves",
-    twoHostLegacy: "This older computer can still move the group automatically when its reported switch is on. If the connection breaks, both computers may run work. Turn it off here, or update Hermes before choosing the two-computer risk setting.",
-    twoHostDisable: "Turn off automatic moves"
+    classicActivityStopped: 'Requested Stop; further replies are paused until you continue'
   },
   ja: {
-    legacyRoom: 'このチャットを続けるか、同じBotで新しいグループを始められます。新しいグループはDesktopを閉じても作業を続けられます。これまでのメッセージはここに残ります。',
+    approvalAction: '操作',
+    approvalCommand: 'コマンド',
+    approvalChanges: '変更案',
+    approvalBefore: '変更前',
+    approvalAfter: '変更後',
+    approvalEmptyFile: '空のファイル',
+    approvalDetailsMissing: '操作の詳細を表示できません。許可する前に、詳細を更新してください。',
+    pendingActionUnconfirmed: 'この操作を確認できませんでした。グループチャットを更新して状態を確認してください。',
+    legacyRoom:
+      'このチャットを続けるか、同じBotで新しいグループを始められます。新しいグループはDesktopを閉じても作業を続けられます。これまでのメッセージはここに残ります。',
     checkingDriver: 'グループチャットを確認中…',
     startGatewayGroup: '新しいグループを始める',
     classicCount: '共有グループチャットには2～6体のBotが必要です。この会話は以前のDesktop方式のままです。',
@@ -313,7 +328,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       '以前の設定を先に完了する必要があります。元のホストとBotに再接続して、「再試行」を選んでください。',
     classicMembers: 'それぞれ異なる@名を持つ別々のBotを選んでください。@allと@everyoneは予約されています。',
-    createRefused: 'ゲートウェイでグループチャットを作成できませんでした。グループ名と選択したBotを確認して、再試行してください。',
+    createRefused:
+      'ゲートウェイでグループチャットを作成できませんでした。グループ名と選択したBotを確認して、再試行してください。',
     hostedProfileOwners: 'グループチャット設定ガイド',
     refreshGroups: 'グループチャットを更新',
     loadingGroup: 'グループチャットを読み込み中…',
@@ -342,7 +358,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusApprovals: '承認待ち {count} 件',
     statusAttention: '要対応 {count} 件',
     stopped: '停止を要求しました',
-    nothingRunning: '現在作業中のBotはいません。',
+    nothingRunning: '新たに取り消された返信はありません。',
     sendRefused: 'このメッセージは受け付けられませんでした。編集して、もう一度送信してください。',
     sendNotYet: 'まだ送信されていません。同じメッセージを送るには、もう一度試してください。',
     sendMaybe: 'このメッセージはすでに送信された可能性があります。再試行しても二重には表示されません。',
@@ -361,8 +377,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'ファイルを一時的に利用できません。',
     filesAccess: 'このグループチャットのファイルを利用できません。',
     filesEmpty: '共有されたファイルはまだありません。',
-    filesHistoryNotListed: "共有ファイルの参照は会話に残っていますが、ここにはファイルが表示されていません。",
-    fileVersionUnavailable: "このバージョンは現在のホストからダウンロードできません。",
+    filesHistoryNotListed: '共有ファイルの参照は会話に残っていますが、ここにはファイルが表示されていません。',
+    fileVersionUnavailable: 'このバージョンは現在のホストからダウンロードできません。',
     filesPageEmpty: 'このページにファイルはありません。',
     filesNoResults: '一致するファイルはありません。',
     filesClearSearch: '検索をクリア',
@@ -401,24 +417,17 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyHistory: '会話を始めましょう',
     emptyHistoryHint: 'このグループチャットのBotにメッセージを送ってください。',
     pendingApprovalTitle: '{name}が承認を求めています',
-    approvalAction: '操作',
-    approvalCommand: 'コマンド',
-    approvalChanges: '変更案',
-    approvalBefore: '変更前',
-    approvalAfter: '変更後',
-    approvalEmptyFile: '空のファイル',
-    approvalDetailsMissing: '操作の詳細を表示できません。許可する前に、詳細を更新してください。',
     pendingRetryTitle: '{name}はこの返信を開始できませんでした。',
     pendingFilesTitle: '{name}のファイルを共有中…',
     pendingFilesCleanupTitle: '{name}のファイルの後片付けを完了中…',
     pendingFilesBlockedTitle: '{name}のファイルを確認してください。',
-    pendingFilesBlockedHelp: 'ファイル共有を完了できませんでした。このグループチャットを実行しているコンピューターを確認してください。',
+    pendingFilesBlockedHelp:
+      'ファイル共有を完了できませんでした。このグループチャットを実行しているコンピューターを確認してください。',
     pendingUnknownTitle: '{name}が完了したか確認できませんでした。',
     pendingStoppingTitle: '{name}を停止中…',
     retryReply: '再試行',
     skipReply: 'この返信をスキップ',
     pendingBot: 'Bot',
-    pendingActionUnconfirmed: 'この操作を確認できませんでした。グループチャットを更新して状態を確認してください。',
     skipUnstartedWarning: 'このBotは、このメッセージに返信しません。',
     activityFailed: '{name}はこの返信を完了できませんでした。',
     activityDeferred: '{name}の返信に対応が必要です。',
@@ -436,25 +445,38 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostFile: '{host}を待っています：そこにしかないファイルが必要です。',
     waitingForUnnamedHostBot: '別のコンピューターを待っています：そこにしかないBotが必要です。',
     waitingForUnnamedHostFile: '別のコンピューターを待っています：そこにしかないファイルが必要です。',
+    retirementStopping: 'グループチャットを終了処理中です。実行中の作業の停止を待っています。',
+    retirementCleanupPending:
+      '終了処理はまだ続いています。他のコンピューターのアクセスを解除しています。再接続時にHermesが再試行します。この画面を離れても構いません。',
+    retirementCleanupUnreadable:
+      '後処理を確認できませんでした。記録は保持されています。管理元のコンピューターを再接続し、もう一度確認してください。',
+    retirementUnconfirmed:
+      'グループチャットが終了したか確認できませんでした。送信は一時停止中です。状態を確認するか、終了を再試行してください。',
+    twoHostRiskTitle: '2台のコンピューターで自動移動を許可しますか？',
+    twoHostRiskBody:
+      '接続が切れると、両方のコンピューターが同時にこのグループの作業を実行し、操作が重複する可能性があります。このリスクを受け入れない場合は、継続先を毎回選ぶ設定のままにしてください。',
+    twoHostRiskConfirm: '2台での自動移動を許可',
+    twoHostLegacy:
+      '古いバージョンのこのコンピューターは、表示されたスイッチがオンならグループを自動で移動することがあります。接続が切れると両方で作業が動く可能性があります。ここでオフにするか、2台でのリスク設定を選ぶ前にHermesを更新してください。',
+    twoHostDisable: '自動移動を無効にする',
     journalLoadFailed: '保存済みメッセージを読み込めませんでした。',
     journalLoadHint:
       '保存済みメッセージを重複して送信しないよう、送信を一時停止しています。現在の下書きはそのまま残ります。',
     journalReload: 'もう一度読み込む',
     classicActivitySettled: '返信が完了しました',
-    classicActivityStopped: '停止を要求しました。続行するまで、その後の返信は一時停止します',
-    retirementStopping: "グループチャットを終了処理中です。実行中の作業の停止を待っています。",
-    retirementCleanupPending: "終了処理はまだ続いています。他のコンピューターのアクセスを解除しています。再接続時にHermesが再試行します。この画面を離れても構いません。",
-    retirementCleanupUnreadable: "後処理を確認できませんでした。記録は保持されています。管理元のコンピューターを再接続し、もう一度確認してください。",
-    retirementUnconfirmed: "グループチャットが終了したか確認できませんでした。送信は一時停止中です。状態を確認するか、終了を再試行してください。"
-  ,
-    twoHostRiskTitle: "2台のコンピューターで自動移動を許可しますか？",
-    twoHostRiskBody: "接続が切れると、両方のコンピューターが同時にこのグループの作業を実行し、操作が重複する可能性があります。このリスクを受け入れない場合は、継続先を毎回選ぶ設定のままにしてください。",
-    twoHostRiskConfirm: "2台での自動移動を許可",
-    twoHostLegacy: "古いバージョンのこのコンピューターは、表示されたスイッチがオンならグループを自動で移動することがあります。接続が切れると両方で作業が動く可能性があります。ここでオフにするか、2台でのリスク設定を選ぶ前にHermesを更新してください。",
-    twoHostDisable: "自動移動を無効にする"
+    classicActivityStopped: '停止を要求しました。続行するまで、その後の返信は一時停止します'
   },
   zh: {
-    legacyRoom: '继续在这里聊天，或用相同的Bot开始一个新群聊，让它们在Desktop关闭后仍能继续工作。之前的消息会保留在这里。',
+    approvalAction: '操作',
+    approvalCommand: '命令',
+    approvalChanges: '拟议更改',
+    approvalBefore: '更改前',
+    approvalAfter: '更改后',
+    approvalEmptyFile: '空文件',
+    approvalDetailsMissing: '无法显示操作详情。请先刷新详情，再允许此操作。',
+    pendingActionUnconfirmed: '无法确认此操作。请刷新群聊以检查其状态。',
+    legacyRoom:
+      '继续在这里聊天，或用相同的Bot开始一个新群聊，让它们在Desktop关闭后仍能继续工作。之前的消息会保留在这里。',
     checkingDriver: '正在检查群聊…',
     startGatewayGroup: '开始新群聊',
     classicCount: '共享群聊需要2至6个Bot。此对话将继续使用旧版Desktop模式。',
@@ -492,7 +514,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusApprovals: '{count}项等待批准',
     statusAttention: '{count}项需要处理',
     stopped: '已请求停止',
-    nothingRunning: '目前没有Bot在工作。',
+    nothingRunning: '没有取消新的回复。',
     sendRefused: '此消息未被接受。请编辑后重新发送。',
     sendNotYet: '尚未发送。请重试以发送同一条消息。',
     sendMaybe: '此消息可能已经发送。可以安全重试，不会重复显示。',
@@ -510,8 +532,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: '文件暂时不可用。',
     filesAccess: '此群聊的文件不可用。',
     filesEmpty: '尚未共享任何文件。',
-    filesHistoryNotListed: "共享文件的引用仍保留在对话中，但此处未显示文件。",
-    fileVersionUnavailable: "无法从当前主机下载此版本。",
+    filesHistoryNotListed: '共享文件的引用仍保留在对话中，但此处未显示文件。',
+    fileVersionUnavailable: '无法从当前主机下载此版本。',
     filesPageEmpty: '此页没有文件。',
     filesNoResults: '没有匹配的文件。',
     filesClearSearch: '清除搜索',
@@ -550,13 +572,6 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyHistory: '开始对话',
     emptyHistoryHint: '向此群聊中的Bot发送消息。',
     pendingApprovalTitle: '{name}需要你的批准',
-    approvalAction: '操作',
-    approvalCommand: '命令',
-    approvalChanges: '拟议更改',
-    approvalBefore: '更改前',
-    approvalAfter: '更改后',
-    approvalEmptyFile: '空文件',
-    approvalDetailsMissing: '无法显示操作详情。请先刷新详情，再允许此操作。',
     pendingRetryTitle: '{name}未能开始此回复。',
     pendingFilesTitle: '正在共享{name}的文件…',
     pendingFilesCleanupTitle: '正在完成{name}的文件清理…',
@@ -567,7 +582,6 @@ export const CANONICAL_GROUP_LOCALES = {
     retryReply: '重试',
     skipReply: '跳过此回复',
     pendingBot: 'Bot',
-    pendingActionUnconfirmed: '无法确认此操作。请刷新群聊以检查其状态。',
     skipUnstartedWarning: '此Bot不会回复这条消息。',
     activityFailed: '{name}未能完成此回复。',
     activityDeferred: '{name}的回复需要处理。',
@@ -585,24 +599,35 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostFile: '正在等待{host}：这需要一个只在那里的文件。',
     waitingForUnnamedHostBot: '正在等待另一台电脑：这需要一个只在那里的Bot。',
     waitingForUnnamedHostFile: '正在等待另一台电脑：这需要一个只在那里的文件。',
+    retirementStopping: '正在结束群聊，等待正在进行的工作停止。',
+    retirementCleanupPending:
+      '结束操作尚未完成，正在移除其他电脑的访问权限。它们重新连接后Hermes会继续尝试；你可以离开此视图。',
+    retirementCleanupUnreadable: '无法确认清理状态，记录已保留。请重新连接负责的电脑并再次检查。',
+    retirementUnconfirmed: '无法确认群聊是否已结束。发送已暂停，请检查状态或重试结束操作。',
+    twoHostRiskTitle: '允许两台电脑自动迁移吗？',
+    twoHostRiskBody:
+      '如果连接中断，两台电脑可能同时执行此群聊的工作并重复操作。除非你接受此风险，否则请继续每次询问在哪里继续。',
+    twoHostRiskConfirm: '允许两台电脑自动迁移',
+    twoHostLegacy:
+      '这台电脑使用旧版 Hermes，报告的开关开启时仍可自动迁移群聊。连接中断时，两台电脑都可能运行工作。可在此关闭，或先更新 Hermes 再选择两台电脑的风险设置。',
+    twoHostDisable: '关闭自动迁移',
     journalLoadFailed: '无法加载已保存的消息。',
     journalLoadHint: '发送已暂停，以免重复发送已保存的消息。当前草稿会保留。',
     journalReload: '重新加载',
     classicActivitySettled: '回复已完成',
-    classicActivityStopped: '已请求停止；后续回复将暂停，直到你继续',
-    retirementStopping: "正在结束群聊，等待正在进行的工作停止。",
-    retirementCleanupPending: "结束操作尚未完成，正在移除其他电脑的访问权限。它们重新连接后Hermes会继续尝试；你可以离开此视图。",
-    retirementCleanupUnreadable: "无法确认清理状态，记录已保留。请重新连接负责的电脑并再次检查。",
-    retirementUnconfirmed: "无法确认群聊是否已结束。发送已暂停，请检查状态或重试结束操作。"
-  ,
-    twoHostRiskTitle: "允许两台电脑自动迁移吗？",
-    twoHostRiskBody: "如果连接中断，两台电脑可能同时执行此群聊的工作并重复操作。除非你接受此风险，否则请继续每次询问在哪里继续。",
-    twoHostRiskConfirm: "允许两台电脑自动迁移",
-    twoHostLegacy: "这台电脑使用旧版 Hermes，报告的开关开启时仍可自动迁移群聊。连接中断时，两台电脑都可能运行工作。可在此关闭，或先更新 Hermes 再选择两台电脑的风险设置。",
-    twoHostDisable: "关闭自动迁移"
+    classicActivityStopped: '已请求停止；后续回复将暂停，直到你继续'
   },
   'zh-hant': {
-    legacyRoom: '繼續在這裡聊天，或用相同的Bot開始一個新群聊，讓它們在Desktop關閉後仍能繼續工作。之前的訊息會保留在這裡。',
+    approvalAction: '操作',
+    approvalCommand: '命令',
+    approvalChanges: '建議變更',
+    approvalBefore: '變更前',
+    approvalAfter: '變更後',
+    approvalEmptyFile: '空白檔案',
+    approvalDetailsMissing: '無法顯示操作詳細資訊。請先重新整理詳細資訊，再允許此操作。',
+    pendingActionUnconfirmed: '無法確認此操作。請重新整理群聊以檢查其狀態。',
+    legacyRoom:
+      '繼續在這裡聊天，或用相同的Bot開始一個新群聊，讓它們在Desktop關閉後仍能繼續工作。之前的訊息會保留在這裡。',
     checkingDriver: '正在檢查群聊…',
     startGatewayGroup: '開始新群聊',
     classicCount: '共享群聊需要2至6個Bot。此對話會繼續使用舊版Desktop模式。',
@@ -640,7 +665,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusApprovals: '{count}項等待核准',
     statusAttention: '{count}項需要處理',
     stopped: '已要求停止',
-    nothingRunning: '目前沒有Bot在工作。',
+    nothingRunning: '沒有取消新的回覆。',
     sendRefused: '此訊息未被接受。請編輯後重新傳送。',
     sendNotYet: '尚未傳送。請重試以傳送同一則訊息。',
     sendMaybe: '此訊息可能已經傳送。可以安全重試，不會重複顯示。',
@@ -658,8 +683,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: '檔案暫時無法使用。',
     filesAccess: '此群組聊天的檔案無法使用。',
     filesEmpty: '尚未共享任何檔案。',
-    filesHistoryNotListed: "共用檔案的參照仍保留在對話中，但此處未顯示檔案。",
-    fileVersionUnavailable: "無法從目前的主機下載此版本。",
+    filesHistoryNotListed: '共用檔案的參照仍保留在對話中，但此處未顯示檔案。',
+    fileVersionUnavailable: '無法從目前的主機下載此版本。',
     filesPageEmpty: '此頁沒有檔案。',
     filesNoResults: '找不到相符的檔案。',
     filesClearSearch: '清除搜尋',
@@ -698,13 +723,6 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyHistory: '開始對話',
     emptyHistoryHint: '向此群聊中的Bot傳送訊息。',
     pendingApprovalTitle: '{name}需要你的核准',
-    approvalAction: '操作',
-    approvalCommand: '命令',
-    approvalChanges: '建議變更',
-    approvalBefore: '變更前',
-    approvalAfter: '變更後',
-    approvalEmptyFile: '空白檔案',
-    approvalDetailsMissing: '無法顯示操作詳細資訊。請先重新整理詳細資訊，再允許此操作。',
     pendingRetryTitle: '{name}未能開始此回覆。',
     pendingFilesTitle: '正在分享{name}的檔案…',
     pendingFilesCleanupTitle: '正在完成{name}的檔案清理…',
@@ -715,7 +733,6 @@ export const CANONICAL_GROUP_LOCALES = {
     retryReply: '重試',
     skipReply: '略過此回覆',
     pendingBot: 'Bot',
-    pendingActionUnconfirmed: '無法確認此操作。請重新整理群聊以檢查其狀態。',
     skipUnstartedWarning: '此Bot不會回覆這則訊息。',
     activityFailed: '{name}未能完成此回覆。',
     activityDeferred: '{name}的回覆需要處理。',
@@ -733,24 +750,35 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostFile: '正在等待{host}：這需要一個只在那裡的檔案。',
     waitingForUnnamedHostBot: '正在等待另一台電腦：這需要一個只在那裡的Bot。',
     waitingForUnnamedHostFile: '正在等待另一台電腦：這需要一個只在那裡的檔案。',
+    retirementStopping: '正在結束群聊，等待進行中的工作停止。',
+    retirementCleanupPending:
+      '結束操作尚未完成，正在移除其他電腦的存取權限。它們重新連線後Hermes會繼續嘗試；你可以離開此檢視。',
+    retirementCleanupUnreadable: '無法確認清理狀態，記錄已保留。請重新連接負責的電腦並再次檢查。',
+    retirementUnconfirmed: '無法確認群聊是否已結束。傳送已暫停，請檢查狀態或重試結束操作。',
+    twoHostRiskTitle: '允許兩台電腦自動移轉嗎？',
+    twoHostRiskBody:
+      '如果連線中斷，兩台電腦可能同時執行此群聊的工作並重複操作。除非你接受此風險，否則請繼續每次詢問在哪裡繼續。',
+    twoHostRiskConfirm: '允許兩台電腦自動移轉',
+    twoHostLegacy:
+      '這台電腦使用舊版 Hermes，回報的開關開啟時仍可自動移轉群聊。連線中斷時，兩台電腦都可能執行工作。可在此關閉，或先更新 Hermes 再選擇兩台電腦的風險設定。',
+    twoHostDisable: '關閉自動移轉',
     journalLoadFailed: '無法載入已儲存的訊息。',
     journalLoadHint: '傳送已暫停，以免重複傳送已儲存的訊息。目前的草稿會保留。',
     journalReload: '重新載入',
     classicActivitySettled: '回覆已完成',
-    classicActivityStopped: '已要求停止；後續回覆將暫停，直到你繼續',
-    retirementStopping: "正在結束群聊，等待進行中的工作停止。",
-    retirementCleanupPending: "結束操作尚未完成，正在移除其他電腦的存取權限。它們重新連線後Hermes會繼續嘗試；你可以離開此檢視。",
-    retirementCleanupUnreadable: "無法確認清理狀態，記錄已保留。請重新連接負責的電腦並再次檢查。",
-    retirementUnconfirmed: "無法確認群聊是否已結束。傳送已暫停，請檢查狀態或重試結束操作。"
-  ,
-    twoHostRiskTitle: "允許兩台電腦自動移轉嗎？",
-    twoHostRiskBody: "如果連線中斷，兩台電腦可能同時執行此群聊的工作並重複操作。除非你接受此風險，否則請繼續每次詢問在哪裡繼續。",
-    twoHostRiskConfirm: "允許兩台電腦自動移轉",
-    twoHostLegacy: "這台電腦使用舊版 Hermes，回報的開關開啟時仍可自動移轉群聊。連線中斷時，兩台電腦都可能執行工作。可在此關閉，或先更新 Hermes 再選擇兩台電腦的風險設定。",
-    twoHostDisable: "關閉自動移轉"
+    classicActivityStopped: '已要求停止；後續回覆將暫停，直到你繼續'
   },
   ar: {
-    legacyRoom: 'تابع المحادثة هنا، أو ابدأ مجموعة جديدة مع البوتات نفسها. يمكن للمجموعة الجديدة مواصلة العمل حتى عند إغلاق Desktop. ستبقى رسائلك السابقة هنا.',
+    approvalAction: 'الإجراء',
+    approvalCommand: 'الأمر',
+    approvalChanges: 'التغييرات المقترحة',
+    approvalBefore: 'قبل',
+    approvalAfter: 'بعد',
+    approvalEmptyFile: 'ملف فارغ',
+    approvalDetailsMissing: 'تفاصيل الإجراء غير متاحة. حدّثها قبل السماح بهذا الإجراء.',
+    pendingActionUnconfirmed: 'لم نتمكن من تأكيد هذا الإجراء. حدّث محادثة المجموعة للتحقق من حالته.',
+    legacyRoom:
+      'تابع المحادثة هنا، أو ابدأ مجموعة جديدة مع البوتات نفسها. يمكن للمجموعة الجديدة مواصلة العمل حتى عند إغلاق Desktop. ستبقى رسائلك السابقة هنا.',
     checkingDriver: 'جارٍ التحقق من محادثة المجموعة…',
     startGatewayGroup: 'بدء مجموعة جديدة',
     classicCount: 'تحتاج المحادثات المشتركة إلى بوتين إلى ستة بوتات. تبقى هذه المحادثة في وضع Desktop السابق.',
@@ -762,7 +790,8 @@ export const CANONICAL_GROUP_LOCALES = {
       'لم يتمكن Desktop من قراءة معلومات الوصول للإعداد أو حفظها. تحقّق من إعداد التخزين ثم حاول مجددًا.',
     peerSetupCleanup: 'نحتاج أولًا إلى إكمال إعداد سابق. أعد الاتصال بالمضيف والبوتات الأصلية ثم اختر إعادة المحاولة.',
     classicMembers: 'اختر بوتات مختلفة بأسماء @ فريدة. الاسمان @all و@everyone محجوزان.',
-    createRefused: 'تعذّر على البوابة إنشاء هذه الدردشة الجماعية. تحقّق من اسم المجموعة والبوتات المحددة، ثم حاول مرة أخرى.',
+    createRefused:
+      'تعذّر على البوابة إنشاء هذه الدردشة الجماعية. تحقّق من اسم المجموعة والبوتات المحددة، ثم حاول مرة أخرى.',
     hostedProfileOwners: 'دليل إعداد محادثة المجموعة',
     refreshGroups: 'تحديث محادثات المجموعات',
     loadingGroup: 'جارٍ تحميل محادثة المجموعة…',
@@ -789,7 +818,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusApprovals: '{count} بانتظار الموافقة',
     statusAttention: '{count} تحتاج إلى متابعة',
     stopped: 'طُلب الإيقاف',
-    nothingRunning: 'لا يعمل أي بوت حاليًا.',
+    nothingRunning: 'لم يتم إلغاء أي ردود جديدة.',
     sendRefused: 'لم تُقبل هذه الرسالة. عدّلها وأرسلها مجددًا.',
     sendNotYet: 'لم تُرسل بعد. حاول مجددًا لإرسال الرسالة نفسها.',
     sendMaybe: 'قد تكون رسالتك قد أُرسلت بالفعل. يمكنك إعادة المحاولة بأمان؛ لن تظهر مرتين.',
@@ -808,8 +837,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'الملفات غير متاحة مؤقتاً.',
     filesAccess: 'الملفات غير متاحة لهذه المحادثة الجماعية.',
     filesEmpty: 'لم تتم مشاركة أي ملفات بعد.',
-    filesHistoryNotListed: "تبقى مراجع الملفات المشتركة في المحادثة، لكن لا تظهر ملفات هنا.",
-    fileVersionUnavailable: "لا يمكن تنزيل هذا الإصدار من المضيف الحالي.",
+    filesHistoryNotListed: 'تبقى مراجع الملفات المشتركة في المحادثة، لكن لا تظهر ملفات هنا.',
+    fileVersionUnavailable: 'لا يمكن تنزيل هذا الإصدار من المضيف الحالي.',
     filesPageEmpty: 'لا توجد ملفات في هذه الصفحة.',
     filesNoResults: 'لا توجد ملفات مطابقة.',
     filesClearSearch: 'مسح البحث',
@@ -848,13 +877,6 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyHistory: 'ابدأ المحادثة',
     emptyHistoryHint: 'أرسل رسالة إلى البوتات في محادثة المجموعة.',
     pendingApprovalTitle: 'يحتاج {name} إلى موافقتك',
-    approvalAction: 'الإجراء',
-    approvalCommand: 'الأمر',
-    approvalChanges: 'التغييرات المقترحة',
-    approvalBefore: 'قبل',
-    approvalAfter: 'بعد',
-    approvalEmptyFile: 'ملف فارغ',
-    approvalDetailsMissing: 'تفاصيل الإجراء غير متاحة. حدّثها قبل السماح بهذا الإجراء.',
     pendingRetryTitle: 'لم يتمكن {name} من بدء هذه الإجابة.',
     pendingFilesTitle: 'جارٍ مشاركة ملفات {name}…',
     pendingFilesCleanupTitle: 'جارٍ إكمال تنظيف ملفات {name}…',
@@ -865,7 +887,6 @@ export const CANONICAL_GROUP_LOCALES = {
     retryReply: 'إعادة المحاولة',
     skipReply: 'تخطي هذه الإجابة',
     pendingBot: 'بوت',
-    pendingActionUnconfirmed: 'لم نتمكن من تأكيد هذا الإجراء. حدّث محادثة المجموعة للتحقق من حالته.',
     skipUnstartedWarning: 'لن يجيب هذا البوت عن هذه الرسالة.',
     activityFailed: 'لم يتمكن {name} من إكمال هذه الإجابة.',
     activityDeferred: 'تحتاج إجابة {name} إلى متابعة.',
@@ -883,24 +904,37 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostFile: 'بانتظار {host}: يحتاج هذا إلى ملف موجود هناك فقط.',
     waitingForUnnamedHostBot: 'بانتظار جهاز كمبيوتر آخر: يحتاج هذا إلى بوت موجود هناك فقط.',
     waitingForUnnamedHostFile: 'بانتظار جهاز كمبيوتر آخر: يحتاج هذا إلى ملف موجود هناك فقط.',
+    retirementStopping: 'جارٍ إنهاء محادثة المجموعة. ننتظر توقف العمل الجاري.',
+    retirementCleanupPending:
+      'الإنهاء لم يكتمل بعد. يجري إزالة صلاحيات الوصول على الأجهزة الأخرى. سيواصل Hermes المحاولة عند إعادة اتصالها؛ يمكنك مغادرة هذه الشاشة.',
+    retirementCleanupUnreadable: 'تعذر تأكيد التنظيف. تم الاحتفاظ بسجلاته. أعد توصيل الجهاز المسؤول وتحقق مجددًا.',
+    retirementUnconfirmed:
+      'تعذر تأكيد انتهاء محادثة المجموعة. الإرسال متوقف مؤقتًا؛ تحقق من حالتها أو أعد محاولة الإنهاء.',
+    twoHostRiskTitle: 'السماح بالانتقال التلقائي مع جهازين؟',
+    twoHostRiskBody:
+      'إذا انقطع الاتصال، فقد يعمل الجهازان على مهام هذه المجموعة في الوقت نفسه وينفذان إجراءات مكررة. أبقِ اختيار مكان المتابعة يدويًا ما لم تقبل هذا الخطر.',
+    twoHostRiskConfirm: 'السماح بالانتقال التلقائي مع جهازين',
+    twoHostLegacy:
+      'قد ينقل هذا الكمبيوتر القديم المجموعة تلقائيًا عندما يكون المفتاح المعروض مفعّلًا. إذا انقطع الاتصال، فقد يعمل الكمبيوتران معًا. أوقفه هنا أو حدّث Hermes قبل اختيار إعداد المخاطرة مع كمبيوترين.',
+    twoHostDisable: 'إيقاف الانتقال التلقائي',
     journalLoadFailed: 'تعذّر تحميل الرسائل المحفوظة.',
     journalLoadHint: 'توقف الإرسال مؤقتًا لمنع إرسال رسالة محفوظة مرتين. ستبقى مسودتك الحالية هنا.',
     journalReload: 'إعادة التحميل',
     classicActivitySettled: 'اكتملت الردود',
-    classicActivityStopped: 'طُلب الإيقاف؛ تتوقف الردود اللاحقة مؤقتًا حتى تتابع',
-    retirementStopping: "جارٍ إنهاء محادثة المجموعة. ننتظر توقف العمل الجاري.",
-    retirementCleanupPending: "الإنهاء لم يكتمل بعد. يجري إزالة صلاحيات الوصول على الأجهزة الأخرى. سيواصل Hermes المحاولة عند إعادة اتصالها؛ يمكنك مغادرة هذه الشاشة.",
-    retirementCleanupUnreadable: "تعذر تأكيد التنظيف. تم الاحتفاظ بسجلاته. أعد توصيل الجهاز المسؤول وتحقق مجددًا.",
-    retirementUnconfirmed: "تعذر تأكيد انتهاء محادثة المجموعة. الإرسال متوقف مؤقتًا؛ تحقق من حالتها أو أعد محاولة الإنهاء."
-  ,
-    twoHostRiskTitle: "السماح بالانتقال التلقائي مع جهازين؟",
-    twoHostRiskBody: "إذا انقطع الاتصال، فقد يعمل الجهازان على مهام هذه المجموعة في الوقت نفسه وينفذان إجراءات مكررة. أبقِ اختيار مكان المتابعة يدويًا ما لم تقبل هذا الخطر.",
-    twoHostRiskConfirm: "السماح بالانتقال التلقائي مع جهازين",
-    twoHostLegacy: "قد ينقل هذا الكمبيوتر القديم المجموعة تلقائيًا عندما يكون المفتاح المعروض مفعّلًا. إذا انقطع الاتصال، فقد يعمل الكمبيوتران معًا. أوقفه هنا أو حدّث Hermes قبل اختيار إعداد المخاطرة مع كمبيوترين.",
-    twoHostDisable: "إيقاف الانتقال التلقائي"
+    classicActivityStopped: 'طُلب الإيقاف؛ تتوقف الردود اللاحقة مؤقتًا حتى تتابع'
   },
   ru: {
-    legacyRoom: 'Продолжайте общаться здесь или начните новую группу с теми же Ботами, которые смогут продолжать работу после закрытия Desktop. Ваши предыдущие сообщения останутся здесь.',
+    approvalAction: 'Действие',
+    approvalCommand: 'Команда',
+    approvalChanges: 'Предлагаемые изменения',
+    approvalBefore: 'До',
+    approvalAfter: 'После',
+    approvalEmptyFile: 'Пустой файл',
+    approvalDetailsMissing: 'Подробности действия недоступны. Обновите их перед тем, как разрешить действие.',
+    pendingActionUnconfirmed:
+      'Не удалось подтвердить это действие. Обновите групповой чат, чтобы проверить его состояние.',
+    legacyRoom:
+      'Продолжайте общаться здесь или начните новую группу с теми же Ботами, которые смогут продолжать работу после закрытия Desktop. Ваши предыдущие сообщения останутся здесь.',
     checkingDriver: 'Проверяем групповой чат…',
     startGatewayGroup: 'Начать новую группу',
     classicCount: 'Для общего чата нужны 2–6 Ботов. Эта беседа остаётся в прежнем режиме Desktop.',
@@ -913,7 +947,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'Сначала нужно завершить предыдущую настройку. Подключите исходный хост и Ботов, затем выберите Повторить.',
     classicMembers: 'Выберите разных Ботов с уникальными @именами. Имена @all и @everyone зарезервированы.',
-    createRefused: 'Шлюз не смог создать групповой чат. Проверьте название группы и выбранных ботов, затем повторите попытку.',
+    createRefused:
+      'Шлюз не смог создать групповой чат. Проверьте название группы и выбранных ботов, затем повторите попытку.',
     hostedProfileOwners: 'Руководство по настройке группового чата',
     refreshGroups: 'Обновить групповые чаты',
     loadingGroup: 'Загружаем групповой чат…',
@@ -941,7 +976,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusApprovals: '{count} ожидают разрешения',
     statusAttention: 'Требуется внимание: {count}',
     stopped: 'Остановка запрошена',
-    nothingRunning: 'Сейчас ни один Бот не работает.',
+    nothingRunning: 'Новые ответы не были отменены.',
     sendRefused: 'Это сообщение не принято. Измените его и отправьте снова.',
     sendNotYet: 'Ещё не отправлено. Попробуйте снова, чтобы отправить то же сообщение.',
     sendMaybe: 'Сообщение уже могло быть отправлено. Можно безопасно повторить попытку: оно не появится дважды.',
@@ -960,8 +995,8 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Файлы временно недоступны.',
     filesAccess: 'Файлы недоступны для этого группового чата.',
     filesEmpty: 'Файлами ещё не делились.',
-    filesHistoryNotListed: "Ссылки на общие файлы остаются в разговоре, но файлы здесь не отображаются.",
-    fileVersionUnavailable: "Эту версию нельзя скачать с текущего хоста.",
+    filesHistoryNotListed: 'Ссылки на общие файлы остаются в разговоре, но файлы здесь не отображаются.',
+    fileVersionUnavailable: 'Эту версию нельзя скачать с текущего хоста.',
     filesPageEmpty: 'На этой странице нет файлов.',
     filesNoResults: 'Подходящие файлы не найдены.',
     filesClearSearch: 'Очистить поиск',
@@ -1000,25 +1035,17 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyHistory: 'Начните беседу',
     emptyHistoryHint: 'Отправьте сообщение Ботам в этом групповом чате.',
     pendingApprovalTitle: '{name} запрашивает ваше разрешение',
-    approvalAction: 'Действие',
-    approvalCommand: 'Команда',
-    approvalChanges: 'Предлагаемые изменения',
-    approvalBefore: 'До',
-    approvalAfter: 'После',
-    approvalEmptyFile: 'Пустой файл',
-    approvalDetailsMissing: 'Подробности действия недоступны. Обновите их перед тем, как разрешить действие.',
     pendingRetryTitle: '{name} не смог начать этот ответ.',
     pendingFilesTitle: 'Передача файлов от {name}…',
     pendingFilesCleanupTitle: 'Завершение очистки файлов {name}…',
     pendingFilesBlockedTitle: 'Файлы от {name} требуют внимания.',
-    pendingFilesBlockedHelp: 'Не удалось завершить передачу файлов. Проверьте компьютеры, на которых работает этот групповой чат.',
+    pendingFilesBlockedHelp:
+      'Не удалось завершить передачу файлов. Проверьте компьютеры, на которых работает этот групповой чат.',
     pendingUnknownTitle: 'Не удалось подтвердить, закончил ли {name}.',
     pendingStoppingTitle: 'Останавливаем {name}…',
     retryReply: 'Повторить',
     skipReply: 'Пропустить этот ответ',
     pendingBot: 'Бот',
-    pendingActionUnconfirmed:
-      'Не удалось подтвердить это действие. Обновите групповой чат, чтобы проверить его состояние.',
     skipUnstartedWarning: 'Этот Бот не ответит на это сообщение.',
     activityFailed: '{name} не смог завершить этот ответ.',
     activityDeferred: 'Ответ {name} требует внимания.',
@@ -1030,31 +1057,47 @@ export const CANONICAL_GROUP_LOCALES = {
     activityUpdated: 'Групповой чат обновлён.',
     createdGroupSyncFailed: '«{name}» готов. Некоторые сведения о Ботах не удалось синхронизировать.',
     continuedOn: 'Теперь эта группа продолжает работу на компьютере {target}.',
-    continuedOnSince: 'Теперь эта группа продолжает работу на компьютере {target}. Компьютер {host} отключился в {time}.',
+    continuedOnSince:
+      'Теперь эта группа продолжает работу на компьютере {target}. Компьютер {host} отключился в {time}.',
     continuedOnUnnamed: 'Теперь эта группа продолжает работу на другом компьютере.',
     waitingForHostBot: 'Ожидание компьютера {host}: для этого нужен Бот, который есть только там.',
     waitingForHostFile: 'Ожидание компьютера {host}: для этого нужен файл, который есть только там.',
     waitingForUnnamedHostBot: 'Ожидание другого компьютера: для этого нужен Бот, который есть только там.',
     waitingForUnnamedHostFile: 'Ожидание другого компьютера: для этого нужен файл, который есть только там.',
+    retirementStopping: 'Групповой чат завершается. Ожидаем остановки текущей работы.',
+    retirementCleanupPending:
+      'Завершение ещё продолжается: доступ с других компьютеров удаляется. Hermes продолжит попытки после их подключения; вы можете закрыть этот экран.',
+    retirementCleanupUnreadable:
+      'Очистку не удалось подтвердить. Её записи сохранены. Подключите управляющий компьютер и проверьте снова.',
+    retirementUnconfirmed:
+      'Не удалось подтвердить завершение чата. Отправка приостановлена; проверьте состояние или повторите завершение.',
+    twoHostRiskTitle: 'Разрешить автоматический перенос между двумя компьютерами?',
+    twoHostRiskBody:
+      'При разрыве связи оба компьютера могут одновременно выполнять работу группы и повторять действия. Продолжайте выбирать место вручную, если не принимаете этот риск.',
+    twoHostRiskConfirm: 'Разрешить автоматический перенос с двумя компьютерами',
+    twoHostLegacy:
+      'Этот компьютер со старым Hermes может автоматически переносить группу, когда показанный переключатель включён. При разрыве связи оба компьютера могут выполнять работу. Выключите настройку здесь или обновите Hermes перед выбором риска для двух компьютеров.',
+    twoHostDisable: 'Выключить автоматический перенос',
     journalLoadFailed: 'Не удалось загрузить сохранённые сообщения.',
     journalLoadHint:
       'Отправка приостановлена, чтобы не отправить сохранённое сообщение дважды. Текущий черновик остаётся здесь.',
     journalReload: 'Загрузить ещё раз',
     classicActivitySettled: 'Ответы завершены',
-    classicActivityStopped: 'Запрошена остановка; дальнейшие ответы приостановлены до продолжения',
-    retirementStopping: "Групповой чат завершается. Ожидаем остановки текущей работы.",
-    retirementCleanupPending: "Завершение ещё продолжается: доступ с других компьютеров удаляется. Hermes продолжит попытки после их подключения; вы можете закрыть этот экран.",
-    retirementCleanupUnreadable: "Очистку не удалось подтвердить. Её записи сохранены. Подключите управляющий компьютер и проверьте снова.",
-    retirementUnconfirmed: "Не удалось подтвердить завершение чата. Отправка приостановлена; проверьте состояние или повторите завершение."
-  ,
-    twoHostRiskTitle: "Разрешить автоматический перенос между двумя компьютерами?",
-    twoHostRiskBody: "При разрыве связи оба компьютера могут одновременно выполнять работу группы и повторять действия. Продолжайте выбирать место вручную, если не принимаете этот риск.",
-    twoHostRiskConfirm: "Разрешить автоматический перенос с двумя компьютерами",
-    twoHostLegacy: "Этот компьютер со старым Hermes может автоматически переносить группу, когда показанный переключатель включён. При разрыве связи оба компьютера могут выполнять работу. Выключите настройку здесь или обновите Hermes перед выбором риска для двух компьютеров.",
-    twoHostDisable: "Выключить автоматический перенос"
+    classicActivityStopped: 'Запрошена остановка; дальнейшие ответы приостановлены до продолжения'
   },
   fr: {
-    legacyRoom: 'Continuez à discuter ici, ou démarrez un nouveau groupe avec les mêmes Bots qui pourront continuer à travailler quand Desktop sera fermé. Vos messages précédents resteront ici.',
+    approvalAction: 'Action',
+    approvalCommand: 'Commande',
+    approvalChanges: 'Modifications proposées',
+    approvalBefore: 'Avant',
+    approvalAfter: 'Après',
+    approvalEmptyFile: 'Fichier vide',
+    approvalDetailsMissing:
+      'Les détails de l’action sont indisponibles. Actualisez-les avant d’autoriser cette action.',
+    pendingActionUnconfirmed:
+      'Cette action n’a pas pu être confirmée. Actualisez la discussion pour vérifier son état.',
+    legacyRoom:
+      'Continuez à discuter ici, ou démarrez un nouveau groupe avec les mêmes Bots qui pourront continuer à travailler quand Desktop sera fermé. Vos messages précédents resteront ici.',
     checkingDriver: 'Vérification de la discussion…',
     startGatewayGroup: 'Démarrer un nouveau groupe',
     classicCount: 'Une discussion partagée nécessite 2 à 6 Bots. Cette conversation reste dans l’ancien mode Desktop.',
@@ -1069,7 +1112,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'Une configuration précédente doit d’abord être terminée. Reconnectez l’hôte et les Bots d’origine, puis choisissez Réessayer.',
     classicMembers: 'Choisissez des Bots différents avec des @noms uniques. @all et @everyone sont réservés.',
-    createRefused: 'La passerelle n’a pas pu créer cette discussion de groupe. Vérifiez le nom du groupe et les Bots sélectionnés, puis réessayez.',
+    createRefused:
+      'La passerelle n’a pas pu créer cette discussion de groupe. Vérifiez le nom du groupe et les Bots sélectionnés, puis réessayez.',
     hostedProfileOwners: 'Guide de configuration des discussions de groupe',
     refreshGroups: 'Actualiser les discussions de groupe',
     loadingGroup: 'Chargement de la discussion…',
@@ -1098,7 +1142,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusApprovals: '{count} en attente d’autorisation',
     statusAttention: '{count} à vérifier',
     stopped: 'Arrêt demandé',
-    nothingRunning: 'Aucun Bot ne travaille actuellement.',
+    nothingRunning: 'Aucune nouvelle réponse n’a été annulée.',
     sendRefused: 'Ce message n’a pas été accepté. Modifiez-le puis renvoyez-le.',
     sendNotYet: 'Pas encore envoyé. Réessayez pour envoyer ce même message.',
     sendMaybe: 'Votre message a peut-être déjà été envoyé. Vous pouvez réessayer sans créer de doublon.',
@@ -1117,8 +1161,10 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Les fichiers sont temporairement indisponibles.',
     filesAccess: 'Les fichiers ne sont pas disponibles pour ce groupe.',
     filesEmpty: 'Aucun fichier partagé pour l’instant.',
-    filesHistoryNotListed: "Les références aux fichiers partagés restent dans la conversation, mais aucun fichier n’est affiché ici.",
-    fileVersionUnavailable: "Cette version ne peut pas être téléchargée depuis l’ordinateur qui héberge actuellement le groupe.",
+    filesHistoryNotListed:
+      'Les références aux fichiers partagés restent dans la conversation, mais aucun fichier n’est affiché ici.',
+    fileVersionUnavailable:
+      'Cette version ne peut pas être téléchargée depuis l’ordinateur qui héberge actuellement le groupe.',
     filesPageEmpty: 'Aucun fichier sur cette page.',
     filesNoResults: 'Aucun fichier correspondant.',
     filesClearSearch: 'Effacer la recherche',
@@ -1157,26 +1203,17 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyHistory: 'Commencez la conversation',
     emptyHistoryHint: 'Envoyez un message aux Bots de cette discussion.',
     pendingApprovalTitle: '{name} a besoin de votre autorisation',
-    approvalAction: 'Action',
-    approvalCommand: 'Commande',
-    approvalChanges: 'Modifications proposées',
-    approvalBefore: 'Avant',
-    approvalAfter: 'Après',
-    approvalEmptyFile: 'Fichier vide',
-    approvalDetailsMissing:
-      'Les détails de l’action sont indisponibles. Actualisez-les avant d’autoriser cette action.',
     pendingRetryTitle: '{name} n’a pas pu commencer cette réponse.',
     pendingFilesTitle: 'Partage des fichiers de {name}…',
     pendingFilesCleanupTitle: 'Finalisation du nettoyage des fichiers de {name}…',
     pendingFilesBlockedTitle: 'Les fichiers de {name} nécessitent votre attention.',
-    pendingFilesBlockedHelp: 'Le partage des fichiers n’a pas pu se terminer. Vérifiez les ordinateurs qui exécutent cette discussion de groupe.',
+    pendingFilesBlockedHelp:
+      'Le partage des fichiers n’a pas pu se terminer. Vérifiez les ordinateurs qui exécutent cette discussion de groupe.',
     pendingUnknownTitle: 'Nous n’avons pas pu confirmer si {name} a terminé.',
     pendingStoppingTitle: 'Arrêt de {name}…',
     retryReply: 'Réessayer',
     skipReply: 'Ignorer cette réponse',
     pendingBot: 'Bot',
-    pendingActionUnconfirmed:
-      'Cette action n’a pas pu être confirmée. Actualisez la discussion pour vérifier son état.',
     skipUnstartedWarning: 'Ce Bot ne répondra pas à ce message.',
     activityFailed: '{name} n’a pas pu terminer cette réponse.',
     activityDeferred: 'La réponse de {name} doit être vérifiée.',
@@ -1194,25 +1231,40 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostFile: 'En attente de l’ordinateur {host} : il faut un fichier qui ne se trouve que là-bas.',
     waitingForUnnamedHostBot: 'En attente d’un autre ordinateur : il faut un Bot qui ne se trouve que là-bas.',
     waitingForUnnamedHostFile: 'En attente d’un autre ordinateur : il faut un fichier qui ne se trouve que là-bas.',
+    retirementStopping: 'La discussion se termine. En attente de l’arrêt du travail en cours.',
+    retirementCleanupPending:
+      'La fin est encore en cours : les accès des autres ordinateurs sont retirés. Hermes réessaiera à leur reconnexion ; vous pouvez quitter cette vue.',
+    retirementCleanupUnreadable:
+      'Le nettoyage n’a pas pu être confirmé. Ses traces sont conservées. Reconnectez l’ordinateur responsable et vérifiez à nouveau.',
+    retirementUnconfirmed:
+      'La fin de cette discussion n’a pas pu être confirmée. L’envoi est suspendu ; vérifiez son état ou réessayez de la terminer.',
+    twoHostRiskTitle: 'Autoriser le déplacement automatique avec deux ordinateurs ?',
+    twoHostRiskBody:
+      'En cas de coupure de connexion, les deux ordinateurs peuvent travailler simultanément pour cette discussion et répéter des actions. Continuez à choisir où poursuivre, sauf si vous acceptez ce risque.',
+    twoHostRiskConfirm: 'Autoriser le déplacement automatique avec deux ordinateurs',
+    twoHostLegacy:
+      'Cet ordinateur utilise un ancien Hermes et peut encore déplacer le groupe automatiquement si le réglage affiché est activé. Si la connexion est coupée, les deux ordinateurs peuvent travailler en même temps. Désactivez ce réglage ici, ou mettez Hermes à jour avant de choisir le risque à deux ordinateurs.',
+    twoHostDisable: 'Désactiver le déplacement automatique',
     journalLoadFailed: 'Impossible de charger les messages enregistrés.',
     journalLoadHint:
       'L’envoi est suspendu pour éviter d’envoyer deux fois un message enregistré. Votre brouillon actuel reste ici.',
     journalReload: 'Réessayer le chargement',
     classicActivitySettled: 'Réponses terminées',
-    classicActivityStopped: 'Arrêt demandé ; les réponses suivantes sont suspendues jusqu’à votre reprise',
-    retirementStopping: "La discussion se termine. En attente de l’arrêt du travail en cours.",
-    retirementCleanupPending: "La fin est encore en cours : les accès des autres ordinateurs sont retirés. Hermes réessaiera à leur reconnexion ; vous pouvez quitter cette vue.",
-    retirementCleanupUnreadable: "Le nettoyage n’a pas pu être confirmé. Ses traces sont conservées. Reconnectez l’ordinateur responsable et vérifiez à nouveau.",
-    retirementUnconfirmed: "La fin de cette discussion n’a pas pu être confirmée. L’envoi est suspendu ; vérifiez son état ou réessayez de la terminer."
-  ,
-    twoHostRiskTitle: "Autoriser le déplacement automatique avec deux ordinateurs ?",
-    twoHostRiskBody: "En cas de coupure de connexion, les deux ordinateurs peuvent travailler simultanément pour cette discussion et répéter des actions. Continuez à choisir où poursuivre, sauf si vous acceptez ce risque.",
-    twoHostRiskConfirm: "Autoriser le déplacement automatique avec deux ordinateurs",
-    twoHostLegacy: "Cet ordinateur utilise un ancien Hermes et peut encore déplacer le groupe automatiquement si le réglage affiché est activé. Si la connexion est coupée, les deux ordinateurs peuvent travailler en même temps. Désactivez ce réglage ici, ou mettez Hermes à jour avant de choisir le risque à deux ordinateurs.",
-    twoHostDisable: "Désactiver le déplacement automatique"
+    classicActivityStopped: 'Arrêt demandé ; les réponses suivantes sont suspendues jusqu’à votre reprise'
   },
   de: {
-    legacyRoom: 'Chatte hier weiter oder starte mit denselben Bots eine neue Gruppe, die weiterarbeiten kann, wenn Desktop geschlossen ist. Deine bisherigen Nachrichten bleiben hier.',
+    approvalAction: 'Aktion',
+    approvalCommand: 'Befehl',
+    approvalChanges: 'Vorgeschlagene Änderungen',
+    approvalBefore: 'Vorher',
+    approvalAfter: 'Nachher',
+    approvalEmptyFile: 'Leere Datei',
+    approvalDetailsMissing:
+      'Die Aktionsdetails sind nicht verfügbar. Aktualisiere sie, bevor du diese Aktion erlaubst.',
+    pendingActionUnconfirmed:
+      'Diese Aktion konnte nicht bestätigt werden. Aktualisiere den Gruppenchat, um ihren Status zu prüfen.',
+    legacyRoom:
+      'Chatte hier weiter oder starte mit denselben Bots eine neue Gruppe, die weiterarbeiten kann, wenn Desktop geschlossen ist. Deine bisherigen Nachrichten bleiben hier.',
     checkingDriver: 'Gruppenchat wird geprüft…',
     startGatewayGroup: 'Neue Gruppe starten',
     classicCount: 'Gemeinsame Gruppenchats brauchen 2–6 Bots. Diese Unterhaltung bleibt im älteren Desktop-Modus.',
@@ -1227,7 +1279,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'Eine frühere Einrichtung muss zuerst abgeschlossen werden. Verbinde den ursprünglichen Host und die Bots erneut und wähle Erneut versuchen.',
     classicMembers: 'Wähle unterschiedliche Bots mit eindeutigen @Namen. @all und @everyone sind reserviert.',
-    createRefused: 'Das Gateway konnte diesen Gruppenchat nicht erstellen. Prüfen Sie den Gruppennamen und die ausgewählten Bots und versuchen Sie es erneut.',
+    createRefused:
+      'Das Gateway konnte diesen Gruppenchat nicht erstellen. Prüfen Sie den Gruppennamen und die ausgewählten Bots und versuchen Sie es erneut.',
     hostedProfileOwners: 'Anleitung zur Gruppenchat-Einrichtung',
     refreshGroups: 'Gruppenchats aktualisieren',
     loadingGroup: 'Gruppenchat wird geladen…',
@@ -1257,7 +1310,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusApprovals: '{count} warten auf Freigabe',
     statusAttention: 'Aufmerksamkeit erforderlich: {count}',
     stopped: 'Stopp angefordert',
-    nothingRunning: 'Gerade arbeitet kein Bot.',
+    nothingRunning: 'Keine neuen Antworten wurden abgebrochen.',
     sendRefused: 'Diese Nachricht wurde nicht angenommen. Bearbeite sie und sende sie erneut.',
     sendNotYet: 'Noch nicht gesendet. Versuche es erneut, um dieselbe Nachricht zu senden.',
     sendMaybe:
@@ -1278,8 +1331,9 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Dateien sind vorübergehend nicht verfügbar.',
     filesAccess: 'Für diese Gruppe sind keine Dateien verfügbar.',
     filesEmpty: 'Noch keine Dateien geteilt.',
-    filesHistoryNotListed: "Verweise auf geteilte Dateien bleiben im Gespräch, aber hier werden keine Dateien angezeigt.",
-    fileVersionUnavailable: "Diese Version kann vom aktuellen Host nicht heruntergeladen werden.",
+    filesHistoryNotListed:
+      'Verweise auf geteilte Dateien bleiben im Gespräch, aber hier werden keine Dateien angezeigt.',
+    fileVersionUnavailable: 'Diese Version kann vom aktuellen Host nicht heruntergeladen werden.',
     filesPageEmpty: 'Keine Dateien auf dieser Seite.',
     filesNoResults: 'Keine passenden Dateien.',
     filesClearSearch: 'Suche löschen',
@@ -1318,26 +1372,17 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyHistory: 'Beginne die Unterhaltung',
     emptyHistoryHint: 'Sende den Bots in diesem Gruppenchat eine Nachricht.',
     pendingApprovalTitle: '{name} braucht deine Freigabe',
-    approvalAction: 'Aktion',
-    approvalCommand: 'Befehl',
-    approvalChanges: 'Vorgeschlagene Änderungen',
-    approvalBefore: 'Vorher',
-    approvalAfter: 'Nachher',
-    approvalEmptyFile: 'Leere Datei',
-    approvalDetailsMissing:
-      'Die Aktionsdetails sind nicht verfügbar. Aktualisiere sie, bevor du diese Aktion erlaubst.',
     pendingRetryTitle: '{name} konnte diese Antwort nicht beginnen.',
     pendingFilesTitle: 'Dateien von {name} werden geteilt…',
     pendingFilesCleanupTitle: 'Dateibereinigung für {name} wird abgeschlossen…',
     pendingFilesBlockedTitle: 'Dateien von {name} erfordern Aufmerksamkeit.',
-    pendingFilesBlockedHelp: 'Die Dateifreigabe konnte nicht abgeschlossen werden. Prüfe die Computer, auf denen dieser Gruppenchat läuft.',
+    pendingFilesBlockedHelp:
+      'Die Dateifreigabe konnte nicht abgeschlossen werden. Prüfe die Computer, auf denen dieser Gruppenchat läuft.',
     pendingUnknownTitle: 'Wir konnten nicht bestätigen, ob {name} fertig ist.',
     pendingStoppingTitle: '{name} wird gestoppt…',
     retryReply: 'Erneut versuchen',
     skipReply: 'Diese Antwort überspringen',
     pendingBot: 'Bot',
-    pendingActionUnconfirmed:
-      'Diese Aktion konnte nicht bestätigt werden. Aktualisiere den Gruppenchat, um ihren Status zu prüfen.',
     skipUnstartedWarning: 'Dieser Bot wird auf diese Nachricht nicht antworten.',
     activityFailed: '{name} konnte diese Antwort nicht abschließen.',
     activityDeferred: 'Die Antwort von {name} braucht Aufmerksamkeit.',
@@ -1354,26 +1399,40 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostBot: 'Warten auf {host}: Dafür wird ein Bot gebraucht, den es nur dort gibt.',
     waitingForHostFile: 'Warten auf {host}: Dafür wird eine Datei gebraucht, die es nur dort gibt.',
     waitingForUnnamedHostBot: 'Warten auf einen anderen Computer: Dafür wird ein Bot gebraucht, den es nur dort gibt.',
-    waitingForUnnamedHostFile: 'Warten auf einen anderen Computer: Dafür wird eine Datei gebraucht, die es nur dort gibt.',
+    waitingForUnnamedHostFile:
+      'Warten auf einen anderen Computer: Dafür wird eine Datei gebraucht, die es nur dort gibt.',
+    retirementStopping: 'Der Gruppenchat wird beendet. Laufende Arbeiten müssen noch stoppen.',
+    retirementCleanupPending:
+      'Das Beenden läuft noch: Zugriffe anderer Computer werden entfernt. Hermes versucht es nach deren erneuter Verbindung weiter; du kannst diese Ansicht verlassen.',
+    retirementCleanupUnreadable:
+      'Die Bereinigung konnte nicht bestätigt werden. Ihre Einträge bleiben erhalten. Verbinde den zuständigen Computer erneut und prüfe nochmals.',
+    retirementUnconfirmed:
+      'Das Ende dieses Gruppenchats konnte nicht bestätigt werden. Senden ist pausiert; prüfe den Status oder versuche das Beenden erneut.',
+    twoHostRiskTitle: 'Automatische Wechsel mit zwei Computern erlauben?',
+    twoHostRiskBody:
+      'Wenn die Verbindung abbricht, können beide Computer gleichzeitig an dieser Gruppe arbeiten und Aktionen doppelt ausführen. Wähle weiterhin selbst, wo es weitergeht, wenn du dieses Risiko nicht akzeptierst.',
+    twoHostRiskConfirm: 'Automatische Wechsel mit zwei Computern erlauben',
+    twoHostLegacy:
+      'Dieser Computer verwendet ein älteres Hermes und kann die Gruppe weiterhin automatisch verschieben, wenn der gemeldete Schalter an ist. Bei einem Verbindungsabbruch können beide Computer arbeiten. Schalte die Einstellung hier aus oder aktualisiere Hermes, bevor du das Risiko mit zwei Computern wählst.',
+    twoHostDisable: 'Automatische Wechsel ausschalten',
     journalLoadFailed: 'Gespeicherte Nachrichten konnten nicht geladen werden.',
     journalLoadHint:
       'Das Senden ist pausiert, damit gespeicherte Nachrichten nicht doppelt gesendet werden. Dein aktueller Entwurf bleibt erhalten.',
     journalReload: 'Erneut laden',
     classicActivitySettled: 'Antworten abgeschlossen',
-    classicActivityStopped: 'Stopp angefordert; weitere Antworten sind bis zum Fortsetzen pausiert',
-    retirementStopping: "Der Gruppenchat wird beendet. Laufende Arbeiten müssen noch stoppen.",
-    retirementCleanupPending: "Das Beenden läuft noch: Zugriffe anderer Computer werden entfernt. Hermes versucht es nach deren erneuter Verbindung weiter; du kannst diese Ansicht verlassen.",
-    retirementCleanupUnreadable: "Die Bereinigung konnte nicht bestätigt werden. Ihre Einträge bleiben erhalten. Verbinde den zuständigen Computer erneut und prüfe nochmals.",
-    retirementUnconfirmed: "Das Ende dieses Gruppenchats konnte nicht bestätigt werden. Senden ist pausiert; prüfe den Status oder versuche das Beenden erneut."
-  ,
-    twoHostRiskTitle: "Automatische Wechsel mit zwei Computern erlauben?",
-    twoHostRiskBody: "Wenn die Verbindung abbricht, können beide Computer gleichzeitig an dieser Gruppe arbeiten und Aktionen doppelt ausführen. Wähle weiterhin selbst, wo es weitergeht, wenn du dieses Risiko nicht akzeptierst.",
-    twoHostRiskConfirm: "Automatische Wechsel mit zwei Computern erlauben",
-    twoHostLegacy: "Dieser Computer verwendet ein älteres Hermes und kann die Gruppe weiterhin automatisch verschieben, wenn der gemeldete Schalter an ist. Bei einem Verbindungsabbruch können beide Computer arbeiten. Schalte die Einstellung hier aus oder aktualisiere Hermes, bevor du das Risiko mit zwei Computern wählst.",
-    twoHostDisable: "Automatische Wechsel ausschalten"
+    classicActivityStopped: 'Stopp angefordert; weitere Antworten sind bis zum Fortsetzen pausiert'
   },
   es: {
-    legacyRoom: 'Sigue chateando aquí o inicia un nuevo grupo con los mismos Bots, que pueden seguir trabajando cuando Desktop esté cerrado. Tus mensajes anteriores permanecerán aquí.',
+    approvalAction: 'Acción',
+    approvalCommand: 'Comando',
+    approvalChanges: 'Cambios propuestos',
+    approvalBefore: 'Antes',
+    approvalAfter: 'Después',
+    approvalEmptyFile: 'Archivo vacío',
+    approvalDetailsMissing: 'Los detalles de la acción no están disponibles. Actualízalos antes de permitirla.',
+    pendingActionUnconfirmed: 'No pudimos confirmar esta acción. Actualiza el chat para comprobar su estado.',
+    legacyRoom:
+      'Sigue chateando aquí o inicia un nuevo grupo con los mismos Bots, que pueden seguir trabajando cuando Desktop esté cerrado. Tus mensajes anteriores permanecerán aquí.',
     checkingDriver: 'Comprobando el chat…',
     startGatewayGroup: 'Iniciar nuevo grupo',
     classicCount:
@@ -1388,7 +1447,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'Primero hay que terminar una configuración anterior. Reconecta el anfitrión y los Bots originales y elige Reintentar.',
     classicMembers: 'Elige Bots distintos con @nombres únicos. @all y @everyone están reservados.',
-    createRefused: 'La pasarela no pudo crear este chat grupal. Comprueba el nombre del grupo y los Bots seleccionados e inténtalo de nuevo.',
+    createRefused:
+      'La pasarela no pudo crear este chat grupal. Comprueba el nombre del grupo y los Bots seleccionados e inténtalo de nuevo.',
     hostedProfileOwners: 'Guía de configuración de chats de grupo',
     refreshGroups: 'Actualizar chats de grupo',
     loadingGroup: 'Cargando chat de grupo…',
@@ -1415,7 +1475,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusApprovals: '{count} esperan aprobación',
     statusAttention: 'Atención necesaria: {count}',
     stopped: 'Parada solicitada',
-    nothingRunning: 'Ahora no hay ningún Bot trabajando.',
+    nothingRunning: 'No se cancelaron nuevas respuestas.',
     sendRefused: 'Este mensaje no se aceptó. Edítalo y envíalo de nuevo.',
     sendNotYet: 'Aún no se ha enviado. Inténtalo de nuevo para enviar el mismo mensaje.',
     sendMaybe: 'Tu mensaje puede haberse enviado ya. Puedes reintentarlo sin que aparezca dos veces.',
@@ -1434,8 +1494,9 @@ export const CANONICAL_GROUP_LOCALES = {
     filesUnavailable: 'Los archivos no están disponibles temporalmente.',
     filesAccess: 'Los archivos no están disponibles para este grupo.',
     filesEmpty: 'Aún no se han compartido archivos.',
-    filesHistoryNotListed: "Las referencias a los archivos compartidos permanecen en la conversación, pero aquí no se muestran archivos.",
-    fileVersionUnavailable: "Esta versión no se puede descargar desde el host actual.",
+    filesHistoryNotListed:
+      'Las referencias a los archivos compartidos permanecen en la conversación, pero aquí no se muestran archivos.',
+    fileVersionUnavailable: 'Esta versión no se puede descargar desde el host actual.',
     filesPageEmpty: 'No hay archivos en esta página.',
     filesNoResults: 'No hay archivos que coincidan.',
     filesClearSearch: 'Borrar búsqueda',
@@ -1474,24 +1535,17 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyHistory: 'Inicia la conversación',
     emptyHistoryHint: 'Envía un mensaje a los Bots de este chat.',
     pendingApprovalTitle: '{name} necesita tu aprobación',
-    approvalAction: 'Acción',
-    approvalCommand: 'Comando',
-    approvalChanges: 'Cambios propuestos',
-    approvalBefore: 'Antes',
-    approvalAfter: 'Después',
-    approvalEmptyFile: 'Archivo vacío',
-    approvalDetailsMissing: 'Los detalles de la acción no están disponibles. Actualízalos antes de permitirla.',
     pendingRetryTitle: '{name} no pudo iniciar esta respuesta.',
     pendingFilesTitle: 'Compartiendo archivos de {name}…',
     pendingFilesCleanupTitle: 'Finalizando la limpieza de archivos de {name}…',
     pendingFilesBlockedTitle: 'Los archivos de {name} necesitan atención.',
-    pendingFilesBlockedHelp: 'No se pudo completar el envío de archivos. Comprueba los equipos que ejecutan este chat de grupo.',
+    pendingFilesBlockedHelp:
+      'No se pudo completar el envío de archivos. Comprueba los equipos que ejecutan este chat de grupo.',
     pendingUnknownTitle: 'No pudimos confirmar si {name} terminó.',
     pendingStoppingTitle: 'Deteniendo a {name}…',
     retryReply: 'Reintentar',
     skipReply: 'Omitir esta respuesta',
     pendingBot: 'Bot',
-    pendingActionUnconfirmed: 'No pudimos confirmar esta acción. Actualiza el chat para comprobar su estado.',
     skipUnstartedWarning: 'Este Bot no responderá a este mensaje.',
     activityFailed: '{name} no pudo terminar esta respuesta.',
     activityDeferred: 'La respuesta de {name} necesita atención.',
@@ -1509,21 +1563,25 @@ export const CANONICAL_GROUP_LOCALES = {
     waitingForHostFile: 'Esperando a {host}: esto necesita un archivo que solo está allí.',
     waitingForUnnamedHostBot: 'Esperando a otro equipo: esto necesita un Bot que solo está allí.',
     waitingForUnnamedHostFile: 'Esperando a otro equipo: esto necesita un archivo que solo está allí.',
+    retirementStopping: 'El chat de grupo se está cerrando. Esperamos a que se detenga el trabajo en curso.',
+    retirementCleanupPending:
+      'El cierre sigue en curso: se están retirando los accesos de otros ordenadores. Hermes volverá a intentarlo cuando se reconecten; puedes salir de esta vista.',
+    retirementCleanupUnreadable:
+      'No pudimos confirmar la limpieza. Sus registros se conservan. Reconecta el ordenador responsable y vuelve a comprobar.',
+    retirementUnconfirmed:
+      'No pudimos confirmar si este chat terminó. El envío está pausado; comprueba el estado o vuelve a intentar finalizarlo.',
+    twoHostRiskTitle: '¿Permitir movimientos automáticos con dos ordenadores?',
+    twoHostRiskBody:
+      'Si se interrumpe la conexión, ambos ordenadores pueden trabajar para este grupo al mismo tiempo y repetir acciones. Sigue eligiendo dónde continuar salvo que aceptes este riesgo.',
+    twoHostRiskConfirm: 'Permitir movimientos automáticos con dos ordenadores',
+    twoHostLegacy:
+      'Este ordenador utiliza un Hermes antiguo y puede seguir moviendo el grupo automáticamente si el ajuste mostrado está activado. Si se corta la conexión, ambos ordenadores pueden ejecutar trabajo. Desactívalo aquí o actualiza Hermes antes de elegir el riesgo con dos ordenadores.',
+    twoHostDisable: 'Desactivar movimientos automáticos',
     journalLoadFailed: 'No se pudieron cargar los mensajes guardados.',
     journalLoadHint:
       'El envío está en pausa para evitar enviar un mensaje guardado dos veces. Tu borrador actual se conserva.',
     journalReload: 'Volver a cargar',
     classicActivitySettled: 'Respuestas terminadas',
-    classicActivityStopped: 'Se solicitó detener; las siguientes respuestas están en pausa hasta que continúes',
-    retirementStopping: "El chat de grupo se está cerrando. Esperamos a que se detenga el trabajo en curso.",
-    retirementCleanupPending: "El cierre sigue en curso: se están retirando los accesos de otros ordenadores. Hermes volverá a intentarlo cuando se reconecten; puedes salir de esta vista.",
-    retirementCleanupUnreadable: "No pudimos confirmar la limpieza. Sus registros se conservan. Reconecta el ordenador responsable y vuelve a comprobar.",
-    retirementUnconfirmed: "No pudimos confirmar si este chat terminó. El envío está pausado; comprueba el estado o vuelve a intentar finalizarlo."
-  ,
-    twoHostRiskTitle: "¿Permitir movimientos automáticos con dos ordenadores?",
-    twoHostRiskBody: "Si se interrumpe la conexión, ambos ordenadores pueden trabajar para este grupo al mismo tiempo y repetir acciones. Sigue eligiendo dónde continuar salvo que aceptes este riesgo.",
-    twoHostRiskConfirm: "Permitir movimientos automáticos con dos ordenadores",
-    twoHostLegacy: "Este ordenador utiliza un Hermes antiguo y puede seguir moviendo el grupo automáticamente si el ajuste mostrado está activado. Si se corta la conexión, ambos ordenadores pueden ejecutar trabajo. Desactívalo aquí o actualiza Hermes antes de elegir el riesgo con dos ordenadores.",
-    twoHostDisable: "Desactivar movimientos automáticos"
+    classicActivityStopped: 'Se solicitó detener; las siguientes respuestas están en pausa hasta que continúes'
   }
 } satisfies Record<string, CanonicalGroupMessages>

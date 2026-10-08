@@ -17,11 +17,10 @@ from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state_runtime import (
     RuntimeStoreError, admit_session_input, cancel_session_input, get_session_admission, list_session_admissions,
 )
-from tests.gateway.test_session_hosted_rpc import owner as owner
 
 
-def local_case(owner, monkeypatch, *, previous_stop=False):
-    authority, loop, _, _ = owner
+def local_case(hosted_owner, monkeypatch, *, previous_stop=False):
+    authority, loop, _, _ = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)
     authority.hosted_room_service = service
     monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id), 'other': Path(authority.profile_id)})
@@ -134,8 +133,8 @@ def barrier(c, kind, monkeypatch):
 
 
 @pytest.mark.parametrize('kind', ['open', 'previous_stop', 'retiring', 'stop', 'stopping'])
-def test_new_admission_reads_room_barrier_in_its_writer(owner, monkeypatch, kind):
-    c = local_case(owner, monkeypatch, previous_stop=kind == 'previous_stop')
+def test_new_admission_reads_room_barrier_in_its_writer(hosted_owner, monkeypatch, kind):
+    c = local_case(hosted_owner, monkeypatch, previous_stop=kind == 'previous_stop')
     preparing, release = threading.Event(), threading.Event()
     original = hosted_room_input_preparation.prepare_hosted_input
 
@@ -170,8 +169,8 @@ def test_new_admission_reads_room_barrier_in_its_writer(owner, monkeypatch, kind
 @pytest.mark.parametrize('kind,phase', [
     (kind, phase) for kind in ['retiring', 'stop'] for phase in ['before_check', 'after_check']
 ] + [('replacement', 'claim_selection'), ('same_id_change', 'claim_selection')])
-def test_retained_receipt_replays_but_old_work_cannot_be_claimed(owner, monkeypatch, kind, phase):
-    c = local_case(owner, monkeypatch)
+def test_retained_receipt_replays_but_old_work_cannot_be_claimed(hosted_owner, monkeypatch, kind, phase):
+    c = local_case(hosted_owner, monkeypatch)
     receipt = c.member.submit(**c.args)
     admitted = get_session_admission(c.authority.db, admission_id=receipt['admission_id'])
     if phase == 'claim_selection':

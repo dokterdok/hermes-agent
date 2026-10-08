@@ -31,16 +31,24 @@ export interface GroupMentionSurface {
  * also sees character references in raw HTML blocks, which document tokens retain as one HTML span. */
 function generatedHandleContinuations(source: string): Set<number> {
   const offsets = new Set<number>()
-  const events = postprocess(parse().text().write(preprocess()(source, undefined, true)))
+  const events = postprocess(
+    parse()
+      .text()
+      .write(preprocess()(source, undefined, true))
+  )
 
   for (const [event, token] of events) {
-    if (event !== 'enter' || !GENERATED.has(token.type)) {continue}
+    if (event !== 'enter' || !GENERATED.has(token.type)) {
+      continue
+    }
     const raw = source.slice(token.start.offset, token.end.offset)
     const fragment = token.type === 'characterReference' ? parseFragment(raw) : null
     const node = fragment?.childNodes[0]
     const decoded = node && 'value' in node ? node.value : raw.slice(1)
 
-    if (/^[\p{L}\p{N}._-]/u.test(decoded)) {offsets.add(token.start.offset)}
+    if (/^[\p{L}\p{N}._-]/u.test(decoded)) {
+      offsets.add(token.start.offset)
+    }
   }
 
   return offsets
@@ -87,7 +95,9 @@ function markdownLiteralSource(source: string): GroupMentionSurface {
  * tokenizer markup span so discarded attributes cannot re-enter through a merged text node. */
 function maskHtmlMetadata(source: string, visible: string[]) {
   const hide = (token: Token.Token) => {
-    if (!token.location) {return}
+    if (!token.location) {
+      return
+    }
 
     for (let offset = token.location.startOffset; offset < token.location.endOffset; offset++) {
       visible[offset] = source[offset] === '\n' ? '\n' : ' '
@@ -96,10 +106,19 @@ function maskHtmlMetadata(source: string, visible: string[]) {
 
   const ignore = () => undefined
 
-  const tokenizer = new Tokenizer({ sourceCodeLocationInfo: true }, {
-    onStartTag: hide, onEndTag: hide, onComment: hide, onDoctype: hide,
-    onCharacter: ignore, onNullCharacter: ignore, onWhitespaceCharacter: ignore, onEof: ignore
-  })
+  const tokenizer = new Tokenizer(
+    { sourceCodeLocationInfo: true },
+    {
+      onStartTag: hide,
+      onEndTag: hide,
+      onComment: hide,
+      onDoctype: hide,
+      onCharacter: ignore,
+      onNullCharacter: ignore,
+      onWhitespaceCharacter: ignore,
+      onEof: ignore
+    }
+  )
 
   tokenizer.write(source, true)
 }

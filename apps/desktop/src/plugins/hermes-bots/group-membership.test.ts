@@ -72,8 +72,11 @@ describe('membership metadata', () => {
     const ownedKey = modules.data.botMetaKey(owned)
 
     const plan = modules.membership.groupDisbandMetadataPlan(
-      'Workshop', [orphan, owned], { log: [], members: [orphan, owned], watermarks: {} },
-      [orphan, owned], { [orphanKey]: meta, [ownedKey]: meta }
+      'Workshop',
+      [orphan, owned],
+      { log: [], members: [orphan, owned], watermarks: {} },
+      [orphan, owned],
+      { [orphanKey]: meta, [ownedKey]: meta }
     )
 
     expect(plan.patches.get(orphanKey)).toEqual({ groups: ['Other'], group: 'Other' })

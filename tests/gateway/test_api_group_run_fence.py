@@ -224,7 +224,7 @@ async def test_canonical_fenced_epoch_refuses_answers_and_passes_status_and_stop
             successor = await invite(cli, SUCCESSOR, 2)
             status = await cli.get(f'/v1/runs/{run_id}', headers=bearer(successor))
             assert status.status == 200, await status.text()
-            assert (await status.json())['status'] == 'running'
+            assert (await status.json())['status'] == 'waiting_for_approval'
             stopped = await cli.post(f'/v1/runs/{run_id}/stop', headers=bearer(successor))
             assert stopped.status == 200, await stopped.text()
             assert (await stopped.json())['status'] == 'stopping' and interrupted.is_set()

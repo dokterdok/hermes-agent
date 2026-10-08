@@ -983,10 +983,19 @@ _PROTOCOL_VIOLATION_ERROR = (
 )
 
 
-_EXIT_SUMMARY_MARKER = "Resume this session with:"
 # Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
 _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
-_LOG_NOISE_PREFIXES = ("session_id:", "Query:", "Initializing agent")
+
+
+def _exit_summary_marker() -> str:
+    """The CLI exit-summary header (``cli_session_mixin.show_exit_summary``), in the active language."""
+    from agent.i18n import t
+    return t("cli.session.exit_resume_hint")
+
+
+def _log_noise_prefixes() -> tuple[str, ...]:
+    from agent.i18n import t
+    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
 
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
@@ -1011,13 +1020,13 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     if not raw:
         return ""
     raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_EXIT_SUMMARY_MARKER)
+    cut = raw.rfind(_exit_summary_marker())
     if cut != -1:
         raw = raw[:cut]
     lines = []
     for ln in raw.splitlines():
         ln = _LOG_CHROME.sub("", ln).strip()
-        if ln and not ln.startswith(_LOG_NOISE_PREFIXES):
+        if ln and not ln.startswith(_log_noise_prefixes()):
             lines.append(ln)
     return " ".join(lines)[-400:]
 
@@ -2072,6 +2081,19 @@ def _dispatch_lane_task(
     profile_exists = _profile_exists_fn()
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
+        # Per-task diagnostic so ``show``/``tail`` name the missing profile instead of leaving
+        # the card in ``ready`` with zero board evidence (#122422). Unlike a respawn guard the
+        # condition never expires on its own, so write it once: a repeat only when something
+        # else happened on the card since (reassign, comment) — not one row per tick forever,
+        # and not one row per foreign home per tick on a shared board (#101015).
+        if not dry_run:
+            with _kb.write_txn(conn):
+                last = conn.execute(
+                    "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+                if (last is None or last["kind"] != "skipped_nonspawnable"
+                        or last["payload"] != _kb._json_or_null({"assignee": assignee})):
+                    _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.

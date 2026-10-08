@@ -21,7 +21,6 @@ import {
 import { $unreadSessionTargets, type UnreadSessionTarget } from '@/store/session-dot-state'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { $focusedStoredSessionId, $sessionTiles } from '@/store/session-states'
-
 import {
   $openNextUnreadRequest,
   openNextValidUnread,

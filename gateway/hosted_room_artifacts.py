@@ -280,7 +280,9 @@ def _lineage_identity_sql(scope_json: str) -> str:
     arguments = ", ".join(
         f"'{key}', json_extract({scope_json}, '$.{key}')" for key in keys
     )
-    return f"json_object({arguments})"
+    return (f"CASE WHEN json_extract({scope_json}, '$.kind')='classic' THEN "
+            f"json_object('export_id',json_extract({scope_json}, '$.export_id'),'kind','classic') "
+            f"ELSE json_object({arguments}) END")
 
 
 def output_store_exists(conn: sqlite3.Connection) -> bool:
@@ -429,6 +431,7 @@ class RoomArtifactOutbox:
                 """SELECT artifact_id, blob_name, scope_json
                      FROM hosted_room_output_artifacts
                     WHERE acknowledged_at IS NULL AND cleanup_required_at IS NULL AND created_at<=?
+                      AND json_extract(scope_json, '$.kind') IS NULL
                     ORDER BY created_at, artifact_id
                     LIMIT ?""",
                 (cutoff, ACKNOWLEDGED_ARTIFACT_PRUNE_BATCH),
@@ -543,6 +546,14 @@ class RoomArtifactOutbox:
             """CREATE INDEX IF NOT EXISTS idx_hosted_room_output_generation_expiry
                ON hosted_room_output_generation_fences(updated_at, lineage_identity)"""
         )
+        trigger = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='hosted_room_output_generation_track_insert'"
+        ).fetchone()
+        if trigger and "$.kind" not in trigger[0]:
+            for name in (
+                'guard_insert', 'track_insert', 'guard_update', 'track_update', 'track_terminal', 'track_delete'
+            ):
+                conn.execute(f"DROP TRIGGER IF EXISTS hosted_room_output_generation_{name}")
         identity = _lineage_identity_sql("NEW.scope_json")
         generation = "CAST(json_extract(NEW.scope_json, '$.execution_generation') AS INTEGER)"
         deleted_identity = _lineage_identity_sql("OLD.scope_json")
@@ -643,6 +654,10 @@ class RoomArtifactOutbox:
         scope: RoomArtifactScope,
     ) -> None:
         """Advance one logical task generation or reject a stale producer."""
+
+        if scope.as_mapping().get("kind") == "classic":
+            from gateway.classic_output_exports import validate_write
+            validate_write(conn, scope)
 
         row = conn.execute(
             """SELECT max_generation, retired_generation
@@ -918,7 +933,7 @@ class RoomArtifactOutbox:
     def _read_blob(self, row: sqlite3.Row, *, offset: int, length: int) -> bytes:
         path = self.blob_root / str(row["blob_name"])
         try:
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
         except FileNotFoundError as exc:
             raise RoomArtifactError("room artifact bytes are missing") from exc
         try:
@@ -1083,7 +1098,12 @@ class RoomArtifactOutbox:
         removed = 0
         for row in rows:
             try:
-                scope = RoomArtifactScope.from_mapping(json.loads(row["scope_json"]))
+                stored = json.loads(row["scope_json"])
+                if isinstance(stored, dict) and stored.get("kind") == "classic":
+                    from gateway.hosted_room_artifacts_classic import ClassicExportScope
+                    scope = ClassicExportScope(stored["export_id"], stored["execution_generation"])
+                else:
+                    scope = RoomArtifactScope.from_mapping(stored)
                 removed += self.discard(scope)
             except (OSError, ValueError, sqlite3.Error):
                 continue

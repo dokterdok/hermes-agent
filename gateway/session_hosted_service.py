@@ -185,15 +185,6 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
         if target_home is None or params.get('_target_home') != str(target_home):
             raise RuntimeStoreError('permission_denied')
         result = {'owner': owner, 'target_home': str(target_home)}
-        if operation == 'output_scope':
-            from gateway.session_hosted_output_owner import attest_output_scope
-            result['scope'] = attest_output_scope(self, room_id, member, profile, params)
-            return result
-        from gateway.session_hosted_output_owner import OUTPUT_OPERATIONS
-        if operation in OUTPUT_OPERATIONS:
-            from gateway.session_hosted_output_owner import attest_output_action
-            result.update(attest_output_action(self, room_id, member, profile, operation, params))
-            return result
         if operation == 'approve':
             from gateway.hosted_room_approval import require_current_approval
             task = params.get('task')
@@ -203,6 +194,15 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                                                params.get('execution_generation'))
             if asdict(current['identity']) != task:
                 raise RuntimeStoreError('permission_denied')
+        if operation == 'output_scope':
+            from gateway.session_hosted_output_owner import attest_output_scope
+            result['scope'] = attest_output_scope(self, room_id, member, profile, params)
+            return result
+        from gateway.session_hosted_output_owner import OUTPUT_OPERATIONS
+        if operation in OUTPUT_OPERATIONS:
+            from gateway.session_hosted_output_owner import attest_output_action
+            result.update(attest_output_action(self, room_id, member, profile, operation, params))
+            return result
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -526,7 +526,8 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                     if not authorized(conn, operation, identity, generation):
                         return False
                 if operation == 'approve':
-                    # Approval owns its short transaction, outside the admission writer/read context.
+                    # Approval owns its short transaction; never open it inside
+                    # the admission writer or while retaining this read context.
                     from gateway.hosted_room_approval import require_current_approval
                     if identity is None:
                         return False
@@ -604,12 +605,14 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                                          execution_generation=execution_generation, choice=choice,
                                          request_id=request_id)
 
+
     def _set_pending_action(self, room_id, member_id, action):
         super()._set_pending_action(room_id, member_id, action)
         if action is not None:
             # A chat's "Always allow in this chat" answers a matching request as soon as it is seen.
             from gateway.group_chat_rules import apply_remembered
             apply_remembered(self, room_id, member_id, action)
+
 
     def approve(self, *, session_id, request_id, choice, expected_task_id, expected_execution_generation):
         rpc = next((r for r in self.member_rpcs.values() if r.ref.session_id == session_id), None)

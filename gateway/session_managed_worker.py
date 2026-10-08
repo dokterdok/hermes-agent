@@ -211,15 +211,22 @@ def _worker_env(authority):
     process env byte-for-byte, exactly as before."""
     from pathlib import Path
     from agent.secret_scope import is_multiplex_active
+    from tools.environments.local import _is_routed_home
     home = Path(str(authority.profile_id))
-    if not is_multiplex_active() or not home.is_absolute():
+    if not home.is_absolute():
+        return None
+    # Keyed on the worker's OWNING profile, not only the process-wide multiplex flag: a worker for
+    # another profile must never inherit the launch environ even when that flag reads False.
+    routed = _is_routed_home(home)
+    if not routed and not is_multiplex_active():
         return None
     from agent.secret_scope import build_profile_secret_scope
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
-    # Remove launch residue before the constructor injects current owned context;
-    # a launch .env key must not erase a freshly derived session/bridge value.
+    from tools.environments.local import _scrub_credentials, build_subprocess_env, strip_launch_profile_env
+    # Strip launch residue before injecting the owning session's current context.
     base = strip_launch_profile_env(os.environ.copy(), target_home=home)
     env = build_subprocess_env(base=base, scrub_secrets=True)
+    if routed:
+        _scrub_credentials(env, inherit_credentials=False)
     env.update({k: v for k, v in build_profile_secret_scope(home).items() if v is not None})
     env['HERMES_HOME'] = str(home)
     from hermes_constants import apply_subprocess_home_env
@@ -229,8 +236,9 @@ def _worker_env(authority):
 
 async def execute_managed(authority, ref, row, policy):
     env = await asyncio.to_thread(_worker_env, authority)
+    cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
     process = await asyncio.to_thread(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
-        cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE, env=env,
+        cwd=cwd, stdin=subprocess.PIPE, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
     worker = ManagedWorker(process)
     workers = getattr(authority, '_managed_workers', None)

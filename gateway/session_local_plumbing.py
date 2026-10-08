@@ -44,6 +44,7 @@ def refresh_on_resume(authority, actor, ref):
     from gateway.session_policy import restore_policy, build_policy, bind_launch_key
     from hermes_state_local import local_receipt, POLICY_PREFIX
     from hermes_state_mutation_prepared import local_snapshot, validate_prepared
+    from hermes_state_mutation_guards import require_idle
     live = authority.sessions.get(ref.session_id)
     if (live is None or getattr(live.source, 'platform', None) != Platform.LOCAL
             or 'session:control' not in actor.capabilities):
@@ -58,6 +59,7 @@ def refresh_on_resume(authority, actor, ref):
     try:
         with authority.db._read_ctx() as conn:
             snapshot = local_snapshot(authority.db, conn, ref.session_id)
+            require_idle(authority.db, conn, list({ref.session_id, snapshot["target"]}))
     except RuntimeStoreError as error:
         if error.reason in {'session_busy', 'unknown_execution'}:
             return  # resume still observes the existing work with its original policy
@@ -104,6 +106,7 @@ def refresh_on_resume(authority, actor, ref):
         _epoch(conn, authority.epoch)
         authority.authorize(actor, ref, 'session:control')
         current = validate_prepared(authority.db, conn, ref.session_id, {'snapshot': snapshot})
+        require_idle(authority.db, conn, list({ref.session_id, current['target']}))
         receipt = current['receipt']
         if receipt['principal_id'] != actor.subject or receipt['profile_id'] != authority.profile_id:
             raise RuntimeStoreError('permission_denied')

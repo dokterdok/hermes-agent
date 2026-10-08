@@ -13,62 +13,117 @@ export interface CanonicalGroupEvent {
   created_at?: number
   kind: string
   payload: {
-    text?: string; content?: string; attachments?: CanonicalGroupAttachment[]; member_id?: string; error?: string; reason?: string
-    resource?: string; host_name?: string | null
-    to_name?: string | null; from_name?: string | null; offline_since?: number | null; successor_gateway_id?: string
+    text?: string
+    content?: string
+    attachments?: CanonicalGroupAttachment[]
+    member_id?: string
+    error?: string
+    reason?: string
+    resource?: string
+    host_name?: string | null
+    to_name?: string | null
+    from_name?: string | null
+    offline_since?: number | null
+    successor_gateway_id?: string
     /** On `authority.transition`: why it moved, its proof and how many recent messages may be missing. */
-    proof_kind?: string; at_risk?: number | null; to_epoch?: number
+    proof_kind?: string
+    at_risk?: number | null
+    to_epoch?: number
   }
   actor?: { kind?: string; id?: string; display_name?: string }
 }
 
 /** Bookkeeping kinds that carry nothing to show when empty. Unknown kinds always stay visible. */
-const QUIET_KINDS = new Set(['turn.settled', 'room.activity', 'task.admitted', 'custody.configured', 'succession.state'])
+const QUIET_KINDS = new Set([
+  'turn.settled',
+  'room.activity',
+  'task.admitted',
+  'custody.configured',
+  'succession.state'
+])
 
 type Labels = ReturnType<typeof useCanonicalGroupLabels>
 type Words = ReturnType<typeof useBots>['succession']
 
 function quiet(event: CanonicalGroupEvent) {
-  return QUIET_KINDS.has(event.kind) && !event.payload.text && !event.payload.content && !event.payload.attachments?.length
+  return (
+    QUIET_KINDS.has(event.kind) && !event.payload.text && !event.payload.content && !event.payload.attachments?.length
+  )
 }
 
-const label = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : undefined
+const label = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
 
 /** One pass, so a computer's display label is never read as another placeholder. */
 const fill = (template: string, values: Record<string, string>) =>
-  template.replace(/\{(\w+)\}/g, (token, key: string) => Object.hasOwn(values, key) ? values[key] : token)
+  template.replace(/\{(\w+)\}/g, (token, key: string) => (Object.hasOwn(values, key) ? values[key] : token))
 
 function offlineAt(seconds: unknown, locale: string | undefined) {
-  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {return undefined}
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    return undefined
+  }
   const at = new Date(seconds * 1000)
   const today = at.toDateString() === new Date().toDateString()
 
-  return new Intl.DateTimeFormat(locale, today ? { hour: 'numeric', minute: '2-digit' }
-    : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(at)
+  return new Intl.DateTimeFormat(
+    locale,
+    today
+      ? { hour: 'numeric', minute: '2-digit' }
+      : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+  ).format(at)
 }
 
 /** The gateway words these notices in English; display labels let Desktop say them in the reader's language.
  * A computer the event leaves unnamed may still be named by the room's latest status. */
-function localizedNotice({ kind, payload }: CanonicalGroupEvent, labels: Labels, words: Words, locale: string | undefined,
-  computerName?: (installId: string) => string | undefined) {
-  if (kind === 'authority.transition') {
-    const named = typeof payload.successor_gateway_id === 'string' ? computerName?.(payload.successor_gateway_id) : undefined
-    const target = label(payload.to_name) ?? named, host = label(payload.from_name), time = offlineAt(payload.offline_since, locale)
+function authorityTransitionNotice(
+  payload: CanonicalGroupEvent['payload'],
+  labels: Labels,
+  words: Words,
+  locale: string | undefined,
+  computerName?: (installId: string) => string | undefined
+) {
+  const named =
+    typeof payload.successor_gateway_id === 'string' ? computerName?.(payload.successor_gateway_id) : undefined
+  const target = label(payload.to_name) ?? named,
+    host = label(payload.from_name),
+    time = offlineAt(payload.offline_since, locale)
 
-    // Automatic moves say why. They never claim nothing was lost: Bot replies written after the host's last push aren't protected.
-    if (payload.reason === 'automatic') {return words.movedAutomatically(target ?? null, host ?? null, time ?? null)}
-
-    if (payload.reason === 'handover') {return words.movedHandover(target ?? null, host ?? null)}
-
-    if (!target) {return Object.hasOwn(payload, 'to_name') ? labels.continuedOnUnnamed : undefined}
-
-    return host && time ? fill(labels.continuedOnSince, { target, host, time }) : fill(labels.continuedOn, { target })
+  // Automatic moves say why. They never claim nothing was lost: Bot replies written after the host's last push aren't protected.
+  if (payload.reason === 'automatic') {
+    return words.movedAutomatically(target ?? null, host ?? null, time ?? null)
   }
 
-  if (kind === 'turn.deferred' && payload.reason === 'waiting_for_host' && (payload.resource === 'bot' || payload.resource === 'file')) {
+  if (payload.reason === 'handover') {
+    return words.movedHandover(target ?? null, host ?? null)
+  }
+
+  if (!target) {
+    return Object.hasOwn(payload, 'to_name') ? labels.continuedOnUnnamed : undefined
+  }
+
+  return host && time ? fill(labels.continuedOnSince, { target, host, time }) : fill(labels.continuedOn, { target })
+}
+
+function localizedNotice(
+  { kind, payload }: CanonicalGroupEvent,
+  labels: Labels,
+  words: Words,
+  locale: string | undefined,
+  computerName?: (installId: string) => string | undefined
+) {
+  if (kind === 'authority.transition') {
+    return authorityTransitionNotice(payload, labels, words, locale, computerName)
+  }
+
+  if (
+    kind === 'turn.deferred' &&
+    payload.reason === 'waiting_for_host' &&
+    (payload.resource === 'bot' || payload.resource === 'file')
+  ) {
     const host = label(payload.host_name)
 
-    if (!host) {return payload.resource === 'bot' ? labels.waitingForUnnamedHostBot : labels.waitingForUnnamedHostFile}
+    if (!host) {
+      return payload.resource === 'bot' ? labels.waitingForUnnamedHostBot : labels.waitingForUnnamedHostFile
+    }
 
     return fill(payload.resource === 'bot' ? labels.waitingForHostBot : labels.waitingForHostFile, { host })
   }
@@ -98,39 +153,86 @@ export interface MissingMessages {
 function MissingMark({ missing, event }: { missing?: MissingMessages; event: CanonicalGroupEvent }) {
   const words = useBots().succession
 
-  if (!missing?.events.includes(event)) {return null}
+  if (!missing?.events.includes(event)) {
+    return null
+  }
 
-  return <div className="mt-1 flex flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)"
-    data-slot="missing-message">
-    <span>{missing.note}</span>
-    <Button disabled={missing.blocked} onClick={() => missing.onSendAgain(event)} size="inline" variant="text">{words.sendAgain}</Button>
-  </div>
+  return (
+    <div
+      className="mt-1 flex flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)"
+      data-slot="missing-message"
+    >
+      <span>{missing.note}</span>
+      <Button disabled={missing.blocked} onClick={() => missing.onSendAgain(event)} size="inline" variant="text">
+        {words.sendAgain}
+      </Button>
+    </div>
+  )
 }
 
 /** A row's files download from the room that logged them; a message the new host doesn't have can't be fetched there. */
-function RowAttachments({ event, binding, disabled }: { event: CanonicalGroupEvent; binding: CanonicalGroupBinding; disabled: boolean }) {
-  if (!event.payload.attachments?.length) {return null}
+function RowAttachments({
+  event,
+  binding,
+  disabled
+}: {
+  event: CanonicalGroupEvent
+  binding: CanonicalGroupBinding
+  disabled: boolean
+}) {
+  if (!event.payload.attachments?.length) {
+    return null
+  }
 
-  return <div className="mt-2"><CanonicalGroupAttachments attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
-    binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} readOnly /></div>
+  return (
+    <div className="mt-2">
+      <CanonicalGroupAttachments
+        attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
+        binding={binding}
+        disabled={disabled || !event.event_id || event.room_id !== binding.roomId}
+        readOnly
+      />
+    </div>
+  )
 }
 
 /** What a row says: a worded notice, the message itself, or the activity line for an empty gateway event. */
-function rowText(event: CanonicalGroupEvent, notice: string | undefined, labels: Labels, member: CanonicalRoomMember | undefined) {
-  if (notice) {return { system: true, text: notice }}
+function rowText(
+  event: CanonicalGroupEvent,
+  notice: string | undefined,
+  labels: Labels,
+  member: CanonicalRoomMember | undefined
+) {
+  if (notice) {
+    return { system: true, text: notice, notice: true }
+  }
 
   const activity: Record<string, string> = {
-    'turn.failed': labels.activityFailed, 'turn.deferred': labels.activityDeferred,
-    'turn.cancelled': labels.activityCancelled, 'member.unavailable': labels.activityUnavailable,
-    'room.created': labels.activityCreated, 'room.disbanded': labels.activityEnded,
-    'room.renamed': labels.activityRenamed, 'room.stop_requested': labels.stopped
+    'turn.failed': labels.activityFailed,
+    'turn.deferred': labels.activityDeferred,
+    'turn.cancelled': labels.activityCancelled,
+    'member.unavailable': labels.activityUnavailable,
+    'room.created': labels.activityCreated,
+    'room.disbanded': labels.activityEnded,
+    'room.renamed': labels.activityRenamed,
+    'room.stop_requested': labels.classicActivityStopped
   }
 
   const suppliedText = event.payload.text || event.payload.content
   const system = !suppliedText && !event.payload.attachments?.length
 
-  return { system, text: suppliedText || (system ? (activity[event.kind] || labels.activityUpdated)
-    .replace('{name}', canonicalMemberName(member, labels.unknownBot)) : '') }
+  return {
+    system,
+    notice: false,
+    text:
+      suppliedText ||
+      (system
+        ? (activity[event.kind] || labels.activityUpdated).replace(
+            '{name}',
+            canonicalMemberName(member, labels.unknownBot)
+          )
+        : '')
+  }
 }
 
 function eventTime(event: CanonicalGroupEvent) {
@@ -158,107 +260,19 @@ function eventIdentity(event: CanonicalGroupEvent, members: CanonicalRoomMember[
   return { isBot, isHuman, member, name }
 }
 
-function HistoryText({
-  event,
-  text,
-  system,
-  labels
-}: {
-  event: CanonicalGroupEvent
-  text: string
-  system: boolean
-  labels: Labels
-}) {
-  if (!text) {
-    return null
-  }
-
-  return system ? (
-    <div className="select-text text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)">
-      <p className={event.kind === 'turn.failed' ? 'text-destructive' : 'text-(--ui-text-tertiary)'}>{text}</p>
-      <details className="mt-1 text-(--ui-text-quaternary)">
-        <summary className="cursor-pointer">{labels.setupDetails}</summary>
-        <p className="mt-1 break-words font-mono text-[length:var(--conversation-tool-font-size)]">{event.kind}</p>
-        {(event.payload.error || event.payload.reason) && (
-          <p className="mt-1 whitespace-pre-wrap break-words">{event.payload.error || event.payload.reason}</p>
-        )}
-      </details>
-    </div>
-  ) : (
-    <div className="select-text break-words text-[length:var(--conversation-text-font-size)] leading-(--conversation-line-height)">
-      <MessageTextContent media={false} previewOnly text={text} />
-    </div>
-  )
-}
-
-function HistoryRow({
-  event,
+export function CanonicalGroupHistory({
   binding,
-  members,
-  disabled,
-  labels,
-  locale,
-  words,
+  events,
+  members = [],
+  disabled = false,
   computerName,
   unsaved,
   missing
 }: {
-  event: CanonicalGroupEvent
   binding: CanonicalGroupBinding
-  members: CanonicalRoomMember[]
-  disabled: boolean
-  labels: Labels
-  locale?: string
-  words: Words
-  computerName?: (installId: string) => string | undefined
-  unsaved?: ReadonlySet<string | undefined>
-  missing?: MissingMessages
-}) {
-  const { isBot, isHuman, member, name } = eventIdentity(event, members, labels)
-  const { text, system } = rowText(event, localizedNotice(event, labels, words, locale, computerName), labels, member)
-  const at = eventTime(event)
-
-  return (
-    <article
-      className={`group flex min-w-0 items-start gap-3 py-3 ${isHuman ? 'rounded-lg bg-(--chrome-action-hover) px-3' : 'px-3'}`}
-    >
-      {isBot && (
-        <div aria-hidden className="mt-0.5 shrink-0">
-          <CanonicalMemberFace member={member} name={name} seed={event.actor?.id} />
-        </div>
-      )}
-      <div className="min-w-0 flex-1">
-        {(name || at) && (
-          <div className="mb-1 flex min-w-0 items-center gap-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)">
-            {name && (
-              <span className="truncate font-medium text-(--ui-text-primary)">
-                <bdi>{name}</bdi>
-              </span>
-            )}
-            {at && (
-              <time className="shrink-0 text-(--ui-text-quaternary)" dateTime={at.toISOString()}>
-                {new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(at)}
-              </time>
-            )}
-            {!!text && (
-              <div className="ml-auto opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                <CopyButton appearance="icon" buttonSize="icon-xs" text={text} />
-              </div>
-            )}
-          </div>
-        )}
-        <HistoryText event={event} labels={labels} system={system} text={text} />
-        <RowAttachments binding={binding} disabled={disabled || !!missing?.events.includes(event)} event={event} />
-        <MissingMark event={event} missing={missing} />
-        {unsaved?.has(event.event_id) && <p className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-quaternary)"
-          data-slot="unsaved-message">{words.unsavedMessage}</p>}
-      </div>
-    </article>
-  )
-}
-
-export function CanonicalGroupHistory({ binding, events, members = [], disabled = false, computerName, unsaved, missing }: {
-  binding: CanonicalGroupBinding; events: CanonicalGroupEvent[]; members?: CanonicalRoomMember[]; disabled?: boolean
+  events: CanonicalGroupEvent[]
+  members?: CanonicalRoomMember[]
+  disabled?: boolean
   computerName?: (installId: string) => string | undefined
   /** Your messages the host holds alone so far (`protected: false`), by event id. */
   unsaved?: ReadonlySet<string | undefined>
@@ -267,9 +281,96 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
   const labels = useCanonicalGroupLabels()
   const words = useBots().succession
   const { locale } = useI18n()
-  return <>{inPlace(events.filter(event => !quiet(event)), missing?.events ?? []).map(event => (
-    <HistoryRow binding={binding} disabled={disabled} event={event} key={event.event_id ?? event.seq}
-      labels={labels} locale={locale} members={members} words={words} computerName={computerName}
-      unsaved={unsaved} missing={missing} />
-  ))}</>
+
+  return (
+    <>
+      {inPlace(
+        events.filter(event => !quiet(event)),
+        missing?.events ?? []
+      ).map(event => {
+        const { isBot, isHuman, member, name } = eventIdentity(event, members, labels)
+
+        const {
+          system,
+          text,
+          notice: isNotice
+        } = rowText(event, localizedNotice(event, labels, words, locale, computerName), labels, member)
+
+        const at = eventTime(event)
+
+        return (
+          <article
+            className={`group flex min-w-0 items-start gap-3 py-3 ${isHuman ? 'rounded-lg bg-(--chrome-action-hover) px-3' : 'px-3'}`}
+            key={event.event_id ?? event.seq}
+          >
+            {isBot && (
+              <div aria-hidden className="mt-0.5 shrink-0">
+                <CanonicalMemberFace member={member} name={name} seed={event.actor?.id} />
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              {(name || at) && (
+                <div className="mb-1 flex min-w-0 items-center gap-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)">
+                  {name && (
+                    <span className="truncate font-medium text-(--ui-text-primary)">
+                      <bdi>{name}</bdi>
+                    </span>
+                  )}
+                  {at && (
+                    <time className="shrink-0 text-(--ui-text-quaternary)" dateTime={at.toISOString()}>
+                      {new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(at)}
+                    </time>
+                  )}
+                  {!!text && (
+                    <div className="ml-auto opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                      <CopyButton appearance="icon" buttonSize="icon-xs" text={text} />
+                    </div>
+                  )}
+                </div>
+              )}
+              {!!text &&
+                (system ? (
+                  <div className="select-text text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)">
+                    <p className={event.kind === 'turn.failed' ? 'text-destructive' : 'text-(--ui-text-tertiary)'}>
+                      {text}
+                    </p>
+                    {!isNotice && (
+                      <details className="mt-1 text-(--ui-text-quaternary)">
+                        <summary className="cursor-pointer">{labels.setupDetails}</summary>
+                        <p className="mt-1 break-words font-mono text-[length:var(--conversation-tool-font-size)]">
+                          {event.kind}
+                        </p>
+                        {(event.payload.error || event.payload.reason) && (
+                          <p className="mt-1 whitespace-pre-wrap break-words">
+                            {event.payload.error || event.payload.reason}
+                          </p>
+                        )}
+                      </details>
+                    )}
+                  </div>
+                ) : (
+                  <div className="select-text break-words text-[length:var(--conversation-text-font-size)] leading-(--conversation-line-height)">
+                    <MessageTextContent media={false} previewOnly text={text} />
+                  </div>
+                ))}
+              <RowAttachments
+                binding={binding}
+                disabled={disabled || !!missing?.events.includes(event)}
+                event={event}
+              />
+              <MissingMark event={event} missing={missing} />
+              {unsaved?.has(event.event_id) && (
+                <p
+                  className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-quaternary)"
+                  data-slot="unsaved-message"
+                >
+                  {words.unsavedMessage}
+                </p>
+              )}
+            </div>
+          </article>
+        )
+      })}
+    </>
+  )
 }

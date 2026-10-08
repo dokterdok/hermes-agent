@@ -28,12 +28,23 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const button = (props: ComponentProps<'button'>) => createElement('button', { type: 'button', ...props })
 
   return {
-    ...original, ...await pluginSdkMock(host),
-    Badge: children, Dialog: children, DialogContent: children, DialogDescription: children,
-    DialogFooter: children, DialogHeader: children, DialogTitle: children, Tip: children,
-    Button: button, RowButton: button, Input: (props: ComponentProps<'input'>) => createElement('input', props),
-    SearchField: () => null, Codicon: () => null,
-    useI18n: () => ({ t: { common: { cancel: 'Cancel' } } }), usePluginI18n: () => translateBots
+    ...original,
+    ...(await pluginSdkMock(host)),
+    Badge: children,
+    Dialog: children,
+    DialogContent: children,
+    DialogDescription: children,
+    DialogFooter: children,
+    DialogHeader: children,
+    DialogTitle: children,
+    Tip: children,
+    Button: button,
+    RowButton: button,
+    Input: (props: ComponentProps<'input'>) => createElement('input', props),
+    SearchField: () => null,
+    Codicon: () => null,
+    useI18n: () => ({ t: { common: { cancel: 'Cancel' } } }),
+    usePluginI18n: () => translateBots
   }
 })
 vi.mock('./group-chat-parts', () => ({ GroupImageControls: () => null }))
@@ -162,7 +173,8 @@ describe('opening a room', () => {
 describe('gateway room tabs', () => {
   it('names a gateway room tab after the room, and keeps its binding through a rename', async () => {
     const room = await loadRoom()
-    const { $canonicalGroupBindings, $canonicalGroupNames, forgetCanonicalGroup, registerCanonicalGroup } = await import('./canonical-group-registry')
+    const { $canonicalGroupBindings, $canonicalGroupNames, forgetCanonicalGroup, registerCanonicalGroup } =
+      await import('./canonical-group-registry')
     const open = vi.fn((_id: string, _options: { title: string }) => () => undefined)
     host.openWorkspace = open
     const firstRoute = { connectionId: 'first-owner', profile: 'team' }
@@ -176,7 +188,9 @@ describe('gateway room tabs', () => {
     expect(open.mock.calls.map(call => (call[1] as { title: string }).title)).toEqual(['Planning', 'Review'])
     expect(originalBinding).toEqual({ ...firstRoute, roomId: 'same-room' })
 
-    expect(registerCanonicalGroup(firstRoute, { room_id: 'same-room', name: 'Renamed planning', members: [] })).toBe(first)
+    expect(registerCanonicalGroup(firstRoute, { room_id: 'same-room', name: 'Renamed planning', members: [] })).toBe(
+      first
+    )
     room.view.openGroupChat(first)
     expect((open.mock.calls.at(-1)?.[1] as { title: string }).title).toBe('Renamed planning')
     expect($canonicalGroupBindings.get()[first]).toBe(originalBinding)
@@ -188,55 +202,85 @@ describe('gateway room tabs', () => {
 })
 
 describe('disband', () => {
-  it.each([false, true])('deferred creation cannot restore membership after disband (replacement: %s)', async replace => {
-    const room = await loadRoom()
-    const { CreateGroupChatDialog } = await import('./create-dialog')
-    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
-    let finish!: (value: unknown) => void
-    const pending = new Promise(resolve => { finish = resolve })
-    let held = false
+  it.each([false, true])(
+    'deferred creation cannot restore membership after disband (replacement: %s)',
+    async replace => {
+      const room = await loadRoom()
+      const { CreateGroupChatDialog } = await import('./create-dialog')
+      const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+      let finish!: (value: unknown) => void
+      const pending = new Promise(resolve => {
+        finish = resolve
+      })
+      let held = false
 
-    host.request = (method: string, params: Record<string, unknown>) => {
-      if (method === 'profiles.configure' && params.name === 'research' && !held) {
-        held = true
+      host.request = (method: string, params: Record<string, unknown>) => {
+        if (method === 'profiles.list') {
+          return Promise.resolve({ profiles: roster.map(bot => ({ ...bot, ui_meta: { 'hermes-bots': {} } })) })
+        }
+        if (method === 'profiles.configure' && params.name === 'research' && !held) {
+          held = true
 
-        return pending
+          return pending
+        }
+
+        return request(method, params)
       }
 
-      return request(method, params)
+      const roster = [{ name: 'research' }, { name: 'builder' }]
+      const onCreated = vi.fn()
+      render(createElement(CreateGroupChatDialog, { onClose: vi.fn(), onCreated, open: true, roster }))
+      screen.getAllByRole('checkbox').forEach(box => fireEvent.click(box))
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))
+      })
+      await vi.waitFor(() => expect(held).toBe(true))
+      const group = Object.keys(room.chat.$groupChats.get())[0]
+      expect(onCreated).not.toHaveBeenCalled()
+      await act(async () => {
+        await room.view.disbandGroupChat(group, roster)
+      })
+      expect(room.chat.$groupChats.get()[group]).toBeUndefined()
+      expect(room.data.$botMeta.get().builder.groups).not.toContain(group)
+
+      if (replace) {
+        room.chat.updateGroupChat(group, current => ({ ...current, roomId: 'replacement' }), { sync: false })
+      }
+      const metadata = structuredClone(room.data.$botMeta.get())
+      await act(async () => {
+        finish({ applied: { ui_meta: true } })
+      })
+      expect(room.data.$botMeta.get()).toEqual(metadata)
+      expect(room.chat.$groupChats.get()[group]?.roomId).toBe(replace ? 'replacement' : undefined)
+      expect(onCreated).not.toHaveBeenCalled()
     }
-
-    const roster = [{ name: 'research' }, { name: 'builder' }]
-    const onCreated = vi.fn()
-    render(createElement(CreateGroupChatDialog, { onClose: vi.fn(), onCreated, open: true, roster }))
-    screen.getAllByRole('checkbox').forEach(box => fireEvent.click(box))
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup })) })
-    const group = Object.keys(room.chat.$groupChats.get())[0]
-    await act(async () => { await room.view.disbandGroupChat(group, roster) })
-    expect(room.chat.$groupChats.get()[group]).toBeUndefined()
-    expect(room.data.$botMeta.get().builder.groups).not.toContain(group)
-
-    if (replace) {room.chat.updateGroupChat(group, current => ({ ...current, roomId: 'replacement' }), { sync: false })}
-    const metadata = structuredClone(room.data.$botMeta.get())
-    await act(async () => { finish({ applied: { ui_meta: true } }) })
-    expect(room.data.$botMeta.get()).toEqual(metadata)
-    expect(room.chat.$groupChats.get()[group]?.roomId).toBe(replace ? 'replacement' : undefined)
-    expect(onCreated).not.toHaveBeenCalled()
-  })
+  )
 
   it('cold reload keeps a disbanded room gone and every other room field intact', async () => {
     const room = await loadRoom()
-    room.chat.updateGroupChat('Keep', current => ({
-      ...current,
-      log: [{ at: 10, from: { kind: 'user', name: 'You' }, id: 'held', text: 'keep', thread: 't' }],
-      watermarks: { 't::builder': 1 }, sessions: { builder: 'session' },
-      sessionOwners: { builder: { name: 'builder', connectionId: 'owner' } },
-      holds: { builder: { at: 2, noted: true } }, heldMessages: { builder: ['held'] },
-      holdDetection: false, stranded: { builder: { before: 2, thread: 't' } },
-      externalCursors: { builder: 4 }, members: [{ name: 'builder' }],
-      roomId: 'keep-id', image: 'data:image/png;base64,keep', sectionId: 'section',
-      rosterOrder: 3, pinned: true, syncRevision: 7
-    }), { sync: false })
+    room.chat.updateGroupChat(
+      'Keep',
+      current => ({
+        ...current,
+        log: [{ at: 10, from: { kind: 'user', name: 'You' }, id: 'held', text: 'keep', thread: 't' }],
+        watermarks: { 't::builder': 1 },
+        sessions: { builder: 'session' },
+        sessionOwners: { builder: { name: 'builder', connectionId: 'owner' } },
+        holds: { builder: { at: 2, noted: true } },
+        heldMessages: { builder: ['held'] },
+        holdDetection: false,
+        stranded: { builder: { before: 2, thread: 't' } },
+        externalCursors: { builder: 4 },
+        members: [{ name: 'builder' }],
+        roomId: 'keep-id',
+        image: 'data:image/png;base64,keep',
+        sectionId: 'section',
+        rosterOrder: 3,
+        pinned: true,
+        syncRevision: 7
+      }),
+      { sync: false }
+    )
     room.chat.updateGroupChat('Gone', current => ({ ...current, roomId: 'gone-id', running: true }), { sync: false })
     const keep = structuredClone(durable(room).Keep)
     await room.view.disbandGroupChat('Gone', [])

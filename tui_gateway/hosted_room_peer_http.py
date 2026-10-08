@@ -467,6 +467,8 @@ class PeerRunsHTTPClient:
         except Exception:
             detail = ""
         error_code = _response_error_code(detail)
+        if error_code == "run_history_retired" and method == "POST":
+            flags.update(ambiguous=True, not_admitted=False)
         logger.debug(
             "Peer RoomLink request returned HTTP %s (%s)", exc.code, error_code or "no-code")
         renewal = exc.code in {401, 403} and error_code in _GRANT_RENEWAL_CODES
@@ -505,11 +507,13 @@ class PeerRunsHTTPClient:
         return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
 
     def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str, observation_only=False,
-                         before_preparation_resume=None) -> Mapping[str, Any]:
+                         before_preparation_resume=None, admit_if_missing=True) -> Mapping[str, Any] | None:
         """Observe output-enabled attempts; legacy text retains its idempotent replay."""
         accepted = self.recover_accepted_dispatch(dispatch=dispatch, grant=grant)
         if accepted is not None:
             return accepted
+        if not admit_if_missing:
+            return None
         checked = self._checked_dispatch(dispatch, grant)
         key, now = (checked.task_id, checked.execution_generation), self.clock()
         backoff = self._recovery_backoff.get(key)
@@ -1022,9 +1026,19 @@ class PeerRunsHTTPClient:
         return self._acknowledged(self._scoped_post(
             "/v1/room-members/grants/cleanup-issuance", grant, body={'request_id': request_id}))
 
-    def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
-        """Revoke this grant's exact room/home/target/profile scope."""
-        return self._acknowledged(self._scoped_post("/v1/room-members/grants/revoke", grant, body={}))
+    def revoke_grant(self, *, grant: str, retire_authority: bool = False) -> Mapping[str, Any]:
+        """Disband may retire an explicitly granted epoch; ordinary revoke permits reauthorization."""
+        body = {"retire_authority": True} if retire_authority else {}
+        try:
+            return self._acknowledged(self._scoped_post("/v1/room-members/grants/revoke", grant, body=body))
+        except PeerRunsHTTPError as exc:
+            legacy = ((exc.status_code, exc.error_code) in {
+                (400, "invalid_room_grant_revoke"), (403, "room_retirement_not_granted")})
+            if not retire_authority or not legacy:
+                raise
+            # An older endpoint/grant explicitly refused before any retirement.
+            # Its ordinary revocation remains safe; exact cancellation receipts stay retained.
+            return self._acknowledged(self._scoped_post("/v1/room-members/grants/revoke", grant, body={}))
 
     def revoke_grant_exact(self, *, grant: str) -> Mapping[str, Any]:
         """Retire this one grant, never the replacement that shares its scope."""
@@ -1035,6 +1049,8 @@ class PeerRunsHTTPClient:
         if result.get("revoked") is not True:
             raise PeerRunsHTTPError("peer did not acknowledge the grant revocation", retryable=True)
         return result
+
+
 
     def probe(self, *, grant: str, features: str | None = None) -> Mapping[str, Any]:
         """Verify gateway reachability and the live scoped capability catalog."""

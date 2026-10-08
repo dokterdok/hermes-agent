@@ -1,16 +1,16 @@
 # Gateway-owned groups in Desktop
 
-Bot Mode lists gateway rooms separately from classic rooms, which Desktop runs itself. **Refresh gateway groups** reloads the canonical room list for the selected connection and profile. Opening a room captures that exact authority; changing the foreground profile does not retarget its controls.
+Bot Mode lists gateway rooms separately from classic rooms, which Desktop runs itself. **Refresh group chats** reloads the canonical room list for the selected connection and profile. Opening a room captures that exact authority; changing the foreground profile does not retarget its controls.
 
 ## Which rooms are gateway rooms
 
 One classifier (`groupExecutionMode`) decides from `groups.capabilities`. A connection is canonical only when its `methods` include `groups.discard`, and it can run rooms only when `driver` is `true`. A `-32601` reply, or any other capability payload (current `main`, standalone `hermes serve` or `hermes dashboard`), means classic rooms. A transport error shows the driver as unavailable with **Retry now**, but a connection already classified classic in this session keeps its classic composer.
 
-The connection kind plays no part in this choice. Desktop's local connection and SSH connections to Linux/macOS hosts with `gateway ensure` and `gateway ticket` reach the canonical owner. Closing Desktop closes its SSH tunnel without stopping that owner. Update a canonical SSH gateway on its host, then reconnect; Desktop does not run its managed isolated-backend updater against that service. Older SSH runtimes without canonical ensure, Windows SSH, URL remotes and Nous Cloud retain their existing classic connection path. A canonical runtime missing private ticket support asks for an update instead of spawning another backend.
+Connection kind alone does not determine support; the advertised capabilities do. Desktop's local connection and SSH connections to Linux/macOS hosts with `gateway ensure` and `gateway ticket` reach the canonical owner. Closing Desktop closes its SSH tunnel without stopping that owner. Update a canonical SSH gateway on its host, then reconnect; Desktop does not run its managed isolated-backend updater against that service. Older SSH runtimes without canonical ensure, Windows SSH, URL remotes and Nous Cloud retain their existing classic connection path. A canonical runtime missing private ticket support asks for an update instead of spawning another backend.
 
-On a canonical connection the creation dialog creates a gateway group when the roster qualifies: two to six members, all on this connection, with unique profiles and non-reserved handles. Other rosters are created as classic rooms, and the dialog says why. On a default install the gateway refuses members that are not listed under `hosted_rooms.profiles`; the dialog explains this and links the hosted profile guide.
+For members on one canonical connection, the creation dialog creates a gateway group when the roster qualifies: two to six members, all on this connection, with unique profiles and non-reserved handles. Native setup can also combine Bots on supported SSH gateways, as described below. Rosters that qualify for neither path stay classic, and the dialog says why. On a default install the gateway refuses members that are not listed under `hosted_rooms.profiles`; the dialog explains this and links the hosted profile guide.
 
-An existing classic room whose roster qualifies offers **Start gateway group**, which starts a new gateway room and deliberately does not replay the classic history. A classic room whose roster does not qualify keeps its classic composer.
+An existing classic room whose roster qualifies offers **Start new group**, which starts a new gateway room and deliberately does not replay the classic history. A classic room whose roster does not qualify keeps its classic composer.
 
 ## The room workspace
 
@@ -31,6 +31,7 @@ Errors stay visible, and no failed gateway-room action falls back to Desktop-run
 ## When a group's host goes offline
 
 These controls appear only when the host advertises `groups.succession.*` in `groups.capabilities`. Owner-only controls come only from the status `actions`. Desktop reads `groups.succession.status` again:
+
 - when the log records `succession.state`, `authority.transition` or `custody.configured`;
 - every 30 seconds while the room's own host answers, because a host that pauses to stay safe appends nothing;
 - every 15 seconds while the host is unreachable, the group isn't settled, or a message waits to be saved;

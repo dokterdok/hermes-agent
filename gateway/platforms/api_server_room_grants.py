@@ -238,10 +238,13 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) ->
         execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
         ttl_seconds=ttl, status_ttl_seconds=status_ttl)
     claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
+    from gateway.platforms.api_server_run_authority import room_authority
+    authority = room_authority(claims)
+    if not self._run_idempotency_store.accepts_room_authority(authority):
+        raise RoomGrantReauthorizationRequired("room authority has already advanced")
     hosted_rooms.reserve_peer_room(
         _grant_db(self), claims=claims, expires_at=_hard_expiry(claims), conn=conn)
     if "replicate" in permissions:
-        # Inside a recoverable setup issuance, the consent joins that issuance's own transaction.
         set_local_consent(_grant_db(self), room_id=claims["room_id"], allowed="successor" in permissions, conn=conn)
     from contextlib import nullcontext
     from gateway.hosted_room_succession import record_consent_locked, withdraw_consent_locked
@@ -258,9 +261,18 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) ->
         else:
             withdraw_consent_locked(consent_conn, room_id=claims["room_id"], member_id=claims["member_id"],
                                     target_profile=profile)
+    # A borrowed grant/consent writer publishes its floor only after the setup receipt commits.
+    if conn is None:
+        _observe_invitation_authority(self, claims)
     return {"grant": token, "target_profile": profile, "catalog": catalog,
             "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"]),
             "passive_replication": passive_capabilities()}
+
+
+def _observe_invitation_authority(self, claims):
+    from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+    if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), room_authority(claims)):
+        raise RoomGrantReauthorizationRequired("room authority has already advanced")
 
 
 async def _handle_room_member_capabilities(
@@ -281,11 +293,6 @@ async def _handle_room_member_capabilities(
         enrollment = current_target_enrollment(
             _grant_db(self), room_id=claims["room_id"],
             authority_gateway_id=claims["authority_gateway_id"], authority_epoch=claims["authority_epoch"])
-    from gateway.hosted_room_documents import advertised_capability
-    documents = advertised_capability(self) if request.headers.get("Hermes-Room-Features") == "document-input-v1" else None
-    from gateway.session_peer_output import output_available
-    output = output_available(self) if (request.headers.get("Hermes-Room-Features") == "document-output-v1"
-                                      and {"status", "stop", "dispatch"} <= set(claims["permissions"])) else None
     from gateway.hosted_room_custody import local_always_on, local_consent, local_names
     from gateway.hosted_room_identity import local_public_key
     # The home pins this key at custody enrollment; the reply is authenticated by the pinned grant.
@@ -293,6 +300,11 @@ async def _handle_room_member_capabilities(
     room_identity = {"install_id": installation_id, "public_key": local_public_key(), "name": name,
                      "operator_name": operator_name, "allowed": local_consent(_grant_db(self), claims["room_id"]),
                      "always_on": local_always_on()}
+    from gateway.hosted_room_documents import advertised_capability
+    documents = advertised_capability(self) if request.headers.get("Hermes-Room-Features") == "document-input-v1" else None
+    from gateway.session_peer_output import output_available
+    output = output_available(self) if (request.headers.get("Hermes-Room-Features") == "document-output-v1"
+                                      and {"status", "stop", "dispatch"} <= set(claims["permissions"])) else None
     return web.json_response({
         **({"document_output": output} if output is not None else {}),
         **({"document_inputs": documents} if documents is not None else {}),
@@ -361,9 +373,9 @@ async def _handle_room_member_grant_revoke(
     body, error = await self._read_json_body(request)
     if error:
         return error
-    if body:
+    if set(body) - {"retire_authority"} or ("retire_authority" in body and type(body["retire_authority"]) is not bool):
         return _json_error(
-            _openai_error, "Grant revoke accepts no fields.",
+            _openai_error, "Grant revoke accepts only the boolean retire_authority option.",
             code="invalid_room_grant_revoke", status=400)
     try:
         from gateway import hosted_rooms
@@ -371,11 +383,21 @@ async def _handle_room_member_grant_revoke(
         # verify signature/scope/horizon directly (not _room_grant_claims) and upsert the id.
         claims = _decode_request_grant(self, request, permission="status")
         _local_target(claims, _api_request_profile)
+        if body.get("retire_authority"):
+            if "retire" not in claims["permissions"]:
+                return _json_error(_openai_error, "This grant does not authorize room retirement.",
+                                   code="room_retirement_not_granted", status=403)
+            from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+            authority = room_authority(claims)
+            if not self._run_idempotency_store.room_authority_retired(authority):
+                self._room_grant_claims(request, permission="retire")
+            self._run_idempotency_store.retire_room_authority(room_run_scope(claims), authority)
         hosted_rooms.revoke_room_grant_scope(
             _grant_db(self), claims=claims, expires_at=_hard_expiry(claims))
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
-    return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})
+    return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True,
+                              "authority_retired": bool(body.get("retire_authority"))})
 
 
 async def _handle_room_member_grant_revoke_exact(

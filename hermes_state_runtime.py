@@ -6,7 +6,8 @@ SessionDB transaction owner, including its inode guard and SQLite retry policy.
 import json
 import uuid
 
-from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
+from agent.conversation_compression_archive import ABSORBED_ROW_IDS
+from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT, PERSISTENCE_ONLY_MESSAGE_FIELDS
 from gateway.session_admission import admission_fingerprint
 
 
@@ -556,7 +557,9 @@ _MESSAGE_FIELDS = frozenset({
     'codex_reasoning_items', 'codex_message_items', 'platform_message_id', 'message_id',
     'observed', 'effect_disposition', '_compressed_summary', 'timestamp', 'api_content',
     'display_kind', 'display_metadata', '_row_id', '_canonical_content', DB_ROW_SNAPSHOT, CANONICAL_ROW,
-})
+    # Main's durable message identity (message_uid / merge witness / tool-call uids) and the alternation
+    # repair's row counts ride every persisted dict; the owner's insert and coverage read them.
+}) | PERSISTENCE_ONLY_MESSAGE_FIELDS | {ABSORBED_ROW_IDS}
 # Row state the owner's transcript repair stamps on each message (main mutates the caller's dict
 # in place; a worker gets it back as an annotation). None = absent, so a stale adoption is cleared.
 _ROW_ANNOTATION_KEYS = ('_row_id', 'timestamp', DB_ROW_SNAPSHOT, CANONICAL_ROW)
@@ -620,7 +623,7 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         # ``source`` feeds the legacy path's row-existence guard (#111999); an authority-owned
         # session row was minted with its real surface at admission, so nothing to repair here.
         payload = {k: v for k, v in payload.items() if k != 'source'}
-    allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute'})
+    allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task'})
     if set(payload) - allowed:
         raise RuntimeStoreError('invalid_params')
     for key, value in payload.items():

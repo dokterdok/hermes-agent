@@ -344,8 +344,10 @@ def share_group_file(
 ) -> str:
     """Copy a safe file into the current hosted-room output outbox."""
 
-    binding = current_output_binding()
-    if binding is None or not isinstance(binding.scope, RoomArtifactScope):
+    from gateway.hosted_room_artifacts_classic import ClassicExportScope
+    from gateway.session_classic_output import current_classic_output_binding
+    binding = current_output_binding() or current_classic_output_binding()
+    if binding is None or not isinstance(binding.scope, (RoomArtifactScope, ClassicExportScope)):
         return json.dumps({"ok": False, "error": _UNAVAILABLE})
     try:
         from gateway.platforms.base import validate_media_delivery_path

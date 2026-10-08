@@ -412,12 +412,12 @@ _GRANT_SCOPE = (
 _GRANT_FIELDS = frozenset({
     "version", *_GRANT_SCOPE, "execution_policy_digest", "permissions", "issued_at", "expires_at"})
 _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
-_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop", "replicate", "work_records", "successor"}
+_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop", "retire", "replicate", "work_records", "successor"}
 # Observation and passive copies last until the status horizon; dispatch needs a fresh grant.
-_STATUS_HORIZON_PERMISSIONS = frozenset({"approve", "status", "stop", "replicate", "work_records", "successor"})
+_STATUS_HORIZON_PERMISSIONS = frozenset({"approve", "status", "stop", "retire", "replicate", "work_records", "successor"})
 MAX_DISPATCH_GRANT_TTL_SECONDS = 24 * 60 * 60
 MAX_STATUS_GRANT_TTL_SECONDS = 30 * 24 * 60 * 60
-_MEMBER_PERMISSIONS = ("approve", "dispatch", "status", "stop")
+_MEMBER_PERMISSIONS = ("approve", "dispatch", "status", "stop", "retire")
 
 
 def invitation_permissions(
@@ -447,7 +447,7 @@ def invitation_permissions(
 def issue_room_grant(
     secret: bytes, *, grant_id: str, room_id: str, home_install_id: str, authority_gateway_id: str,
     authority_epoch: int, member_id: str, target_install_id: str, target_profile: str,
-    execution_policy_digest: str | None = None, permissions: Iterable[str] = ("approve", "dispatch", "status", "stop"),
+    execution_policy_digest: str | None = None, permissions: Iterable[str] = ("approve", "dispatch", "status", "stop", "retire"),
     issued_at: float | None = None, ttl_seconds: float = 3600, status_ttl_seconds: float | None = None,
     status_expires_at: float | None = None) -> str:
     """Issue a target-verifiable bearer grant scoped to one room member."""
@@ -558,57 +558,3 @@ def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, l
         return clock(now) + max(0.0, float(leeway_seconds)) >= expires_at
     except Exception:
         return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import time  # noqa: F401,E402
-
-@dataclass(frozen=True)
-class RoomLinkProbe:
-    """One gateway-verified route candidate."""
-
-    mode: LinkMode
-    verified: bool
-    encrypted: bool
-    latency_ms: float
-
-_LINK_PRIORITY = {
-    "direct": 0,
-    "overlay": 1,
-    "relay": 2,
-    "pull": 3,
-    "desktop": 4,
-}
-
-def select_room_link(
-    probes: Iterable[RoomLinkProbe],
-    *,
-    desktop_available: bool,
-) -> RoomLinkProbe | None:
-    """Choose the fastest safe route without weakening encryption."""
-    candidates = [
-        probe
-        for probe in probes
-        if probe.verified
-        and probe.encrypted
-        and probe.mode != "desktop"
-        and math.isfinite(probe.latency_ms)
-        and probe.latency_ms >= 0
-    ]
-    if candidates:
-        return min(
-            candidates,
-            key=lambda item: (_LINK_PRIORITY[item.mode], item.latency_ms),
-        )
-    if desktop_available:
-        return RoomLinkProbe(
-            mode="desktop",
-            verified=True,
-            encrypted=True,
-            latency_ms=0,
-        )
-    return None
-# ---- END PLUGIN-COMPAT ----

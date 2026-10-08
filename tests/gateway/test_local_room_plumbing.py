@@ -180,3 +180,22 @@ async def test_failed_policy_write_preserves_original_receipt_and_live_cache(plu
         refresh_on_resume(p.authority, p.actor, ref)
     assert local_receipt(p.authority.db, ref.session_id) == before
     assert not p.evictions
+
+
+@pytest.mark.asyncio
+async def test_queued_admission_during_preparation_keeps_original_policy(plumbing, monkeypatch):
+    from gateway import run
+    p = plumbing
+    ref = create(p)
+    before = local_receipt(p.authority.db, ref.session_id)
+    p.config['model']['default'] = 'later'
+
+    def concurrent_admission():
+        admit_session_input(p.authority.db, epoch=p.authority.epoch, principal_id=p.actor.subject,
+            session_id=ref.session_id, request_id='during-refresh', payload={'text': 'keep policy'})
+        return copy.deepcopy(p.config)
+
+    monkeypatch.setattr(run, '_load_gateway_config', concurrent_admission)
+    refresh_on_resume(p.authority, p.actor, ref)
+    assert local_receipt(p.authority.db, ref.session_id) == before
+    assert not p.evictions

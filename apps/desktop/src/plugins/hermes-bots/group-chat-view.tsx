@@ -42,9 +42,20 @@ import { isBackfilledFacePng } from './avatar-image'
 import { groupCreationSource } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import { CanonicalGroupRoomActions } from './canonical-group-header'
-import { $canonicalGroupBindings, $canonicalGroupNames, forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
+import {
+  $canonicalGroupBindings,
+  $canonicalGroupNames,
+  forgetCanonicalGroup,
+  registerCanonicalGroup
+} from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
-import { canonicalGroupCreateErrorMessage, canonicalGroupEligibility, createCanonicalGroup, knownGroupExecutionMode, readGroupExecutionMode } from './canonical-groups'
+import {
+  canonicalGroupCreateErrorMessage,
+  canonicalGroupEligibility,
+  createCanonicalGroup,
+  knownGroupExecutionMode,
+  readGroupExecutionMode
+} from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -634,10 +645,28 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const binding = bindings[props.group]
 
   if (binding) {
-    return <CanonicalGroupWorkspace actions={room => <CanonicalGroupRoomActions binding={binding}
-      latestFileSeq={room.latestFileSeq} name={room.name} onChanged={room.refresh}
-      onDisbanded={() => { forgetCanonicalGroup(binding); props.onBack?.() }} visible={room.visible} onRetirementRequested={room.onRetirementRequested} retirement={room.retirement} />}
-    binding={binding} onBack={props.onBack} visible={props.visible} />
+    return (
+      <CanonicalGroupWorkspace
+        actions={room => (
+          <CanonicalGroupRoomActions
+            binding={binding}
+            latestFileSeq={room.latestFileSeq}
+            name={room.name}
+            onChanged={room.refresh}
+            onDisbanded={() => {
+              forgetCanonicalGroup(binding)
+              props.onBack?.()
+            }}
+            onRetirementRequested={room.onRetirementRequested}
+            retirement={room.retirement}
+            visible={room.visible}
+          />
+        )}
+        binding={binding}
+        onBack={props.onBack}
+        visible={props.visible}
+      />
+    )
   }
 
   return <GroupExecutionGate {...props} />
@@ -658,10 +687,14 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [refresh, setRefresh] = useState(0)
-  useEffect(() => host.state.gateway.listen(() => {
-    socketGenerationRef.current++
-    setSocketGeneration(socketGenerationRef.current)
-  }), [])
+  useEffect(
+    () =>
+      host.state.gateway.listen(() => {
+        socketGenerationRef.current++
+        setSocketGeneration(socketGenerationRef.current)
+      }),
+    []
+  )
   useEffect(() => {
     let cancelled = false
     setCapability(null)
@@ -669,98 +702,162 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     const activationEpoch = gatewayActivationEpoch()
 
     if (gateway !== 'open') {
-      setCapability({ source, epoch: activationEpoch, mode: knownGroupExecutionMode({ connectionId: connectionId ?? '', profile }) === 'legacy' ? 'legacy' : 'unavailable' })
+      setCapability({
+        source,
+        epoch: activationEpoch,
+        mode:
+          knownGroupExecutionMode({ connectionId: connectionId ?? '', profile }) === 'legacy' ? 'legacy' : 'unavailable'
+      })
 
       return
     }
 
     const route = { connectionId: connectionId ?? '', profile }
     const sourceCurrent = groupCreationSource(route, activationEpoch)
-    void readGroupExecutionMode(route, activationEpoch, refresh > 0 || socketGeneration > 0)
-      .then(result => {
-        if (cancelled || socketGenerationRef.current !== socketGeneration) {return}
-
-        if (sourceCurrent()) {
-          setCapability({ source, epoch: activationEpoch, mode: result.mode })
-
-          if (result.error && result.mode === 'unavailable') {setError(String(result.error))}
-        } else if (gatewayActivationEpoch() !== activationEpoch && groupCreationSource(route)()) {
-          setRefresh(value => value + 1)
-        }
-      })
-
-    return () => { cancelled = true }
-  }, [connectionId, profile, gateway, source, socketGeneration, refresh])
-
-  if (mode === 'legacy' || (mode === 'canonical' && !canonicalGroupEligibility({ connectionId: connectionId ?? '', profile }, props.members).eligible)) {
-    return <LegacyGroupChatWorkspace {...props} />
-  }
-
-  return <div className="flex h-full min-h-0 flex-col">
-    {(mode === 'canonical' || existingClassicRoom) && <div className="min-h-0 flex-1"><LegacyGroupChatWorkspace {...props} /></div>}
-    <div className="grid gap-3 p-3">
-    {mode !== 'canonical' && !existingClassicRoom && <h2>{props.group}</h2>}
-    <p>{mode === 'canonical' ? b.canonical.legacyRoom : mode === 'unavailable' ? b.canonical.driverUnavailable : b.canonical.checkingDriver}</p>
-    {error && <div className="grid gap-1 text-sm" role="alert"><p>{b.canonical.pendingActionUnconfirmed}</p>
-      <details><summary>{b.canonical.setupDetails}</summary><p className="whitespace-pre-wrap break-words">{groupFailureDetail(error)}</p></details>
-    </div>}
-    {mode === 'unavailable' && <Button className="justify-self-start" onClick={() => setRefresh(value => value + 1)} size="sm" variant="secondary">{b.roster.retryNow}</Button>}
-    <Button className="justify-self-start" disabled={mode !== 'canonical' || busy} onClick={() => {
-      const route = { connectionId: connectionId ?? '', profile }
-      const activationEpoch = gatewayActivationEpoch()
-      const creationSocketGeneration = socketGenerationRef.current
-      const creationSource = JSON.stringify([route.connectionId, route.profile, 'open', creationSocketGeneration])
-      const sourceIsCurrent = groupCreationSource(route, activationEpoch)
-      const sourceCurrent = () => socketGenerationRef.current === creationSocketGeneration && sourceIsCurrent()
-
-      const approvedGesture = capability?.source === source && capability.epoch === activationEpoch &&
-        creationSocketGeneration === socketGeneration
-
-      const name = props.group
-      const members = props.members.map(member => ({ ...member, ...(member.route ? { route: { ...member.route } } : {}) }))
-
-      if (mode !== 'canonical' || !sourceCurrent()) {
-        setError(b.canonical.driverUnavailable)
-
+    void readGroupExecutionMode(route, activationEpoch, refresh > 0 || socketGeneration > 0).then(result => {
+      if (cancelled || socketGenerationRef.current !== socketGeneration) {
         return
       }
 
-      setBusy(true)
-      setError('')
-      void (async () => {
-          const current = await readGroupExecutionMode(route, activationEpoch, true)
+      if (sourceCurrent()) {
+        setCapability({ source, epoch: activationEpoch, mode: result.mode })
 
-          if (!sourceCurrent()) {return}
+        if (result.error && result.mode === 'unavailable') {
+          setError(String(result.error))
+        }
+      } else if (gatewayActivationEpoch() !== activationEpoch && groupCreationSource(route)()) {
+        setRefresh(value => value + 1)
+      }
+    })
 
-          setCapability({ source: creationSource, epoch: activationEpoch, mode: current.mode })
+    return () => {
+      cancelled = true
+    }
+  }, [connectionId, profile, gateway, source, socketGeneration, refresh])
 
-          if (current.mode !== 'canonical' || !current.methods?.includes('groups.create')) {throw new Error(b.canonical.driverUnavailable)}
+  if (
+    mode === 'legacy' ||
+    (mode === 'canonical' &&
+      !canonicalGroupEligibility({ connectionId: connectionId ?? '', profile }, props.members).eligible)
+  ) {
+    return <LegacyGroupChatWorkspace {...props} />
+  }
 
-          // An old rendered button can refresh its classification after an
-          // activation, but only the next explicit gesture may create there.
-          if (!approvedGesture) {return}
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {(mode === 'canonical' || existingClassicRoom) && (
+        <div className="min-h-0 flex-1">
+          <LegacyGroupChatWorkspace {...props} />
+        </div>
+      )}
+      <div className="grid gap-3 p-3">
+        {mode !== 'canonical' && !existingClassicRoom && <h2>{props.group}</h2>}
+        <p>
+          {mode === 'canonical'
+            ? b.canonical.legacyRoom
+            : mode === 'unavailable'
+              ? b.canonical.driverUnavailable
+              : b.canonical.checkingDriver}
+        </p>
+        {error && (
+          <div className="grid gap-1 text-sm" role="alert">
+            <p>{b.canonical.pendingActionUnconfirmed}</p>
+            <details>
+              <summary>{b.canonical.setupDetails}</summary>
+              <p className="whitespace-pre-wrap break-words">{groupFailureDetail(error)}</p>
+            </details>
+          </div>
+        )}
+        {mode === 'unavailable' && (
+          <Button
+            className="justify-self-start"
+            onClick={() => setRefresh(value => value + 1)}
+            size="sm"
+            variant="secondary"
+          >
+            {b.roster.retryNow}
+          </Button>
+        )}
+        <Button
+          className="justify-self-start"
+          disabled={mode !== 'canonical' || busy}
+          onClick={() => {
+            const route = { connectionId: connectionId ?? '', profile }
+            const activationEpoch = gatewayActivationEpoch()
+            const creationSocketGeneration = socketGenerationRef.current
+            const creationSource = JSON.stringify([route.connectionId, route.profile, 'open', creationSocketGeneration])
+            const sourceIsCurrent = groupCreationSource(route, activationEpoch)
+            const sourceCurrent = () => socketGenerationRef.current === creationSocketGeneration && sourceIsCurrent()
 
-          const { room } = await createCanonicalGroup(route, name, members)
+            const approvedGesture =
+              capability?.source === source &&
+              capability.epoch === activationEpoch &&
+              creationSocketGeneration === socketGeneration
 
-          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
-        })()
-        .catch(e => {
-          if (sourceCurrent()) {
-            setError(canonicalGroupCreateErrorMessage(e, b.canonical))
-          }
-        }).finally(() => setBusy(false))
-    }} size="sm" variant="secondary">{b.canonical.startGatewayGroup}</Button>
+            const name = props.group
+            const members = props.members.map(member => ({
+              ...member,
+              ...(member.route ? { route: { ...member.route } } : {})
+            }))
+
+            if (mode !== 'canonical' || !sourceCurrent()) {
+              setError(b.canonical.driverUnavailable)
+
+              return
+            }
+
+            setBusy(true)
+            setError('')
+            void (async () => {
+              const current = await readGroupExecutionMode(route, activationEpoch, true)
+
+              if (!sourceCurrent()) {
+                return
+              }
+
+              setCapability({ source: creationSource, epoch: activationEpoch, mode: current.mode })
+
+              if (current.mode !== 'canonical' || !current.methods?.includes('groups.create')) {
+                throw new Error(b.canonical.driverUnavailable)
+              }
+
+              // An old rendered button can refresh its classification after an
+              // activation, but only the next explicit gesture may create there.
+              if (!approvedGesture) {
+                return
+              }
+
+              const { room } = await createCanonicalGroup(route, name, members)
+
+              if (sourceCurrent()) {
+                openGroupChat(registerCanonicalGroup(route, room))
+              }
+            })()
+              .catch(e => {
+                if (sourceCurrent()) {
+                  setError(canonicalGroupCreateErrorMessage(e, b.canonical))
+                }
+              })
+              .finally(() => setBusy(false))
+          }}
+          size="sm"
+          variant="secondary"
+        >
+          {b.canonical.startGatewayGroup}
+        </Button>
+      </div>
     </div>
-  </div>
+  )
 }
 
-/** A qualified historical author without its matching seat cannot resolve foreground artifacts. */
 function groupHistoryIsForeign(entry: GroupMessage, member: GroupMember | null): boolean {
-  if (member?.remoteSource) {return true}
-
-  if (entry.from.gateway) {return !member?.installId || member.installId !== entry.from.gateway}
-
-  // Connection labels are presentation, not evidence for artifact authority.
+  if (member?.remoteSource) {
+    return true
+  }
+  if (entry.from.gateway) {
+    return !member?.installId || member.installId !== entry.from.gateway
+  }
+  // Connection labels cannot establish local artifact authority.
   return Boolean(entry.from.source)
 }
 
@@ -818,6 +915,124 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       ...current,
       pendingAttachments: typeof value === 'function' ? value(current.pendingAttachments || {}) : value
     }))
+
+  // Browser Comment Mode can live in its own Electron pop-out on another
+  // monitor. The ordinary composer bus is window-local and this room uses its
+  // own New Thread composer anyway, so accept only batches explicitly pinned to
+  // THIS room + THIS renderer. Packaged Electron windows use the preload IPC
+  // relay; BroadcastChannel stays only as a browser/dev fallback. The protocol
+  // strings remain literal here to preserve the plugin fence (Bot Mode imports
+  // only the SDK + its own files). A stale route gets no ACK, leaving the
+  // annotations intact.
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const desktopBridge = window.hermesDesktop?.windowRelay
+
+    const channel =
+      !desktopBridge && typeof BroadcastChannel !== 'undefined'
+        ? new BroadcastChannel('hermes.desktop.preview-annotate-handoff.v1')
+        : null
+
+    if (!desktopBridge && !channel) {
+      return
+    }
+
+    const send = (payload: unknown) => {
+      if (desktopBridge) {
+        desktopBridge.send(payload)
+      } else {
+        channel?.postMessage(payload)
+      }
+    }
+
+    const onMessage = (data: unknown) => {
+      if (!data || typeof data !== 'object') {
+        return
+      }
+
+      const request = data as {
+        count?: unknown
+        destination?: { composerKey?: unknown; group?: unknown; kind?: unknown; windowId?: unknown }
+        images?: unknown
+        prompt?: unknown
+        requestId?: unknown
+        type?: unknown
+      }
+
+      const destination = request.destination
+      const sourceWindowId = window.sessionStorage.getItem('hermes.desktop.previewAnnotate.windowId')?.trim()
+
+      if (
+        !sourceWindowId ||
+        request.type !== 'preview-annotate-handoff' ||
+        typeof request.requestId !== 'string' ||
+        typeof request.prompt !== 'string' ||
+        !Array.isArray(request.images) ||
+        destination?.kind !== 'group' ||
+        destination.windowId !== sourceWindowId ||
+        destination.group !== group ||
+        destination.composerKey !== composerKeyRef.current
+      ) {
+        return
+      }
+
+      try {
+        const prompt = request.prompt
+
+        const attachments: Attachment[] = request.images
+          .filter((image): image is { dataUrl: string; name: string; number?: number } =>
+            Boolean(
+              image &&
+              typeof image === 'object' &&
+              typeof (image as { dataUrl?: unknown }).dataUrl === 'string' &&
+              typeof (image as { name?: unknown }).name === 'string'
+            )
+          )
+          .map(image => ({ data: image.dataUrl, kind: 'image' as const, name: image.name }))
+
+        const next = updateGroupComposerDraft(composerKeyRef.current, current => ({
+          ...current,
+          activeReplyThread: null,
+          main: current.main.trim() ? `${current.main.trimEnd()}\n\n${prompt}` : prompt,
+          pendingAttachments: {
+            ...(current.pendingAttachments || {}),
+            main: [...(current.pendingAttachments?.main || []), ...attachments]
+          }
+        }))
+
+        setComposerDraft(next)
+        host.notify({
+          kind: 'success',
+          message: `${Number(request.count) || attachments.length} Browser comment${Number(request.count) === 1 ? '' : 's'} added to ${group}. Review the New Thread draft before sending.`
+        })
+        send({
+          ok: true,
+          requestId: request.requestId,
+          type: 'preview-annotate-handoff-ack'
+        })
+      } catch (error) {
+        send({
+          error: error instanceof Error ? error.message : String(error),
+          ok: false,
+          requestId: request.requestId,
+          type: 'preview-annotate-handoff-ack'
+        })
+      }
+    }
+
+    const stopDesktop = desktopBridge?.onMessage(onMessage)
+    const onBroadcast = (event: MessageEvent<unknown>) => onMessage(event.data)
+    channel?.addEventListener('message', onBroadcast)
+
+    return () => {
+      stopDesktop?.()
+      channel?.removeEventListener('message', onBroadcast)
+      channel?.close()
+    }
+  }, [composerKey, group])
 
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -1077,7 +1292,6 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           aria-expanded={activityOpen}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground"
           onClick={() => setActivityOpen(prev => !prev)}
-          title={activityOpen ? b.group.hideActivity : b.group.showActivity}
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
@@ -1312,11 +1526,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     // names and disambiguating handles come from the roster (the
     // primary "default" profile renders as Hermes, remote dupes
     // carry their @name-device handle) instead of raw profile ids.
-    const member = isUser
-      ? null
-      : members.find(
-          candidate => isGroupChatSelf(entry.from, candidate)
-        ) || null
+    const member = isUser ? null : members.find(candidate => isGroupChatSelf(entry.from, candidate)) || null
 
     const foreignHistory = groupHistoryIsForeign(entry, member)
 
@@ -1406,13 +1616,18 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             ) : null}
           </div>
           <div
-            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
+            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
             data-slot="group-chat-message-content"
           >
             {MessageTextContent ? (
-              <MessageTextContent decorateText={mentionText} media={!foreignHistory} previewOnly={foreignHistory} text={entry.text} />
+              <MessageTextContent
+                decorateText={mentionText}
+                media={!foreignHistory}
+                previewOnly={foreignHistory}
+                text={entry.text}
+              />
             ) : Streamdown ? (
               <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
             ) : (
@@ -1517,6 +1732,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   return (
     <div
       className="relative flex h-full flex-col"
+      data-preview-annotate-composer-key={composerKey}
+      data-preview-annotate-destination="group"
+      data-preview-annotate-group={group}
+      data-preview-annotate-owner-key={groupWorkspaceOwnerKey(group)}
       onDragLeave={event => {
         // Only clear when leaving the room container itself, not when the
         // cursor moves between its children. React types relatedTarget as a
