@@ -309,6 +309,10 @@ class A2AAdapter(BasePlatformAdapter):
         self._mark_connected()
         logger.info("A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)", self.host, self.port,
                     "localhost-only" if self._security_context.localhost_only() else "REMOTE (bearer auth)", self.agent_name, len(self._agents))
+        sec = self._security_context
+        if sec.dispatch_fails_closed():
+            logger.error("A2A: exposed on non-loopback bind %s with no A2A_TRUSTED_PEERS; every dispatch will be refused (403). "
+                         "Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.", self.host)
         self._wire_plugin_handlers(None)  # plugin-registered native handlers
         return True
 
@@ -587,6 +591,8 @@ class A2AAdapter(BasePlatformAdapter):
         except TimeoutError:
             return "[profile reply unverified; accepted work was not cancelled]", protocol.STATE_FAILED
         except Exception as exc:
+            # Boundary for a network peer: the full error stays in the local log, the reply is redacted.
+            logger.warning("A2A: dispatch to profile %r unverified", profile, exc_info=True)
             return security.redact_outbound(f"Profile dispatch unverified: {exc}"), protocol.STATE_FAILED
         result = receipt.get('result') or {}
         completed = receipt.get('outcome') == 'completed' and not result.get('failed')

@@ -89,6 +89,7 @@ def main():
     # Pin the installed launcher to this checkout for base/fixed argv comparisons.
     dispatch._resolve_hermes_argv = lambda: [sys.executable, '-m', 'hermes_cli.main']
     os.environ['HERMES_KANBAN_CRASH_GRACE_SECONDS'] = '0'
+    kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
         tid = kb.create_task(conn, title='KANBAN_TASK_SENTINEL', body='Acceptance: finish owned card', assignee='default',
             workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'],
@@ -140,7 +141,8 @@ def main():
                         assert receipt['pid_preserved'] and receipt['managed_dead'], receipt
                     elif peer.mode == 'crash':
                         import signal
-                        os.kill(active.worker_pid, signal.SIGKILL)
+                        # Windows has no SIGKILL; os.kill there is TerminateProcess for any signal.
+                        os.kill(active.worker_pid, getattr(signal, 'SIGKILL', signal.SIGTERM))
                     peer.release.set()
                     if peer.mode != 'timeout':
                         wait_for(lambda: not kb._pid_alive(active.worker_pid))
