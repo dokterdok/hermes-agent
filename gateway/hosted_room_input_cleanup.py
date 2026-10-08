@@ -14,6 +14,9 @@ import stat
 
 def _verified_source(source, copy):
     saved = os.fstat(source.fileno())
+    partial_output = copy['namespace'] == 'output' and copy['size'] is None and copy['digest'] is None
+    if not partial_output and (copy['size'] is None or copy['digest'] is None):
+        raise ValueError('sealed input evidence is incomplete')
     if (not stat.S_ISREG(saved.st_mode) or saved.st_nlink != 1
             or (str(saved.st_dev), str(saved.st_ino)) != (copy['device'], copy['inode'])
             or copy['size'] is not None and saved.st_size != copy['size']
