@@ -236,7 +236,8 @@ def test_durable_discard_replays_after_a_failed_removal(tmp_path: Path, monkeypa
     scope = _scope()
     stored = _put(outbox, scope, _file(tmp_path))
     blob = _blob(outbox, stored["artifact_id"])
-    original = Path.unlink
+    from gateway import hosted_room_input_cleanup as cleanup
+    original = cleanup.remove_sealed_copy
     failures = [True]
 
     def flaky(candidate, *args, **kwargs):
@@ -245,7 +246,7 @@ def test_durable_discard_replays_after_a_failed_removal(tmp_path: Path, monkeypa
             raise OSError("temporary unlink fault")
         return original(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", flaky)
+    monkeypatch.setattr(cleanup, "remove_sealed_copy", flaky)
     with pytest.raises(OSError, match="temporary unlink fault"):
         outbox.discard_durably(scope)
     with sqlite3.connect(outbox.db_path) as conn:
@@ -387,7 +388,8 @@ def test_supersede_unlink_failure_replays_without_losing_the_fence(tmp_path: Pat
     path = _file(tmp_path)
     first, second = _scope(execution_generation=1), _scope(execution_generation=2)
     blob = _blob(outbox, _put(outbox, first, path)["artifact_id"])
-    original = Path.unlink
+    from gateway import hosted_room_input_cleanup as cleanup
+    original = cleanup.remove_sealed_copy
     failures = [True]
 
     def flaky(candidate, *args, **kwargs):
@@ -396,7 +398,7 @@ def test_supersede_unlink_failure_replays_without_losing_the_fence(tmp_path: Pat
             raise OSError("temporary supersede unlink fault")
         return original(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", flaky)
+    monkeypatch.setattr(cleanup, "remove_sealed_copy", flaky)
     with pytest.raises(OSError, match="temporary supersede unlink fault"):
         _put(outbox, second, path)
     with pytest.raises(RoomArtifactError, match="generation is stale"):
