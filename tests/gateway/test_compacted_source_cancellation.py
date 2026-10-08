@@ -19,6 +19,12 @@ def prune_inventory(store):
     assert store.lookup('ordinary-scope', 'old-terminal', 'fingerprint') == ('missing', None)
 
 
+def age_executed_receipts(store):
+    # Exercise history after bounded observation retention, with grants still valid.
+    store._conn.execute("UPDATE run_idempotency SET retention_until=1,updated_at=0 WHERE fingerprint!=''")
+    store._conn.commit()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('upgrade', [False, True])
 @pytest.mark.parametrize('same_epoch', [False, True])
@@ -55,8 +61,14 @@ async def test_source_only_successor_stop_stays_unknown_after_compaction_and_sco
         successor = promise(gateways, ctx)
     with gateways['p'].acting():
         store = adapter._run_idempotency_store
-        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 0
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 1
+        age_executed_receipts(store)
         claims = claims_for(adapter, successor)
+        from gateway.platforms.api_server_run_authority import room_authority, room_namespace, room_run_scope
+        store.observe_room_authority(room_run_scope(claims), room_authority(claims),
+                                    namespace=room_namespace(claims), claims=claims)
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 0
+        assert store._conn.execute('SELECT COUNT(*) FROM group_run_scopes').fetchone()[0] > 0
         async with TestClient(TestServer(app(adapter))) as cli:
             body = body_for(claims, successor['catalog'], 'executed')
             headers = {**_headers(successor['grant']), 'Idempotency-Key': 'room:executed:1'}
@@ -147,6 +159,7 @@ def test_history_is_bounded_and_the_final_cancellation_writer_rechecks_it(tmp_pa
                 store.reserve(scope, f'room:task-{index}:1', 'executed', run_id,
                     {'status': 'completed', 'run_id': run_id}, identity=identity, room_authority=authority)
                 store.request_stop(scope, run_id)
+            age_executed_receipts(store)
             newer = {**identity, 'authority_epoch': epoch + 1}
             store.observe_room_authority(room_run_scope(newer), room_authority(newer),
                 namespace=room_namespace(newer), claims=newer)
