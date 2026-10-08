@@ -140,6 +140,30 @@ def test_null_config_sections_read_as_absent(tmp_path):
 
 
 
+def test_local_policy_uses_runtime_profile_not_receiving_transport(tmp_path):
+    from types import SimpleNamespace
+    from dataclasses import replace
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.session_local import LocalSessionAdapter
+    from gateway.session_policy import build_policy, policy_for_source
+    first = SimpleNamespace(sessions={})
+    second = SimpleNamespace(sessions={})
+    primary, beta = LocalSessionAdapter(first), LocalSessionAdapter(second)
+    source = SessionSource(platform=Platform.LOCAL, chat_id='owned', user_id='human', profile='beta')
+    second.sessions['owned'] = SimpleNamespace(source=source)
+    beta.register_source(source)
+    policy = build_policy({'source': 'gui', 'cwd': str(tmp_path), 'model': 'beta-model'}, {})
+    beta.policies['owned'] = policy
+    runner = SimpleNamespace(_delivery_adapter_for=lambda _: primary,
+        _adapters_for_profile=lambda profile: {Platform.LOCAL: beta if profile == 'beta' else primary})
+    assert policy_for_source(runner, source) is policy
+    # A copied or relabelled source has no registration and cannot select any policy.
+    assert policy_for_source(runner, replace(source)) is None
+    assert policy_for_source(runner, replace(source, profile='default')) is None
+    assert runner._delivery_adapter_for(source) is primary
+
+
 def test_frozen_route_keeps_its_endpoint_after_live_config_edit(tmp_path, monkeypatch):
     """R2-M2: the frozen policy's config-derived endpoint is the one its frozen credential
     belongs to; a later ``model.base_url`` edit must not redirect that credential."""
