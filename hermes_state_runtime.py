@@ -18,10 +18,12 @@ from hermes_state_keys import admission_fingerprint
 # A client field is echoed only when every dot-separated segment is a short
 # identifier or a list index. Whether a loc is a secret is the log formatter's
 # redactor (``redact_sensitive_text(..., force=True)``), not a second prefix
-# list: a hit on the path, on any segment, on the path with dots removed
-# (several token bodies do not cross a dot), or on any of those with one
-# leading underscore stripped, becomes ``<redacted-key>``. ``gateway.runtime``
-# is a gateway-log component, so the warning lands in gateway.log.
+# list. ``_SEGMENT``'s only separator is ``_`` (digits cannot lead). The
+# redactor's lookbehind treats ``_`` as part of the token, wherever it sits,
+# and several bodies do not cross ``.``. A hit on the path, any segment, or
+# any suffix after ``_`` or ``.`` (dots removed as well as kept) becomes
+# ``<redacted-key>``. ``gateway.runtime`` is a gateway-log component, so the
+# warning lands in gateway.log.
 _SEGMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,40}$')
 _INDEX = re.compile(r'^[0-9]{1,6}$')
 _DEV_CLAUSE = re.compile(
@@ -42,16 +44,41 @@ def _redactor_alters(text):
         return True
 
 
+def _add_probe(probes, value):
+    if value and value not in probes:
+        probes.append(value)
+
+
+def _pieces(text):
+    """*text* plus every suffix that starts after ``_`` or ``.``.
+
+    ``_`` is the only separator ``_SEGMENT`` allows, and it hides a prefix
+    from the redactor whether or not it is the first character. ``.`` is the
+    loc separator and also the ``SG.`` token's own dot, so both cuts are kept.
+    """
+    pieces = []
+    pending = [text]
+    while pending:
+        current = pending.pop()
+        if not current or current in pieces:
+            continue
+        pieces.append(current)
+        for mark in ('_', '.'):
+            at = current.find(mark)
+            if at >= 0:
+                pending.append(current[at + 1:])
+    return pieces
+
+
 def _secret_probes(text):
-    probes = [text]
-    if text[:1] == '_' and len(text) > 1:
-        probes.append(text[1:])
-    flat = text.replace('.', '')
-    if flat not in probes:
-        probes.append(flat)
-    stripped = flat[1:]
-    if flat[:1] == '_' and stripped and stripped not in probes:
-        probes.append(stripped)
+    """Variants of *text* the log redactor can actually match."""
+    probes = []
+    for piece in _pieces(text):
+        _add_probe(probes, piece)
+        _add_probe(probes, piece.lstrip('_'))
+        flat = piece.replace('.', '')
+        _add_probe(probes, flat)
+        _add_probe(probes, flat.lstrip('_'))
     return probes
 
 

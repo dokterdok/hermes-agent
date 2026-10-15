@@ -497,6 +497,80 @@ def test_credential_shaped_key_is_not_copied_into_detail_log_or_cli(
     assert shown == f"invalid_params ({clause})"
 
 
+def _assert_secret_is_redacted(response, logs):
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+
+    error = response["error"]
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    blob = " ".join([error["data"]["detail"], shown, *logs, *map(str, error["data"]["fields"])])
+    assert error["message"] == "invalid_params"
+    assert "AbCdEf" not in blob
+    assert "Ab12Cd34" not in blob
+    assert error["data"]["detail"] == "<redacted-key>"
+    assert logs == ["invalid_params: <redacted-key>"]
+    assert shown == "invalid_params (<redacted-key>)"
+    return blob
+
+
+@pytest.mark.parametrize("secret", [
+    "__hf_" + ("Ab12Cd34" * 4) + "Ab",
+    "___hf_" + ("Ab12Cd34" * 4),
+    "__sk_live_" + "AbCdEf1234" + "AbCdEf1234" + "AbCd",
+    "___sk_live_" + "AbCdEf1234" + "AbCdEf1234",
+    "__am_" + "AbCdEfGhIjKlMnOpQrSt",
+    "___am_" + "AbCdEfGhIjKlMnOpQrSt",
+    "__SG." + "AbCdEfGhIjKlMnOpQrStUv",
+    "___SG." + "AbCdEfGhIjKlMnOpQrStUv",
+    "__npm_" + "AbCdEf12." + "GhIjKl34." + "MnOpQr56",
+    # An underscore that is not the first character still hides the prefix.
+    "foo__hf_" + ("Ab12Cd34" * 3),
+    "bar__am_" + "AbCdEfGhIjKlMnOpQrSt",
+    "x__SG." + "AbCdEfGhIjKlMnOpQrStUv",
+])
+def test_extra_leading_underscores_are_not_echoed(tmp_path, monkeypatch, caplog, secret):
+    import asyncio
+
+    response, logs = asyncio.run(_dispatch_create(tmp_path, monkeypatch, caplog, {secret: 1}))
+    blob = _assert_secret_is_redacted(response, logs)
+    assert secret not in blob
+
+
+@pytest.mark.parametrize("secret", [
+    "__hf_" + ("Ab12Cd34" * 4) + "Ab",
+    "___hf_" + ("Ab12Cd34" * 3),
+    "__am_" + "AbCdEfGhIjKlMnOpQrSt",
+    "__SG." + "AbCdEfGhIjKlMnOpQrStUv",
+    "__npm_" + "AbCdEf12." + "GhIjKl34." + "MnOpQr56",
+    "foo__hf_" + ("Ab12Cd34" * 3),
+    "x__SG." + "AbCdEfGhIjKlMnOpQrStUv",
+])
+def test_nested_leading_underscores_are_not_echoed(tmp_path, monkeypatch, caplog, secret):
+    import asyncio
+
+    response, logs = asyncio.run(_dispatch_create(
+        tmp_path, monkeypatch, caplog, {},
+        method="prompt.submit",
+        params={"session_id": "s", "text": "hi", "turn_author": {secret: "x"}},
+    ))
+    blob = _assert_secret_is_redacted(response, logs)
+    assert secret not in blob
+
+
+@pytest.mark.parametrize("name", ["__private", "___private", "__am_example_identifier_123"])
+def test_extra_underscores_on_a_plain_name_stay_echoed(tmp_path, monkeypatch, caplog, name):
+    import asyncio
+
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+
+    response, logs = asyncio.run(_dispatch_create(tmp_path, monkeypatch, caplog, {name: 1}))
+    error = response["error"]
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    assert error["message"] == "invalid_params"
+    assert error["data"]["detail"] == name
+    assert name in shown
+    assert logs == [f"invalid_params: {name}"]
+
+
 @pytest.mark.parametrize("secret", [
     "npm_" + "AbCdEf12." + "GhIjKl34." + "MnOpQr56",
     "rk_live_" + "AbCdEf1234",
