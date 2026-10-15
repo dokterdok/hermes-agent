@@ -379,7 +379,6 @@ def _list_cron_output_runs(
         files = []
 
     executions = _owner_profile_executions(canonical_job_id)
-    represented: set = set()
     runs: list[dict[str, Any]] = []
 
     for path in files[:limit]:
@@ -397,26 +396,27 @@ def _list_cron_output_runs(
         ]
         if candidates:
             # Newest first: the latest attempt claimed by the doc's second is the likeliest writer.
-            index, attempt = candidates[0]
-            represented.add(index)
+            attempt = candidates[0][1]
             title = _execution_status_title(attempt["status"], attempt["error"], title)
         runs.append({
             "id": f"cron_output:{canonical_job_id}:{path.stem}",
             **_cron_output_run_row(started_at, title, preview),
             # Internal: a doc never records its execution, so this is a window guess — every
             # attempt it could be, for the caller to pair with a session by time, never by id.
+            # Which attempt the doc stands for is decided there: a doc dropped against one
+            # session must not have already erased a different attempt's ledger row.
             "_execution_candidates": tuple(attempt["id"] for _, attempt in candidates),
         })
 
-    # Terminal attempts whose output doc is gone (pruned, or the run never
-    # wrote one — e.g. a failed fire) are still real executions: give each its
-    # own metadata row from the ledger instead of letting the latest attempt's
-    # status bleed onto an older surviving document.
+    # Every terminal attempt gets a ledger row. The reconciler drops it when a
+    # session, or a document that row actually keeps, already represents the
+    # attempt. Suppressing it here — because some document merely *could* be
+    # this attempt — erases a fire whose document is later paired with a
+    # different session (a failure a minute after an agent run, inside that
+    # run's five-minute window, writes a doc and then vanishes).
     for index, attempt in enumerate(executions):
-        if index in represented or attempt["status"] not in ("completed", "failed"):
+        if attempt["status"] not in ("completed", "failed"):
             continue
-        if len(runs) >= limit:
-            break
         when = attempt["finished_at"] or attempt["claimed_at"]
         error = attempt["error"]
         runs.append({
@@ -426,8 +426,8 @@ def _list_cron_output_runs(
                 _execution_status_title(attempt["status"], error, "Script-only run"),
                 error or None,
             ),
-            # Internal: the attempt itself (durable), so the caller drops this row
-            # exactly when a session already represents the same execution.
+            # Internal: the attempt itself (durable). The caller drops this row when
+            # a session, or a document it keeps, already represents this execution.
             "_execution_id": attempt["id"],
         })
     runs.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
@@ -570,6 +570,36 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     return {"runs": _reconcile_cron_runs(session_runs, doc_runs, limit_n), "limit": limit_n}
 
 
+def _public_run_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Drop the ``_`` keys the lister uses to talk to the reconciler."""
+    return {k: v for k, v in row.items() if not k.startswith("_")}
+
+
+def _sessions_a_doc_may_belong_to(
+    doc: dict[str, Any],
+    session_runs: list[dict[str, Any]],
+    legacy: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Sessions whose run a document might be the output of.
+
+    A document never records its execution, only a window guess. It can belong
+    to a legacy session (no execution id) or to a session whose execution is
+    one of those candidates. A document no attempt claims is matched against
+    every session.
+    """
+    candidates = doc.get("_execution_candidates")
+    if candidates:
+        return legacy + [s for s in session_runs if s.get("cron_execution_id") in candidates]
+    return list(session_runs)
+
+
+def _row_matches_any_session(
+    row: dict[str, Any], sessions: list[dict[str, Any]], grace_seconds: float,
+) -> bool:
+    started_at = float(row.get("started_at") or 0)
+    return any(_doc_matches_session(started_at, session, grace_seconds) for session in sessions)
+
+
 def _reconcile_cron_runs(
     session_runs: list[dict[str, Any]],
     doc_runs: list[dict[str, Any]],
@@ -587,32 +617,50 @@ def _reconcile_cron_runs(
     (``_execution_candidates``), so it pairs by time: a doc within
     ``_SESSION_DOC_MATCH_SECONDS`` of a legacy session, or of a session whose
     execution is one of its candidates, is that session's execution (a doc no
-    attempt claims is matched against every session). Doc rows matching no
-    session are distinct executions — script-only fires — and are kept. A session
-    row must never be dropped in favor of a doc: the doc is the fallback
-    representation.
+    attempt claims is matched against every session).
+
+    Dropping that document covers the session it matched and nothing else. The
+    other attempts in its window guess are still real fires — the document was
+    only a candidate for them — so each keeps its ledger row unless a document
+    we actually show already stands for it. Doc rows matching no session are
+    distinct executions — script-only fires — and are kept, standing for their
+    likeliest (newest) candidate. A session row must never be dropped in favor
+    of a doc: the doc is the fallback representation.
     """
     _SESSION_DOC_MATCH_SECONDS = 300.0
 
-    executions = {s["cron_execution_id"] for s in session_runs if s.get("cron_execution_id")}
+    session_executions = {s["cron_execution_id"] for s in session_runs if s.get("cron_execution_id")}
     legacy = [s for s in session_runs if not s.get("cron_execution_id")]
+    documents = [row for row in doc_runs if "_execution_candidates" in row]
+    ledger_rows = [row for row in doc_runs if row.get("_execution_id") and "_execution_candidates" not in row]
+    plain_rows = [row for row in doc_runs if "_execution_candidates" not in row and not row.get("_execution_id")]
+
     merged = list(session_runs)
-    for doc in doc_runs:
-        candidates = doc.get("_execution_candidates")
-        execution_id = doc.get("_execution_id")
-        if candidates:
-            window = legacy + [s for s in session_runs if s.get("cron_execution_id") in candidates]
-        elif candidates is None and execution_id:
-            if execution_id in executions:
-                continue
-            window = legacy
-        else:
-            window = session_runs
-        doc = {k: v for k, v in doc.items() if not k.startswith("_")}
-        doc_ts = float(doc.get("started_at") or 0)
-        if any(_doc_matches_session(doc_ts, s, _SESSION_DOC_MATCH_SECONDS) for s in window):
+    # Execution ids a document we KEEP stands for. A document dropped against a
+    # session does not contribute: that drop must not suppress a different attempt.
+    represented: set[str] = set()
+    for doc in documents:
+        window = _sessions_a_doc_may_belong_to(doc, session_runs, legacy)
+        if _row_matches_any_session(doc, window, _SESSION_DOC_MATCH_SECONDS):
             continue
-        merged.append(doc)
+        candidates = doc.get("_execution_candidates") or ()
+        if candidates:
+            represented.add(candidates[0])
+        merged.append(_public_run_row(doc))
+
+    for row in ledger_rows:
+        execution_id = row.get("_execution_id")
+        if execution_id in session_executions or execution_id in represented:
+            continue
+        if _row_matches_any_session(row, legacy, _SESSION_DOC_MATCH_SECONDS):
+            continue
+        merged.append(_public_run_row(row))
+
+    for row in plain_rows:
+        if _row_matches_any_session(row, session_runs, _SESSION_DOC_MATCH_SECONDS):
+            continue
+        merged.append(_public_run_row(row))
+
     merged.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
     return merged[:limit]
 

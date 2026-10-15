@@ -154,6 +154,33 @@ async def test_a_fire_that_failed_beside_a_unified_run_keeps_its_own_row(owner, 
 
 
 @pytest.mark.asyncio
+async def test_a_failed_fire_that_wrote_output_is_not_swallowed_by_the_earlier_run(owner, clock):
+    """A doc's claim window is only a guess. A fire that fails a minute after an agent run,
+    before it creates a session, still writes a doc, and that doc sits inside the earlier
+    run's five-minute window — so both attempts are candidates. Pairing the doc with the
+    earlier session must not also erase the failed attempt: its row and error stay."""
+    job = jobs.create_job(prompt='report', schedule='every 1m', deliver='local')['id']
+    session_id, first, claim = await _start_fire(owner, job)
+    _close_run(owner, session_id, claim)
+    jobs.save_job_output(job, '# Cron Job: report\n\nreport done')
+    executions.finish_execution(first, success=True)
+
+    clock['seconds'] = 60
+    second = executions.create_execution(job, source='test')['id']
+    executions.mark_execution_running(second)
+    clock['seconds'] = 70
+    jobs.save_job_output(job, '# Cron Job: report\n\nowner down')
+    executions.finish_execution(second, success=False, error='owner_unavailable')
+
+    runs = _runs(job)
+
+    assert [r['source'] for r in runs] == ['cron_output', 'cron'], runs
+    assert runs[0]['title'].startswith('FAILED'), runs[0]
+    assert runs[0]['preview'] == 'owner_unavailable'
+    assert (runs[1]['id'], runs[1]['cron_execution_id']) == (session_id, first)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('neighbour_doc_survives', [True, False])
 async def test_a_same_second_output_doc_is_not_pinned_on_the_earlier_execution(
         owner, monkeypatch, neighbour_doc_survives):
