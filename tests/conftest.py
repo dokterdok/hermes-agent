@@ -26,6 +26,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -385,6 +386,13 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")
+    # datetime.now().astimezone() keeps the zone it cached at process start.
+    # naive.astimezone() re-reads TZ. On a host that did not start in UTC those
+    # two disagree, and a cron output filename (written from the cached zone)
+    # parses hours away from the session it belongs to, so one fire becomes two
+    # history rows. tzset makes the pin real before either clock is read.
+    if hasattr(time, "tzset"):
+        time.tzset()
     monkeypatch.setenv("LANG", "C.UTF-8")
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
