@@ -260,7 +260,7 @@ def _create_shape_clause(params, source):
         # Same predicate the store uses to keep a detail. A leading underscore or a
         # credential-shaped key is not echoed; the clause falls back to create.fields
         # when nothing publishable remains.
-        return refusal_clause(sorted((name for name in extra), key=str))
+        return refusal_clause(sorted((name for name in extra), key=str), method='session.create')
     if not isinstance(source, str) or source not in SURFACES:
         return 'source'
     return None

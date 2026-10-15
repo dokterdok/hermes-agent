@@ -15,59 +15,106 @@ from agent.message_metadata import (
 from hermes_state_keys import admission_fingerprint
 
 
-# A clause name only: field or check, never a rejected value. ``gateway.runtime`` is a
-# gateway-log component, so the one warning lands in gateway.log.
-_CLAUSE_NAME = re.compile(r'^[A-Za-z][A-Za-z0-9_.:()\-]{0,79}$')
-# Prefixes of credential-shaped identifiers. The tail is never stored or logged.
+# A client field is echoed only when every dot-separated segment is a short identifier.
+# Credential-shaped names and anything else become a fixed placeholder. ``gateway.runtime``
+# is a gateway-log component, so the warning lands in gateway.log.
+_SEGMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,40}$')
+_DEV_CLAUSE = re.compile(
+    r'^(?:[A-Za-z_][A-Za-z0-9_]{0,40})(?:\.[A-Za-z_][A-Za-z0-9_]{0,40})*\([A-Za-z_][A-Za-z0-9_]{0,40}\)$'
+)
+REDACTED_KEY = '<redacted-key>'
+# Longer prefixes first. A match anywhere in a path is enough; the tail is never kept.
 _TOKEN_PREFIXES = (
-    'sk_live_', 'sk_test_', 'sk_proj_', 'sk-',
-    'ghp_', 'gho_', 'github_pat_',
+    'github_pat_',
+    'sk_live_', 'sk_test_', 'sk_proj_',
+    'sk-', 'sk_',
+    'ghp_', 'gho_', 'ghs_', 'ghu_',
     'glpat-',
-    'xoxb-', 'xoxp-', 'xoxa-', 'xoxs-',
+    'xoxa-', 'xoxb-', 'xoxc-', 'xoxo-', 'xoxp-', 'xoxs-',
     'AKIA', 'AIza',
 )
 _refusal_log = logging.getLogger('gateway.runtime')
 
 
-def clause_token(name):
-    """A field name safe to put in ``detail`` and the log, or ``None``.
-
-    A credential-shaped name is reduced to its prefix (``sk_live_Ab12…`` becomes
-    ``sk_live_``). A leading underscore or any other non-clause is dropped.
-    """
-    if not isinstance(name, str) or len(name) > 200:
-        return None
+def _segment_is_token(segment):
+    """True for a known credential prefix or a long mixed letter/digit run."""
+    if not isinstance(segment, str) or not segment:
+        return False
     for prefix in _TOKEN_PREFIXES:
-        if not name.startswith(prefix):
-            continue
-        tail = name[len(prefix):]
-        if len(tail) >= 8 and tail.replace('_', '').replace('-', '').isalnum() and _CLAUSE_NAME.fullmatch(prefix):
-            return prefix
-    if _CLAUSE_NAME.fullmatch(name):
-        return name
-    return None
+        if segment.startswith(prefix) and len(segment) > len(prefix):
+            return True
+    return (bool(_SEGMENT.fullmatch(segment)) and len(segment) >= 20
+            and any(char.isdigit() for char in segment) and any(char.isalpha() for char in segment))
 
 
-def refusal_clause(names):
-    """One log-safe clause for field names. Empty or all-rejected input is ``create.fields``."""
+def _looks_like_secret(name):
+    if not isinstance(name, str) or not name:
+        return False
+    if _segment_is_token(name):
+        return True
+    return any(_segment_is_token(part) for part in re.split(r'[^A-Za-z0-9_]+', name) if part)
+
+
+def _path_is_safe(path):
+    if not isinstance(path, str) or not path or len(path) > 80:
+        return False
+    parts = path.split('.')
+    return all(_SEGMENT.fullmatch(part) and not _segment_is_token(part) for part in parts)
+
+
+def is_published_clause(detail):
+    """True when *detail* may be stored, logged, and shown. One predicate for all three."""
+    if detail == REDACTED_KEY:
+        return True
+    if _path_is_safe(detail):
+        return True
+    if not isinstance(detail, str) or not _DEV_CLAUSE.fullmatch(detail):
+        return False
+    head, _, inner = detail.rpartition('(')
+    return _path_is_safe(head) and not _segment_is_token(inner[:-1])
+
+
+def _method_fallback(method):
+    leaf = method.split('.')[-1] if isinstance(method, str) and '.' in method else (method or 'params')
+    if isinstance(leaf, str) and _SEGMENT.fullmatch(leaf) and not _segment_is_token(leaf):
+        return f'{leaf}.fields'
+    return 'params.fields'
+
+
+def published_fields(names, *, method=None):
+    """Field paths safe to return on the wire. Unsafe entries become the placeholder."""
     if isinstance(names, str):
         names = [names]
-    tokens = []
+    out = []
     for name in names or ():
-        token = clause_token(name)
-        if token and token not in tokens:
-            tokens.append(token)
-    if not tokens:
-        return 'create.fields'
-    joined = '.'.join(tokens)
-    if _CLAUSE_NAME.fullmatch(joined):
-        return joined
-    return tokens[0]
+        if isinstance(name, str) and _path_is_safe(name):
+            token = name
+        elif _looks_like_secret(name):
+            token = REDACTED_KEY
+        else:
+            token = _method_fallback(method)
+        if token not in out:
+            out.append(token)
+    return out or [_method_fallback(method)]
+
+
+def refusal_clause(names, *, method=None):
+    """One clause for detail, the log, and the CLI. A secret wins over every other name."""
+    if isinstance(names, str):
+        names = [names]
+    names = list(names or ())
+    if any(_looks_like_secret(name) for name in names):
+        return REDACTED_KEY
+    safe = [name for name in names if isinstance(name, str) and _path_is_safe(name)]
+    if safe and len(safe) == len(names):
+        joined = '.'.join(dict.fromkeys(safe))
+        return joined if _path_is_safe(joined) else safe[0]
+    return _method_fallback(method)
 
 
 def log_invalid_params(detail):
-    """One warning, and only when *detail* is a clause name."""
-    if isinstance(detail, str) and _CLAUSE_NAME.fullmatch(detail):
+    """One warning, and only for a clause ``is_published_clause`` accepts."""
+    if isinstance(detail, str) and is_published_clause(detail):
         _refusal_log.warning('invalid_params: %s', detail)
 
 
@@ -81,7 +128,7 @@ class RuntimeStoreError(ValueError):
 
     def __init__(self, reason: str, *, detail: str | None = None):
         self.reason = reason
-        self.detail = detail if isinstance(detail, str) and _CLAUSE_NAME.fullmatch(detail) else None
+        self.detail = detail if isinstance(detail, str) and is_published_clause(detail) else None
         super().__init__(reason)
         if self.detail:
             _refusal_log.warning('%s: %s', reason, self.detail)

@@ -382,14 +382,15 @@ def test_token_shaped_key_is_not_echoed(tmp_path, monkeypatch, caplog):
     assert response["error"]["message"] == "invalid_params"
     assert secret not in detail
     assert secret not in " ".join(logs)
-    assert detail == "sk_live_"
-    assert logs == ["invalid_params: sk_live_"]
+    assert secret not in " ".join(response["error"]["data"]["fields"])
+    assert detail == "<redacted-key>"
+    assert logs == ["invalid_params: <redacted-key>"]
     from hermes_cli.gateway_client import GatewayRPCError, refusal_display
     # A frame that only has the raw fields list (no detail) must still not print the secret.
     bare = GatewayRPCError("invalid_params", 4001, {"reason": "invalid_params", "fields": [secret]})
     shown = refusal_display(bare)
     assert secret not in shown
-    assert shown != "invalid_params"
+    assert shown == "invalid_params (<redacted-key>)"
 
 
 def test_fields_only_frame_names_the_field():
@@ -407,9 +408,8 @@ def test_underscore_extra_key_logs_a_safe_clause(tmp_path, caplog):
             build_policy({"cwd": str(tmp_path), "_private": 1}, {})
     assert caught.value.reason == "invalid_params"
     assert str(caught.value) == "invalid_params"
-    assert caught.value.detail == "create.fields"
-    assert "invalid_params: create.fields" in caplog.text
-    assert "_private" not in caplog.text
+    assert caught.value.detail == "_private"
+    assert "invalid_params: _private" in caplog.text
 
 
 def test_hardlink_staging_logs_the_clause_once(tmp_path, monkeypatch, caplog):
@@ -469,7 +469,95 @@ async def test_role_gated_relay_without_relay_provenance_names_the_clause(caplog
     assert "invalid_params: native.relay_provenance" in caplog.text
 
 
-def _dispatch_create(tmp_path, monkeypatch, caplog, extra):
+@pytest.mark.parametrize("secret", [
+    "ghp_AAAAAAAA.BBBBBBBB",
+    "sk-sp-" + "AbCdEf12." + "GhIjKl34." + "MnOpQr56",
+    "ghs_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6",
+    "xoxc-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUv",
+])
+def test_credential_shaped_key_is_not_copied_into_detail_log_or_cli(tmp_path, monkeypatch, caplog, secret):
+    import asyncio
+
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+
+    response, logs = asyncio.run(_dispatch_create(tmp_path, monkeypatch, caplog, {secret: 1}))
+    error = response["error"]
+    detail = error["data"]["detail"]
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    blob = " ".join([detail, shown, *logs, *error["data"]["fields"]])
+    assert error["message"] == "invalid_params"
+    assert secret not in blob
+    assert detail == "<redacted-key>"
+    assert logs == ["invalid_params: <redacted-key>"]
+    assert shown == "invalid_params (<redacted-key>)"
+
+
+def test_nested_token_path_is_not_echoed(tmp_path, monkeypatch, caplog):
+    import asyncio
+
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+
+    secret = "sk_live_" + ("Ab12Cd34" * 3)
+    response, logs = asyncio.run(_dispatch_create(
+        tmp_path, monkeypatch, caplog, {},
+        method="prompt.submit",
+        params={"session_id": "s", "text": "hi", "turn_author": {secret: "x"}},
+    ))
+    error = response["error"]
+    detail = error["data"]["detail"]
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    blob = " ".join([detail, shown, *logs, *map(str, error["data"]["fields"])])
+    assert secret not in blob
+    assert "Ab12Cd34" not in blob
+    assert detail == "<redacted-key>"
+
+
+def test_resume_fallback_is_not_create_fields(tmp_path, monkeypatch, caplog):
+    import asyncio
+
+    response, logs = asyncio.run(_dispatch_create(
+        tmp_path, monkeypatch, caplog, {},
+        method="session.resume",
+        params={"session_id": "s", "_private": 1, "user:s3cret-pass": 1},
+    ))
+    detail = response["error"]["data"]["detail"]
+    blob = " ".join([detail, *logs, *response["error"]["data"]["fields"]])
+    assert "create.fields" not in blob
+    assert "s3cret" not in blob
+    assert "_private" in detail or detail == "resume.fields"
+    assert "resume.fields" in detail or "_private" in detail
+
+
+def test_exit_code_uses_the_reason_not_the_rendered_clause(monkeypatch, capsys):
+    import argparse
+
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+    import hermes_cli.gateway_chat as chat
+    import hermes_cli.gateway_chat_startup as startup
+
+    exc = GatewayRPCError("invalid_params", 4001, {
+        "reason": "invalid_params", "detail": "unsupported_flag"})
+
+    async def refused(args, emitter=None):
+        raise exc
+
+    monkeypatch.setattr(chat, "validate_options", lambda args: None)
+    monkeypatch.setattr(chat, "_register_terminal_process", lambda: None)
+    monkeypatch.setattr(startup, "ensure_launch_provider", lambda args: True)
+    monkeypatch.setattr(chat, "run_gateway_chat", refused)
+    args = argparse.Namespace(
+        output_format="text", list_tools=False, list_toolsets=False,
+        query="hi", q=None, oneshot=None, query_file=None,
+    )
+    assert chat.launch_from_args(args) == 1
+    err = capsys.readouterr().err
+    assert "unsupported_flag" in err
+    usage = GatewayClientError("Unsupported gateway CLI options: --image")
+    assert chat.client_error_exit_code(usage) == 2
+    assert chat.client_error_exit_code(exc) == 1
+
+
+def _dispatch_create(tmp_path, monkeypatch, caplog, extra, *, method="session.create", params=None):
     import json
     from types import SimpleNamespace
 
@@ -500,10 +588,11 @@ def _dispatch_create(tmp_path, monkeypatch, caplog, extra):
         )
         owner = AuthorityConnection(authority, object(), {"user_id": "human"})
         try:
+            body = params if params is not None else {
+                "request_id": "schema", "source": "cli", "cwd": str(tmp_path), "model": "m", **extra,
+            }
             with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
-                response = await owner.dispatch({"id": "schema", "method": "session.create", "params": {
-                    "request_id": "schema", "source": "cli", "cwd": str(tmp_path), "model": "m", **extra,
-                }})
+                response = await owner.dispatch({"id": "schema", "method": method, "params": body})
             logs = [rec.getMessage() for rec in caplog.records if rec.name == "gateway.runtime"]
             return response, logs
         finally:
