@@ -582,6 +582,108 @@ def test_nested_leading_underscores_are_not_echoed(tmp_path, monkeypatch, caplog
     assert secret not in blob
 
 
+# The redactor's lookahead treats ``_`` as part of a token too, so an
+# underscore after the body hides it the same way one in front does.
+_TRAILING_UNDERSCORE_TOKENS = [
+    ("hf_" + "Ab12Cd34" * 4, "_x"),
+    ("ghp_" + "AbCdEf1234" * 3 + "Ab", "_"),
+    ("npm_" + "AbCdEf1234" * 2, "_x"),
+    ("am_" + "AbCdEfGhIjKlMnOpQrSt", "_"),
+    ("AKIA" + "IOSFODNN7EXAMPLE", "_x"),
+    ("npm_" + "AbCdEf12." + "GhIjKl34", "_x"),
+]
+
+
+def _assert_token_not_published(response, logs, token):
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+
+    error = response["error"]
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    blob = " ".join([error["data"]["detail"], shown, *logs, *map(str, error["data"]["fields"])])
+    assert error["message"] == "invalid_params"
+    assert token not in blob
+    assert token.replace(".", "") not in blob
+    assert error["data"]["detail"] == "<redacted-key>"
+    assert logs == ["invalid_params: <redacted-key>"]
+    assert shown == "invalid_params (<redacted-key>)"
+
+
+@pytest.mark.parametrize("token, tail", _TRAILING_UNDERSCORE_TOKENS)
+def test_trailing_underscore_does_not_hide_a_token(tmp_path, monkeypatch, caplog, token, tail):
+    import asyncio
+
+    response, logs = asyncio.run(_dispatch_create(tmp_path, monkeypatch, caplog, {token + tail: 1}))
+    _assert_token_not_published(response, logs, token)
+
+
+@pytest.mark.parametrize("token, tail", _TRAILING_UNDERSCORE_TOKENS)
+def test_nested_trailing_underscore_does_not_hide_a_token(tmp_path, monkeypatch, caplog, token, tail):
+    import asyncio
+
+    response, logs = asyncio.run(_dispatch_create(
+        tmp_path, monkeypatch, caplog, {},
+        method="prompt.submit",
+        params={"session_id": "s", "text": "hi", "turn_author": {"x_" + token + tail: "x"}},
+    ))
+    _assert_token_not_published(response, logs, token)
+
+
+def test_overlong_key_is_not_probed_run_by_run(tmp_path, monkeypatch, caplog):
+    """A key too long to publish gets one redactor pass, not one per run of it.
+    The run-by-run probe is quadratic and held the event loop for seconds on a
+    few thousand characters."""
+    import asyncio
+
+    from agent import redact
+
+    key = "a_" * 2000
+    real = redact.redact_sensitive_text
+    probes = []
+
+    def counting(text, **kwargs):
+        if "a_a_" in text:
+            probes.append(len(text))
+        return real(text, **kwargs)
+
+    monkeypatch.setattr(redact, "redact_sensitive_text", counting)
+    response, logs = asyncio.run(_dispatch_create(tmp_path, monkeypatch, caplog, {key: 1}))
+    error = response["error"]
+    assert error["message"] == "invalid_params"
+    assert error["data"]["detail"] == "create.fields"
+    assert key not in " ".join([*logs, *error["data"]["fields"]])
+    assert len(probes) < 20
+
+
+def test_many_extra_keys_stay_within_the_client_bound(tmp_path, monkeypatch, caplog):
+    """The published list must survive rpc_error's data bound, and keys past
+    it are never probed. Each probe is a redactor pass per run of the name."""
+    import asyncio
+
+    from agent import redact
+    from hermes_cli.gateway_client import refusal_display, rpc_error
+
+    keys = [f"extra{index:03d}" for index in range(200)]
+    real = redact.redact_sensitive_text
+    probed = set()
+
+    def counting(text, **kwargs):
+        probed.update(key for key in keys if key in text)
+        return real(text, **kwargs)
+
+    monkeypatch.setattr(redact, "redact_sensitive_text", counting)
+    response, _logs = asyncio.run(_dispatch_create(
+        tmp_path, monkeypatch, caplog, dict.fromkeys(keys, 1)))
+    error = response["error"]
+    fields = error["data"]["fields"]
+    assert error["message"] == "invalid_params"
+    assert fields[0] == keys[0] and fields[-1] == "create.fields"
+    received = rpc_error(error)
+    assert received.data["fields"] == fields
+    assert refusal_display(received).startswith(f"invalid_params ({keys[0]}")
+    assert keys[-1] not in probed
+    assert len(probed) < len(keys) // 4
+
+
 @pytest.mark.parametrize("name", ["__private", "___private", "__am_example_identifier_123"])
 def test_extra_underscores_on_a_plain_name_stay_echoed(tmp_path, monkeypatch, caplog, name):
     import asyncio

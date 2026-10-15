@@ -18,14 +18,17 @@ from hermes_state_keys import admission_fingerprint
 # A client field is echoed only when every dot-separated segment is a short
 # identifier or a list index. Whether a loc is a secret is the log formatter's
 # redactor (``redact_sensitive_text(..., force=True)``), not a second prefix
-# list. ``_SEGMENT``'s only separator is ``_`` (digits cannot lead). The
-# redactor's lookbehind treats ``_`` as part of the token, wherever it sits,
-# and several bodies do not cross ``.``. A hit on the path, any segment, or
-# any suffix after ``_`` or ``.`` (dots removed as well as kept) becomes
-# ``<redacted-key>``. ``gateway.runtime`` is a gateway-log component, so the
-# warning lands in gateway.log.
+# list. ``_SEGMENT``'s only separator is ``_`` (digits cannot lead), and the
+# redactor's lookbehind and lookahead both count ``_`` as part of a token, so
+# a token with ``_`` on either side is invisible to it in place. Several
+# bodies do not cross ``.``. A hit on any run of the loc cut at ``_`` or ``.``
+# on both ends (dots removed as well as kept) becomes ``<redacted-key>``.
+# ``gateway.runtime`` is a gateway-log component, so the warning lands in
+# gateway.log.
 _SEGMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,40}$')
 _INDEX = re.compile(r'^[0-9]{1,6}$')
+_MAX_CLAUSE = 80
+_MAX_LOCS = 16
 _DEV_CLAUSE = re.compile(
     r'^(?:[A-Za-z_][A-Za-z0-9_]{0,40})(?:\.[A-Za-z_][A-Za-z0-9_]{0,40})*'
     r'\([A-Za-z_][A-Za-z0-9_]{0,40}\)$'
@@ -44,47 +47,26 @@ def _redactor_alters(text):
         return True
 
 
-def _add_probe(probes, value):
-    if value and value not in probes:
-        probes.append(value)
-
-
-def _pieces(text):
-    """*text* plus every suffix that starts after ``_`` or ``.``.
-
-    ``_`` is the only separator ``_SEGMENT`` allows, and it hides a prefix
-    from the redactor whether or not it is the first character. ``.`` is the
-    loc separator and also the ``SG.`` token's own dot, so both cuts are kept.
-    """
-    pieces = []
-    pending = [text]
-    while pending:
-        current = pending.pop()
-        if not current or current in pieces:
-            continue
-        pieces.append(current)
-        for mark in ('_', '.'):
-            at = current.find(mark)
-            if at >= 0:
-                pending.append(current[at + 1:])
-    return pieces
-
-
 def _secret_probes(text):
-    """Variants of *text* the log redactor can actually match."""
-    probes = []
-    for piece in _pieces(text):
-        _add_probe(probes, piece)
-        _add_probe(probes, piece.lstrip('_'))
-        flat = piece.replace('.', '')
-        _add_probe(probes, flat)
-        _add_probe(probes, flat.lstrip('_'))
-    return probes
+    """Every run of *text* cut at ``_`` or ``.`` on both ends, dots kept and removed.
+
+    The whole text and each dot segment are runs too, and so is every run
+    with its leading or trailing underscores cut off.
+    """
+    cuts = [at for at, char in enumerate(text) if char in '_.']
+    starts = (0, *(at + 1 for at in cuts))
+    ends = (*cuts, len(text))
+    runs = (text[start:end] for start in starts for end in ends if end > start)
+    return list(dict.fromkeys(probe for run in runs for probe in (run, run.replace('.', '')) if probe))
 
 
 def _redactor_hits(text):
     if not isinstance(text, str) or not text:
         return False
+    if len(text) > _MAX_CLAUSE:
+        # Never published, so one pass only picks <redacted-key> over the
+        # fallback. The run-by-run probe is quadratic in the length.
+        return _redactor_alters(text)
     return any(_redactor_alters(probe) for probe in _secret_probes(text))
 
 
@@ -92,27 +74,18 @@ def _segment_shape_ok(part):
     return bool(_SEGMENT.fullmatch(part) or _INDEX.fullmatch(part))
 
 
-def _path_is_safe(path):
-    """True for a loc we may echo: short idents and indexes the redactor leaves."""
-    if not isinstance(path, str) or not path or len(path) > 80 or _redactor_hits(path):
-        return False
-    parts = path.split('.')
-    return all(_segment_shape_ok(part) and not _redactor_hits(part) for part in parts)
+def _path_shape_ok(path):
+    return (isinstance(path, str) and 0 < len(path) <= _MAX_CLAUSE
+            and all(_segment_shape_ok(part) for part in path.split('.')))
 
 
 def _clause_path(path):
     """A published clause: a safe path, or the same with placeholder segments."""
-    if not isinstance(path, str) or not path or len(path) > 80 or _redactor_hits(path):
+    if not isinstance(path, str) or not path or len(path) > _MAX_CLAUSE:
         return False
-    parts = path.split('.')
-    if not all(parts):
+    if not all(part == REDACTED_KEY or _segment_shape_ok(part) for part in path.split('.')):
         return False
-    for part in parts:
-        if part == REDACTED_KEY:
-            continue
-        if not _segment_shape_ok(part) or _redactor_hits(part):
-            return False
-    return True
+    return not _redactor_hits(path)
 
 
 def is_published_clause(detail):
@@ -135,21 +108,20 @@ def _method_fallback(method):
     return 'params.fields'
 
 
-def _loc_is_secret(name):
-    if not isinstance(name, str) or not name:
-        return False
-    if _redactor_hits(name):
-        return True
-    return any(_redactor_hits(part) for part in name.split('.') if part)
-
-
 def _classify_loc(name):
     """Published token for one loc, or None when it is neither safe nor a secret."""
-    if _path_is_safe(name):
-        return name
-    if _loc_is_secret(name):
+    if not isinstance(name, str) or not name:
+        return None
+    if _redactor_hits(name):
         return REDACTED_KEY
-    return None
+    return name if _path_shape_ok(name) else None
+
+
+def _bounded_locs(names):
+    """The locs worth classifying: ``rpc_error`` drops a data list longer than
+    ``_MAX_LOCS``, so the rest share one ``None`` slot (the method fallback)."""
+    names = [names] if isinstance(names, str) else list(names or ())
+    return names if len(names) <= _MAX_LOCS else [*names[:_MAX_LOCS - 1], None]
 
 
 def published_fields(names, *, method=None):
@@ -158,11 +130,9 @@ def published_fields(names, *, method=None):
     A secret loc is the placeholder. Any other unsafe loc is the method
     fallback, and it does not replace a sibling that is safe.
     """
-    if isinstance(names, str):
-        names = [names]
     out = []
     fallback = _method_fallback(method)
-    for name in names or ():
+    for name in _bounded_locs(names):
         token = _classify_loc(name)
         if token is None:
             token = fallback
@@ -178,10 +148,8 @@ def refusal_clause(names, *, method=None):
     and does not replace a sibling safe loc. ``<method>.fields`` is used only
     when no loc is safe and none is a secret.
     """
-    if isinstance(names, str):
-        names = [names]
     tokens = []
-    for name in names or ():
+    for name in _bounded_locs(names):
         token = _classify_loc(name)
         if token and token not in tokens:
             tokens.append(token)
