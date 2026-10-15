@@ -4,10 +4,8 @@ The reason code stays the bare token callers and the wire compare. The clause
 name is a separate, non-secret field: logged, carried on the RPC error, and
 shown to the person who was refused.
 """
-import ast
 import base64
 import logging
-from pathlib import Path
 
 import pytest
 
@@ -321,23 +319,51 @@ async def test_notify_turn_error_sends_the_named_refusal():
     assert "native.media_urls" in body
 
 
-def _invalid_params_sites(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    sites = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Raise) or not isinstance(getattr(node, "exc", None), ast.Call):
-            continue
-        call = node.exc
-        func = call.func
-        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-        if name != "RuntimeStoreError" or not call.args:
-            continue
-        arg = call.args[0]
-        if not isinstance(arg, ast.Constant) or arg.value != "invalid_params":
-            continue
-        details = [kw for kw in call.keywords if kw.arg == "detail"]
-        sites.append((node.lineno, details))
-    return sites
+def _set_event(**fields):
+    return lambda event: [setattr(event, name, value) for name, value in fields.items()]
+
+
+def _set_source(**fields):
+    return lambda event: [setattr(event.source, name, value) for name, value in fields.items()]
+
+
+# Every other clause _validate_native refuses with. The multiplex provenance
+# and media_urls=None clauses have their own tests above.
+_NATIVE_REFUSALS = {
+    "native.source": _set_event(source=None),
+    "native.text": _set_event(text=None),
+    "native.message_type": _set_event(message_type="text"),
+    "native.command": _set_event(text="/new"),
+    "native.internal": _set_event(internal=True),
+    "native.metadata": _set_event(metadata={"other": 1}),
+    "native.prompt_response": _set_event(prompt_response={"id": "p"}),
+    "native.stale_roles": _set_source(role_authorized=True),
+    "native.relay_provenance": _set_source(delivered_via_upstream_relay=True),
+    "native.profile_route_rejected": _set_source(profile_route_rejected=True),
+    "native.provenance_missing(authorization_home)": _set_source(_authorization_profile_home="/tmp/home"),
+    "native.channel_prompt": _set_event(channel_prompt=1),
+    "native.channel_context": _set_event(channel_context=1),
+    "native.reply_expected": _set_event(reply_expected="yes"),
+    "native.auto_skill": _set_event(auto_skill=[1]),
+    "native.media_types": _set_event(media_types=None),
+    "native.media_text_inlined": _set_event(media_text_inlined=["x"]),
+    "native.media_length": _set_event(media_urls=["/a.png", "/b.png"], media_types=["image/png"]),
+}
+
+
+@pytest.mark.parametrize("clause", sorted(_NATIVE_REFUSALS))
+def test_native_refusal_names_its_clause(caplog, clause):
+    from gateway.session_envelope import _validate_native
+
+    event = _native_event()
+    _NATIVE_REFUSALS[clause](event)
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            _validate_native(_runner(multiplex=False), event, provenance=None)
+    assert caught.value.reason == "invalid_params"
+    assert str(caught.value) == "invalid_params"
+    assert caught.value.detail == clause
+    assert [rec.getMessage() for rec in caplog.records] == [f"invalid_params: {clause}"]
 
 
 def test_schema_extra_key_is_named_logged_and_shown(tmp_path, monkeypatch, caplog):
@@ -770,11 +796,3 @@ def _dispatch_create(tmp_path, monkeypatch, caplog, extra, *, method="session.cr
             store.close_all_db_handles()
 
     return go()
-
-
-@pytest.mark.parametrize("rel", ["gateway/session_policy.py", "gateway/session_envelope.py"])
-def test_every_invalid_params_site_carries_a_clause(rel):
-    sites = _invalid_params_sites(Path(__file__).resolve().parents[2] / rel)
-    assert sites, rel
-    bare = [line for line, details in sites if len(details) != 1]
-    assert bare == [], (rel, bare)
