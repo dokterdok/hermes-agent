@@ -26,7 +26,7 @@ import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import { trackPendingSubmission } from '@/store/pending-submissions'
-import { isCronRunReadOnly, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
+import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionId,
   $sessions,
@@ -41,7 +41,7 @@ import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import { isCronRunSession, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
+import { refreshCronRunWriteGate, shouldRefreshCronRunWriteGate } from '../../../cron/open-cron-run'
 import type { ClientSessionState } from '../../../types'
 import { routeTargetFromToken, sessionContextDrift } from '../session-context-drift'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
@@ -322,13 +322,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // to another chat.
       let targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
 
-      // A cron run's write gate is re-evaluated against its authoritative row
-      // right here (#88443): a verdict recorded when the run looked idle
-      // must not outlive the run ticking or closing, and a tab restored
-      // after a restart (no verdict yet) is gated too. No-op for non-cron
-      // sessions. If the user moved to another chat meanwhile, drop the send
-      // rather than route it on a stale target — the draft stays.
-      if (isCronRunSession(targetStoredSessionId) || isCronRunReadOnly(targetStoredSessionId)) {
+      // Re-evaluate a cron run against its authoritative row (#88443). The
+      // gate's own predicate counts a stored false verdict: once a local-*
+      // run leaves the cached page, isCronRunSession is false and "not
+      // read-only" would skip the refresh and send into a dead run. Other
+      // sessions are not awaited — that yield lands before the send pins its
+      // owner. If the user moved chats during the refresh, drop the send.
+      if (shouldRefreshCronRunWriteGate(targetStoredSessionId)) {
         const viewBeforeGate = selectedStoredSessionIdRef.current
 
         await refreshCronRunWriteGate(targetStoredSessionId, id =>

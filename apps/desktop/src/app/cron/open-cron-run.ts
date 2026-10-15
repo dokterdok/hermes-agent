@@ -111,14 +111,30 @@ export function reconcileCronRunVerdicts(runs: readonly CronRunRow[]): void {
 }
 
 /**
+ * Whether a pre-send refresh would do anything for this id.
+ *
+ * A cached cron row qualifies, and so does any stored verdict — including
+ * `false`, a run that was live when it was opened. The sidebar only keeps the
+ * latest page, so a `local-*` run leaves `isCronRunSession` once it scrolls
+ * off, while its writable verdict stays. Callers await the refresh only when
+ * this is true: awaiting it for every send yields before the send pins its
+ * owner.
+ */
+export function shouldRefreshCronRunWriteGate(storedSessionId: null | string | undefined): storedSessionId is string {
+  const id = storedSessionId?.trim()
+
+  return Boolean(id && (isCronRunSession(id) || hasCronRunVerdict(id)))
+}
+
+/**
  * Re-evaluate a cron run's write gate against its AUTHORITATIVE row right
  * before a send, then report whether the send must be refused.
  *
  * Covers what the Cron surfaces cannot: a verdict that went stale while no
  * surface was polling, and a restored route/tab after an app restart, where no
  * surface ever evaluated the run (the in-memory verdicts start empty). Such a
- * session is recognised by `isCronRunSession`. Any other session returns
- * immediately without a request.
+ * session is recognised by `shouldRefreshCronRunWriteGate`. Any other session
+ * returns immediately without a request.
  *
  * An unreadable row keeps a known verdict; an unknown run fails CLOSED — a
  * send into a possibly-dead cron session is exactly the misroute to prevent.
@@ -127,11 +143,11 @@ export async function refreshCronRunWriteGate(
   storedSessionId: null | string | undefined,
   fetchRow: (storedSessionId: string) => Promise<CronRunLiveness & Partial<Pick<SessionInfo, 'source'>>>
 ): Promise<boolean> {
-  const id = storedSessionId?.trim()
-
-  if (!id || !(isCronRunSession(id) || hasCronRunVerdict(id))) {
+  if (!shouldRefreshCronRunWriteGate(storedSessionId)) {
     return false
   }
+
+  const id = storedSessionId.trim()
 
   try {
     const row = await fetchRow(id)
