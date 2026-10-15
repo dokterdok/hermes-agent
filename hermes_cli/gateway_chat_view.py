@@ -5,7 +5,7 @@ import logging
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import GatewayClientError, refusal_display
 
 logger = logging.getLogger(__name__)
 
@@ -496,7 +496,7 @@ class GatewayChatView:
                     except EOFError:
                         return 0
                     except GatewayClientError as exc:
-                        print(f"Error: {exc}", file=sys.stderr)
+                        print(f"Error: {refusal_display(exc)}", file=sys.stderr)
                 raise self.failure
         finally:
             renderer.cancel()

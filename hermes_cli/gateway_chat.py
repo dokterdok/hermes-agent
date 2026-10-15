@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import GatewayClientError, connect_gateway, refusal_display
 
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
@@ -363,7 +363,7 @@ def launch_from_args(args) -> int:
         return asyncio.run(run_gateway_chat(args, emitter=emitter))
     except (GatewayClientError, OSError, TimeoutError, WebSocketException) as exc:
         # WebSocket errors can embed credential URLs/remote bodies.
-        message = str(exc) if isinstance(exc, GatewayClientError) else "Gateway connection/read failed; no local fallback"
+        message = refusal_display(exc) if isinstance(exc, GatewayClientError) else "Gateway connection/read failed; no local fallback"
         return failed(message, 2 if isinstance(exc, GatewayClientError) and ("Unsupported" in message or "unsupported" in message) else 1)
     except KeyboardInterrupt:
         print("Detached; accepted work continues at the gateway.", file=sys.stderr)

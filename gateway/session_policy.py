@@ -254,6 +254,30 @@ def present_sections(config):
     return config
 
 
+def _field_name(name):
+    """A clause safe to log: an identifier, never a value."""
+    if isinstance(name, str) and name.isascii() and name.isidentifier() and len(name) <= 64:
+        return name
+    return None
+
+
+def _create_shape_clause(params, source):
+    extra = set(params) - CREATE_FIELDS
+    if extra:
+        names = sorted(name for name in extra if _field_name(name))
+        return names[0] if names and len(names) == len(extra) else 'create.fields'
+    if not isinstance(source, str) or source not in SURFACES:
+        return 'source'
+    return None
+
+
+def _non_bool(params, names):
+    for name in names:
+        if name in params and type(params[name]) is not bool:
+            return name
+    return None
+
+
 def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False):
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
@@ -263,23 +287,25 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if source == 'a2a':
         from gateway.session_a2a import build_forward_policy
         return build_forward_policy(params, config, private_secrets=private_secrets)
-    if set(params) - CREATE_FIELDS or not isinstance(source, str) or source not in SURFACES:
-        raise RuntimeStoreError('invalid_params')
-    if any(name in params and type(params[name]) is not bool for name in BYPASS_FIELDS):
-        raise RuntimeStoreError('invalid_params')
+    clause = _create_shape_clause(params, source)
+    if clause:
+        raise RuntimeStoreError('invalid_params', detail=clause)
+    bad_bypass = _non_bool(params, BYPASS_FIELDS)
+    if bad_bypass:
+        raise RuntimeStoreError('invalid_params', detail=bad_bypass)
     safe_mode = params.get('safe_mode', False)
     ignore_user_config = safe_mode or params.get('ignore_user_config', False)
     if 'api_key' in params and (not isinstance(params['api_key'], str) or not params['api_key'].strip()):
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('invalid_params', detail='api_key')
     model = params.get('model')
     if 'model' in params and (not isinstance(model, str) or not model.strip()):
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('invalid_params', detail='model')
     cwd = params.get('cwd', str(resolve_agent_cwd()))
     if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('invalid_params', detail='cwd')
     row_cwd = params.get('row_cwd')
     if 'row_cwd' in params and (not isinstance(row_cwd, str) or (row_cwd and not Path(row_cwd).is_absolute())):
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('invalid_params', detail='row_cwd')
     if params.get('cwd_explicit') is False and 'cwd' in params:
         cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     from gateway.session_local_editor import validate_editor
@@ -345,17 +371,17 @@ def _apply_launch_overrides(params, config):
         if key in params:
             value = params[key]
             if not isinstance(value, str) or not value.strip():
-                raise RuntimeStoreError('invalid_params')
+                raise RuntimeStoreError('invalid_params', detail=key)
             if key == 'base_url':
                 url = urlsplit(value)
                 if (url.scheme not in {'http', 'https'} or not url.hostname
                         or url.username or url.password or url.query or url.fragment):
-                    raise RuntimeStoreError('invalid_params')
+                    raise RuntimeStoreError('invalid_params', detail='base_url')
             config.setdefault('model', {})[key] = value
     for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
                  'cwd_explicit', 'verbose'):
         if flag in params and type(params[flag]) is not bool:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', detail=flag)
     if 'service_tier' in params:
         # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
         # profile tier; an unknown word is refused, never read as normal.
@@ -365,14 +391,14 @@ def _apply_launch_overrides(params, config):
         except ValueError:
             tier = None
         if tier is None:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', detail='service_tier')
         config.setdefault('agent', {})['service_tier'] = tier or 'normal'
     if 'run_budget' in params:
         # `--run-budget SECONDS`: the wall-clock budget per run (80% wrap-up notice, capped provider
         # timeouts), frozen as the session's `agent.run_budget_seconds` like main's CLI flag over config.
         value = params['run_budget']
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', detail='run_budget')
         config.setdefault('agent', {})['run_budget_seconds'] = float(value)
     if params.get('checkpoints'):
         section = config.get('checkpoints')
@@ -384,11 +410,11 @@ def _apply_launch_overrides(params, config):
         value = params['max_turns']
         limit = resolve_turn_limit(value, default=0) if isinstance(value, (int, str)) else 0
         if not limit:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', detail='max_turns')
         config.setdefault('agent', {})['max_turns'] = limit
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', detail='reasoning')
         config.setdefault('agent', {})['reasoning_effort'] = params['reasoning']
         # An explicit launch level wins over a per-model default, just like CLI.
         config['agent'].pop('reasoning_overrides', None)
@@ -404,7 +430,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
     if 'toolsets' in params:
         if (not isinstance(explicit, list) or any(not isinstance(x, str) or not validate_toolset(x) for x in explicit)
                 or ('desktop_ui' in explicit and source != 'gui')):
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', detail='toolsets')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
     posture = None
     if explicit is None and coding_posture:
@@ -416,7 +442,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
         requested = {t for name in explicit for t in resolve_toolset(name)}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', detail='toolsets')
     if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
@@ -473,7 +499,7 @@ def launch_skills(params):
     if (('skills' in params and (not isinstance(skills, list) or not skills
                                  or any(not isinstance(s, str) or not s.strip() for s in skills)))
             or (skills and any(params.get(name) is True for name in BYPASS_FIELDS))):
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('invalid_params', detail='skills')
     return [s.strip() for s in skills]
 
 
@@ -584,7 +610,7 @@ def rebind_launch_key(authority, session, api_key):
     from agent.credential_persistence import fingerprint_secret_value
     from gateway.config import Platform
     if not isinstance(api_key, str) or not api_key.strip():
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('invalid_params', detail='api_key')
     source = authority.sessions[session.session_id].source
     if source is None or source.platform != Platform.LOCAL:
         raise RuntimeStoreError('admission_conflict')

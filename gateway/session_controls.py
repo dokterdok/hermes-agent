@@ -30,6 +30,16 @@ def display_projection(history, profile_home):
     return server._history_to_messages(rows, profile_home=profile_home)
 
 
+def _runtime_error(rid, exc):
+    """JSON-RPC error for a store refusal. ``message`` stays the reason code; a named
+    clause rides in ``data.detail`` and is never a value."""
+    data = {'reason': exc.reason}
+    if getattr(exc, 'detail', None):
+        data['detail'] = exc.detail
+    return {'jsonrpc': '2.0', 'id': rid, 'error': {
+        'code': 4001, 'message': exc.reason, 'data': data}}
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -156,8 +166,7 @@ class AuthorityConnection:
             try:
                 routed = self._sibling_for(profile)
             except RuntimeStoreError as exc:
-                return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                    'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+                return _runtime_error(rid, exc)
             if routed is not None:
                 return await routed.dispatch(request)
             # Our own home: the scope is implicit for the strict session verbs, which refuse
@@ -199,8 +208,7 @@ class AuthorityConnection:
             check_result(contract, result)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
-            return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+            return _runtime_error(rid, exc)
         except sqlite3.Error:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}}
@@ -304,7 +312,7 @@ class AuthorityConnection:
         # the frozen request: the policy re-reads the profile's current route every turn.
         hidden = params.pop('hidden', False)
         if type(hidden) is not bool:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', detail='hidden')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if not ref:
             skills_prompt = None

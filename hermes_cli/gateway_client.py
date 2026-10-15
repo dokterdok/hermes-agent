@@ -47,6 +47,21 @@ class GatewayRPCError(GatewayClientError):
         self.data = data or {}
 
 
+def refusal_display(exc) -> str:
+    """Text a person sees for an owner refusal.
+
+    ``str(exc)`` stays the bare reason code so callers that branch on it keep
+    working. A named ``invalid_params`` clause is appended:
+    ``invalid_params (toolsets)``.
+    """
+    reason = str(exc)
+    data = getattr(exc, "data", None)
+    detail = data.get("detail") if isinstance(data, dict) else None
+    if reason == "invalid_params" and isinstance(detail, str) and detail:
+        return f"{reason} ({detail})"
+    return reason
+
+
 def _bounded_reason(value):
     return value if isinstance(value, str) and value.replace("_", "").isalnum() and len(value) <= 80 else None
 

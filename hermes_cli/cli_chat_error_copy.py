@@ -64,5 +64,14 @@ def chat_error_response(
 
 
 def agent_init_failure_message(error: BaseException) -> str:
-    """Copy for a failed AIAgent build on first message: the user's turn was dropped."""
+    """Copy for a failed AIAgent build on first message: the user's turn was dropped.
+
+    A named ``invalid_params`` refusal is ``Error: invalid_params (toolsets)``.
+    Other failures keep the catalog sentence.
+    """
+    from hermes_cli.gateway_client import refusal_display
+
+    shown = refusal_display(error)
+    if str(error) == "invalid_params" and shown != str(error):
+        return f"Error: {shown}"
     return t("cli.error.agent_init_failed", error=_short(str(error)) or type(error).__name__)

@@ -1,0 +1,348 @@
+"""Named ``invalid_params`` refusals.
+
+The reason code stays the bare token callers and the wire compare. The clause
+name is a separate, non-secret field: logged, carried on the RPC error, and
+shown to the person who was refused.
+"""
+import ast
+import base64
+import logging
+from pathlib import Path
+
+import pytest
+
+from hermes_state_runtime import RuntimeStoreError
+
+
+def test_bare_reason_code_is_unchanged():
+    """Control: a refusal with no clause still stringifies as the code alone."""
+    exc = RuntimeStoreError("invalid_params")
+    assert exc.reason == "invalid_params"
+    assert str(exc) == "invalid_params"
+
+
+def test_named_clause_does_not_change_the_reason_code():
+    exc = RuntimeStoreError("invalid_params", detail="toolsets")
+    assert exc.reason == "invalid_params"
+    assert str(exc) == "invalid_params"
+    assert exc.detail == "toolsets"
+
+
+def test_refusal_logger_routes_to_gateway_log():
+    """Control: the refusal logger is a gateway component, so the line lands in gateway.log."""
+    from hermes_logging import COMPONENT_PREFIXES
+    assert any("gateway.runtime".startswith(prefix) for prefix in COMPONENT_PREFIXES["gateway"])
+
+
+def test_missing_staging_file_names_the_staging_clause(tmp_path, monkeypatch, caplog):
+    from gateway.platforms import base
+    from gateway.session_ingress_media import admit_attachments
+
+    staging = tmp_path / "images"
+    staging.mkdir()
+    monkeypatch.setattr(base, "get_image_cache_dir", lambda: staging)
+    missing = staging / "gone.png"
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            admit_attachments([{"path": str(missing), "mime": "image/png"}])
+    assert caught.value.reason == "invalid_params"
+    assert str(caught.value) == "invalid_params"
+    assert caught.value.detail == "attachments.staging"
+    assert "invalid_params: attachments.staging" in caplog.text
+    assert str(missing) not in caplog.text
+
+
+def test_bmp_mime_names_the_mime_clause(caplog):
+    from gateway.session_ingress_media import admit_attachments
+
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            admit_attachments([{"path": "/tmp/scan.bmp", "mime": "image/bmp"}])
+    assert caught.value.reason == "invalid_params"
+    assert str(caught.value) == "invalid_params"
+    assert caught.value.detail == "attachments.mime"
+    assert "invalid_params: attachments.mime" in caplog.text
+    assert "image/bmp" not in caplog.text
+
+
+def test_chat_upload_rejects_bmp_outside_the_admission_set():
+    """Upload allows only the mime set admission will keep. A BMP that got
+    through here used to die later as a bare ``invalid_params``."""
+    from fastapi import HTTPException
+
+    from hermes_cli.web_models import ChatImageUpload
+    from hermes_cli.web_routers.files import _decode_chat_image_upload
+
+    payload = ChatImageUpload(data_url="data:image/bmp;base64," + base64.b64encode(b"BM" + b"\x00" * 16).decode())
+    with pytest.raises(HTTPException) as caught:
+        _decode_chat_image_upload(payload)
+    assert caught.value.status_code == 400
+
+
+def test_chat_upload_still_accepts_png():
+    """Control: a mime admission accepts is still a valid clipboard upload."""
+    from hermes_cli.web_models import ChatImageUpload
+    from hermes_cli.web_routers.files import _decode_chat_image_upload
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    payload = ChatImageUpload(data_url="data:image/png;base64," + base64.b64encode(png).decode())
+    data, mime, ext = _decode_chat_image_upload(payload)
+    assert data.startswith(b"\x89PNG") and mime == "image/png" and ext == ".png"
+
+
+@pytest.mark.parametrize("extra,detail", [
+    ({"nope": 1}, "nope"),
+    ({"source": "cron"}, "source"),
+    ({"safe_mode": "yes"}, "safe_mode"),
+    ({"api_key": "  "}, "api_key"),
+    ({"model": ""}, "model"),
+    ({"cwd": "."}, "cwd"),
+    ({"row_cwd": "rel"}, "row_cwd"),
+    ({"provider": " "}, "provider"),
+    ({"base_url": ""}, "base_url"),
+    ({"base_url": "http://user:secret@127.0.0.1/v1"}, "base_url"),
+    ({"yolo": 1}, "yolo"),
+    ({"ignore_rules": "false"}, "ignore_rules"),
+    ({"service_tier": "warp"}, "service_tier"),
+    ({"run_budget": 0}, "run_budget"),
+    ({"max_turns": "garbage"}, "max_turns"),
+    ({"reasoning": "nope"}, "reasoning"),
+    ({"toolsets": ["not-a-toolset"]}, "toolsets"),
+    ({"toolsets": ["desktop_ui"], "source": "cli"}, "toolsets"),
+    ({"skills": []}, "skills"),
+    ({"skills": ["launch-fixture"], "safe_mode": True}, "skills"),
+])
+def test_session_policy_names_the_failing_clause(tmp_path, caplog, extra, detail):
+    from gateway.session_policy import build_policy
+
+    params = {"cwd": str(tmp_path)}
+    params.update(extra)
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            build_policy(params, {})
+    assert caught.value.reason == "invalid_params"
+    assert str(caught.value) == "invalid_params"
+    assert caught.value.detail == detail
+    assert f"invalid_params: {detail}" in caplog.text
+    assert "secret" not in caplog.text
+
+
+def test_toolset_outside_the_enabled_set_names_toolsets(tmp_path, caplog):
+    """A valid name the profile has disabled still refuses, and names ``toolsets``
+    (the subset check, distinct from an unknown name)."""
+    from gateway.session_policy import build_policy
+
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            build_policy(
+                {"cwd": str(tmp_path), "toolsets": ["web", "terminal"]},
+                {"agent": {"disabled_toolsets": ["web"]}},
+            )
+    assert caught.value.detail == "toolsets"
+    assert str(caught.value) == "invalid_params"
+    assert "invalid_params: toolsets" in caplog.text
+
+
+def test_blank_rebind_key_names_api_key_not_the_value(caplog):
+    from types import SimpleNamespace
+
+    from gateway.session_policy import rebind_launch_key
+
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            rebind_launch_key(SimpleNamespace(), SimpleNamespace(session_id="s"), "   ")
+    assert caught.value.detail == "api_key"
+    assert str(caught.value) == "invalid_params"
+    assert "invalid_params: api_key" in caplog.text
+
+
+def _native_event():
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="user")
+    return MessageEvent(text="hello", source=source)
+
+
+def _runner(*, multiplex):
+    from types import SimpleNamespace
+
+    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=multiplex))
+    runner._is_user_authorized_for_source = lambda source, allow_adapter_delegation=False: True
+    runner._adapter_for_source = lambda source: object()
+    return runner
+
+
+def test_multiplex_missing_provenance_names_its_clause(caplog):
+    from gateway.session_envelope import _validate_native
+
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            _validate_native(_runner(multiplex=True), _native_event(), provenance=None)
+    assert caught.value.reason == "invalid_params"
+    assert str(caught.value) == "invalid_params"
+    assert caught.value.detail == "native.provenance_missing(multiplex)"
+    assert "invalid_params: native.provenance_missing(multiplex)" in caplog.text
+
+
+def test_media_urls_none_names_its_clause(caplog):
+    from gateway.session_envelope import _validate_native
+
+    event = _native_event()
+    event.media_urls = None
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            _validate_native(_runner(multiplex=False), event, provenance=None)
+    assert caught.value.reason == "invalid_params"
+    assert str(caught.value) == "invalid_params"
+    assert caught.value.detail == "native.media_urls"
+    assert "invalid_params: native.media_urls" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_session_create_rpc_keeps_the_code_and_names_toolsets(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    import hermes_state_runtime as rt
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(json.dumps({"model": {"default": "m"}}))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(run, "_hermes_home", home)
+    store = SessionStore(home / "sessions", GatewayConfig())
+    db = store._db
+    runner = SimpleNamespace(
+        session_store=store, _session_db=db, adapters={}, _draining=False,
+        _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
+        _handle_message=None, _peek_session_state=lambda key: None,
+    )
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = SessionAuthority(
+        runner, profile_id="owned", instance_id="owner", db=db,
+        epoch=rt.begin_runtime_epoch(db, instance_id="owner"),
+    )
+    owner = AuthorityConnection(authority, object(), {"user_id": "human"})
+    try:
+        response = await owner.dispatch({"id": "bad-toolset", "method": "session.create", "params": {
+            "request_id": "bad-toolset", "source": "cli", "cwd": str(tmp_path),
+            "toolsets": ["not-a-toolset"], "model": "m",
+        }})
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+    error = response["error"]
+    assert error["message"] == "invalid_params"
+    assert error["data"]["reason"] == "invalid_params"
+    assert error["data"]["detail"] == "toolsets"
+
+
+def test_cli_error_line_names_toolsets(monkeypatch, capsys):
+    import argparse
+
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+    import hermes_cli.gateway_chat as chat
+    import hermes_cli.gateway_chat_startup as startup
+    from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+
+    exc = GatewayRPCError("invalid_params", 4001, {"reason": "invalid_params", "detail": "toolsets"})
+    assert str(exc) == "invalid_params"
+    assert refusal_display(exc) == "invalid_params (toolsets)"
+    assert agent_init_failure_message(exc) == "Error: invalid_params (toolsets)"
+
+    async def refused(args, emitter=None):
+        raise exc
+
+    monkeypatch.setattr(chat, "validate_options", lambda args: None)
+    monkeypatch.setattr(chat, "_register_terminal_process", lambda: None)
+    monkeypatch.setattr(startup, "ensure_launch_provider", lambda args: True)
+    monkeypatch.setattr(chat, "run_gateway_chat", refused)
+    args = argparse.Namespace(
+        output_format="text", list_tools=False, list_toolsets=False,
+        query="hi", q=None, oneshot=None, query_file=None,
+    )
+    assert chat.launch_from_args(args) == 1
+    assert capsys.readouterr().err.strip() == "Error: invalid_params (toolsets)"
+
+
+def test_messaging_refusal_names_the_clause_not_the_class():
+    from agent.i18n import t
+    from hermes_state_runtime import named_turn_error
+
+    exc = RuntimeStoreError("invalid_params", detail="native.provenance_missing(multiplex)")
+    error_type, error_detail = named_turn_error(exc, "no details available")
+    text = t("gateway.notify.turn_error_detailed", error_type=error_type, error_detail=error_detail)
+    assert "RuntimeStoreError" not in text
+    assert "native.provenance_missing(multiplex)" in text
+    assert "invalid_params" in text
+
+
+@pytest.mark.asyncio
+async def test_notify_turn_error_sends_the_named_refusal():
+    from gateway.config import Platform, PlatformConfig
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+
+    class _Adapter(BasePlatformAdapter):
+        def __init__(self):
+            super().__init__(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
+            self.sent = []
+
+        async def connect(self, *, is_reconnect=False):
+            return True
+
+        async def disconnect(self):
+            pass
+
+        async def get_chat_info(self, chat_id):
+            return {"id": chat_id}
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.sent.append(content)
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True, message_id="1")
+
+    adapter = _Adapter()
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42")
+    event = MessageEvent(text="hi", source=source)
+    await adapter._notify_turn_error(
+        event, RuntimeStoreError("invalid_params", detail="native.media_urls"))
+    assert adapter.sent
+    body = adapter.sent[0]
+    assert "RuntimeStoreError" not in body
+    assert "native.media_urls" in body
+
+
+def _invalid_params_sites(path):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    sites = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Raise) or not isinstance(getattr(node, "exc", None), ast.Call):
+            continue
+        call = node.exc
+        func = call.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if name != "RuntimeStoreError" or not call.args:
+            continue
+        arg = call.args[0]
+        if not isinstance(arg, ast.Constant) or arg.value != "invalid_params":
+            continue
+        details = [kw for kw in call.keywords if kw.arg == "detail"]
+        sites.append((node.lineno, details))
+    return sites
+
+
+@pytest.mark.parametrize("rel", ["gateway/session_policy.py", "gateway/session_envelope.py"])
+def test_every_invalid_params_site_carries_a_clause(rel):
+    sites = _invalid_params_sites(Path(__file__).resolve().parents[2] / rel)
+    assert sites, rel
+    bare = [line for line, details in sites if len(details) != 1]
+    assert bare == [], (rel, bare)

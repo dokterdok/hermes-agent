@@ -4,6 +4,8 @@ No execution, transport, or authority objects live here. Every mutation uses the
 SessionDB transaction owner, including its inode guard and SQLite retry policy.
 """
 import json
+import logging
+import re
 import uuid
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
@@ -13,10 +15,40 @@ from agent.message_metadata import (
 from hermes_state_keys import admission_fingerprint
 
 
+# A clause name only: field or check, never a rejected value. ``gateway.runtime`` is a
+# gateway-log component, so the one warning lands in gateway.log.
+_CLAUSE_NAME = re.compile(r'^[A-Za-z][A-Za-z0-9_.:()\-]{0,79}$')
+_refusal_log = logging.getLogger('gateway.runtime')
+
+
 class RuntimeStoreError(ValueError):
-    def __init__(self, reason: str):
+    """A bounded store refusal.
+
+    ``reason`` and ``str(self)`` stay the wire code (``invalid_params``). ``detail``
+    is an optional clause name (``toolsets``, ``native.provenance_missing(multiplex)``),
+    never a value or a secret. A named clause logs one warning.
+    """
+
+    def __init__(self, reason: str, *, detail: str | None = None):
         self.reason = reason
+        self.detail = detail if isinstance(detail, str) and _CLAUSE_NAME.fullmatch(detail) else None
         super().__init__(reason)
+        if self.detail:
+            _refusal_log.warning('%s: %s', reason, self.detail)
+
+
+def named_turn_error(exc, empty_detail: str) -> tuple[str, str]:
+    """Messaging copy for a failed turn.
+
+    A named ``invalid_params`` refusal is the clause, not the class name
+    ``RuntimeStoreError``. Anything else keeps the generic type and text.
+    """
+    detail = getattr(exc, 'detail', None)
+    reason = getattr(exc, 'reason', None)
+    if reason == 'invalid_params' and isinstance(detail, str) and detail:
+        return reason, detail
+    text = str(exc)
+    return type(exc).__name__, (text[:300] if text else empty_detail)
 
 
 def _text(value):
