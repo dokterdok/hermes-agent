@@ -9,7 +9,7 @@ import uuid
 
 from gateway.config import Platform
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
-from hermes_state_runtime import RuntimeStoreError
+from hermes_state_runtime import RuntimeStoreError, log_invalid_params, refusal_clause
 
 
 # ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.
@@ -180,9 +180,13 @@ class AuthorityConnection:
         contract = CANONICAL_METHODS.get(method)
         if contract is not None and (problems := canonical_param_problems(contract, params)):
             # The declared wire contract (``tui_gateway/contracts/canonical.py``) is the closed
-            # key set: an unknown or missing key never reaches the handler.
+            # key set: an unknown or missing key never reaches the handler. ``fields`` stays the
+            # raw paths; ``detail`` and the log carry only a clause name.
+            detail = refusal_clause(problems)
+            log_invalid_params(detail)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
+                'code': 4001, 'message': 'invalid_params',
+                'data': {'reason': 'invalid_params', 'fields': problems, 'detail': detail}}}
         original_params = dict(params)
         contract = contract or METHODS.get(method)
         handlers = self.handlers()

@@ -18,7 +18,57 @@ from hermes_state_keys import admission_fingerprint
 # A clause name only: field or check, never a rejected value. ``gateway.runtime`` is a
 # gateway-log component, so the one warning lands in gateway.log.
 _CLAUSE_NAME = re.compile(r'^[A-Za-z][A-Za-z0-9_.:()\-]{0,79}$')
+# Prefixes of credential-shaped identifiers. The tail is never stored or logged.
+_TOKEN_PREFIXES = (
+    'sk_live_', 'sk_test_', 'sk_proj_', 'sk-',
+    'ghp_', 'gho_', 'github_pat_',
+    'glpat-',
+    'xoxb-', 'xoxp-', 'xoxa-', 'xoxs-',
+    'AKIA', 'AIza',
+)
 _refusal_log = logging.getLogger('gateway.runtime')
+
+
+def clause_token(name):
+    """A field name safe to put in ``detail`` and the log, or ``None``.
+
+    A credential-shaped name is reduced to its prefix (``sk_live_Ab12…`` becomes
+    ``sk_live_``). A leading underscore or any other non-clause is dropped.
+    """
+    if not isinstance(name, str) or len(name) > 200:
+        return None
+    for prefix in _TOKEN_PREFIXES:
+        if not name.startswith(prefix):
+            continue
+        tail = name[len(prefix):]
+        if len(tail) >= 8 and tail.replace('_', '').replace('-', '').isalnum() and _CLAUSE_NAME.fullmatch(prefix):
+            return prefix
+    if _CLAUSE_NAME.fullmatch(name):
+        return name
+    return None
+
+
+def refusal_clause(names):
+    """One log-safe clause for field names. Empty or all-rejected input is ``create.fields``."""
+    if isinstance(names, str):
+        names = [names]
+    tokens = []
+    for name in names or ():
+        token = clause_token(name)
+        if token and token not in tokens:
+            tokens.append(token)
+    if not tokens:
+        return 'create.fields'
+    joined = '.'.join(tokens)
+    if _CLAUSE_NAME.fullmatch(joined):
+        return joined
+    return tokens[0]
+
+
+def log_invalid_params(detail):
+    """One warning, and only when *detail* is a clause name."""
+    if isinstance(detail, str) and _CLAUSE_NAME.fullmatch(detail):
+        _refusal_log.warning('invalid_params: %s', detail)
 
 
 class RuntimeStoreError(ValueError):

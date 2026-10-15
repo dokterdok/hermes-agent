@@ -120,6 +120,8 @@ def admit_attachments(attachments, *, admitted=None):
     committed = row['payload'].get('attachments_v1') if row is not None else None
     try:
         hashes = _attachment_hashes(paths)
+    except RuntimeStoreError:
+        raise
     except (OSError, ValueError) as exc:
         raise RuntimeStoreError('invalid_params', detail='attachments.staging') from exc
     if None in hashes:

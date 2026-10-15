@@ -56,9 +56,15 @@ def refusal_display(exc) -> str:
     """
     reason = str(exc)
     data = getattr(exc, "data", None)
-    detail = data.get("detail") if isinstance(data, dict) else None
-    if reason == "invalid_params" and isinstance(detail, str) and detail:
+    if reason != "invalid_params" or not isinstance(data, dict):
+        return reason
+    detail = data.get("detail")
+    if isinstance(detail, str) and detail:
         return f"{reason} ({detail})"
+    fields = data.get("fields")
+    if isinstance(fields, list) and fields:
+        from hermes_state_runtime import refusal_clause
+        return f"{reason} ({refusal_clause(fields)})"
     return reason
 
 

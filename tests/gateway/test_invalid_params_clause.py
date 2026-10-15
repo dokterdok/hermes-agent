@@ -340,6 +340,179 @@ def _invalid_params_sites(path):
     return sites
 
 
+def test_schema_extra_key_is_named_logged_and_shown(tmp_path, monkeypatch, caplog):
+    """An unknown session.create key is refused by the canonical schema, before build_policy."""
+    import asyncio
+
+    response, logs = asyncio.run(_dispatch_create(tmp_path, monkeypatch, caplog, {"nope": 1}))
+    error = response["error"]
+    assert error["message"] == "invalid_params"
+    assert error["data"]["reason"] == "invalid_params"
+    assert error["data"]["fields"] == ["nope"]
+    assert error["data"]["detail"] == "nope"
+    assert logs == ["invalid_params: nope"]
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    assert shown == "invalid_params (nope)"
+
+
+def test_schema_bad_type_names_the_field(tmp_path, monkeypatch, caplog):
+    import asyncio
+
+    response, logs = asyncio.run(_dispatch_create(
+        tmp_path, monkeypatch, caplog, {"toolsets": "terminal", "source": "cron"}))
+    error = response["error"]
+    assert error["message"] == "invalid_params"
+    assert "toolsets" in error["data"]["fields"] and "source" in error["data"]["fields"]
+    assert error["data"]["detail"]
+    assert "terminal" not in error["data"]["detail"]
+    assert logs and all(not line.endswith("terminal") for line in logs)
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    assert shown.startswith("invalid_params (")
+    assert "toolsets" in shown and "source" in shown
+
+
+def test_token_shaped_key_is_not_echoed(tmp_path, monkeypatch, caplog):
+    import asyncio
+
+    secret = "sk_live_" + "Ab12Cd34" * 3
+    response, logs = asyncio.run(_dispatch_create(tmp_path, monkeypatch, caplog, {secret: 1}))
+    detail = response["error"]["data"]["detail"]
+    assert response["error"]["message"] == "invalid_params"
+    assert secret not in detail
+    assert secret not in " ".join(logs)
+    assert detail == "sk_live_"
+    assert logs == ["invalid_params: sk_live_"]
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+    # A frame that only has the raw fields list (no detail) must still not print the secret.
+    bare = GatewayRPCError("invalid_params", 4001, {"reason": "invalid_params", "fields": [secret]})
+    shown = refusal_display(bare)
+    assert secret not in shown
+    assert shown != "invalid_params"
+
+
+def test_fields_only_frame_names_the_field():
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+    exc = GatewayRPCError("invalid_params", 4001, {"reason": "invalid_params", "fields": ["nope"]})
+    assert str(exc) == "invalid_params"
+    assert refusal_display(exc) == "invalid_params (nope)"
+
+
+def test_underscore_extra_key_logs_a_safe_clause(tmp_path, caplog):
+    from gateway.session_policy import build_policy
+
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            build_policy({"cwd": str(tmp_path), "_private": 1}, {})
+    assert caught.value.reason == "invalid_params"
+    assert str(caught.value) == "invalid_params"
+    assert caught.value.detail == "create.fields"
+    assert "invalid_params: create.fields" in caplog.text
+    assert "_private" not in caplog.text
+
+
+def test_hardlink_staging_logs_the_clause_once(tmp_path, monkeypatch, caplog):
+    import os
+
+    from gateway.platforms import base
+    from gateway.session_ingress_media import admit_attachments
+
+    staging = tmp_path / "images"
+    staging.mkdir()
+    monkeypatch.setattr(base, "get_image_cache_dir", lambda: staging)
+    original = staging / "one.png"
+    alias = staging / "two.png"
+    original.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
+    os.link(original, alias)
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            admit_attachments([{"path": str(alias), "mime": "image/png"}])
+    assert caught.value.detail == "attachments.staging"
+    assert str(caught.value) == "invalid_params"
+    assert [rec.getMessage() for rec in caplog.records] == ["invalid_params: attachments.staging"]
+
+
+@pytest.mark.asyncio
+async def test_role_gated_missing_provenance_names_the_clause(caplog):
+    from gateway.session_envelope import prepare_native
+    from hermes_state_runtime import named_turn_error
+
+    event = _native_event()
+    event.source.role_authorized = True
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            await prepare_native(_runner(multiplex=True), event)
+    assert caught.value.reason == "invalid_params"
+    assert str(caught.value) == "invalid_params"
+    assert caught.value.detail == "native.provenance_missing(roles)"
+    assert "invalid_params: native.provenance_missing(roles)" in caplog.text
+    error_type, error_detail = named_turn_error(caught.value, "no details available")
+    assert error_type == "invalid_params"
+    assert "RuntimeStoreError" not in error_type
+    assert error_detail == "native.provenance_missing(roles)"
+
+
+@pytest.mark.asyncio
+async def test_role_gated_relay_without_relay_provenance_names_the_clause(caplog):
+    from gateway.session_ingress_context import reauthorize_roles
+
+    source = _native_event().source
+    source.role_authorized = True
+    source.delivered_via_upstream_relay = True
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+        with pytest.raises(RuntimeStoreError) as caught:
+            await reauthorize_roles(_runner(multiplex=False), source, {"transport_home": "/tmp"})
+    assert caught.value.reason == "invalid_params"
+    assert str(caught.value) == "invalid_params"
+    assert caught.value.detail == "native.relay_provenance"
+    assert "invalid_params: native.relay_provenance" in caplog.text
+
+
+def _dispatch_create(tmp_path, monkeypatch, caplog, extra):
+    import json
+    from types import SimpleNamespace
+
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    import hermes_state_runtime as rt
+
+    async def go():
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.yaml").write_text(json.dumps({"model": {"default": "m"}}))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(run, "_hermes_home", home)
+        store = SessionStore(home / "sessions", GatewayConfig())
+        db = store._db
+        runner = SimpleNamespace(
+            session_store=store, _session_db=db, adapters={}, _draining=False,
+            _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
+            _handle_message=None, _peek_session_state=lambda key: None,
+        )
+        runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+        authority = SessionAuthority(
+            runner, profile_id="owned", instance_id="owner", db=db,
+            epoch=rt.begin_runtime_epoch(db, instance_id="owner"),
+        )
+        owner = AuthorityConnection(authority, object(), {"user_id": "human"})
+        try:
+            with caplog.at_level(logging.WARNING, logger="gateway.runtime"):
+                response = await owner.dispatch({"id": "schema", "method": "session.create", "params": {
+                    "request_id": "schema", "source": "cli", "cwd": str(tmp_path), "model": "m", **extra,
+                }})
+            logs = [rec.getMessage() for rec in caplog.records if rec.name == "gateway.runtime"]
+            return response, logs
+        finally:
+            await owner.close()
+            store.close_all_db_handles()
+
+    return go()
+
+
 @pytest.mark.parametrize("rel", ["gateway/session_policy.py", "gateway/session_envelope.py"])
 def test_every_invalid_params_site_carries_a_clause(rel):
     sites = _invalid_params_sites(Path(__file__).resolve().parents[2] / rel)

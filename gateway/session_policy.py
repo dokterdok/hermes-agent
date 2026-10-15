@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_state_runtime import RuntimeStoreError, refusal_clause
 
 logger = logging.getLogger(__name__)
 
@@ -254,18 +254,13 @@ def present_sections(config):
     return config
 
 
-def _field_name(name):
-    """A clause safe to log: an identifier, never a value."""
-    if isinstance(name, str) and name.isascii() and name.isidentifier() and len(name) <= 64:
-        return name
-    return None
-
-
 def _create_shape_clause(params, source):
     extra = set(params) - CREATE_FIELDS
     if extra:
-        names = sorted(name for name in extra if _field_name(name))
-        return names[0] if names and len(names) == len(extra) else 'create.fields'
+        # Same predicate the store uses to keep a detail. A leading underscore or a
+        # credential-shaped key is not echoed; the clause falls back to create.fields
+        # when nothing publishable remains.
+        return refusal_clause(sorted((name for name in extra), key=str))
     if not isinstance(source, str) or source not in SURFACES:
         return 'source'
     return None
