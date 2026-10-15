@@ -469,13 +469,17 @@ async def test_role_gated_relay_without_relay_provenance_names_the_clause(caplog
     assert "invalid_params: native.relay_provenance" in caplog.text
 
 
-@pytest.mark.parametrize("secret", [
-    "ghp_AAAAAAAA.BBBBBBBB",
-    "sk-sp-" + "AbCdEf12." + "GhIjKl34." + "MnOpQr56",
-    "ghs_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6",
-    "xoxc-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUv",
+@pytest.mark.parametrize("secret, clause", [
+    ("ghp_AAAAAAAA.BBBBBBBB", "<redacted-key>"),
+    ("sk-sp-" + "AbCdEf12." + "GhIjKl34." + "MnOpQr56", "<redacted-key>"),
+    ("ghs_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6", "<redacted-key>"),
+    # The log redactor's Slack pattern is xox[baprs]-, so xoxc- is not a hit.
+    # The key is not an identifier either: the clause is the method fallback
+    # and the raw token is still absent from detail, fields, the log, and the CLI.
+    ("xoxc-" + "123456789012-1234567890123-" + "AbCdEfGhIjKlMnOpQrStUv", "create.fields"),
 ])
-def test_credential_shaped_key_is_not_copied_into_detail_log_or_cli(tmp_path, monkeypatch, caplog, secret):
+def test_credential_shaped_key_is_not_copied_into_detail_log_or_cli(
+        tmp_path, monkeypatch, caplog, secret, clause):
     import asyncio
 
     from hermes_cli.gateway_client import GatewayRPCError, refusal_display
@@ -487,9 +491,101 @@ def test_credential_shaped_key_is_not_copied_into_detail_log_or_cli(tmp_path, mo
     blob = " ".join([detail, shown, *logs, *error["data"]["fields"]])
     assert error["message"] == "invalid_params"
     assert secret not in blob
-    assert detail == "<redacted-key>"
+    assert "AbCdEf" not in blob
+    assert detail == clause
+    assert logs == [f"invalid_params: {clause}"]
+    assert shown == f"invalid_params ({clause})"
+
+
+@pytest.mark.parametrize("secret", [
+    "npm_" + "AbCdEf12." + "GhIjKl34." + "MnOpQr56",
+    "rk_live_" + "AbCdEf1234",
+    "hf_" + "AbCdEf123456." + "GhIjKl789012",
+    "am_" + "AbCdEfGhIjKlMnOpQrSt",
+    "_ghp_" + "AbCdEf1234",
+])
+def test_redactor_known_shapes_are_not_echoed(tmp_path, monkeypatch, caplog, secret):
+    import asyncio
+
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+
+    response, logs = asyncio.run(_dispatch_create(tmp_path, monkeypatch, caplog, {secret: 1}))
+    error = response["error"]
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    blob = " ".join([error["data"]["detail"], shown, *logs, *error["data"]["fields"]])
+    assert error["message"] == "invalid_params"
+    assert secret not in blob
+    assert "AbCdEf" not in blob
+    assert error["data"]["detail"] == "<redacted-key>"
     assert logs == ["invalid_params: <redacted-key>"]
     assert shown == "invalid_params (<redacted-key>)"
+
+
+def test_list_index_locs_stay_named_beside_safe_fields(tmp_path, monkeypatch, caplog):
+    import asyncio
+
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+
+    response, logs = asyncio.run(_dispatch_create(
+        tmp_path, monkeypatch, caplog, {},
+        params={"request_id": "schema", "cwd": str(tmp_path), "model": "m",
+                "toolsets": [1], "source": "cron"},
+    ))
+    error = response["error"]
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    detail = error["data"]["detail"]
+    blob = " ".join([detail, shown, *logs, *error["data"]["fields"]])
+    assert "toolsets.0" in detail and "source" in detail
+    assert "toolsets.0" in shown and "source" in shown
+    assert logs and "toolsets.0" in logs[0] and "source" in logs[0]
+    assert "create.fields" not in blob
+    assert "cron" not in detail
+    assert "cron" not in " ".join(logs)
+
+
+def test_secret_loc_does_not_hide_a_safe_sibling(tmp_path, monkeypatch, caplog):
+    import asyncio
+
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+
+    secret = "rk_live_" + "AbCdEf1234"
+    response, logs = asyncio.run(_dispatch_create(
+        tmp_path, monkeypatch, caplog, {secret: 1},
+        params={"request_id": "schema", "cwd": str(tmp_path), "model": "m",
+                "source": "cron", secret: 1},
+    ))
+    error = response["error"]
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    detail = error["data"]["detail"]
+    blob = " ".join([detail, shown, *logs, *error["data"]["fields"]])
+    assert "source" in detail and "<redacted-key>" in detail
+    assert "source" in shown and "<redacted-key>" in shown
+    assert logs and "source" in logs[0] and "<redacted-key>" in logs[0]
+    assert secret not in blob and "AbCdEf" not in blob
+    assert "cron" not in detail
+
+
+@pytest.mark.parametrize("attachments, needle", [
+    ([{"path": 1, "mime": "image/png"}], "attachments.0.path"),
+    ([{"path": "/tmp/a.png", "mime": "image/png", "bogus": True}], "attachments.0.bogus"),
+])
+def test_attachment_index_locs_name_the_field(tmp_path, monkeypatch, caplog, attachments, needle):
+    import asyncio
+
+    from hermes_cli.gateway_client import GatewayRPCError, refusal_display
+
+    response, logs = asyncio.run(_dispatch_create(
+        tmp_path, monkeypatch, caplog, {},
+        method="prompt.submit",
+        params={"session_id": "s", "text": "hi", "attachments": attachments},
+    ))
+    error = response["error"]
+    shown = refusal_display(GatewayRPCError(error["message"], error["code"], error["data"]))
+    blob = " ".join([error["data"]["detail"], shown, *logs, *error["data"]["fields"]])
+    assert needle in error["data"]["detail"]
+    assert needle in shown
+    assert logs and needle in logs[0]
+    assert "submit.fields" not in blob
 
 
 def test_nested_token_path_is_not_echoed(tmp_path, monkeypatch, caplog):

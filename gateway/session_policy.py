@@ -257,9 +257,9 @@ def present_sections(config):
 def _create_shape_clause(params, source):
     extra = set(params) - CREATE_FIELDS
     if extra:
-        # Same predicate the store uses to keep a detail. A leading underscore or a
-        # credential-shaped key is not echoed; the clause falls back to create.fields
-        # when nothing publishable remains.
+        # A safe identifier, a leading underscore included, is echoed. A key
+        # the log redactor would mask is <redacted-key>. A name that is
+        # neither is create.fields, and it does not replace a safe sibling.
         return refusal_clause(sorted((name for name in extra), key=str), method='session.create')
     if not isinstance(source, str) or source not in SURFACES:
         return 'source'

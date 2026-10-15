@@ -15,101 +15,155 @@ from agent.message_metadata import (
 from hermes_state_keys import admission_fingerprint
 
 
-# A client field is echoed only when every dot-separated segment is a short identifier.
-# Credential-shaped names and anything else become a fixed placeholder. ``gateway.runtime``
+# A client field is echoed only when every dot-separated segment is a short
+# identifier or a list index. Whether a loc is a secret is the log formatter's
+# redactor (``redact_sensitive_text(..., force=True)``), not a second prefix
+# list: a hit on the path, on any segment, on the path with dots removed
+# (several token bodies do not cross a dot), or on any of those with one
+# leading underscore stripped, becomes ``<redacted-key>``. ``gateway.runtime``
 # is a gateway-log component, so the warning lands in gateway.log.
 _SEGMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,40}$')
+_INDEX = re.compile(r'^[0-9]{1,6}$')
 _DEV_CLAUSE = re.compile(
-    r'^(?:[A-Za-z_][A-Za-z0-9_]{0,40})(?:\.[A-Za-z_][A-Za-z0-9_]{0,40})*\([A-Za-z_][A-Za-z0-9_]{0,40}\)$'
+    r'^(?:[A-Za-z_][A-Za-z0-9_]{0,40})(?:\.[A-Za-z_][A-Za-z0-9_]{0,40})*'
+    r'\([A-Za-z_][A-Za-z0-9_]{0,40}\)$'
 )
 REDACTED_KEY = '<redacted-key>'
-# Longer prefixes first. A match anywhere in a path is enough; the tail is never kept.
-_TOKEN_PREFIXES = (
-    'github_pat_',
-    'sk_live_', 'sk_test_', 'sk_proj_',
-    'sk-', 'sk_',
-    'ghp_', 'gho_', 'ghs_', 'ghu_',
-    'glpat-',
-    'xoxa-', 'xoxb-', 'xoxc-', 'xoxo-', 'xoxp-', 'xoxs-',
-    'AKIA', 'AIza',
-)
 _refusal_log = logging.getLogger('gateway.runtime')
 
 
-def _segment_is_token(segment):
-    """True for a known credential prefix or a long mixed letter/digit run."""
-    if not isinstance(segment, str) or not segment:
-        return False
-    for prefix in _TOKEN_PREFIXES:
-        if segment.startswith(prefix) and len(segment) > len(prefix):
-            return True
-    return (bool(_SEGMENT.fullmatch(segment)) and len(segment) >= 20
-            and any(char.isdigit() for char in segment) and any(char.isalpha() for char in segment))
-
-
-def _looks_like_secret(name):
-    if not isinstance(name, str) or not name:
-        return False
-    if _segment_is_token(name):
+def _redactor_alters(text):
+    """True when the log redactor would mask or rewrite *text*. Fail closed."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=True) != text
+    except Exception:  # health: allow BLE001 -- a redactor failure must not echo the loc
+        _refusal_log.exception('invalid_params redactor failed; treating the loc as secret')
         return True
-    return any(_segment_is_token(part) for part in re.split(r'[^A-Za-z0-9_]+', name) if part)
+
+
+def _secret_probes(text):
+    probes = [text]
+    if text[:1] == '_' and len(text) > 1:
+        probes.append(text[1:])
+    flat = text.replace('.', '')
+    if flat not in probes:
+        probes.append(flat)
+    stripped = flat[1:]
+    if flat[:1] == '_' and stripped and stripped not in probes:
+        probes.append(stripped)
+    return probes
+
+
+def _redactor_hits(text):
+    if not isinstance(text, str) or not text:
+        return False
+    return any(_redactor_alters(probe) for probe in _secret_probes(text))
+
+
+def _segment_shape_ok(part):
+    return bool(_SEGMENT.fullmatch(part) or _INDEX.fullmatch(part))
 
 
 def _path_is_safe(path):
-    if not isinstance(path, str) or not path or len(path) > 80:
+    """True for a loc we may echo: short idents and indexes the redactor leaves."""
+    if not isinstance(path, str) or not path or len(path) > 80 or _redactor_hits(path):
         return False
     parts = path.split('.')
-    return all(_SEGMENT.fullmatch(part) and not _segment_is_token(part) for part in parts)
+    return all(_segment_shape_ok(part) and not _redactor_hits(part) for part in parts)
+
+
+def _clause_path(path):
+    """A published clause: a safe path, or the same with placeholder segments."""
+    if not isinstance(path, str) or not path or len(path) > 80 or _redactor_hits(path):
+        return False
+    parts = path.split('.')
+    if not all(parts):
+        return False
+    for part in parts:
+        if part == REDACTED_KEY:
+            continue
+        if not _segment_shape_ok(part) or _redactor_hits(part):
+            return False
+    return True
 
 
 def is_published_clause(detail):
     """True when *detail* may be stored, logged, and shown. One predicate for all three."""
     if detail == REDACTED_KEY:
         return True
-    if _path_is_safe(detail):
+    if _clause_path(detail):
         return True
     if not isinstance(detail, str) or not _DEV_CLAUSE.fullmatch(detail):
         return False
     head, _, inner = detail.rpartition('(')
-    return _path_is_safe(head) and not _segment_is_token(inner[:-1])
+    inner = inner[:-1]
+    return _clause_path(head) and bool(_SEGMENT.fullmatch(inner)) and not _redactor_hits(inner)
 
 
 def _method_fallback(method):
     leaf = method.split('.')[-1] if isinstance(method, str) and '.' in method else (method or 'params')
-    if isinstance(leaf, str) and _SEGMENT.fullmatch(leaf) and not _segment_is_token(leaf):
+    if isinstance(leaf, str) and _SEGMENT.fullmatch(leaf) and not _redactor_hits(leaf):
         return f'{leaf}.fields'
     return 'params.fields'
 
 
+def _loc_is_secret(name):
+    if not isinstance(name, str) or not name:
+        return False
+    if _redactor_hits(name):
+        return True
+    return any(_redactor_hits(part) for part in name.split('.') if part)
+
+
+def _classify_loc(name):
+    """Published token for one loc, or None when it is neither safe nor a secret."""
+    if _path_is_safe(name):
+        return name
+    if _loc_is_secret(name):
+        return REDACTED_KEY
+    return None
+
+
 def published_fields(names, *, method=None):
-    """Field paths safe to return on the wire. Unsafe entries become the placeholder."""
+    """Field paths safe to return on the wire.
+
+    A secret loc is the placeholder. Any other unsafe loc is the method
+    fallback, and it does not replace a sibling that is safe.
+    """
     if isinstance(names, str):
         names = [names]
     out = []
+    fallback = _method_fallback(method)
     for name in names or ():
-        if isinstance(name, str) and _path_is_safe(name):
-            token = name
-        elif _looks_like_secret(name):
-            token = REDACTED_KEY
-        else:
-            token = _method_fallback(method)
+        token = _classify_loc(name)
+        if token is None:
+            token = fallback
         if token not in out:
             out.append(token)
-    return out or [_method_fallback(method)]
+    return out or [fallback]
 
 
 def refusal_clause(names, *, method=None):
-    """One clause for detail, the log, and the CLI. A secret wins over every other name."""
+    """One clause for detail, the log, and the CLI.
+
+    Each loc is classified on its own. A secret becomes ``<redacted-key>``
+    and does not replace a sibling safe loc. ``<method>.fields`` is used only
+    when no loc is safe and none is a secret.
+    """
     if isinstance(names, str):
         names = [names]
-    names = list(names or ())
-    if any(_looks_like_secret(name) for name in names):
-        return REDACTED_KEY
-    safe = [name for name in names if isinstance(name, str) and _path_is_safe(name)]
-    if safe and len(safe) == len(names):
-        joined = '.'.join(dict.fromkeys(safe))
-        return joined if _path_is_safe(joined) else safe[0]
-    return _method_fallback(method)
+    tokens = []
+    for name in names or ():
+        token = _classify_loc(name)
+        if token and token not in tokens:
+            tokens.append(token)
+    if not tokens:
+        return _method_fallback(method)
+    if len(tokens) == 1:
+        return tokens[0]
+    joined = '.'.join(tokens)
+    return joined if is_published_clause(joined) else tokens[0]
 
 
 def log_invalid_params(detail):
