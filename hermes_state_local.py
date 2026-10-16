@@ -45,11 +45,19 @@ def commit_local_session(db, *, epoch, receipt):
         policy, entry = receipt['policy'], receipt['entry']
         from datetime import datetime
         started = datetime.fromisoformat(entry['created_at']).timestamp()
-        conn.execute('''INSERT INTO sessions(id,source,user_id,session_key,chat_id,chat_type,
-            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,'dm',?,?,?,?,?)
+        # The agent's create stamps this too, but only while it is still NULL, and only if it
+        # runs before anything else. Token accounting's placeholder is ``unknown`` and wins that
+        # race (#139049). A peer refresh that lands first makes the worker create refuse, leaving
+        # the column empty. Use the agent surface (gui's agent is ``desktop``), not the raw
+        # policy label, so the later create cannot disagree.
+        from gateway.session_policy import SURFACES
+        created = SURFACES.get(policy['source'], policy['source'])
+        conn.execute('''INSERT INTO sessions(id,source,created_source,user_id,session_key,chat_id,chat_type,
+            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,?,'dm',?,?,?,?,?)
             ON CONFLICT(id) DO NOTHING''',
-            (sid, policy['source'], receipt['principal_id'], route, entry['origin']['chat_id'],
-             policy['model'], _row_cwd(policy), db._own_profile_name(), _json(entry['origin']), started))
+            (sid, policy['source'], created, receipt['principal_id'], route,
+             entry['origin']['chat_id'], policy['model'], _row_cwd(policy), db._own_profile_name(),
+             _json(entry['origin']), started))
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
                      (route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
