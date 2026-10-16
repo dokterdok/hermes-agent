@@ -249,15 +249,14 @@ class SessionCompressionMixin:
         # Pin/archive are compression-lineage flags; canonical branch/reset verbs also publish through
         # here, and their child is its own conversation, so it starts unpinned and visible.
         continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
-        # Same race as the owner's insert: accounting before the child's first turn freezes
-        # ``created_source`` as ``unknown``. Keep the parent's creating surface (gui's agent
-        # surface is ``desktop``); fall back to this publish's source when the parent has none.
-        # Callers that project a parent row must include created_source; a row that
-        # predates the column simply has no key.
+        # Copy a real creating surface. ``local`` is the live label after the peer refresh
+        # and ``unknown`` is the accounting placeholder; persisting either blocks the agent's
+        # later create from stamping the real surface (COALESCE keeps the first value).
         created_source = parent["created_source"] if "created_source" in parent.keys() else None
-        if not created_source or created_source == "unknown":
+        if created_source in (None, "", "local", "unknown"):
             from gateway.session_policy import SURFACES
-            created_source = SURFACES.get(source, source)
+            mapped = SURFACES.get(source, source)
+            created_source = None if mapped in (None, "", "local", "unknown") else mapped
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.
         conn.execute(
