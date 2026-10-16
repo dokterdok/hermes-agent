@@ -128,3 +128,116 @@ def test_resolve_latest_on_a_pre_column_store_finds_the_legacy_cli_row(tmp_path)
     finally:
         db.close()
 
+
+def test_reopen_fills_created_source_from_the_local_receipt(tmp_path):
+    """Rows stored before the insert stamp pick up ``created_source`` from the receipt.
+
+    ``unknown`` is not a surface and stays unset.
+    """
+    import json
+
+    from hermes_state_local import POLICY_PREFIX, _CREATED_SOURCE_BACKFILL
+
+    path = tmp_path / "state.db"
+    db = SessionDB(db_path=path)
+    db.create_session("local-old", source="local", chat_id="local-old", user_id="human")
+    db.create_session("local-unknown", source="local", chat_id="local-unknown", user_id="human")
+    with db._lock:
+        db._conn.executemany(
+            "UPDATE sessions SET created_source=NULL WHERE id=?",
+            [("local-old",), ("local-unknown",)])
+        db._conn.executemany(
+            "INSERT INTO state_meta(key, value) VALUES(?, ?)",
+            [(POLICY_PREFIX + "local-old", json.dumps({"policy": {"source": "cli"}})),
+             (POLICY_PREFIX + "local-unknown", json.dumps({"policy": {"source": "unknown"}}))])
+        db._conn.execute("DELETE FROM state_meta WHERE key=?", (_CREATED_SOURCE_BACKFILL,))
+        db._conn.commit()
+    db.close()
+    db = SessionDB(db_path=path)
+    try:
+        assert db.get_session("local-old")["created_source"] == "cli"
+        assert db.get_session("local-unknown")["created_source"] is None
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_latest_reaches_a_gateway_cli_session_behind_newer_local_rows(tmp_path, monkeypatch):
+    """Owner round-trip for ``hermes -z --resume latest`` / ``chat -c`` on the transport client.
+
+    ``session.create`` plus the routing-peer refresh stores the CLI row as ``source='local'``.
+    Two hundred newer Desktop/TUI ``local`` rows sit in front of it. ``_resume_latest`` asks the
+    owner for ``latest='cli'`` in this workspace, which resolves through ``resolve_local_target``.
+    """
+    from pathlib import Path
+
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_cli.gateway_chat import _resume_latest
+    from hermes_cli.gateway_client import GatewayClientError
+
+    monkeypatch.setattr(run, "_load_gateway_config", lambda: {
+        "model": {"default": "fixture"}, "platform_toolsets": {"cli": []}})
+    monkeypatch.setattr(run, "_resolve_gateway_model", lambda config: "fixture")
+    monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: _WORKSPACE)
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    runner = run.GatewayRunner.__new__(run.GatewayRunner)
+    runner.adapters = {}
+    runner.session_store = store
+    runner._session_db = store._db
+    runner._draining = False
+    authority = await initialize_session_authority(
+        runner, profile_id=str(Path(store._db.db_path).parent), instance_id="test")
+    authority._schedule = lambda ref: None
+    connection = AuthorityConnection(
+        authority, SimpleNamespace(write=lambda frame: None), {"user_id": "owner"})
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        async def rpc(self, method, **params):
+            self.calls.append((method, params))
+            reply = await connection.dispatch({"id": 1, "method": method, "params": params})
+            if "error" in reply:
+                raise GatewayClientError(reply["error"]["message"])
+            return reply["result"]
+
+    client = _Client()
+    try:
+        created = await connection.dispatch({
+            "id": 1, "method": "session.create",
+            "params": {"request_id": "chat", "source": "cli", "cwd": str(tmp_path)}})
+        assert "result" in created, created
+        sid = created["result"]["stored_session_id"]
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        row = authority.db.get_session(sid)
+        assert (row["source"], row["created_source"]) == ("local", "cli")
+        with authority.db._lock:
+            authority.db._conn.execute(
+                "UPDATE sessions SET started_at=?, git_repo_root=? WHERE id=?",
+                (1_000_000, _WORKSPACE, sid))
+            authority.db._conn.commit()
+        for index in range(200):
+            nid = f"local-noise-{index:03d}"
+            authority.db.create_session(nid, source="local", chat_id=nid, user_id="other")
+        with authority.db._lock:
+            authority.db._conn.executemany(
+                "UPDATE sessions SET created_source=?, started_at=?, git_repo_root=? WHERE id=?",
+                [(("desktop", "tui")[index % 2], 2_000_000 + index, _WORKSPACE, f"local-noise-{index:03d}")
+                 for index in range(200)],
+            )
+            authority.db._conn.commit()
+        args = SimpleNamespace(continue_last=False, resume="latest", in_dir=None)
+        snapshot = await _resume_latest(client, args)
+        assert snapshot["stored_session_id"] == sid
+        assert client.calls[-1][0] == "session.resume"
+        assert client.calls[-1][1]["latest"] == "cli"
+        assert client.calls[-1][1]["workspace"] == _WORKSPACE
+    finally:
+        await connection.close()
+        authority.db.close()

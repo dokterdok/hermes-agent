@@ -962,6 +962,11 @@ class SessionSchemaMixin:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
         self._execute_ddl_skipping_settled_triggers(cursor, DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
+        # Local rows written before ``created_source`` was stamped at insert: one fill from the
+        # receipt, then a marker so later opens do not scan for it again.
+        with contextlib.suppress(sqlite3.OperationalError):
+            from hermes_state_local import backfill_null_local_created_source
+            backfill_null_local_created_source(cursor)
 
         # Heal NULL ``active`` rows on every startup: older reconciler builds added ``active``
         # without NOT NULL DEFAULT 1, so ``WHERE active = 1`` loaders hid whole histories. A

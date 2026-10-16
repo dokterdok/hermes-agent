@@ -45,16 +45,44 @@ def commit_local_session(db, *, epoch, receipt):
         policy, entry = receipt['policy'], receipt['entry']
         from datetime import datetime
         started = datetime.fromisoformat(entry['created_at']).timestamp()
-        conn.execute('''INSERT INTO sessions(id,source,user_id,session_key,chat_id,chat_type,
-            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,'dm',?,?,?,?,?)
+        # ``created_source`` is the creating surface. A later peer refresh rewrites interactive
+        # cli/tui/gui/acp rows to ``source='local'`` and leaves this column alone.
+        conn.execute('''INSERT INTO sessions(id,source,created_source,user_id,session_key,chat_id,chat_type,
+            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,?,'dm',?,?,?,?,?)
             ON CONFLICT(id) DO NOTHING''',
-            (sid, policy['source'], receipt['principal_id'], route, entry['origin']['chat_id'],
-             policy['model'], _row_cwd(policy), db._own_profile_name(), _json(entry['origin']), started))
+            (sid, policy['source'], policy['source'], receipt['principal_id'], route,
+             entry['origin']['chat_id'], policy['model'], _row_cwd(policy), db._own_profile_name(),
+             _json(entry['origin']), started))
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
                      (route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         return receipt
     return db._execute_write(write)
+
+
+_CREATED_SOURCE_BACKFILL = 'gateway.local_created_source_backfill.v1'
+
+
+def backfill_null_local_created_source(conn) -> None:
+    """Fill ``created_source`` from the local receipt once, for rows written before it was stamped.
+
+    Interactive gateway rows are ``source='local'`` after the peer refresh. Listings match them on
+    ``created_source``. ``unknown`` stays unset so it is not treated as a surface. A store with
+    nothing to fill records that and does not scan again.
+    """
+    if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (_CREATED_SOURCE_BACKFILL,)).fetchone():
+        return
+    conn.execute(
+        '''UPDATE sessions SET created_source = (
+               SELECT json_extract(m.value, '$.policy.source') FROM state_meta m
+               WHERE m.key = ? || sessions.id)
+           WHERE source = 'local' AND created_source IS NULL
+             AND EXISTS (
+               SELECT 1 FROM state_meta m WHERE m.key = ? || sessions.id
+                 AND json_extract(m.value, '$.policy.source') IS NOT NULL
+                 AND json_extract(m.value, '$.policy.source') NOT IN ('', 'unknown'))''',
+        (POLICY_PREFIX, POLICY_PREFIX))
+    conn.execute('INSERT INTO state_meta(key, value) VALUES(?, ?)', (_CREATED_SOURCE_BACKFILL, '1'))
 
 
 def _row_cwd(policy):
