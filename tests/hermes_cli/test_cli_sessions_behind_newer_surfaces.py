@@ -241,3 +241,37 @@ def test_absent_schema_probe_sees_a_column_added_later(tmp_path):
     finally:
         db.close()
 
+
+def test_sessions_list_source_cli_includes_local_rows_behind_newer_surfaces(tmp_path, capsys):
+    """``hermes sessions list --source cli`` pages by creating surface, like ``hermes -c``."""
+    from argparse import Namespace
+
+    from hermes_cli.sessions_cmd import _cmd_list
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _populate(db, [("cli-session", "local", "cli", 1_000_000), *_newer_locals(200, start=2_000_000, prefix="d")])
+    _cmd_list(db, Namespace(limit=20, source="cli", workspace=None))
+    out = capsys.readouterr().out
+    db.close()
+    assert "cli-session" in out
+    assert "d-000" not in out
+    assert "No sessions found." not in out
+
+
+def test_sessions_list_source_cli_on_a_pre_column_store(tmp_path, capsys):
+    """A read-only pre-column store still lists ``source='cli'`` and is not migrated."""
+    from argparse import Namespace
+
+    from hermes_cli.sessions_cmd import _cmd_list
+
+    db = _pre_column_readonly(tmp_path)
+    try:
+        _cmd_list(db, Namespace(limit=20, source="cli", workspace=None))
+        assert "legacy-cli" in capsys.readouterr().out
+    finally:
+        db.close()
+    ro = SessionDB(db_path=tmp_path / "state.db", read_only=True)
+    try:
+        assert "created_source" not in _columns(ro)
+    finally:
+        ro.close()
