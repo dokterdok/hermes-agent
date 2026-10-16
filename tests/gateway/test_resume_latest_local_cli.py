@@ -99,3 +99,38 @@ async def test_token_accounting_before_the_agent_create_keeps_the_cli_surface(tm
         await owner.close()
         store.close_all_db_handles()
 
+
+@pytest.mark.asyncio
+async def test_reset_child_stays_in_the_cli_listing_when_accounting_runs_first(tmp_path, monkeypatch):
+    """``/new`` publishes the child with no ``created_source``. Accounting before its first
+    turn then freezes ``unknown``, and the peer refresh stores ``local``, so the CLI listing
+    drops the conversation (the ended parent is no longer the row that is shown)."""
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+    from hermes_state_local_lineage import reset_local_target
+    from gateway.session import SessionEntry
+    from hermes_state_local import local_receipt
+
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id='chat', source='cli',
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        # Normal first turn on the parent, so this failure is the child's stamp, not the parent's.
+        authority.db.create_session(sid, source=SURFACES['cli'])
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        old = SessionEntry.from_dict(local_receipt(authority.db, sid)['entry'])
+        child = 'local-reset-child'
+        entry = SessionEntry(old.session_key, child, old.created_at, old.updated_at, origin=old.origin,
+                             platform=old.platform, chat_type=old.chat_type, is_fresh_reset=True)
+        reset_local_target(authority.db, epoch=authority.epoch, parent_session_id=sid, entry=entry.to_dict())
+        authority.db.update_token_counts(child, input_tokens=2, output_tokens=1, model='m', api_call_count=1)
+        store._record_gateway_session_peer(child, live.route, live.source)
+        # The listing, not the raw search: the ended parent is hidden, so only the child can
+        # represent the conversation.
+        ids = [row['id'] for row in SurfaceLabelReader(authority.db).list_sessions_rich(source='cli', limit=10)]
+        assert ids == [child], (ids, authority.db.get_session(child)['source'],
+                                authority.db.get_session(child)['created_source'])
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
