@@ -262,12 +262,18 @@ def _default_exclude(args):
     return None if getattr(args, "source", None) else ["tool"]
 
 
+def _surface_reader(db):
+    """``--source cli`` also matches a gateway row stored as ``local`` with that created surface."""
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+    return SurfaceLabelReader(db)
+
+
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
     # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
     limit = args.limit
-    sessions = db.list_sessions_rich(
+    sessions = _surface_reader(db).list_sessions_rich(
         source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
     )
     truncated = limit > 0 and len(sessions) > limit
@@ -893,7 +899,7 @@ def _cmd_retitle_skills(db, args):
 
 def _cmd_browse(db, args):
     limit = getattr(args, "limit", 500) or 500
-    sessions = db.list_sessions_rich(
+    sessions = _surface_reader(db).list_sessions_rich(
         source=getattr(args, "source", None), exclude_sources=_default_exclude(args), limit=limit
     )
     if not sessions:
