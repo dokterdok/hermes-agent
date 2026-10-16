@@ -34,19 +34,40 @@ def resolve_titled_session(authority, actor, name, *, missing_ok=False):
     return ref
 
 
+def _db_has_created_source(db) -> bool:
+    """Read-only opens do not migrate, so a store from before the column has none.
+
+    A lock or I/O error propagates (``_read_all`` retries); it is not proof the column is absent.
+    """
+    return any(row[1] == 'created_source' for row in db._read_all('PRAGMA table_info(sessions)'))
+
+
 def resolve_latest_session(authority, actor, family, workspace=None):
     """The most recently active session of a surface family (``cli`` = classic CLI incl. its finite
     one-shot runs, ``tui``), scoped to ``workspace`` (git root / cwd) first and then global: the
     classic ``hermes -c`` / ``--resume latest`` rule (``hermes_cli.main._resolve_last_session``),
     applied by the owner so the client opens no database. Only a local session the actor may read
-    counts; another principal's sessions are skipped, never confirmed."""
+    counts; another principal's sessions are skipped, never confirmed.
+
+    Gateway interactive rows are stored as ``source='local'`` with the creating surface in
+    ``created_source`` (``storage_source``). ``oneshot`` keeps its own source, so it is not a local
+    surface. A pre-column store has no ``local`` rows; naming the column would raise.
+    """
     from agent.session_source import CLI_FAMILY_SOURCES
     families = {'cli': sorted(CLI_FAMILY_SOURCES), 'tui': ['tui']}
+    # Only the labels ``storage_source`` rewrites to ``local``. ``oneshot`` stays ``oneshot``.
+    local_surfaces = {'cli': ['cli'], 'tui': ['tui']}
     if family not in families or (workspace is not None and (not isinstance(workspace, str) or not workspace)):
         raise RuntimeStoreError('invalid_params')
     from gateway.session_local_migration import resolve_local_target
+    sources = list(families[family])
+    created = None
+    if _db_has_created_source(authority.db):
+        sources = sorted(families[family]) + ['local']
+        created = local_surfaces[family]
     for scope in ([workspace] if workspace else []) + [None]:
-        for row in authority.db.search_sessions(source=families[family], limit=50, workspace_key=scope):
+        for row in authority.db.search_sessions(
+                source=sources, limit=50, workspace_key=scope, local_created_sources=created):
             tip = authority.db.get_compression_tip(row['id']) or row['id']
             try:
                 return resolve_local_target(authority, actor, tip)
