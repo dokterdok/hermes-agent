@@ -71,3 +71,31 @@ async def test_resume_latest_matches_the_owners_local_rows_by_creating_surface(t
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_token_accounting_before_the_agent_create_keeps_the_cli_surface(tmp_path, monkeypatch):
+    """An accounting write before the agent's create must not freeze ``created_source`` as ``unknown``.
+
+    The normal first turn stamps ``cli`` in ``create_session`` and only then refreshes the peer.
+    ``update_token_counts`` can land first (#139049). Its placeholder source is ``unknown``, and
+    ``created_source`` never moves once set, so ``-c`` / ``--resume latest`` then miss the row.
+    """
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id='chat', source='cli',
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        authority.db.update_token_counts(sid, input_tokens=3, output_tokens=1, model='m', api_call_count=1)
+        authority.db.create_session(sid, source=SURFACES['cli'])
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        authority.sessions.clear()
+        resumed = await _call(owner, 'session.resume', latest='cli')
+        assert isinstance(resumed, dict) and resumed['session_id'] == sid, resumed
+        row = authority.db.get_session(sid)
+        assert (row['source'], row['created_source']) == ('local', 'cli')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
