@@ -249,19 +249,28 @@ class SessionCompressionMixin:
         # Pin/archive are compression-lineage flags; canonical branch/reset verbs also publish through
         # here, and their child is its own conversation, so it starts unpinned and visible.
         continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
+        # Same race as the owner's insert: accounting before the child's first turn freezes
+        # ``created_source`` as ``unknown``. Keep the parent's creating surface (gui's agent
+        # surface is ``desktop``); fall back to this publish's source when the parent has none.
+        # Callers that project a parent row must include created_source; a row that
+        # predates the column simply has no key.
+        created_source = parent["created_source"] if "created_source" in parent.keys() else None
+        if not created_source or created_source == "unknown":
+            from gateway.session_policy import SURFACES
+            created_source = SURFACES.get(source, source)
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.
         conn.execute(
             """INSERT INTO sessions (
-                   id, source, model, model_config, system_prompt,
+                   id, source, created_source, model, model_config, system_prompt,
                    system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, pinned, started_at,
                    archived, auto_archived
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                child_session_id, source, model, json.dumps(model_config) if model_config else None,
+                child_session_id, source, created_source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
@@ -330,7 +339,7 @@ class SessionCompressionMixin:
             """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                       user_id, session_key, chat_id, chat_type,
                       thread_id, display_name, origin_json, profile_name, tool_names,
-                      archived, auto_archived, pinned, model_config
+                      archived, auto_archived, pinned, model_config, created_source
                FROM sessions WHERE id = ?""",
             (parent_session_id,),
         ).fetchone()
