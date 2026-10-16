@@ -134,3 +134,57 @@ async def test_reset_child_stays_in_the_cli_listing_when_accounting_runs_first(t
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+def _listed(db, source, capsys):
+    from argparse import Namespace
+    from hermes_cli.sessions_cmd import _cmd_list
+    _cmd_list(db, Namespace(limit=20, source=source, workspace=None))
+    return capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('surface', 'labels'), [('gui', ('gui', 'desktop')), ('acp', ('acp',))])
+async def test_gui_and_acp_list_under_the_policy_label_and_the_agent_surface(
+        tmp_path, monkeypatch, capsys, surface, labels):
+    """A gateway row is ``local`` after the peer refresh, with the agent surface in
+    ``created_source`` (gui's agent is ``desktop``). ``--source`` must accept either name,
+    including the pre-refresh row whose live source is still the policy label."""
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id=surface, source=surface,
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        for label in labels:
+            assert sid in _listed(authority.db, label, capsys), (surface, label, 'before peer')
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        for label in labels:
+            assert sid in _listed(authority.db, label, capsys), (surface, label, 'after peer')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_worker_create_after_peer_refresh_still_resumes(tmp_path, monkeypatch):
+    """The peer refresh rewrites source to ``local`` and worker_create is refused.
+    The insert stamp must already hold ``cli``, or the row stays invisible to latest."""
+    from hermes_state_runtime import RuntimeStoreError
+    from hermes_state_worker_lifecycle import worker_create
+
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id='chat', source='cli',
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            authority.db._execute_write(lambda conn: worker_create(authority.db, conn, sid, {'source': 'cli'}))
+        authority.sessions.clear()
+        resumed = await _call(owner, 'session.resume', latest='cli')
+        assert isinstance(resumed, dict) and resumed['session_id'] == sid, resumed
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

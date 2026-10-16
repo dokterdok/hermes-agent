@@ -340,9 +340,18 @@ class GatewaySessionStore:
         }
 
 
-# Interactive surfaces whose gateway rows are labelled ``local`` (``created_source`` keeps the surface;
-# gateway/session_a2a.storage_source). Producer labels (oneshot, tool, kanban, ...) are stored as is.
-_LOCAL_LABELLED = frozenset({"cli", "tui", "gui"})
+# Policy label and the agent surface are one conversation. gui's in-process agent is
+# ``desktop`` (session_policy.SURFACES); the managed worker creates with ``gui``. After the
+# peer refresh the row is ``source='local'`` and ``created_source`` is whichever path ran.
+# acp is stored ``local`` too. A filter for either name matches both, including a pre-refresh
+# row whose live source is still the policy label.
+_SURFACE_GROUPS = {
+    "cli": frozenset({"cli"}),
+    "tui": frozenset({"tui"}),
+    "gui": frozenset({"gui", "desktop"}),
+    "desktop": frozenset({"gui", "desktop"}),
+    "acp": frozenset({"acp"}),
+}
 
 
 class SurfaceLabelReader:
@@ -367,14 +376,31 @@ class SurfaceLabelReader:
             self._has_column = any(row[1] == "created_source" for row in rows)
         return self._has_column
 
-    def _labelled(self, requested, limit, offset, call):
+    def _expand(self, requested):
+        """``(live source labels, created_source labels)`` or None for a raw source filter.
+
+        Live labels include the other name of a gui/desktop pair, so a row that has not been
+        peer-refreshed (``source='gui'``) still matches ``--source desktop``.
+        """
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
-        surfaces = wanted & _LOCAL_LABELLED
+        created = set()
+        live = set(wanted)
+        for name, group in _SURFACE_GROUPS.items():
+            if name in wanted:
+                live |= group
+                created |= group
+        if not created or not self._has_created_source_column():
+            return None
+        return sorted(live | {"local"}), sorted(created)
+
+    def _labelled(self, requested, limit, offset, call):
+        expanded = self._expand(requested)
         # No column (and so no gateway ``local`` rows yet): naming it would raise, and the caller
         # swallows that into an empty page.
-        if not surfaces or not self._has_created_source_column():
+        if expanded is None:
             return call(requested, limit, offset, None)
-        return call(sorted(wanted | {"local"}), limit, offset, sorted(surfaces))
+        live, surfaces = expanded
+        return call(live, limit, offset, surfaces)
 
     def search_sessions(self, source=None, limit=20, offset=0, **kw):
         return self._labelled(
@@ -390,6 +416,16 @@ class SurfaceLabelReader:
             requested, limit, offset,
             lambda src, lim, off, surfaces: self._wrapped.list_sessions_rich(
                 sources=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
+
+    def session_count(self, source=None, sources=None, **kw):
+        requested = sources if sources else ([source] if source else None)
+        if not requested:
+            return self._wrapped.session_count(source=source, sources=sources, **kw)
+        expanded = self._expand(requested)
+        if expanded is None:
+            return self._wrapped.session_count(source=source, sources=sources, **kw)
+        live, surfaces = expanded
+        return self._wrapped.session_count(sources=live, local_created_sources=surfaces, **kw)
 
 
 _CANONICAL_LOCAL_ID = re.compile(r"^local-([0-9a-f]{8})[0-9a-f]{56}$")
