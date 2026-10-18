@@ -265,8 +265,10 @@ def _session_route_fields(authority, runner, live) -> dict:
     policy = policy_for_source(runner, live.source)
     if policy is None:
         return {}
-    model = policy.current_model(authority)
-    fields = {"model": model, **({"provider": policy.provider} if policy.provider else {})}
+    # One read of the owning profile: a following session's model and provider move together.
+    config, model = policy.effective(authority, secrets=False)
+    provider = (config.get("model") or {}).get("provider")
+    fields = {"model": model, **({"provider": provider} if provider else {})}
     peek = getattr(runner, "_peek_session_state", None)
     state = peek(live.route) if peek is not None else None
     typed = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning

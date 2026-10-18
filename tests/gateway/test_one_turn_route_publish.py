@@ -43,6 +43,46 @@ def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monk
     assert published[0][1]["reasoning_effort"] == "low"
 
 
+@pytest.mark.asyncio
+async def test_one_turn_settled_info_names_the_profiles_current_provider(monkeypatch):
+    """A following Bot Chat whose profile moved to another provider: after a one-turn admission the
+    published model and provider are the next turn's, both from the profile as it is now."""
+    import json
+
+    from gateway import run
+    from gateway.session_local_inventory import publish_settled_info
+    from hermes_constants import get_hermes_home
+    from tests.gateway.test_follow_profile_followups import _create_bot_chat
+    from tests.gateway.test_session_follow_profile_config import _owner
+
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(run, "_hermes_home", home)
+
+    def profile(provider, model, port):
+        (home / "config.yaml").write_text(json.dumps({"model": {
+            "provider": provider, "default": model, "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "k"}}))
+
+    profile("custom", "local-a", 1)
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda _key: None
+    try:
+        live = await _create_bot_chat(owner, authority, home, "follow")
+        sid = next(sid for sid, value in authority.sessions.items() if value is live)
+        profile("openrouter", "openai/gpt-b", 2)
+        published = []
+        turn = SimpleNamespace(_ctx=SimpleNamespace(inbound_message_id="adm"), _approval_owner=(authority, sid, 1),
+                               _runner=runner, _publish_execution=lambda _kind, payload: published.append(payload))
+        once = SimpleNamespace(model="once-model", provider="nous", tools=None, _cached_system_prompt="",
+                               context_compressor=None)
+        with cli_turn_scope("adm", {"model_override": {"model": "once-model", "provider": "nous"}}):
+            publish_settled_info(turn, once)
+        assert (published[-1]["model"], published[-1]["provider"]) == ("openai/gpt-b", "openrouter")
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
 def test_a_one_turn_agent_is_released_once_its_turn_ends(monkeypatch):
     """The settle drops the one-turn agent from the cache while its turn still runs it, and nothing else
     holds it. It is released when that turn's slot clears (a Codex app-server child would otherwise
