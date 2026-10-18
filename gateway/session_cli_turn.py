@@ -102,17 +102,19 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
     runtime = dict(runtime_kwargs)
     current_provider = runtime_kwargs.get('provider') or ''
     same_provider = (result.target_provider or '').strip().lower() == current_provider.strip().lower()
-    if same_provider:
-        # The explicit provider on a one-turn override re-resolves the provider's default endpoint
-        # and key. The session already has both, so keep them. The wire follows the target, as a
-        # session /model writes it: Copilot, Nous Portal and OpenCode pick it per model.
+    if same_provider and not result.alias_endpoint:
+        # A plain model pick on the session's provider. The explicit provider on a one-turn override
+        # re-resolves the provider's default endpoint and key. The session already has both, so keep
+        # them. The wire follows the target, as a session /model writes it: Copilot, Nous Portal and
+        # OpenCode pick it per model.
         from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
         api_mode = result.api_mode or runtime.get('api_mode')
         runtime['api_mode'] = api_mode or None
         if runtime.get('base_url') and opencode_provider_family(result.target_provider):
             runtime['base_url'] = normalize_opencode_base_url(result.target_provider, api_mode, runtime['base_url'])
     else:
-        # A different provider does not keep this session's pool, endpoint, or key.
+        # A different provider, or an alias with its own endpoint and key on this one, is another
+        # route: it does not keep this session's pool, endpoint, or key.
         runtime.update(credential_pool=None, command=None, args=[],
                        api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode or None,
                        request_overrides=dict(result.request_overrides or {}),

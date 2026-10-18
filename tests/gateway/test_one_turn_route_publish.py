@@ -1,9 +1,11 @@
 """A one-turn model override must not become the route other clients read, and a same-provider
-override must keep the session endpoint and key."""
+override must keep the session endpoint and key unless it names an alias with its own."""
 from types import SimpleNamespace
 
+import pytest
+
 from gateway.session_cli_turn import cli_turn_scope, one_turn_runtime
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_cli.model_switch import DirectAlias, ModelSwitchResult
 
 
 def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monkeypatch):
@@ -57,6 +59,46 @@ def test_same_provider_override_keeps_the_session_endpoint_and_key(monkeypatch):
     assert runtime["api_key"] == "sk-session"
     assert runtime["credential_pool"] is pool
     assert runtime["request_overrides"] == {"provider": {"only": ["anthropic"]}}
+
+
+@pytest.mark.parametrize("override", [{"model": "fast"}, {"model": "fast-model", "provider": "custom"}],
+                         ids=["alias", "resolved-route"])
+def test_same_provider_alias_override_runs_on_the_alias_endpoint_and_key(monkeypatch, override):
+    """``/model fast --once``: ``fast`` is a ``model_aliases`` entry on the session's own provider with its own
+    endpoint and key. The override names the alias, or (the classic CLI) the model and provider it resolved to.
+    The turn runs on the alias's endpoint and key, not the session's, and leaves the session's pool behind."""
+    _resolve_aliases(monkeypatch, fast=DirectAlias(
+        model="fast-model", provider="custom", base_url="http://127.0.0.1:7002/v1", api_key="sk-alias"))
+    model, runtime = one_turn_runtime(override, "session-model", {
+        "provider": "custom", "api_key": "sk-session", "base_url": "http://127.0.0.1:7001/v1",
+        "api_mode": "chat_completions", "credential_pool": object()}, {})
+    assert model == "fast-model"
+    assert (runtime["base_url"], runtime["api_key"]) == ("http://127.0.0.1:7002/v1", "sk-alias")
+    assert runtime["credential_pool"] is None
+
+
+def test_an_alias_naming_the_sessions_endpoint_keeps_the_sessions_key_and_pool(monkeypatch):
+    """An alias on the session's own endpoint, with no key of its own, is a plain pick there: the turn keeps
+    the session's launch key and pool, not the profile's key."""
+    endpoint = "https://openrouter.ai/api/v1"
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-profile")
+    _resolve_aliases(monkeypatch, fast=DirectAlias(model="vendor/fast", provider="openrouter", base_url=endpoint))
+    pool = object()
+    model, runtime = one_turn_runtime({"model": "fast", "provider": "openrouter"}, "vendor/old", {
+        "provider": "openrouter", "api_key": "sk-launch", "base_url": endpoint, "api_mode": "chat_completions",
+        "credential_pool": pool}, {})
+    assert model == "vendor/fast"
+    assert (runtime["api_key"], runtime["credential_pool"]) == ("sk-launch", pool)
+
+
+def _resolve_aliases(monkeypatch, **aliases):
+    """The real ``switch_model`` over these ``model_aliases`` entries; catalog validation accepts any model."""
+    from hermes_cli import model_switch
+    for name, alias in aliases.items():
+        monkeypatch.setitem(model_switch.DIRECT_ALIASES, name, alias)
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *_a, **_k: {
+        "accepted": True, "persist": True, "recognized": True, "message": ""})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
 
 
 def _same_provider_override(monkeypatch, provider, model, api_mode, base_url, session):

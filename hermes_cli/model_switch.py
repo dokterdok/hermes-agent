@@ -458,6 +458,9 @@ class ModelSwitchResult:
     warning_message: str = ""
     provider_label: str = ""
     resolved_via_alias: str = ""
+    # A ``model_aliases`` entry moved the route to another endpoint than the current one, or
+    # brought its own key: a caller keeping a session's endpoint for a same-provider pick must not.
+    alias_endpoint: bool = False
     capabilities: Optional[ModelCapabilities] = None
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
@@ -1186,6 +1189,7 @@ class _Switch:
     new_model: str = ""
     target_provider: str = ""
     resolved_alias: str = ""
+    alias_endpoint: bool = False
     provider_label: str = ""
     api_key: str = ""
     base_url: str = ""
@@ -1586,6 +1590,10 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
         da = DIRECT_ALIASES.get(st.resolved_alias)
         if da is not None and da.base_url:
             _apply_direct_alias_endpoint(st, da)
+            # Naming the endpoint already in use, with no key of its own, is a plain pick there.
+            from hermes_cli.route_identity import normalize_route_base_url
+            st.alias_endpoint = bool(direct_alias_api_key(da)) or (
+                normalize_route_base_url(da.base_url) != normalize_route_base_url(st.current_base_url))
 
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
@@ -1735,8 +1743,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
-        provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
-        runtime_capabilities={
+        provider_label=st.provider_label, resolved_via_alias=st.resolved_alias,
+        alias_endpoint=st.alias_endpoint, capabilities=capabilities, runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
         model_info=model_info, is_global=st.is_global)
 
