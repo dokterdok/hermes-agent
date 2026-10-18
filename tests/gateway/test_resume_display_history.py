@@ -5,6 +5,8 @@ turn stays gone, a merged prompt shows once, and the archived part of the reply 
 Real store, authority, local session, compaction verbs and ``AuthorityConnection.resume``; the runner
 is a stand-in with no cached agent, and the resume ``info`` block is stubbed out.
 """
+import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -171,3 +173,55 @@ async def test_rollback_turn_rewind_never_targets_an_archived_turn(tmp_path, mon
     live = [m['content'] for m in db.get_messages(tip)]
     assert await _rewind_last_turn(SimpleNamespace(authority=authority, actor=actor), ref) == 0
     assert [m['content'] for m in db.get_messages(tip)] == live == [SUMMARY]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage', ['retired', 'committed'])
+async def test_a_delete_during_the_resume_read_is_not_found(tmp_path, monkeypatch, stage):
+    """Resume reads the lineage off the loop between authorizing and attaching. A delete another viewer
+    commits inside that await answers ``not_found``, not an internal error: when the delete has retired
+    the live entry, and when its commit has landed but its retirement has not run yet."""
+    from gateway import session_local_recovery, session_mutations
+    from gateway.session_controls import AuthorityConnection
+    authority, _actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    authority.runner.session_authority = authority  # one process owns both writes of a delete
+    _append(authority.db, physical, 'Q', 'A')
+    caps = ['session:create', 'session:read', 'session:control']
+
+    def connection():
+        return AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'owner',
+                                                         'profile_id': 'fixture', 'capabilities': caps,
+                                                         'instance_id': authority.instance_id})
+    prepare, write, deletes = session_local_recovery.prepare_history, session_mutations.mutate_runtime_session, []
+    committed, release = threading.Event(), threading.Event()
+
+    def write_then_hold(*args, **kwargs):
+        result = write(*args, **kwargs)
+        if kwargs.get('operation') == 'delete' and stage == 'committed':
+            committed.set()
+            assert release.wait(10), 'the delete was never released'
+        return result
+
+    async def prepare_then_delete(authority_, ref_):
+        prepared = await prepare(authority_, ref_)
+        row = authority.db.get_session(ref.session_id)
+        deletes.append(asyncio.ensure_future(connection().dispatch({'id': 9, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': 'delete-1', 'operation': 'delete', 'payload': {},
+            'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation']}})))
+        if stage == 'retired':
+            await deletes[0]
+        else:
+            assert await asyncio.to_thread(committed.wait, 10)
+            assert authority.db.get_session(ref.session_id) is None and ref.session_id in authority.sessions
+            release.set()  # the commit has landed; the retirement runs once the loop gets to it
+        return prepared
+    monkeypatch.setattr(session_mutations, 'mutate_runtime_session', write_then_hold)
+    monkeypatch.setattr(session_local_recovery, 'prepare_history', prepare_then_delete)
+    try:
+        reply = await connection().dispatch({'id': 1, 'method': 'session.resume',
+                                             'params': {'session_id': ref.session_id}})
+    finally:
+        release.set()
+    assert 'result' in await deletes[0], deletes  # the delete committed inside the read
+    assert reply.get('error', {}).get('message') == 'not_found', reply
+    assert ref.session_id not in authority.sessions
