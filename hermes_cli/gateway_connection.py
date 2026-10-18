@@ -32,6 +32,17 @@ class CallStopped(GatewayClientError):
     """The caller stopped waiting (:meth:`GatewayConnection.call_until`); the request was sent."""
 
 
+def live_transcript(snapshot) -> list:
+    """A ``session.resume`` snapshot's live rows (no ``archived`` mark) in stored order: the transcript
+    the model works on and ``/undo`` ordinals count. The reply itself is in display order, which shows a
+    message a rotated compression carried at its first copy's place, so a summary written between a
+    carried head and tail would come last; ``row_id`` is the stored order (ACP replays by it too)."""
+    live = [m for m in snapshot.get("messages") or () if not m.get("archived")]
+    if all(type(m.get("row_id")) is int for m in live):
+        live.sort(key=lambda m: m["row_id"])
+    return live
+
+
 def lost_before(frame, epoch) -> bool:
     """``frame`` is a transport error from a connection older than ``epoch``: a reconnect replaced it,
     so it is no outcome of anything submitted on ``epoch``."""

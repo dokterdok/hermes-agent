@@ -23,7 +23,7 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_connection import GatewayConnection, live_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +223,7 @@ class GatewaySessionStore:
         from hermes_state_rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)
-        durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows
+        durable = live_transcript(snapshot)
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)

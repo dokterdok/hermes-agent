@@ -18,7 +18,7 @@ import time
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import DISCONNECTED, lost_before
+from hermes_cli.gateway_connection import DISCONNECTED, live_transcript, lost_before
 
 logger = logging.getLogger(__name__)
 
@@ -500,8 +500,7 @@ class GatewayAgent:
         compressor.compression_count += 1
         compressor.last_prompt_tokens = -1
         self._turn_base_usage_anchor = None
-        return [{k: v for k, v in m.items() if k != "row_id"} for m in after.get("messages") or []
-                if not m.get("archived")], system_message
+        return [{k: v for k, v in m.items() if k != "row_id"} for m in live_transcript(after)], system_message
 
     def steer(self, text):
         return self._correct("steer", text)

@@ -19,6 +19,7 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_connection import live_transcript
 
 PARITY_DOC = "https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-command-parity"
 
@@ -44,9 +45,9 @@ def _user_turns(snapshot):
     kind other than a typed /steer, never a compaction handoff carrier, never a row a compression
     archived (shown in the snapshot's history, not a turn to rewind to)."""
     from agent.context_compressor import is_user_originated_turn
-    return [row for row in snapshot.get("messages", [])
+    return [row for row in live_transcript(snapshot)
             if type(row.get("row_id")) is int and row.get("display_kind") in (None, "", "steer")
-            and not row.get("archived") and is_user_originated_turn(row)]
+            and is_user_originated_turn(row)]
 
 
 def _rewind_to(turns_back, *, retry=False):
