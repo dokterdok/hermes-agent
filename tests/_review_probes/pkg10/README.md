@@ -15,6 +15,18 @@ Reviewed heads, compared against `main` `d24fe22029` and against all seven lanes
 | 4b, session lists | #140972 | `fe2d54ecf2` | `lane4b/` (+ `apps/desktop/src/__review_probes__/pkg10/lane4b/` for vitest) |
 | 5, messaging and Bot Chat | #140973 | `655aef56d8` | `lane5/` |
 
+Round 2 (the commits added after the first review), each probe failing on the head below:
+
+| Lane | PR | Head | Probes |
+| --- | --- | --- | --- |
+| 1 | #140967 | `cbe8b995f3d` | `r2-lane1/` |
+| 2 | #140968 | `c2c767cf32f` | `r2-lane2/` |
+| 3a | #140969 | `b0bb0d87499` | `r2-lane3a/` |
+| 3b | #140970 | `f2e178388b9` | `r2-lane3b/` |
+| 4a | #140971 | `c6961c62af4` | `r2-lane4a/` |
+| 4b | #140972 | `f607bd2ab41` | `r2-lane4b/` (+ `apps/desktop/src/__review_probes__/pkg10/r2-lane4b/` for vitest) |
+| 5 | #140973 | `a1370c6f5d2` | `r2-lane5/` |
+
 ## Run
 
 Copy a lane's directory into a checkout of that lane's head at the same path, then, with an isolated `HERMES_HOME`:
