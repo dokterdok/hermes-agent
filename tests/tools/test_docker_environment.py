@@ -1930,3 +1930,23 @@ def test_non_workspace_container_is_not_an_idle_workspace(monkeypatch):
 
     monkeypatch.setattr(docker_env.subprocess, "run", _inspect)
     assert not docker_env._is_idle_workspace_container("/usr/bin/docker", "cid"), labels
+
+
+@pytest.mark.parametrize("persist_across_processes", [True, False])
+def test_idle_workspace_reclaim_follows_cross_process_reuse(monkeypatch, persist_across_processes):
+    """An idle-stopped workspace container is kept only for a later process to re-attach. With
+    ``docker_persist_across_processes: false`` nothing ever re-attaches it, and the
+    ``hermes-workspace`` label made the orphan reaper spare it: one stopped container per folder per
+    idle period, forever. There the idle reclaim is cleanup's stop + rm, and no label is stamped."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+    env = _make_dummy_env(task_id="default:ws:0123456789abcdef", persistent_filesystem=True,
+                          persist_across_processes=persist_across_processes)
+    labels = dict(lbl.split("=", 1) for lbl in _labels_in_run_args(_run_args_from_calls(calls)))
+    assert (docker_env._WORKSPACE_LABEL_KEY in labels) is persist_across_processes
+    calls.clear()
+    env.stop_idle()
+    verbs = [cmd[1] for cmd, _kwargs in calls if isinstance(cmd, list) and len(cmd) >= 2]
+    assert "stop" in verbs
+    assert ("rm" in verbs) is not persist_across_processes

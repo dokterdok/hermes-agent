@@ -759,7 +759,8 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label}
-        if workspace := _WORKSPACE_TASK_RE.search(task_id or ""):
+        # Only a container a later process can re-attach is spared once idle-stopped.
+        if persist_across_processes and (workspace := _WORKSPACE_TASK_RE.search(task_id or "")):
             self._labels[_WORKSPACE_LABEL_KEY] = workspace.group(1)
         # Explicit sharing opts into the first creator's settings. Otherwise,
         # changed image/mount/home configuration must start a fresh container.
@@ -1344,7 +1345,13 @@ class DockerEnvironment(BaseEnvironment):
         container. Without this, persistent mode left one RUNNING container per workspace a user
         ever opened (each with its own ``container_memory``) until the process exited. Like a
         persist-mode cleanup, the host user may touch what it left before it is reattached, so its
-        sandbox privileges are stripped once it has stopped."""
+        sandbox privileges are stripped once it has stopped.
+
+        ``persist_across_processes=False`` never re-attaches, so a stopped container would only pile
+        up (the orphan reaper spares it): there the idle reclaim is :meth:`cleanup`, stop + rm."""
+        if not self._persist_across_processes:
+            self.cleanup()
+            return
         container_id = self._container_id
         if not container_id:
             return
