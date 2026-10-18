@@ -7,7 +7,8 @@ Reviewed heads, compared against `main` `d24fe22029` and against all seven lanes
 | Lane | PR | Head | Probes |
 | --- | --- | --- | --- |
 | 1, gateway process | #140967 | `6bbaa79050` | `lane1/` |
-| 2, clients | #140968 | `7ce31c0192` | `lane2/` |
+| 2, clients | #140968 | `7ce31c0192` (still reproduces on `cd8a1e6d7f`) | `lane2/` |
+| 2, the RT-37 owner forward | #140968 | `cd8a1e6d7f` (`40cdeb6dd6`, `4fa480c50f`, `cd8a1e6d7f`) | `lane2-rt37/` |
 | 3a, settings | #140969 | `bee90c2e12` | `lane3a/` |
 | 3b, grants and Docker | #140970 | `98bd08e5cd` | `lane3b/` |
 | 4a, identity and history | #140971 | `515fc35607` | `lane4a/` |
