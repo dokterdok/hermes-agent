@@ -699,14 +699,15 @@ def test_fast_tier_reaches_the_session_on_each_rebuild_and_back_to_normal(make_a
 
 
 class RefusingClient(FakeClient):
-    """``prompt.submit`` raises ``error`` instead of admitting the turn."""
+    """``refused`` (``prompt.submit`` unless named) raises ``error`` instead of answering."""
 
-    def __init__(self, error):
+    def __init__(self, error, refused="prompt.submit"):
         super().__init__([])
         self.error = error
+        self.refused = refused
 
     async def rpc(self, method, *, _timeout=None, **params):
-        if method == "prompt.submit":
+        if method == self.refused:
             self.calls.append((method, params))
             raise self.error
         return await super().rpc(method, _timeout=_timeout, **params)
@@ -744,6 +745,25 @@ def test_a_transport_loss_at_submit_is_still_gateway_connection():
     result = submit_against(GatewayClientError(DISCONNECTED))
     assert result["failed"] is True and result["error"] == DISCONNECTED
     assert result["failure_reason"] == "gateway_connection" and result["failure_retryable"] is False
+
+
+@pytest.mark.parametrize("error, reason", [(GatewayRPCError("permission_denied"), None),
+                                           (GatewayClientError(DISCONNECTED), "gateway_connection")],
+                         ids=["refused", "lost"])
+def test_an_image_the_owner_cannot_stage_fails_the_turn_without_submitting_it(error, reason):
+    """Staging an image is an owner call before ``prompt.submit``: a refusal or a lost connection there is a
+    failed turn, as at the submit itself, never an exception out of run_conversation."""
+    client = RefusingClient(error, refused="image.attach_bytes")
+    conn = GatewayConnection(connect=connect_with(client))
+    conn.start(5)
+    parts = [{"type": "text", "text": "what is this?"},
+             {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}]
+    try:
+        result = GatewayAgent(connection=conn, session_id=SID).run_conversation(parts)
+    finally:
+        conn.close()
+    assert result["failed"] is True and result["failure_reason"] == reason
+    assert "prompt.submit" not in [method for method, _ in client.calls]
 
 
 def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):

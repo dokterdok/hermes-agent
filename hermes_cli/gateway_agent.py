@@ -649,8 +649,10 @@ class GatewayAgent:
             receipt = adopted
         else:
             self._drain_stale()
-            params = self._submit_params(user_message, persist_user_message, turn_author)
+            params: dict = {}
             try:
+                # Staging an image calls the owner too: a refusal or a lost connection there fails the turn.
+                params = self._submit_params(user_message, persist_user_message, turn_author)
                 receipt = self.connection.call("prompt.submit", **params)
             except GatewayRPCError as exc:
                 # The owner answered and refused: not a lost connection. Only its own site code
