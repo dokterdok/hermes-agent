@@ -42,11 +42,14 @@ class PromptReceiptParams(Params):
     session_id: str
     admission_id: str
     include_result: bool | None = None
+    omit_messages: bool = False
 
 
 class PromptReceiptResult(AdmissionStatus):
     """``result`` / ``usage``: the structured turn result committed at settlement, only with
-    ``include_result`` on a terminal admission that saved one."""
+    ``include_result`` on a terminal admission that saved one. ``omit_messages`` leaves out the turn's
+    transcript rows, which repeat the answer: a viewer that reads only the answer and the ledger gets
+    one copy, so the reply fits a frame the answer alone fits."""
 
     result: JsonValue | None = None
     usage: dict[str, JsonValue] | None = None

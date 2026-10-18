@@ -6,7 +6,7 @@ import logging
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError, answer_while_draining
+from hermes_cli.gateway_client import GatewayClientError, answer_while_draining, result_receipt
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +189,8 @@ class GatewayChatView:
         self.cut.setdefault(admission, self.streams.pop(admission, ""))
         if status or any(kind == "message.complete" and own == admission for kind, own, _ in self._finite_events):
             return  # (its completion already arrived, held for the submit ack)
-        read = self.client.rpc("prompt.receipt", session_id=sid, admission_id=admission, include_result=True)
         try:
-            receipt = await (answer_while_draining(self.client, read, self._held) if drain else read)
+            receipt = await result_receipt(self.client, sid, admission, self._held if drain else None)
         except Exception:  # health: allow BLE001 -- unreadable, like a receipt without its reply
             receipt = {"status": "terminal"}
         verdict = settled(receipt) if self.session_id == sid and admission not in self.completions else False
@@ -458,8 +457,7 @@ class GatewayChatView:
         dict the in-process one-shot got from ``run_conversation`` (best-effort, never raises)."""
         from websockets.exceptions import WebSocketException
         try:
-            receipt = await self.client.rpc("prompt.receipt", session_id=self.session_id,
-                                            admission_id=admission, include_result=True)
+            receipt = await result_receipt(self.client, self.session_id, admission)
             return dict(receipt.get("result") or {})
         # Transport loss / refusal, or a receipt whose ``result`` is not a mapping.
         except (GatewayClientError, OSError, TimeoutError, WebSocketException,

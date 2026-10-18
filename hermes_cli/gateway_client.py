@@ -23,6 +23,9 @@ COMPRESS_RPC_TIMEOUT = 660
 # A full event queue parks the socket reader; a consumer that takes no event for this long has
 # stalled and is failed. Same bound as the owner's own send deadline (``tui_gateway/ws.py``).
 EVENT_STALL_TIMEOUT = 30
+# The largest frame this client reads; a bigger one closes the socket (1009). Every reply a viewer
+# asks for must fit, which is why recovery reads take the answer once (``prompt.receipt`` ``omit_messages``).
+MAX_FRAME_BYTES = 8 * 1024 * 1024
 
 
 def gateway_ws_target(endpoint, ticket):
@@ -184,6 +187,23 @@ async def answer_while_draining(client, call, held):
             take.cancel()
 
 
+async def result_receipt(client, session_id, admission_id, held=None):
+    """``prompt.receipt`` with the turn's committed result, the answer once: ``omit_messages`` leaves out
+    the turn's transcript rows, which repeat it, so the reply fits a frame the answer fits. An owner from
+    before that parameter refuses it by name, and is asked again without it. ``held``: awaited from the
+    event queue's one consumer (``answer_while_draining``)."""
+    async def read(**slim):
+        call = client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
+                          include_result=True, **slim)
+        return await (call if held is None else answer_while_draining(client, call, held))
+    try:
+        return await read(omit_messages=True)
+    except GatewayRPCError as exc:
+        if str(exc) != "invalid_params" or "omit_messages" not in (exc.data.get("fields") or ()):
+            raise
+        return await read()
+
+
 def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None, subject=None) -> str:
     from hermes_cli.gateway_runtime import control_home_for
     from hermes_cli.gateway_runtime_discovery import connect_private, _identify_response
@@ -263,7 +283,7 @@ async def connect_gateway(endpoint=None, subject=None):
         # The gateway is a loopback (or explicitly named) peer, never something to route through the
         # user's HTTP(S) proxy; websockets>=14 reads HTTP_PROXY/HTTPS_PROXY by default and a proxy that
         # cannot reach 127.0.0.1 turns every launch into a 10 s open timeout.
-        async with connect(url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024,
+        async with connect(url, subprotocols=protocols, open_timeout=10, max_size=MAX_FRAME_BYTES,
                            proxy=None) as ws:
             if protocols and ws.subprotocol != GATEWAY_WS_PROTOCOL:
                 raise GatewayClientError("Gateway protocol mismatch; update/restart required")
