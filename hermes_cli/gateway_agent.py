@@ -78,7 +78,7 @@ class GatewayAgent:
                  tool_gen_callback=None, notice_callback=None, notice_clear_callback=None,
                  reaction_callback=None, interim_assistant_callback=None, connection=None,
                  push_reasoning=False, model_confirm_callback=None, modal_withdraw_callback=None,
-                 one_turn=False, **_ignored):
+                 one_turn=False, one_turn_reasoning=None, **_ignored):
         conn = connection or getattr(session_db, "connection", None)
         if conn is None:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
@@ -172,8 +172,10 @@ class GatewayAgent:
         # below then overwrites ``model``): that preset rides the turn's submit as its model_override.
         self._moa_preset = model if provider == "moa" else None
         # ``/model --once``: chat retires the agent that switch_model touched and builds this one.
-        # Capture the pick before ``_apply_info`` copies the session model over it.
-        self._turn_route = self._route_off_session(model, provider) if one_turn else None
+        # Capture the pick, and the ``--reasoning`` level riding it, before ``_apply_info`` copies the
+        # session model over it.
+        self._turn_route = self._route_off_session(
+            model, provider, _effort_word(one_turn_reasoning) or "") if one_turn else None
         self._apply_info(self._state().info)
         if self._turn_route:
             self.model = self._turn_route["model"]
@@ -211,9 +213,23 @@ class GatewayAgent:
 
     @reasoning_config.setter
     def reasoning_config(self, config):
-        """/new's re-derived effort and a one-turn restore: ``session.mutate reasoning`` when it differs from
-        the session's effort (an inherited level stays inherited)."""
+        """/new's re-derived effort: ``session.mutate reasoning`` when it differs from the session's effort
+        (an inherited level stays inherited)."""
         self._set_reasoning(config, explicit=False)
+
+    def stage_one_turn_reasoning(self, config):
+        """``/model X --once --reasoning <level>``: the level is that turn's only, so it rides the turn's
+        ``model_override`` with the pick. Never ``session.mutate reasoning``: the owner pins every
+        session-scope level (``session_pins.reasoning``), and a pinned session stops following its profile."""
+        self._reasoning_config = config
+        route = self._turn_route or {"model": self.model, **({"provider": self.provider} if self.provider else {})}
+        self._turn_route = self._route_off_session(
+            route["model"], route.get("provider", ""), _effort_word(config) or "")
+
+    def restore_reasoning(self, config):
+        """A ``/model --once`` restore: the previous level goes back on this object only. The one turn never
+        wrote the session's reasoning, so there is nothing to put back there."""
+        self._reasoning_config = config
 
     def pin_reasoning(self, config):
         """``/reasoning <level>`` (session scope; main rebuilds its agent with the new config) and a model
@@ -240,12 +256,15 @@ class GatewayAgent:
         except (GatewayClientError, KeyError, TypeError) as exc:
             logger.debug("session.mutate reasoning failed: %s", exc)
 
-    def _route_off_session(self, model, provider=""):
-        """``{model, provider}`` when the session runs another route, else None."""
+    def _route_off_session(self, model, provider="", reasoning=""):
+        """``{model, provider}`` when the session runs another route, else None. A one-turn ``reasoning``
+        level rides along, and makes even the session's own route a one-turn override."""
         state = self._state()
-        if not model or not (state.info or {}).get("model") or state.runs_route(model, provider):
+        if not model or not (state.info or {}).get("model") or (
+                state.runs_route(model, provider) and not reasoning):
             return None
-        return {"model": model, **({"provider": provider} if provider else {})}
+        return {"model": model, **({"provider": provider} if provider else {}),
+                **({"reasoning": reasoning} if reasoning else {})}
 
     def switch_model(self, new_model, new_provider="", api_key="", base_url="", api_mode="", capabilities=None, *,
                      once=False, restore=False):

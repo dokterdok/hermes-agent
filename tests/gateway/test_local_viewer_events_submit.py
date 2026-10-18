@@ -33,7 +33,7 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
         await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
         for rid, extra in (
                 ('full', {'turn_author': author, 'api_text': '[voice] hi', 'clarify_batch': True,
-                          'model_override': {'model': ' gpt-x ', 'provider': 'openrouter'}}),
+                          'model_override': {'model': ' gpt-x ', 'provider': 'openrouter', 'reasoning': 'High'}}),
                 ('plain', {})):
             reply = await connection.dispatch({'id': 2, 'method': 'prompt.submit', 'params': {
                 'session_id': 's', 'submission_id': rid, 'text': rid, **extra}})
@@ -41,6 +41,7 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
             await authority.sessions['s'].task
         for rid, bad in (('no-model', {'model_override': {'provider': 'x'}}),
                          ('extra-key', {'model_override': {'model': 'm', 'base_url': 'http://x'}}),
+                         ('bad-level', {'model_override': {'model': 'm', 'reasoning': 'hgih'}}),
                          ('bad-text', {'api_text': 7}),
                          ('bad-author', {'turn_author': 'not json'}),
                          ('bad-batch', {'clarify_batch': 'yes'})):
@@ -53,9 +54,9 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
     rows = {row['request_id']: row for row in list_session_admissions(authority.db, session_id='s', pending_only=False)}
     assert rows['full']['payload']['cli_turn_v1'] == {
         'turn_author': author, 'api_text': '[voice] hi', 'clarify_batch': True,
-        'model_override': {'model': 'gpt-x', 'provider': 'openrouter'}}
+        'model_override': {'model': 'gpt-x', 'provider': 'openrouter', 'reasoning': 'high'}}
     assert 'cli_turn_v1' not in rows['plain']['payload']
-    assert not {'no-model', 'extra-key', 'bad-text', 'bad-author', 'bad-batch'} & set(rows)
+    assert not {'no-model', 'extra-key', 'bad-level', 'bad-text', 'bad-author', 'bad-batch'} & set(rows)
     assert seen[0] == ('full', rows['full']['payload']['cli_turn_v1'], {}, author)
     # The next admission never inherits the previous turn's fields.
     assert seen[1][:3] == ('plain', {}, {})
@@ -147,6 +148,24 @@ def test_the_turn_sends_api_text_persists_the_clean_text_and_runs_the_one_turn_m
     [(message, kwargs)] = agent.calls
     assert message == "clean text" and "persist_user_message" not in kwargs
     assert _RecordingAgent.built[-1]["model"] == "session-model"
+
+
+def test_a_one_turn_reasoning_level_runs_that_turn_only():
+    """``/model gpt-x --once --reasoning high``: that admission's agent runs at the level it carries; the
+    next turn runs the session's own level again."""
+    from gateway.session_cli_turn import cli_turn_scope
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    switched = ModelSwitchResult(success=True, new_model="gpt-x", target_provider="openrouter",
+                                 api_key="k2", base_url="http://or", api_mode="chat_completions")
+    runner = _gateway_runner()
+    runner._resolve_session_reasoning_config.return_value = {"enabled": True, "effort": "low"}
+    committed = {"model_override": {"model": "gpt-x", "provider": "openrouter", "reasoning": "high"}}
+    with patch("hermes_cli.model_switch.switch_model", return_value=switched), cli_turn_scope("adm-1", committed):
+        _result, once = _run_turn(runner)
+        _result, after = _run_turn(runner, admission_id="adm-2")
+    assert once.reasoning_config == {"enabled": True, "effort": "high"}
+    assert after.reasoning_config == {"enabled": True, "effort": "low"}
 
 
 def test_an_unresolvable_one_turn_model_fails_the_turn_without_running_it():

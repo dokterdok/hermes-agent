@@ -39,12 +39,18 @@ def admit_cli_turn(params):
             committed['api_text'] = api_text
     override = params.get('model_override')
     if override is not None:
-        if (not isinstance(override, dict) or set(override) - {'model', 'provider'}
+        if (not isinstance(override, dict) or set(override) - {'model', 'provider', 'reasoning'}
                 or not isinstance(override.get('model'), str) or not override['model'].strip()
-                or not isinstance(override.get('provider', ''), str)):
+                or not isinstance(override.get('provider', ''), str)
+                or not isinstance(override.get('reasoning') or '', str)):
+            raise RuntimeStoreError('invalid_params')
+        from hermes_constants import parse_reasoning_effort
+        reasoning = (override.get('reasoning') or '').strip().lower()
+        if reasoning and parse_reasoning_effort(reasoning) is None:
             raise RuntimeStoreError('invalid_params')
         committed['model_override'] = {'model': override['model'].strip(),
-                                       **({'provider': override['provider']} if override.get('provider') else {})}
+                                       **({'provider': override['provider']} if override.get('provider') else {}),
+                                       **({'reasoning': reasoning} if reasoning else {})}
     batch = params.get('clarify_batch')
     if batch is not None and type(batch) is not bool:
         raise RuntimeStoreError('invalid_params')
@@ -183,6 +189,16 @@ def one_turn_route(turn, policy, model, runtime_kwargs):
     from gateway.session_authorities import active_authority
     config = policy.config(active_authority(turn._runner)) if policy else turn._ctx.user_config
     return one_turn_runtime(override, model, runtime_kwargs, config)
+
+
+def one_turn_reasoning(turn, reasoning_config):
+    """The executing admission's ``/model --once --reasoning`` level, else ``reasoning_config`` (the
+    session's). It is this turn's only: nothing writes it to the session."""
+    effort = (cli_turn(turn._ctx.inbound_message_id).get('model_override') or {}).get('reasoning')
+    if not effort:
+        return reasoning_config
+    from hermes_constants import parse_reasoning_effort
+    return parse_reasoning_effort(effort)
 
 
 def run_classic_cli_turn(turn, run):

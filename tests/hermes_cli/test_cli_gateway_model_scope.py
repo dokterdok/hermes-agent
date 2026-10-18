@@ -158,6 +158,27 @@ def test_model_once_rides_one_turn_and_never_touches_the_session(monkeypatch):
     assert (stub.model, stub.agent.model) == ("old/model", "old/model")
 
 
+@pytest.mark.parametrize("pick", [("claude-sonnet-4.6", "anthropic"), ("old/model", "openrouter")],
+                         ids=["another-model", "the-sessions-model"])
+def test_once_reasoning_rides_the_one_turn_and_never_the_session(monkeypatch, pick):
+    """``/model B --once --reasoning high``: the level is that turn's, like the model. A session reasoning
+    commit would stay the session's own level for good, so it would stop following its profile."""
+    model, provider = pick
+    conn = RecordingConnection({"model": "old/model", "provider": "openrouter", "reasoning_effort": "low"})
+    cli_mod, stub, printed = _chat_cli(monkeypatch, conn)
+    stub._confirm_and_apply_cli_model_switch = cli_mod.HermesCLI._confirm_and_apply_cli_model_switch.__get__(stub)
+    _pick(monkeypatch, model, provider, "https://openrouter.ai/api/v1", "chat_completions")
+    cli_mod.HermesCLI._handle_model_switch(stub, f"/model {model} --provider {provider} --once --reasoning high")
+    assert not [line for line in printed if "fail" in line.lower()], printed
+    stub.chat("the once turn")
+    stub.chat("the turn after")
+    assert not [p for m, p in conn.calls if m == "session.mutate" and p.get("operation") == "reasoning"]
+    once, after = _submits(conn)
+    assert once.get("model_override") == {"model": model, "provider": provider, "reasoning": "high"}, once
+    assert "model_override" not in after, after
+    assert stub.reasoning_config is None and stub.agent.reasoning_config is None
+
+
 def test_a_second_once_before_the_turn_restores_the_route_before_the_first(monkeypatch):
     conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})
     cli_mod, stub, _printed = _chat_cli(monkeypatch, conn)

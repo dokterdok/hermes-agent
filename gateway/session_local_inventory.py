@@ -227,14 +227,13 @@ def publish_settled_info(turn, agent) -> None:
 
     A ``model_override`` admission (``/model --once``, ``/moa``) built its agent on the one-turn
     route. That agent must not become the route Desktop, the TUI, and resume read. Drop it from
-    the cache and publish the policy model and provider."""
+    the cache and publish the policy model, provider and reasoning level."""
     if agent is None:
         return
     with contextlib.suppress(Exception):
         from gateway.session_cli_turn import cli_turn
         from gateway.session_contract import SessionRef
         from gateway.session_local import local_session_info
-        from gateway.session_policy import policy_for_source
         authority, session_id, _generation = turn._approval_owner
         message_id = getattr(getattr(turn, "_ctx", None), "inbound_message_id", None)
         one_turn = bool(cli_turn(message_id).get("model_override"))
@@ -252,13 +251,24 @@ def publish_settled_info(turn, agent) -> None:
         info = {**agent_inventory(agent), **local_session_info(authority, ref)}
         if one_turn and live is not None:
             try:
-                runner = getattr(authority, "runner", None) or turn._runner
-                policy = policy_for_source(runner, live.source)
+                info.update(_session_route_fields(authority, getattr(authority, "runner", None) or turn._runner, live))
             except Exception:
                 logger.debug("one-turn policy route unavailable", exc_info=True)
-                policy = None
-            if policy is not None:
-                info["model"] = policy.current_model(authority)
-                if policy.provider:
-                    info["provider"] = policy.provider
         turn._publish_execution("session.info", info)
+
+
+def _session_route_fields(authority, runner, live) -> dict:
+    """The session's own next-turn model, provider and reasoning fields, for the ``session.info`` a
+    one-turn admission settles with: its agent ran another route or level for that turn only."""
+    from gateway.session_local import _reasoning_fields
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(runner, live.source)
+    if policy is None:
+        return {}
+    model = policy.current_model(authority)
+    fields = {"model": model, **({"provider": policy.provider} if policy.provider else {})}
+    peek = getattr(runner, "_peek_session_state", None)
+    state = peek(live.route) if peek is not None else None
+    typed = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
+    fields.update(_reasoning_fields(None, policy, model, authority, typed))
+    return fields

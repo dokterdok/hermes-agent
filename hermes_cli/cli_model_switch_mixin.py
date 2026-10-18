@@ -303,6 +303,35 @@ def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> 
     _cprint(f"    {t('cli.model.reasoning_effort_saved' if saved else 'cli.model.reasoning_effort', effort=effort)}")
 
 
+def _apply_one_turn_reasoning(cli, effort: str) -> None:
+    """``--reasoning <level>`` on a ``/model --once`` pick: the level is that turn's only, like the model.
+    The CLI runs it until the one-turn restore puts the previous level back. A gateway session's agent
+    sends it with the turn's ``model_override``, never as a session reasoning commit, which the owner
+    would keep as the session's own level for good."""
+    from cli import _cprint, _parse_reasoning_config
+    parsed = _parse_reasoning_config(effort)
+    if parsed is None:
+        return
+    cli.reasoning_config = parsed
+    # The agent chat builds for the turn carries it (``_init_agent``).
+    cli._pending_one_turn_reasoning = parsed
+    stage = getattr(cli.agent, "stage_one_turn_reasoning", None) if cli.agent is not None else None
+    if stage is not None:
+        stage(parsed)
+    elif cli.agent is not None:
+        cli.agent.reasoning_config = parsed
+    _cprint(f"    {t('cli.model.reasoning_effort', effort=effort)}")
+
+
+def _restore_agent_reasoning(agent, config) -> None:
+    """The pre-``--once`` level back on ``agent``; a gateway session's agent only restores its own copy."""
+    restore = getattr(agent, "restore_reasoning", None)
+    if restore is not None:
+        restore(config)
+    else:
+        agent.reasoning_config = config
+
+
 _ONE_TURN_SWITCH_KWARGS = ("once", "restore")
 
 
@@ -347,9 +376,13 @@ def _commit_model_switch(
             session_id=getattr(getattr(cli, "agent", None), "session_id", None) or getattr(cli, "session_id", None))
     if not picker:
         cli._pending_one_turn_model_restore = snapshot
+    if one_turn:
+        cli._pending_one_turn_reasoning = None  # a second --once replaces the first one's level too
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
-    if reasoning_effort:
-        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn)
+    if reasoning_effort and one_turn:
+        _apply_one_turn_reasoning(cli, reasoning_effort)
+    elif reasoning_effort:
+        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
@@ -695,6 +728,7 @@ class CLIModelSwitchMixin:
         from cli import _cprint, logger
         if not snapshot:
             return
+        self._pending_one_turn_reasoning = None
         one_turn = _runtime_fields(self)
         for key in _RUNTIME_FIELDS:
             if key in snapshot:
@@ -704,7 +738,7 @@ class CLIModelSwitchMixin:
         if agent is None:
             return
         if "reasoning_config" in snapshot:
-            agent.reasoning_config = snapshot["reasoning_config"]
+            _restore_agent_reasoning(agent, snapshot["reasoning_config"])
         primary = snapshot.get("agent_primary_runtime")
         if primary and hasattr(agent, "_restore_primary_runtime"):
             try:
@@ -735,7 +769,7 @@ class CLIModelSwitchMixin:
                 _cprint(f"  {notice}")
                 return
             if "reasoning_config" in snapshot:
-                agent.reasoning_config = snapshot["reasoning_config"]
+                _restore_agent_reasoning(agent, snapshot["reasoning_config"])
 
     @staticmethod
     def _filter_model_picker_entries(entries: list, query: str) -> list:

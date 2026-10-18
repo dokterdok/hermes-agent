@@ -188,6 +188,8 @@ class CanonicalTurnAuthor(Params):
 class CanonicalModelOverride(Params):
     model: str
     provider: str | None = None
+    # ``/model --once --reasoning <level>``: that turn's reasoning effort, never the session's.
+    reasoning: str | None = None
 
 
 class CanonicalSubmitParams(CanonicalSessionParams):

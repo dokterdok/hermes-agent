@@ -9,9 +9,13 @@ from hermes_cli.model_switch import DirectAlias, ModelSwitchResult
 
 
 def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monkeypatch):
+    """The one turn ran another model at another level; the published route and level are the session's."""
     from gateway.session_local_inventory import publish_settled_info
     published, evicted = [], []
-    policy = SimpleNamespace(current_model=lambda _authority: "session-model", provider="openrouter", source="cli")
+    policy = SimpleNamespace(
+        current_model=lambda _authority: "session-model", provider="openrouter", source="cli",
+        effective=lambda _authority, secrets=True: (
+            {"model": {"provider": "openrouter"}, "agent": {"reasoning_effort": "low"}}, "session-model"))
     live = SimpleNamespace(route="route-1", source=SimpleNamespace())
     authority = SimpleNamespace(profile_id="p", sessions={"s": live})
     turn = SimpleNamespace(
@@ -25,16 +29,18 @@ def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monk
 
     from gateway import session_local, session_policy
     monkeypatch.setattr(session_local, "local_session_info", lambda *_a, **_k: {
-        "model": "once-model", "provider": "anthropic"})
+        "model": "once-model", "provider": "anthropic", "reasoning_effort": "high"})
     monkeypatch.setattr(session_policy, "policy_for_source", lambda *_a, **_k: policy)
 
-    with cli_turn_scope("adm", {"model_override": {"model": "once-model", "provider": "anthropic"}}):
+    with cli_turn_scope("adm", {"model_override": {"model": "once-model", "provider": "anthropic",
+                                                   "reasoning": "high"}}):
         publish_settled_info(turn, agent)
 
     assert evicted == ["route-1"]
     assert published and published[0][0] == "session.info"
     assert published[0][1]["model"] == "session-model"
     assert published[0][1]["provider"] == "openrouter"
+    assert published[0][1]["reasoning_effort"] == "low"
 
 
 def test_same_provider_override_keeps_the_session_endpoint_and_key(monkeypatch):
