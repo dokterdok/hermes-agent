@@ -37,7 +37,7 @@ await local.nativeGatewayHttpHeaders({gatewayEndpoint: endpoint, baseUrl: origin
 console.log(JSON.stringify({route, ...recorded}));
 '''
     result = subprocess.run([node, '--input-type=module', '--eval', script, str(tmp_path), name],
-                            cwd=Path(__file__).resolve().parents[3], capture_output=True, text=True, timeout=30)
+                            cwd=Path(__file__).resolve().parents[4], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     answer = json.loads(result.stdout)
     assert answer == {'route': f'/api/profiles/{name}', 'profile': str(tmp_path / 'profiles' / name),
