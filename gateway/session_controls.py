@@ -732,7 +732,10 @@ class AuthorityConnection:
             from gateway.session_results import admission_result
             saved = admission_result(self.authority.db, receipt.admission_id)
             if saved is not None:
-                out['result'] = saved['result']
+                result = saved['result']
+                if params.get('omit_messages') is True and isinstance(result, dict):
+                    result = {k: v for k, v in result.items() if k not in ('messages', '_turn_user_row')}
+                out['result'] = result
                 out['usage'] = saved.get('usage') or {}
         return out
 

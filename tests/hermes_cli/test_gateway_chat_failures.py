@@ -113,7 +113,8 @@ class _SettledPeer:
 
     async def rpc(self, method, **params):
         if method == "prompt.receipt":
-            assert params == {"session_id": "stored", "admission_id": "mine", "include_result": True}
+            assert params == {"session_id": "stored", "admission_id": "mine", "include_result": True,
+                              "omit_messages": True}
             return {"status": "terminal", "outcome": self.outcome, "result": self.result}
         assert method == "prompt.submit"
         self.events.put_nowait({"method": "event", "params": {

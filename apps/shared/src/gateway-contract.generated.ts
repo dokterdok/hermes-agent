@@ -4514,8 +4514,9 @@ export interface PromptReceiptParams {
   session_id: string
   admission_id: string
   include_result?: boolean | null
+  omit_messages?: boolean
 }
-/** ``result`` / ``usage``: the structured turn result committed at settlement, only with ``include_result`` on a terminal admission that saved one. */
+/** ``result`` / ``usage``: the structured turn result committed at settlement, only with ``include_result`` on a terminal admission that saved one. ``omit_messages`` leaves out the turn's transcript rows, which repeat the answer: a viewer that reads only the answer and the ledger gets one copy, so the reply fits a frame the answer alone fits. */
 export interface PromptReceiptResult {
   admission_id: string
   ref: CanonicalSessionRef

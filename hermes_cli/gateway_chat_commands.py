@@ -155,8 +155,8 @@ async def _usage(view, rest):
     admission = next(reversed(view.completions), None)
     if admission is None:
         return
-    receipt = await view.client.rpc("prompt.receipt", session_id=view.session_id,
-                                    admission_id=admission, include_result=True)
+    from hermes_cli.gateway_client import result_receipt
+    receipt = await result_receipt(view.client, view.session_id, admission)
     result = receipt.get("result") or {}
     if not isinstance(result, dict) or not result:
         return

@@ -14,7 +14,7 @@ from acp.schema import (
     SessionCapabilities, SessionForkCapabilities, SessionListCapabilities, SessionResumeCapabilities,
 )
 
-from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import GatewayClientError, connect_gateway, result_receipt
 from hermes_constants import get_hermes_home
 from acp_adapter.gateway_reply import GatewayReplyMixin, _text
 from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
@@ -723,8 +723,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if status:
             return
         try:
-            receipt = await self._gateway.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
-                                              include_result=True)
+            receipt = await result_receipt(self._gateway, session_id, admission_id)
         except (GatewayClientError, OSError, TimeoutError):
             receipt = {"status": "terminal"}  # unreadable
         verdict = settled(receipt)
@@ -740,8 +739,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _settled_receipt(self, client, held_id, session_id, receipt, saved=None):
         """``saved``: the receipt already fetched with its result (a replay gap's recovery read)."""
         admission_id = receipt["admission_id"]
-        saved = saved or await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
-                                          include_result=True)
+        saved = saved or await result_receipt(client, session_id, admission_id)
         if admission_id in self._terminals or admission_id in self._settling:
             return  # this connection's pump carried the completion itself
         self._settling.add(admission_id)  # claimed before the first await; the pump yields to it

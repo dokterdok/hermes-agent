@@ -31541,6 +31541,11 @@
             ],
             "default": null,
             "title": "Include Result"
+          },
+          "omit_messages": {
+            "default": false,
+            "title": "Omit Messages",
+            "type": "boolean"
           }
         },
         "required": [
@@ -31552,7 +31557,7 @@
       },
       "PromptReceiptResult": {
         "additionalProperties": false,
-        "description": "``result`` / ``usage``: the structured turn result committed at settlement, only with\n``include_result`` on a terminal admission that saved one.",
+        "description": "``result`` / ``usage``: the structured turn result committed at settlement, only with\n``include_result`` on a terminal admission that saved one. ``omit_messages`` leaves out the turn's\ntranscript rows, which repeat the answer: a viewer that reads only the answer and the ledger gets\none copy, so the reply fits a frame the answer alone fits.",
         "properties": {
           "admission_id": {
             "title": "Admission Id",

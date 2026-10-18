@@ -135,3 +135,97 @@ async def test_ack_during_the_reattach_settles_against_its_snapshot(capsys):
         renderer.cancel()
         await asyncio.gather(renderer, return_exceptions=True)
     assert capsys.readouterr().out == "Hello\n"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_past_4_mib_that_ended_in_the_gap_settles_from_one_read(tmp_path, capsys, monkeypatch):
+    """The turn ends in the hole with a 5 MiB answer. Its saved result repeats the answer in the turn's
+    transcript rows, and both copies outgrow the client's frame limit: the recovery read takes it once, and
+    so does ``/usage`` reading the turn's ledger afterwards."""
+    from unittest.mock import AsyncMock
+    from gateway.session_results import finish_result
+    from hermes_cli import gateway_chat_commands
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_cli.gateway_client import MAX_FRAME_BYTES, GatewayClientError
+    from hermes_state_runtime import admit_session_input, claim_session_input
+    answer = "word " * (1024 * 1024)
+
+    class Hole(Owner):
+        async def rpc(self, method, _timeout=None, **params):
+            if method == "prompt.submit":
+                admit_session_input(self.db, epoch=self.epoch, principal_id=self.conn.actor.subject, session_id="s",
+                                    request_id=params["input_id"], payload={"text": params["text"]})
+                row = claim_session_input(self.db, epoch=self.epoch, session_id="s")
+                finish_result(self.db, epoch=self.epoch, row=row, response=answer, outcome="completed", result={
+                    "result": {"final_response": answer, "completed": True, "input_tokens": 21,
+                               "current_turn_user_idx": 0, "messages": [
+                        {"role": "user", "content": params["text"]}, {"role": "assistant", "content": answer}]},
+                    "usage": {}})
+                self.events.put_nowait(GAP)
+                return {"admission_id": row["admission_id"], "status": "queued"}
+            if method == "prompt.receipt":  # the wire contract and handler, then the client's frame limit
+                reply = await self.conn.dispatch({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                if len(json.dumps(reply)) > MAX_FRAME_BYTES:
+                    raise GatewayClientError("Gateway disconnected")  # the socket closes with 1009
+                return reply["result"]
+            return await super().rpc(method, _timeout=_timeout, **params)
+
+    owner = Hole(tmp_path / "state.db")
+    try:
+        view = GatewayChatView(owner, await owner.conn.resume(owner.ref, {}), quiet=True)
+        assert await asyncio.wait_for(view.run("write a long answer", oneshot=True), 30) == 0
+        assert capsys.readouterr().out.count(answer) == 1
+        monkeypatch.setattr(gateway_chat_commands, "forward", AsyncMock())  # the owner's own report
+        assert await view.command("/usage") is True
+        assert "Input tokens: 21" in capsys.readouterr().out
+    finally:
+        await asyncio.to_thread(owner.finish)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["gap", "live"])
+async def test_an_owner_from_before_omit_messages_still_gives_a_oneshot_its_result(tmp_path, monkeypatch, path):
+    """An owner running the previous build refuses ``omit_messages`` by name. The one-shot asks again
+    without it, so the turn's committed result (a partial one: exit 2) still decides the exit code, after a
+    gap (the recovery read) and live (the ledger read)."""
+    from dataclasses import replace
+    from gateway.session_results import finish_result
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_cli.gateway_client import rpc_error
+    from hermes_state_runtime import admit_session_input, claim_session_input
+    from tui_gateway.contracts.base import Params
+    from tui_gateway.contracts.registry import CANONICAL_METHODS
+
+    class PreviousReceiptParams(Params):
+        session_id: str
+        admission_id: str
+        include_result: bool | None = None
+    monkeypatch.setitem(CANONICAL_METHODS, "prompt.receipt", replace(
+        CANONICAL_METHODS["prompt.receipt"], params=PreviousReceiptParams))
+
+    class PreviousOwner(Owner):
+        async def rpc(self, method, _timeout=None, **params):
+            if method == "prompt.submit":
+                admit_session_input(self.db, epoch=self.epoch, principal_id=self.conn.actor.subject, session_id="s",
+                                    request_id=params["input_id"], payload={"text": params["text"]})
+                row = claim_session_input(self.db, epoch=self.epoch, session_id="s")
+                finish_result(self.db, epoch=self.epoch, row=row, response="partial", outcome="completed", result={
+                    "result": {"final_response": "partial", "completed": False, "partial": True}, "usage": {}})
+                self.events.put_nowait(GAP if path == "gap" else {"method": "event", "params": {
+                    "type": "message.complete", "session_id": "s", "admission_id": row["admission_id"],
+                    "payload": {"text": "partial", "outcome": "completed"}}})
+                return {"admission_id": row["admission_id"], "status": "queued"}
+            if method == "prompt.receipt":
+                reply = await self.conn.dispatch({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                if "error" in reply:
+                    raise rpc_error(reply["error"])
+                return reply["result"]
+            return await super().rpc(method, _timeout=_timeout, **params)
+
+    owner = PreviousOwner(tmp_path / "state.db")
+    try:
+        view = GatewayChatView(owner, await owner.conn.resume(owner.ref, {}), quiet=True)
+        view.unattended = True
+        assert await asyncio.wait_for(view.run("q", oneshot=True), 30) == 2
+    finally:
+        await asyncio.to_thread(owner.finish)
