@@ -225,6 +225,52 @@ async def test_restart_waits_for_a_held_text_queued_behind_a_slow_capture(monkey
 
 
 @pytest.mark.asyncio
+async def test_a_later_text_is_read_while_an_earlier_video_still_captures(monkeypatch, tmp_path):
+    """Idle video V (slow capture), queue-mode text B (a burst, queued behind V's route reservation),
+    then text C. The one reader awaits C's handle_message before it reads any other chat of the
+    account, or this chat's /stop, so it must not wait out V's capture (MSG-26): B's place is fixed,
+    and a command still waits for B's row (``burst_gate``)."""
+    adapter, source = _signal(monkeypatch)
+    entered, release = _hold_capture(monkeypatch)
+    runner = GatewayRunner(GatewayConfig())
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=True, message_id='sent')
+    monkeypatch.setattr(adapter, 'send', send)
+    monkeypatch.setattr(adapter, 'send_typing', lambda *a, **k: asyncio.sleep(0))
+    adapter.gateway_runner = runner
+    runner.adapters = {adapter.platform: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
+    runner._wire_adapter_handlers(adapter, busy_text_mode='queue')
+
+    async def turn(event, source, quick_key, run_generation):
+        execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
+        return 'ok'
+    monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    clip = tmp_path / 'clip.mp4'
+    clip.write_bytes(b'video-bytes' * 1000)
+    third = None
+    try:
+        await adapter.handle_message(MessageEvent(text='', message_type=MessageType.VIDEO, source=source,
+                                                  message_id='V', media_urls=[str(clip)], media_types=['video/mp4']))
+        assert await asyncio.to_thread(entered.wait, 5)
+        await adapter.handle_message(MessageEvent(text='B', source=source, message_id='B'))
+        await async_wait_until(lambda: any(entry[1] >= 2 for entry in authority._route_turns.values()),
+                               timeout=10, what='B queued behind the capturing V')
+        third = asyncio.create_task(adapter.handle_message(MessageEvent(text='C', source=source, message_id='C')))
+        done, _ = await asyncio.wait({third}, timeout=5.0)
+        assert done, "the serial reader waited for V's capture before reading past C"
+    finally:
+        release.set()
+        if third is not None:
+            await asyncio.wait_for(third, 15)
+    await async_wait_until(lambda: len(_rows(authority)) == 3 and all(
+        row['status'] == 'terminal' for row in _rows(authority)), timeout=15, what='the three turns to run')
+    assert [row['request_id'] for row in _rows(authority)] == ['V', 'B', 'C']
+    await asyncio.to_thread(authority.db.close)
+
+
+@pytest.mark.asyncio
 async def test_restart_waits_for_a_direct_busy_input_queued_behind_a_slow_capture(monkeypatch, tmp_path):
     """The same with the default busy mode: the text is no burst, so it goes straight to the shared
     runtime, queues behind the capture and releases the reader before it is durable. With no burst commit
