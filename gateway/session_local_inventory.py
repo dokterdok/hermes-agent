@@ -241,10 +241,10 @@ def publish_settled_info(turn, agent) -> None:
         if one_turn:
             sessions = getattr(authority, "sessions", None)
             live = sessions.get(session_id) if hasattr(sessions, "get") else None
-            evict = getattr(getattr(turn, "_runner", None), "_evict_cached_agent", None)
+            evict = getattr(getattr(turn, "_runner", None), "_evict_turn_agent", None)
             if live is not None and callable(evict):
                 try:
-                    evict(live.route)
+                    evict(live.route, agent)
                 except Exception:
                     logger.debug("one-turn agent cache drop failed", exc_info=True)
         ref = SessionRef(authority.profile_id, session_id)

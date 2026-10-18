@@ -31,9 +31,12 @@ class TurnState:
     # token for their own generation, so a displaced turn's unwind frees only its own lease and
     # never a successor's (an evicted turn and its replacement may both hold one briefly).
     lease_tokens: dict[int, Any] = field(default_factory=dict)
+    # Agents this turn built for itself alone (``/model --once``, ``/moa``) and already dropped from
+    # the cache while still running them: released once the slot clears (``_release_running_agent_state``).
+    retired: list[Any] = field(default_factory=list)
 
     def clear(self) -> None:
-        """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
+        """Reset the per-turn slot.  The caller pops ``lease`` and ``retired`` first to release them."""
         self.agent = self.lease = self.event = self.ctx = None
         self.started_ts = self.busy_ack_ts = 0.0
 

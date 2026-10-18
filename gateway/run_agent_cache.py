@@ -305,15 +305,21 @@ class GatewayAgentCacheMixin:
         ):
             return False
         state = self._peek_session_state(session_key)
+        retired = []
         if state is not None:
             if state.turn.lease is not None:
                 try:
                     state.turn.lease.release()
                 except Exception:
                     logger.debug("Failed to release active session slot", exc_info=True)
+            retired, state.turn.retired = state.turn.retired, []
             # One structured reset instead of a drifting pop-list. Turn-lease tokens are deliberately NOT
             # cleared here — _release_turn_lease owns them.
             state.turn.clear()
+        for agent in retired:  # dropped from the cache by its own turn (_evict_turn_agent)
+            self._spawn_release_thread(self._release_turn_agent_soft, (agent,),
+                                       f"agent-retire-{str(session_key)[:24]}", inline_fallback=True,
+                                       session_key=session_key)
         # Turn boundary: a running-agent slot was just released; persist the new (lower) in-flight count
         # so the dashboard readout stays current. Preserves gateway_state (see _persist_active_agents).
         self._persist_active_agents()
@@ -813,7 +819,7 @@ class GatewayAgentCacheMixin:
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
-    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False) -> None:
+    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False, release=None) -> None:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -824,7 +830,7 @@ class GatewayAgentCacheMixin:
         (sockets + held buffers) is freed promptly rather than waiting on CPython GC — AIAgent holds
         reference cycles (callbacks, tool state) that delay refcount collection, so a manual release is
         required to keep gateway RSS flat across many /new, /model, undo and reset operations (#29298, same
-        leak class as #25315).
+        leak class as #25315). ``release`` replaces the soft release (``_evict_turn_agent``).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
@@ -851,9 +857,35 @@ class GatewayAgentCacheMixin:
         if commit_memory:
             target, args = self._commit_then_release_soft, (agent, session_key, True)
         else:
-            target, args = self._release_evicted_agent_soft, (agent,)
+            target, args = release or self._release_evicted_agent_soft, (agent,)
         self._spawn_release_thread(target, args, f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
                                    session_key=session_key)
+
+    def _evict_turn_agent(self, session_key: str, agent: Any) -> None:
+        """Drop an agent a turn built for itself alone (``/model --once``, ``/moa``) and soft-release it,
+        under the owning profile, once nothing runs it. ``_evict_cached_agent`` never releases a running
+        agent and nothing else holds this one: a Codex app-server route's child process would outlive the
+        turn. While the turn still runs it, ``_release_running_agent_state`` releases it."""
+        _lock = getattr(self, "_agent_cache_lock", None)
+        with _lock or nullcontext():
+            cached = _first_agent((getattr(self, "_agent_cache", None) or {}).get(session_key))
+        if cached is agent:  # releases it, unless a turn still runs it
+            self._evict_cached_agent(session_key, release=self._release_turn_agent_soft)
+        state = self._peek_session_state(session_key)
+        if state is not None and state.turn.agent is agent:
+            state.turn.retired.append(agent)
+        elif cached is not agent:
+            self._spawn_release_thread(self._release_turn_agent_soft, (agent,),
+                                       f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
+                                       session_key=session_key)
+
+    def _release_turn_agent_soft(self, agent: Any) -> None:
+        """``_release_evicted_agent_soft`` for an agent its own turn dropped, right after that turn. Its
+        post-turn background review may still run on a fork listed in the agent's ``_active_children``;
+        the fork releases its own clients when it ends, so it is detached first instead of cut mid-request."""
+        from agent.background_review import _track_review_fork
+        _track_review_fork(agent, getattr(agent, "_background_review_agent", None), register=False)
+        self._release_evicted_agent_soft(agent)
 
     def _evict_cached_agent_at_boundary(self, session_key: str) -> None:
         """Reset and compress end the conversation the provider was tracking, so the old agent's

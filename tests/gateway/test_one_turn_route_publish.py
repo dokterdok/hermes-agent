@@ -21,7 +21,7 @@ def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monk
     turn = SimpleNamespace(
         _ctx=SimpleNamespace(inbound_message_id="adm", session_key="route-1"),
         _approval_owner=(authority, "s", 1),
-        _runner=SimpleNamespace(_evict_cached_agent=lambda key: evicted.append(key)),
+        _runner=SimpleNamespace(_evict_turn_agent=lambda key, _agent: evicted.append(key)),
         _publish_execution=lambda kind, payload: published.append((kind, payload)),
     )
     agent = SimpleNamespace(model="once-model", provider="anthropic", tools=None, _cached_system_prompt="",
@@ -41,6 +41,93 @@ def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monk
     assert published[0][1]["model"] == "session-model"
     assert published[0][1]["provider"] == "openrouter"
     assert published[0][1]["reasoning_effort"] == "low"
+
+
+def test_a_one_turn_agent_is_released_once_its_turn_ends(monkeypatch):
+    """The settle drops the one-turn agent from the cache while its turn still runs it, and nothing else
+    holds it. It is released when that turn's slot clears (a Codex app-server child would otherwise
+    outlive the turn), not while the turn runs it."""
+    import threading
+    from collections import OrderedDict
+    from unittest.mock import MagicMock
+
+    from gateway import session_local, session_policy
+    from gateway.run import GatewayRunner
+    from gateway.session_local_inventory import publish_settled_info
+    from tests.waiting import wait_until
+
+    route = "agent:main:local:dm:s"
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._agent_cache, runner._agent_cache_lock = OrderedDict(), threading.Lock()
+    runner._persist_active_agents = lambda: None
+    agent = MagicMock(model="once-model", provider="anthropic", tools=None, _cached_system_prompt="",
+                      context_compressor=None)
+    runner._agent_cache[route] = (agent, "sig-once", 0, "s")
+    runner._running_agents[route] = agent  # the turn that built it is still running
+    authority = SimpleNamespace(profile_id="p", sessions={"s": SimpleNamespace(route=route, source=SimpleNamespace())},
+                                runner=runner)
+    turn = SimpleNamespace(_ctx=SimpleNamespace(inbound_message_id="adm", session_key=route),
+                           _approval_owner=(authority, "s", 1), _runner=runner,
+                           _publish_execution=lambda *_a: None)
+    monkeypatch.setattr(session_local, "local_session_info", lambda *_a, **_k: {"model": "once-model"})
+    monkeypatch.setattr(session_policy, "policy_for_source", lambda *_a, **_k: None)
+
+    with cli_turn_scope("adm", {"model_override": {"model": "once-model", "provider": "anthropic"}}):
+        publish_settled_info(turn, agent)
+    assert route not in runner._agent_cache
+    assert not agent.release_clients.called
+
+    runner._release_running_agent_state(route)
+    wait_until(lambda: agent.release_clients.called, timeout=5, what="the one-turn agent's release")
+
+
+class _Child:
+    released = False
+
+    def release_clients(self):
+        self.released = True
+
+
+def test_releasing_a_one_turn_agent_leaves_its_running_review_alone(monkeypatch):
+    """The one-turn agent's post-turn memory/skill review still runs on its fork when the turn's slot clears.
+    The agent's own release must not cut that fork's request (the fork releases its own clients when it
+    ends); any other leftover child is still released with the agent."""
+    import threading
+    from collections import OrderedDict
+
+    from agent.background_review import _track_review_fork
+    from gateway import session_local, session_policy
+    from gateway.run import GatewayRunner
+    from gateway.session_local_inventory import publish_settled_info
+    from run_agent import AIAgent
+
+    route = "agent:main:local:dm:s"
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._agent_cache, runner._agent_cache_lock = OrderedDict(), threading.Lock()
+    runner._persist_active_agents = lambda: None
+    runner._spawn_release_thread = lambda target, args, _name, *, inline_fallback, session_key=None: (
+        runner._run_release_in_profile_scope(target, args, session_key))
+    agent = AIAgent.__new__(AIAgent)  # the real release_clients
+    agent.client, agent._active_children, agent._active_children_lock = None, [], threading.Lock()
+    agent._background_review_agent, agent._session_messages = None, [{"role": "user", "content": "q"}]
+    review, leftover = _Child(), _Child()
+    _track_review_fork(agent, review, register=True)
+    agent._active_children.append(leftover)
+    runner._agent_cache[route] = (agent, "sig-once", 0, "s")
+    runner._running_agents[route] = agent
+    authority = SimpleNamespace(profile_id="p", sessions={"s": SimpleNamespace(route=route, source=SimpleNamespace())},
+                                runner=runner)
+    turn = SimpleNamespace(_ctx=SimpleNamespace(inbound_message_id="adm", session_key=route),
+                           _approval_owner=(authority, "s", 1), _runner=runner,
+                           _publish_execution=lambda *_a: None)
+    monkeypatch.setattr(session_local, "local_session_info", lambda *_a, **_k: {})
+    monkeypatch.setattr(session_policy, "policy_for_source", lambda *_a, **_k: None)
+
+    with cli_turn_scope("adm", {"model_override": {"model": "once-model", "provider": "custom"}}):
+        publish_settled_info(turn, agent)
+    runner._release_running_agent_state(route)
+    assert agent._session_messages == [] and leftover.released
+    assert not review.released
 
 
 def test_same_provider_override_keeps_the_session_endpoint_and_key(monkeypatch):
