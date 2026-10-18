@@ -148,9 +148,11 @@ async def _commit(adapter, session_key, burst, previous):
     if previous is not None:
         await asyncio.wait({previous})
     try:
-        # Durable: this task is what the chat's next burst, a command barrier and /restart wait on, so
-        # it ends once the row is committed, not when its FIFO position is fixed behind a capture.
-        await dispatch_shared_busy(adapter, burst.head, session_key, durable=True)
+        # Durable: the absorbed callers' acceptance is the head's, so this ends once the row is committed,
+        # not when its FIFO position is fixed behind a capture. A serial reader awaits this task for
+        # the chat's next input, so it ends on that position instead (MSG-26); the input is then held
+        # until it commits (``_hold_until_committed``), and a command waits for it there.
+        await dispatch_shared_busy(adapter, burst.head, session_key, durable=not _serial(adapter))
     except Exception:
         if not _serial(adapter):
             raise  # every absorbed caller sees it (``_settle``)

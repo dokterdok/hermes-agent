@@ -91,3 +91,57 @@ async def test_busy_burst_is_admitted_once(monkeypatch, tmp_path, case, follow_u
     finish.set()
     await async_wait_until(lambda: len(executed) >= 1 + len(expected), timeout=10, what='every merged turn executed')
     await asyncio.to_thread(authority.db.close)
+
+
+@pytest.mark.asyncio
+async def test_a_burst_queued_behind_a_capture_returns_once_committed(monkeypatch, tmp_path):
+    """No serial reader awaits this adapter's handle_message, so a busy burst queued behind the chat's
+    idle video V, still capturing, returns only once its row is committed, with that acceptance
+    (committed before ACK). A serial reader's burst returns on its FIFO place instead (MSG-26)."""
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.base import SendResult
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_results import execution_result
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    from tests.gateway.test_busy_burst_serial_reader import _hold_capture, _rows
+
+    monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
+    entered, release = _hold_capture(monkeypatch)
+    runner = GatewayRunner(GatewayConfig(group_sessions_per_user=False))
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token='fixture-token', typing_indicator=False,
+                                            extra={'group_sessions_per_user': False}))
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=True, message_id='sent')
+    monkeypatch.setattr(adapter, 'send', send)
+    adapter.gateway_runner = runner
+    runner.adapters = {Platform.DISCORD: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
+    runner._wire_adapter_handlers(adapter, busy_text_mode='queue')
+
+    async def turn(event, source, quick_key, run_generation):
+        execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
+        return 'ok'
+    monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    source = adapter.build_source(chat_id='room', chat_type='group', user_id='42')
+    clip = tmp_path / 'clip.mp4'
+    clip.write_bytes(b'video-bytes' * 1000)
+    text = MessageEvent(text='B', source=source, message_id='B')
+    try:
+        await adapter.handle_message(MessageEvent(text='', message_type=MessageType.VIDEO, source=source,
+                                                  message_id='V', media_urls=[str(clip)], media_types=['video/mp4']))
+        assert await asyncio.to_thread(entered.wait, 5)
+        caller = asyncio.create_task(adapter.handle_message(text))
+        await async_wait_until(lambda: any(entry[1] >= 2 for entry in authority._route_turns.values()),
+                               timeout=10, what='B queued behind the capturing V')
+        done, _ = await asyncio.wait({caller}, timeout=2.0)  # a negative window: >= 2 s per tests/AGENTS.md
+        assert not done, 'the burst returned on its FIFO place, before its row was committed'
+    finally:
+        release.set()
+    await asyncio.wait_for(caller, 15)
+    assert text._gateway_accepted is True
+    await async_wait_until(lambda: len(_rows(authority)) == 2 and all(
+        row['status'] == 'terminal' for row in _rows(authority)), timeout=15, what='both turns to run')
+    await asyncio.to_thread(authority.db.close)
