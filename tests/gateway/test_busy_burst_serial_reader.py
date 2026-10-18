@@ -218,7 +218,14 @@ async def test_restart_waits_for_a_held_text_queued_behind_a_slow_capture(monkey
         release.set()
     await asyncio.wait_for(restart, 15)
     assert sorted(row['request_id'] for row in _rows(authority)) == ['B', 'V'], _rows(authority)
+    # The next owner: this owner's drain may pause on B while draining, so once it stopped, a fresh
+    # drain runs what stayed queued.
+    from gateway.session_contract import SessionRef
+    await async_wait_until(lambda: all(live.task is None or live.task.done() for live in authority.sessions.values()),
+                           timeout=15, what="this owner's drain to stop")
     runner._draining = False
+    for sid in list(authority.sessions):
+        authority._schedule(SessionRef(authority.profile_id, sid))
     await async_wait_until(lambda: all(row['status'] == 'terminal' for row in _rows(authority)), timeout=15,
                            what='both turns to run')
     await asyncio.to_thread(authority.db.close)
