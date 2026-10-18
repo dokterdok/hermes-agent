@@ -236,6 +236,40 @@ def test_side_agent_runs_in_its_sessions_workspace(home, tmp_path, persistent):
     assert terminal_tool.resolve_task_overrides('bg_123456') == {}  # released with the side task
 
 
+@pytest.mark.parametrize('subdir', ['', 'web'])
+def test_preview_restart_with_a_client_cwd_runs_in_its_sessions_workspace_container(home, tmp_path, monkeypatch, subdir):
+    # Review (@dokterdok, round 2): Desktop always sends its cwd, and the preview body's cwd-only
+    # override dropped the workspace binding, so the restart ran in the profile container.
+    import asyncio
+    from types import SimpleNamespace
+    from gateway import session_local_recovery, session_tui_side as side
+    from tools.terminal_tool import get_session_cwd
+    ws1 = tmp_path / 'ws1'
+    (ws1 / 'web').mkdir(parents=True)
+    preview_cwd = str(ws1 / subdir) if subdir else str(ws1)
+    policy = _policy(home, ws1, persistent=True)
+    with _turn(policy, 'local-a'):
+        session_key = _plan('local-a')[0]
+    task_id = 'preview_123456'
+    seen = {}
+
+    class Agent:
+        def run_conversation(self, **kwargs):
+            seen['key'] = _plan(kwargs['task_id'])[0]
+            seen['cwd'] = get_session_cwd(kwargs['task_id'])
+            return {'final_response': 'done'}
+
+    monkeypatch.setattr(side, '_admit', lambda *a, **kw: (SimpleNamespace(), policy, 'http://localhost:3000', task_id))
+    monkeypatch.setattr(side, '_side_agent', lambda *a, **kw: Agent())
+    monkeypatch.setattr(side, '_spawn', lambda authority, ref, tid, event, body, **_: body())
+    monkeypatch.setattr(session_local_recovery, 'transcript_target', lambda *a: None)
+    connection = SimpleNamespace(authority=SimpleNamespace(runner=SimpleNamespace(), profile_id='fixture', sessions={}))
+    asyncio.run(side.preview_restart(connection, SimpleNamespace(session_id='local-a'), {'cwd': preview_cwd}))
+    # The session's own workspace container, never re-keyed on the preview cwd; a subdirectory stays
+    # the command cwd (translated under the session's /workspace mount).
+    assert seen == {'key': session_key, 'cwd': preview_cwd}
+
+
 def test_secondary_profiles_side_agent_never_gets_the_launch_profiles_workspace_container(home, tmp_path, monkeypatch):
     # Review (@dokterdok, round 2): beta's /bg in a folder with a live default session got default's env.
     from types import SimpleNamespace

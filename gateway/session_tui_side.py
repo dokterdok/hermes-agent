@@ -273,8 +273,10 @@ async def preview_restart(connection, ref, params):
         prompt = _preview_restart_prompt(url, cwd, context, bool(history))
         with _side_scope(authority, policy, task_id):
             if preview_cwd:
-                from tools.terminal_tool import register_task_env_overrides
-                register_task_env_overrides(task_id, {'cwd': preview_cwd})
+                from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides
+                # Over the session's workspace binding, never instead of it: the restart keeps the
+                # session's container (and its /root), with the preview folder as its cwd.
+                register_task_env_overrides(task_id, {**resolve_task_overrides(task_id), 'cwd': preview_cwd})
             try:
                 progress('Starting hidden restart agent')
                 # Deliberately NOT closed via AIAgent.close(): it would kill the background
