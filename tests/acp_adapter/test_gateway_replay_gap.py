@@ -203,3 +203,119 @@ async def test_without_a_gap_a_streamed_reused_reply_is_not_repainted(rig):
         agent._gateway.events.put_nowait(frame(kind, payload, admission="a", seq=seq))
     assert (await asyncio.wait_for(task, 2)).stop_reason == "end_turn"
     assert shown(agent).count("FINAL") == 1, shown(agent)
+
+
+@pytest.mark.asyncio
+async def test_a_post_ack_recovery_waits_for_room_in_a_full_queue():
+    """Session s completes in a replay gap before its ack lands, while t's frames fill the client queue behind
+    a slow editor update. A full queue parks the reader (CLI-37), so s's one recovery must wait for room."""
+    import json
+    from hermes_cli.gateway_client import GatewayClient
+
+    class Wire:
+        def __init__(self):
+            self.frames, self.submit = asyncio.Queue(), None
+
+        async def send(self, raw):
+            request = json.loads(raw)
+            reply = {"jsonrpc": "2.0", "id": request["id"]}
+            if request["method"] == "prompt.submit":
+                self.submit = reply  # answered by the test, once t has filled the queue
+                self.frames.put_nowait(frame("session.replay_gap", {}))
+                return
+            if request["method"] == "session.resume":
+                self.frames.put_nowait({**reply, "result": resumed()})
+                self.frames.put_nowait(frame("message.delta", {"text": "x"}, session="t", admission="t-a"))
+                return
+            self.frames.put_nowait({**reply, "result": terminal("a", "finished")})
+
+        async def __aiter__(self):
+            while True:
+                yield json.dumps(await self.frames.get())
+
+    wire, entered, release = Wire(), asyncio.Event(), asyncio.Event()
+    async with GatewayClient(wire) as client:
+        agent = GatewayACPAgent()
+        agent._gateway, agent._conn = client, AsyncMock()
+        agent._snapshots.update(s={"replay_epoch": "e", "last_sequence": 0}, t={"replay_epoch": "e", "last_sequence": 0})
+
+        async def deliver(**kwargs):
+            if kwargs["session_id"] == "t" and not entered.is_set():
+                entered.set()
+                await release.wait()
+
+        agent._conn.session_update.side_effect = deliver
+        pump = agent._event_task = asyncio.create_task(agent._events())
+        prompt = asyncio.create_task(agent.prompt([TextContentBlock(type="text", text="q")], "s"))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            for _ in range(client.events.maxsize):
+                wire.frames.put_nowait(frame("message.delta", {"text": "x"}, session="t", admission="t-a"))
+            wire.frames.put_nowait({**wire.submit, "result": {"admission_id": "a", "status": "queued"}})
+            await until(lambda: agent._admissions.get("s") == "a" and client.events.full())
+            release.set()
+            assert (await asyncio.wait_for(prompt, 10)).stop_reason == "end_turn"
+            assert shown(agent) == "finished"
+        finally:
+            release.set()
+            for task in (prompt, pump):
+                task.cancel()
+            await asyncio.gather(prompt, pump, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_prompt_whose_completion_arrived_before_its_ack_never_waits_for_queue_room():
+    """S completes live in a replay gap before its ack lands, while t's frames fill the queue behind a slow
+    editor update. Its terminal is known: it owes no recovery, so it never waits for the pump to make room."""
+    import json
+    from hermes_cli.gateway_client import GatewayClient
+
+    class Wire:
+        def __init__(self):
+            self.frames, self.submit = asyncio.Queue(), None
+
+        async def send(self, raw):
+            request = json.loads(raw)
+            reply = {"jsonrpc": "2.0", "id": request["id"]}
+            if request["method"] == "prompt.submit":
+                self.submit = reply
+                self.frames.put_nowait(frame("session.replay_gap", {}))
+                return
+            assert request["method"] == "session.resume", request
+            self.frames.put_nowait({**reply, "result": resumed({"admission_id": "a", "status": "started"})})
+            self.frames.put_nowait(frame("message.complete", {"text": "finished", "outcome": "completed"},
+                                         admission="a", seq=1))
+            self.frames.put_nowait(frame("message.delta", {"text": "x"}, session="t", admission="t-a"))
+
+        async def __aiter__(self):
+            while True:
+                yield json.dumps(await self.frames.get())
+
+    wire, entered, release = Wire(), asyncio.Event(), asyncio.Event()
+    async with GatewayClient(wire) as client:
+        agent = GatewayACPAgent()
+        agent._gateway, agent._conn = client, AsyncMock()
+        agent._snapshots.update(s={"replay_epoch": "e", "last_sequence": 0}, t={"replay_epoch": "e", "last_sequence": 0})
+
+        async def deliver(**kwargs):
+            if kwargs["session_id"] == "t" and not entered.is_set():
+                entered.set()
+                await release.wait()
+
+        agent._conn.session_update.side_effect = deliver
+        pump = agent._event_task = asyncio.create_task(agent._events())
+        prompt = asyncio.create_task(agent.prompt([TextContentBlock(type="text", text="q")], "s"))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            assert agent._terminals["a"]["outcome"] == "completed"
+            for _ in range(client.events.maxsize):
+                wire.frames.put_nowait(frame("message.delta", {"text": "x"}, session="t", admission="t-a"))
+            wire.frames.put_nowait({**wire.submit, "result": {"admission_id": "a", "status": "queued"}})
+            await until(lambda: client.events.full())
+            assert (await asyncio.wait_for(asyncio.shield(prompt), 5)).stop_reason == "end_turn"
+            assert shown(agent) == "finished"
+        finally:
+            release.set()
+            for task in (prompt, pump):
+                task.cancel()
+            await asyncio.gather(prompt, pump, return_exceptions=True)

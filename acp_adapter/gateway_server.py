@@ -626,9 +626,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 self._pending_cancels.discard(session_id)
                 await self._cancel_admission(session_id, admission_id)
             async with self._changed:
-                await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None
-                                            or self._link != link or admission_id in self._lost
-                                            or self._blocked_admission(session_id, admission_id))
+                await self._changed.wait_for(lambda: self._wait_over(session_id, admission_id, link))
                 # A successor's unknown state cannot replace our committed terminal result.
                 if admission_id not in self._terminals:
                     if self._link != link:
@@ -709,9 +707,29 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         async with self._changed:
             await self._changed.wait_for(lambda: self._adopted.get(session_id, 0) > resumes
                                          or self._failure is not None or self._link != link)
-        if self._adopted.get(session_id, 0) > resumes:
-            with suppress(asyncio.QueueFull):  # full: the reader's own overflow ends this link
-                self._gateway.events.put_nowait((session_id, admission_id))
+        if self._adopted.get(session_id, 0) > resumes and not self._wait_over(session_id, admission_id, link):
+            await self._queue_recovery(session_id, admission_id, link)
+
+    def _wait_over(self, session_id, admission_id, link):
+        """Whether a prompt's wait for *admission_id* ends: its terminal arrived, the link failed or was
+        replaced, its reply was lost, or a lost turn ahead of it blocks the FIFO."""
+        return (admission_id in self._terminals or self._failure is not None or self._link != link
+                or admission_id in self._lost or self._blocked_admission(session_id, admission_id))
+
+    async def _queue_recovery(self, session_id, admission_id, link):
+        """Queue a post-ack recovery behind every frame so far. A full queue parks the reader (it no longer
+        ends the link), so the recovery is never dropped while it is owed: this prompt waits for room until
+        the pump makes some, or until its wait ends without it (its live completion arrived, the link failed)."""
+        async def owed_no_longer():
+            async with self._changed:
+                await self._changed.wait_for(lambda: self._wait_over(session_id, admission_id, link))
+        put = asyncio.ensure_future(self._gateway.events.put((session_id, admission_id)))
+        moot = asyncio.ensure_future(owed_no_longer())
+        try:
+            await asyncio.wait({put, moot}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            put.cancel()
+            moot.cancel()
 
     async def _recover(self, session_id, admission_id):
         """Queued: it lost nothing. Running: cut until its live completion. Unknown: the waiter refuses it.
