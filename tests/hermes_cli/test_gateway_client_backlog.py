@@ -124,3 +124,142 @@ async def test_closing_as_a_waiting_frame_lands_still_ends_the_reader():
     finally:
         client.reader.cancel()
         await asyncio.gather(closing, return_exceptions=True)
+
+
+def _event(kind, payload, seq=1):
+    return json.dumps({"jsonrpc": "2.0", "method": "event", "params": {
+        "type": kind, "session_id": SID, "admission_id": "a", "payload": payload, "replay_epoch": "e", "seq": seq}})
+
+
+class ResumingOwner:
+    """A submit whose subscription the owner then retires (``session.replay_gap``). On ``session.resume``
+    the re-attached subscription streams ``burst`` frames of the running turn before the answer; the
+    turn's completion follows the answer."""
+
+    def __init__(self, burst):
+        self.burst, self.inbox = burst, asyncio.Queue()
+
+    async def send(self, raw):
+        request = json.loads(raw)
+        method, result, after = request["method"], {}, []
+        if method == "prompt.submit":
+            result, after = {"admission_id": "a", "status": "queued"}, [_event("session.replay_gap", {})]
+        elif method == "session.resume":
+            for seq in range(1, self.burst + 1):
+                self.inbox.put_nowait(_event("message.delta", {"text": f"{seq}|"}, seq))
+            result = {"stored_session_id": SID, "replay_epoch": "e", "last_sequence": 0, "prompts": [],
+                      "pending": [{"admission_id": "a", "status": "started"}]}
+            after = [_event("message.complete", {"text": "done", "outcome": "completed"}, self.burst + 1)]
+        elif method == "prompt.receipt":
+            result = {"admission_id": "a", "status": "terminal", "outcome": "completed",
+                      "result": {"final_response": "done", "completed": True}}
+        self.inbox.put_nowait(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+        for frame in after:
+            self.inbox.put_nowait(frame)
+
+    async def __aiter__(self):
+        while True:
+            yield await self.inbox.get()
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_answer_behind_a_full_queue_still_settles_the_oneshot(monkeypatch, capsys):
+    """More frames ahead of the ``session.resume`` answer than the queue holds: the view awaits that
+    answer from its only consumer, so it keeps taking frames instead of parking the reader short of it."""
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    monkeypatch.setattr(gateway_client, "EVENT_STALL_TIMEOUT", 2)
+    async with GatewayClient(ResumingOwner(5000)) as client:
+        view = GatewayChatView(client, {"stored_session_id": SID}, quiet=True)
+        assert await asyncio.wait_for(view.run("q", oneshot=True), 20) == 0
+    assert capsys.readouterr().out.count("done") == 1
+
+
+@pytest.mark.asyncio
+async def test_acp_pump_reattaches_behind_a_full_queue_and_the_prompt_ends(monkeypatch):
+    """ACP multiplexes every editor session on one socket, and its pump is the one consumer."""
+    from unittest.mock import AsyncMock
+    import acp
+    from acp_adapter.gateway_server import GatewayACPAgent
+    monkeypatch.setattr(gateway_client, "EVENT_STALL_TIMEOUT", 2)
+    async with GatewayClient(ResumingOwner(5000)) as client:
+        agent = GatewayACPAgent()
+        agent._snapshots[SID] = {"replay_epoch": "e0", "last_sequence": 0, "pending": [], "prompts": []}
+        agent._gateway, agent._conn = client, AsyncMock()
+        pump = agent._event_task = asyncio.create_task(agent._events())
+        try:
+            response = await asyncio.wait_for(agent.prompt([acp.text_block("q")], SID), 20)
+            assert response.stop_reason == "end_turn" and agent._failure is None and not pump.done()
+        finally:
+            pump.cancel()
+            await asyncio.gather(pump, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_second_gap_during_a_submits_recovery_read_does_not_lock_out_the_consumer(monkeypatch):
+    """After ``/new`` the view's socket still carries the previous session's subscription. A submit acked
+    across a gap reads its receipt holding the re-attach lock; a second gap then sends the renderer for that
+    lock while the other session's frames fill the queue ahead of the receipt. It waits taking frames."""
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    first_resume = asyncio.Event()
+
+    def event(kind, text="", session="s"):
+        return {"method": "event", "params": {"session_id": session, "type": kind,
+                                              "admission_id": "successor", "payload": {"text": text}}}
+
+    class Wire:
+        def __init__(self):
+            self.inbox, self.submit_ack = asyncio.Queue(), None
+
+        def put(self, frame):
+            self.inbox.put_nowait(json.dumps(frame))
+
+        async def send(self, raw):
+            request = json.loads(raw)
+            answer = {"prompt.submit": self.submitted, "session.create": self.created,
+                      "session.resume": self.resumed, "prompt.receipt": self.receipt}.get(request["method"], self.empty)
+            answer({"jsonrpc": "2.0", "id": request["id"]})
+
+        def empty(self, reply):  # session.info, runtime.describe
+            self.put({**reply, "result": {}})
+
+        def submitted(self, reply):
+            self.submit_ack = {**reply, "result": {"admission_id": "a", "status": "queued"}}
+            self.put(event("session.replay_gap"))
+
+        def created(self, reply):
+            self.put({**reply, "result": {"stored_session_id": "s", "execution_generation": 0}})
+
+        def resumed(self, reply):
+            self.put({**reply, "result": {"stored_session_id": "s", "execution_generation": 0,
+                                          "pending": [], "prompts": []}})
+            if self.submit_ack is not None:
+                first_resume.set()
+
+        def receipt(self, reply):
+            self.put(event("session.replay_gap"))  # s retires again; t, still subscribed, streams on
+            for seq in range(5000):
+                self.put(event("message.delta", str(seq), session="t"))
+            self.put({**reply, "result": {"admission_id": "a", "status": "terminal", "outcome": "completed",
+                                          "result": {"final_response": "done", "completed": True}}})
+
+        async def __aiter__(self):
+            while True:
+                yield await self.inbox.get()
+
+    wire = Wire()
+    monkeypatch.setattr(gateway_client, "EVENT_STALL_TIMEOUT", 2)
+    async with GatewayClient(wire) as client:
+        view = GatewayChatView(client, {"stored_session_id": "t"}, quiet=True)
+        await view.command("/new")
+        renderer = asyncio.create_task(view.render())
+        submit = asyncio.create_task(view.submit("q"))
+        try:
+            await asyncio.wait_for(first_resume.wait(), 5)
+            async with view._attaching:  # the ack lands once that re-attach adopted its snapshot
+                wire.put(wire.submit_ack)
+            await asyncio.wait_for(submit, 10)
+            assert view.completions.get("a", {}).get("text") == "done" and not client.reader.done()
+        finally:
+            for task in (submit, renderer):
+                task.cancel()
+            await asyncio.gather(submit, renderer, return_exceptions=True)

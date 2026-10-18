@@ -1,11 +1,12 @@
 """Classic terminal presentation of authority events and fenced controls."""
 import asyncio
+from collections import deque
 from contextlib import suppress
 import logging
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import GatewayClientError, answer_while_draining
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,8 @@ class GatewayChatView:
         self.completions = {}
         # ``gateway_replay_gap``: admission -> the reply segment shown when a gap cut it; own unsettled turns.
         self.cut, self.mine, self.gaps, self._attaching = {}, {}, 0, asyncio.Lock()
+        # Frames ``render`` took while it awaited a re-attach's own reads, read before the queue.
+        self._held = deque()
         self.changed = asyncio.Event()
         self.failure = None
         # Set once with ``failure``: the interactive composer races its line read against it so a
@@ -98,7 +101,7 @@ class GatewayChatView:
 
     async def render(self):
         while True:
-            event = await self.client.events.get()
+            event = self._held.popleft() if self._held else await self.client.events.get()
             if isinstance(event, Exception):
                 self._fail(event)
                 return
@@ -140,10 +143,21 @@ class GatewayChatView:
         """The owner retired this view's subscription; its turns run on. Re-attach (a refusal fails the
         view as before), show the controls the hole hid, and recover the turns in admission order."""
         sid = self.session_id
-        async with self._attaching:  # a submit acked meanwhile recovers against this snapshot, which covers it
+        # A submit acked meanwhile recovers against this snapshot, which covers it. Its receipt read holds
+        # the lock, and its answer can sit behind a full queue: wait for the lock taking frames too.
+        locking = asyncio.ensure_future(self._attaching.acquire())
+        try:
+            await answer_while_draining(self.client, locking, self._held)
+        except BaseException:
+            if locking.done() and not locking.cancelled():
+                self._attaching.release()
+            raise
+        try:
             self.gaps += 1
             try:
-                snapshot = await self.client.rpc("session.resume", session_id=sid)
+                # From ``render``, the queue's only consumer: the new subscription streams ahead of the answer.
+                snapshot = await answer_while_draining(
+                    self.client, self.client.rpc("session.resume", session_id=sid), self._held)
             except Exception:  # health: allow BLE001 -- any failed re-attach ends the wait, never hangs it
                 if self.session_id == sid:
                     self._fail(GatewayClientError("session_replay_gap"))
@@ -156,12 +170,15 @@ class GatewayChatView:
                 self.show_prompt(prompts[prompt_id])
             self.prompts = prompts
             for admission in dict.fromkeys([*self.streams, *self.mine]):  # the running turn first: one FIFO
-                await self._recover(admission, sid)
+                await self._recover(admission, sid, drain=True)
             self.changed.set()  # after its own turn settled: a control it lists may end a one-shot's wait
+        finally:
+            self._attaching.release()
 
-    async def _recover(self, admission, sid):
+    async def _recover(self, admission, sid, *, drain=False):
         """Queued: it lost nothing. Running: cut until its live completion. Unknown: its completion was the
-        one lost, so an own turn settles as unknown now. Unlisted: it ended in the hole."""
+        one lost, so an own turn settles as unknown now. Unlisted: it ended in the hole. ``drain``: called
+        from ``render``, which keeps taking frames while it waits for the receipt."""
         from hermes_cli.gateway_replay_gap import pending_status, settled
         status = pending_status(self.pending, admission)
         if status == "unknown" and admission in self.mine:
@@ -172,8 +189,9 @@ class GatewayChatView:
         self.cut.setdefault(admission, self.streams.pop(admission, ""))
         if status or any(kind == "message.complete" and own == admission for kind, own, _ in self._finite_events):
             return  # (its completion already arrived, held for the submit ack)
+        read = self.client.rpc("prompt.receipt", session_id=sid, admission_id=admission, include_result=True)
         try:
-            receipt = await self.client.rpc("prompt.receipt", session_id=sid, admission_id=admission, include_result=True)
+            receipt = await (answer_while_draining(self.client, read, self._held) if drain else read)
         except Exception:  # health: allow BLE001 -- unreadable, like a receipt without its reply
             receipt = {"status": "terminal"}
         verdict = settled(receipt) if self.session_id == sid and admission not in self.completions else False

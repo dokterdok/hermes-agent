@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import suppress
 import logging
 import os
@@ -14,7 +15,7 @@ from acp.schema import (
     SessionCapabilities, SessionForkCapabilities, SessionListCapabilities, SessionResumeCapabilities,
 )
 
-from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import GatewayClientError, answer_while_draining, connect_gateway
 from hermes_constants import get_hermes_home
 from acp_adapter.gateway_reply import GatewayReplyMixin, _text
 from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
@@ -100,6 +101,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # their terminal, in admission order; those whose reply the hole lost for good; per session, the gap
         # re-attaches sent and adopted (a snapshot covers the submits sent before its resume).
         self._cut, self._inflight, self._lost, self._resumes, self._adopted = {}, {}, {}, {}, {}
+        # Frames the pump took while it awaited a recovery read (``answer_while_draining``), read before the queue.
+        self._held = deque()
         self._pending_cancels = set()
         # (session, tool_call_id) -> (tool name, args, admission) of a call still open on the editor.
         self._tool_args = {}
@@ -237,6 +240,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._segments.clear()
         self._message_ids.clear()
         self._cut.clear()
+        self._held.clear()
         async with self._changed:
             # Every waiter on the old transport wakes to its ambiguous failure, even one that had
             # not yet observed ``_failure`` before it is cleared here.
@@ -722,8 +726,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if status:
             return
         try:
-            receipt = await self._gateway.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
-                                              include_result=True)
+            # From the pump, the queue's only consumer.
+            receipt = await answer_while_draining(self._gateway, self._gateway.rpc(
+                "prompt.receipt", session_id=session_id, admission_id=admission_id, include_result=True), self._held)
         except (GatewayClientError, OSError, TimeoutError):
             receipt = {"status": "terminal"}  # unreadable
         verdict = settled(receipt)
@@ -834,7 +839,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         gateway = self._gateway
         try:
             while True:
-                frame = await gateway.events.get()
+                frame = self._held.popleft() if self._held else await gateway.events.get()
                 if isinstance(frame, Exception):
                     raise frame
                 if isinstance(frame, tuple):  # a post-ack recovery (``_after_ack``), behind every frame so far
@@ -923,7 +928,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # Re-attach that session alone (a refusal still fails the pump: the next call redials).
             params = {"editor": self._editor_mcp[sid]} if sid in self._editor_mcp else {}
             self._resumes[sid] = self._resumes.get(sid, 0) + 1
-            snapshot = await self._gateway.rpc("session.resume", session_id=sid, **params)
+            # The new subscription streams ahead of the answer, and the pump is the queue's only consumer.
+            snapshot = await answer_while_draining(
+                self._gateway, self._gateway.rpc("session.resume", session_id=sid, **params), self._held)
             async with self._changed:  # its pending rows and controls may settle or block a waiter
                 self._snapshots[sid], self._adopted[sid] = snapshot, self._resumes[sid]
                 self._changed.notify_all()

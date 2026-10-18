@@ -159,6 +159,31 @@ class GatewayClient:
             self.pending.pop(rid, None)
 
 
+async def answer_while_draining(client, call, held):
+    """Await ``call`` from the one task that consumes ``client.events``: a ``client.rpc(...)``, or a
+    lock held by another task while it awaits one.
+
+    The owner can send more frames ahead of the answer than the queue holds (a re-attached
+    subscription streams before ``session.resume`` answers), and a full queue parks the reader short
+    of the answer, so a consumer that only awaited would wait out the budget. Frames that arrive
+    meanwhile go to ``held``, in order, for the caller to read before the queue, for as long as the
+    RPC's budget lets the wait run."""
+    answer, take = asyncio.ensure_future(call), None
+    try:
+        while not answer.done():
+            take = asyncio.ensure_future(client.events.get())
+            await asyncio.wait({answer, take}, return_when=asyncio.FIRST_COMPLETED)
+            if take.done():
+                held.append(take.result())
+            else:
+                take.cancel()  # a cancelled get leaves its frame queued
+        return answer.result()
+    finally:
+        answer.cancel()
+        if take is not None:
+            take.cancel()
+
+
 def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None, subject=None) -> str:
     from hermes_cli.gateway_runtime import control_home_for
     from hermes_cli.gateway_runtime_discovery import connect_private, _identify_response
