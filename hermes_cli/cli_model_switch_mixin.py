@@ -313,7 +313,6 @@ def _apply_one_turn_reasoning(cli, effort: str) -> None:
     if parsed is None:
         return
     cli.reasoning_config = parsed
-    # The agent chat builds for the turn carries it (``_init_agent``).
     cli._pending_one_turn_reasoning = parsed
     stage = getattr(cli.agent, "stage_one_turn_reasoning", None) if cli.agent is not None else None
     if stage is not None:
@@ -332,7 +331,7 @@ def _restore_agent_reasoning(agent, config) -> None:
         agent.reasoning_config = config
 
 
-_ONE_TURN_SWITCH_KWARGS = ("once", "restore")
+_ONE_TURN_SWITCH_KWARGS = ("once", "restore", "alias")
 
 
 def _call_agent_switch(agent, **fields):
@@ -377,7 +376,9 @@ def _commit_model_switch(
     if not picker:
         cli._pending_one_turn_model_restore = snapshot
     if one_turn:
-        cli._pending_one_turn_reasoning = None  # a second --once replaces the first one's level too
+        # The agent chat builds for the turn carries both (``_init_agent``); a second --once replaces them.
+        cli._pending_one_turn_alias = getattr(result, "resolved_via_alias", "") or ""
+        cli._pending_one_turn_reasoning = None
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
     if reasoning_effort and one_turn:
         _apply_one_turn_reasoning(cli, reasoning_effort)
@@ -728,7 +729,7 @@ class CLIModelSwitchMixin:
         from cli import _cprint, logger
         if not snapshot:
             return
-        self._pending_one_turn_reasoning = None
+        self._pending_one_turn_reasoning, self._pending_one_turn_alias = None, ""
         one_turn = _runtime_fields(self)
         for key in _RUNTIME_FIELDS:
             if key in snapshot:
@@ -840,7 +841,7 @@ class CLIModelSwitchMixin:
                     api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
                     capabilities=getattr(result, "runtime_capabilities", None))
                 if getattr(self, "_model_switch_one_turn", False):
-                    fields["once"] = True
+                    fields.update(once=True, alias=getattr(result, "resolved_via_alias", "") or "")
                 if _call_agent_switch(self.agent, **fields) is False:
                     # Declined at the gateway owner's guard prompt: nothing was committed.
                     for _k, _v in _cli_snapshot.items():

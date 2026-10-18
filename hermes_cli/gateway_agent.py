@@ -78,7 +78,7 @@ class GatewayAgent:
                  tool_gen_callback=None, notice_callback=None, notice_clear_callback=None,
                  reaction_callback=None, interim_assistant_callback=None, connection=None,
                  push_reasoning=False, model_confirm_callback=None, modal_withdraw_callback=None,
-                 one_turn=False, one_turn_reasoning=None, **_ignored):
+                 one_turn=False, one_turn_reasoning=None, one_turn_alias="", **_ignored):
         conn = connection or getattr(session_db, "connection", None)
         if conn is None:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
@@ -172,13 +172,13 @@ class GatewayAgent:
         # below then overwrites ``model``): that preset rides the turn's submit as its model_override.
         self._moa_preset = model if provider == "moa" else None
         # ``/model --once``: chat retires the agent that switch_model touched and builds this one.
-        # Capture the pick, and the ``--reasoning`` level riding it, before ``_apply_info`` copies the
-        # session model over it.
+        # Capture the pick, and the alias and ``--reasoning`` level riding it, before ``_apply_info``
+        # copies the session model over it.
         self._turn_route = self._route_off_session(
-            model, provider, _effort_word(one_turn_reasoning) or "") if one_turn else None
+            model, provider, _effort_word(one_turn_reasoning) or "", one_turn_alias) if one_turn else None
         self._apply_info(self._state().info)
         if self._turn_route:
-            self.model = self._turn_route["model"]
+            self.model = model
             if self._turn_route.get("provider"):
                 self.provider = self._turn_route["provider"]
         self.reasoning_callback = reasoning_callback
@@ -222,9 +222,11 @@ class GatewayAgent:
         ``model_override`` with the pick. Never ``session.mutate reasoning``: the owner pins every
         session-scope level (``session_pins.reasoning``), and a pinned session stops following its profile."""
         self._reasoning_config = config
-        route = self._turn_route or {"model": self.model, **({"provider": self.provider} if self.provider else {})}
-        self._turn_route = self._route_off_session(
-            route["model"], route.get("provider", ""), _effort_word(config) or "")
+        effort = _effort_word(config) or ""
+        if self._turn_route:
+            self._turn_route = {**self._turn_route, **({"reasoning": effort} if effort else {})}
+        else:
+            self._turn_route = self._route_off_session(self.model, self.provider or "", effort)
 
     def restore_reasoning(self, config):
         """A ``/model --once`` restore: the previous level goes back on this object only. The one turn never
@@ -256,18 +258,20 @@ class GatewayAgent:
         except (GatewayClientError, KeyError, TypeError) as exc:
             logger.debug("session.mutate reasoning failed: %s", exc)
 
-    def _route_off_session(self, model, provider="", reasoning=""):
-        """``{model, provider}`` when the session runs another route, else None. A one-turn ``reasoning``
-        level rides along, and makes even the session's own route a one-turn override."""
+    def _route_off_session(self, model, provider="", reasoning="", alias=""):
+        """``{model, provider}`` the turn sends when the session runs another route, else None. A one-turn
+        ``reasoning`` level rides along. ``alias``, the ``model_aliases`` entry the pick resolved through, is
+        sent instead of the bare model: two aliases may name one model at different endpoints, so the owner
+        must not re-resolve it. Either makes even the session's own model a one-turn override."""
         state = self._state()
         if not model or not (state.info or {}).get("model") or (
-                state.runs_route(model, provider) and not reasoning):
+                state.runs_route(model, provider) and not reasoning and not alias):
             return None
-        return {"model": model, **({"provider": provider} if provider else {}),
+        return {"model": alias or model, **({"provider": provider} if provider else {}),
                 **({"reasoning": reasoning} if reasoning else {})}
 
     def switch_model(self, new_model, new_provider="", api_key="", base_url="", api_mode="", capabilities=None, *,
-                     once=False, restore=False):
+                     once=False, restore=False, alias=""):
         """Session-scoped ``/model`` and /resume commit ``session.mutate model``.
 
         ``once=True`` does not write the session. The next ``chat`` builds a new agent; that
@@ -284,7 +288,7 @@ class GatewayAgent:
         written; with no prompt the refusal raises. Any refusal raises: main's callers roll their
         own fields back."""
         if once or restore:
-            self._turn_route = None if restore else self._route_off_session(new_model, new_provider)
+            self._turn_route = None if restore else self._route_off_session(new_model, new_provider, alias=alias)
             if new_model:
                 self.model = new_model
             if new_provider:
