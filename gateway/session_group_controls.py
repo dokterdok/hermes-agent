@@ -455,6 +455,9 @@ def _profiles(authority, actor, home, params, siblings=()):
 # utime, while ctime moves on every metadata or content change and cannot be set by callers.
 _NAMED_DIRS_CACHE: dict[str, tuple[tuple, list]] = {}
 _PROFILE_META_CACHE: dict[str, tuple[tuple, object]] = {}
+# The stat key of a ``profile.yaml`` whose last read failed, so a file that stays unreadable warns
+# once and not on every poll.
+_PROFILE_META_READ_FAILED: dict[str, tuple] = {}
 
 
 def _stat_key(stat):
@@ -499,7 +502,15 @@ def _discovered_profile_meta(name, meta_path):
     try:
         meta = yaml.safe_load(meta_path.read_text(encoding='utf-8-sig')) if meta_path.is_file() else {}
     except (OSError, ValueError, yaml.YAMLError) as exc:
-        logger.warning('profiles.list: skipping unreadable profile.yaml for %s (%s): %s', name, meta_path, exc)
+        repeat = isinstance(exc, OSError) and _PROFILE_META_READ_FAILED.get(str(meta_path)) == key
+        (logger.debug if repeat else logger.warning)(
+            'profiles.list: skipping unreadable profile.yaml for %s (%s): %s', name, meta_path, exc)
+        if isinstance(exc, OSError):
+            # A failed read (a Windows sharing lock, a permission error) ends without changing the
+            # stat key, so it is never cached: this poll gets the basic row, the next reads again.
+            # Bad encoding or YAML is stable for the same content and stays cached.
+            _PROFILE_META_READ_FAILED[str(meta_path)] = key
+            return {}
         meta = {}
     _PROFILE_META_CACHE[str(meta_path)] = (key, meta)
     return meta

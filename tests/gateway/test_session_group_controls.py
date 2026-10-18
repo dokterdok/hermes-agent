@@ -284,3 +284,33 @@ def test_profiles_list_cache_sees_changes_inside_one_mtime_tick(tmp_path, monkey
     meta.write_text('display_name: BBBB\n')
     pin(meta)
     assert g._discovered_profile_meta('writer', meta) == {'display_name': 'BBBB'}
+
+
+def test_profiles_list_rereads_a_sibling_profile_yaml_after_a_failed_read(tmp_path, monkeypatch, caplog):
+    """@dokterdok on #140972: a sibling profile.yaml held open without read sharing (Windows) failed
+    one read, and the failure was cached as ``{}`` under the file's stat key. Releasing the lock
+    changes no part of that key, so the bot kept its basic row until the YAML was edited. A failed
+    read degrades that poll only and the next one reads the file again; a file that stays unreadable
+    warns once, not on every poll."""
+    home = _roster_home(tmp_path, monkeypatch)
+    (home / 'profiles' / 'helper' / 'profile.yaml').write_text(
+        'display_name: Friendly Helper\nui_meta:\n  hermes-bots:\n    color: blue\n')
+    real_read, locked_reads = Path.read_text, [1, 1]
+
+    def read_text(self, *args, **kwargs):
+        if locked_reads and self.parent.name == 'helper' and self.name == 'profile.yaml':
+            locked_reads.pop()
+            raise PermissionError(13, 'The process cannot access the file', str(self))
+        return real_read(self, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', read_text)
+
+    with caplog.at_level('WARNING', logger='gateway.session_group_controls'):
+        for _ in range(2):
+            rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+            assert rows['helper']['display_name'] == 'helper' and 'ui_meta' not in rows['helper']
+    assert not locked_reads
+    assert sum('helper' in record.getMessage() and 'profile.yaml' in record.getMessage()
+               for record in caplog.records) == 1
+    rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+    assert rows['helper']['display_name'] == 'Friendly Helper'
+    assert rows['helper']['ui_meta'] == {'hermes-bots': {'color': 'blue'}}
