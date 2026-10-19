@@ -95,6 +95,17 @@ def _checked_entry(authority, receipt, source, route):
     row = authority.db.get_session(entry.session_id)
     if row is None or (row['session_key'], row['chat_id'], row['user_id']) != (route, source.chat_id, source.user_id):
         raise ValueError('stored identity mismatch')
+    return clear_spent_reset(authority, entry)
+
+
+def clear_spent_reset(authority, entry):
+    """*entry* without the ``is_fresh_reset`` its reset's first turn already consumed. That turn clears
+    it only in memory, while the receipt keeps the reset's prepared entry: once the target transcript
+    has any row (a rewind only deactivates them), installing that entry must not start it over again."""
+    if entry.is_fresh_reset:
+        with authority.db._read_ctx() as conn:
+            if conn.execute('SELECT 1 FROM messages WHERE session_id=? LIMIT 1', (entry.session_id,)).fetchone():
+                entry.is_fresh_reset = False
     return entry
 
 

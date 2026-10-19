@@ -130,6 +130,69 @@ async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, m
     assert turn._approval_owner[1] == reset.session_id
 
 
+async def _local_owner(tmp_path, monkeypatch, instance_id):
+    """``(runner, authority)`` over the fixture profile's store; booting it restores every receipt."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    monkeypatch.setattr(run, '_load_gateway_config', dict)
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id=instance_id)
+    authority._schedule = lambda ref: None
+    return runner, authority
+
+
+@pytest.mark.asyncio
+async def test_a_reset_is_fresh_for_its_next_turn_only_not_after_every_restart(tmp_path, monkeypatch):
+    """``/new`` marks the route's entry ``is_fresh_reset``: its next turn starts a new session and
+    consumes the flag, in memory only. Restore and ``/compress`` install the receipt's entry (the
+    reset's prepared entry) as the route's, so once that turn wrote the transcript (even rewound away),
+    neither a restart, a compaction nor a retried /new may start the conversation over again; before
+    it, the reset is still fresh."""
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from gateway.session_mutations import _project_committed, mutate_session
+    first, authority = await _local_owner(tmp_path, monkeypatch, 'first')
+    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    ref = create_local_session(authority, actor, dict(request_id='receipt', source='gui', cwd=str(tmp_path),
+                                                      model='m', toolsets=[]))
+    route, db = authority.sessions[ref.session_id].route, authority.db
+    db.append_message(ref.session_id, 'user', 'before the reset')
+    row = db.get_session(ref.session_id)
+    params = dict(session_id=ref.session_id, request_id='reset', expected_revision=row['runtime_revision'],
+                  expected_generation=row['runtime_generation'], operation='reset', payload={})
+    reset = (await mutate_session(authority, actor, ref, params))['target_session_id']
+    assert first.session_store._entries[route].is_fresh_reset, 'the reset does not start its next turn afresh'
+
+    second, _cold = await _local_owner(tmp_path, monkeypatch, 'second')
+    assert second.session_store._entries[route].session_id == reset
+    assert second.session_store._entries[route].is_fresh_reset, 'a restart before its first turn lost the reset'
+
+    first_turn = db.append_message(reset, 'user', 'first turn after the reset')
+    db.rewind_to_message(reset, first_turn)  # an empty transcript again, but that turn ran
+    third, cold = await _local_owner(tmp_path, monkeypatch, 'third')
+    assert not third.session_store._entries[route].is_fresh_reset, 'every restart starts the session over'
+    await mutate_session(cold, actor, ref, params)  # the client resends its /new: an exact retry
+    assert not third.session_store._entries[route].is_fresh_reset, 'a retried /new started the session over'
+
+    assert db.try_acquire_compression_lock(reset, 'fixture')
+    try:
+        db.publish_compression_child(parent_session_id=reset, child_session_id='compressed', source='gui',
+                                     messages=[{'role': 'user', 'content': 'kept'}], compression_lock_holder='fixture')
+    finally:
+        db.release_compression_lock(reset, 'fixture')
+    _project_committed(cold, ref, 'compress', {})  # what a committed /compress publishes in this process
+    assert third.session_store._entries[route].session_id == 'compressed'
+    assert not third.session_store._entries[route].is_fresh_reset, '/compress started the session over'
+    fourth, _cold = await _local_owner(tmp_path, monkeypatch, 'fourth')
+    assert fourth.session_store._entries[route].session_id == 'compressed'
+    assert not fourth.session_store._entries[route].is_fresh_reset, 'a compaction re-armed the reset'
+
+
 @pytest.mark.platforms("linux")
 def test_real_local_lineage_survives_cold_daemon(tmp_path):
     from tests.gateway.fixtures.local_lineage_probe import probe

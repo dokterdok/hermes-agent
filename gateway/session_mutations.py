@@ -315,7 +315,7 @@ def _project_committed(authority, ref, operation, result):
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])
     if operation in {'reset', 'compress'}:
-        from gateway.session_local_recovery import restore_local_session
+        from gateway.session_local_recovery import clear_spent_reset, restore_local_session
         restore_local_session(authority, ref.session_id)
         # A session boundary, not a resource evict: memory providers get on_session_end first.
         evict = getattr(authority.runner, '_evict_cached_agent_at_boundary', None) or authority.runner._evict_cached_agent
@@ -328,6 +328,8 @@ def _project_committed(authority, ref, operation, result):
         with store._lock:
             entry = SessionEntry.from_dict(local_receipt(authority.db, ref.session_id)['entry'])
             entry.origin = authority.sessions[ref.session_id].source
+            # A /compress, or an exact retry of a /new, after the reset's first turn must not repeat it.
+            clear_spent_reset(authority, entry)
             store._entries[entry.session_key] = entry
     if operation == 'delete':
         # Repeat local retirement on an exact retry too: publication may have

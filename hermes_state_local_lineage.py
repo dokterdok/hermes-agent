@@ -89,7 +89,9 @@ def advance_local_target(conn, parent_session_id, child_session_id, *, entry=Non
         if routed is None:
             raise RuntimeStoreError('admission_conflict')
         candidate = dict(entry or routed, session_id=child_session_id)
-        receipt['entry'] = candidate
+        # A compaction moves only the receipt's target, never copying the route's state into it; a
+        # reset's prepared entry is the new conversation's creation copy and replaces it.
+        receipt['entry'] = dict(entry or receipt['entry'], session_id=child_session_id)
         receipt['lineage'] = [*receipt.get('lineage', [logical_id]), child_session_id]
         validate_local_lineage(conn, receipt)
     except (KeyError, TypeError, ValueError) as exc:
