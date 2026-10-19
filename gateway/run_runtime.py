@@ -371,6 +371,7 @@ async def serve_profile_runtime(runner, name, home):
             await _ensure_hosted_service(runner, authority)
     except BaseException:
         if await _retire_profile_authority(authority):
+            _drop_parked_local_adapter(runner, name, authority)
             registry.remove(home)
         raise
     _publish_served_set(runner)
@@ -389,6 +390,23 @@ def _drop_retired_local_adapter(authority):
     previous = getattr(adapters.get(Platform.LOCAL), 'authority', None)
     if previous is not None and previous is not authority and getattr(previous, 'retired', False):
         del adapters[Platform.LOCAL]
+
+
+def _drop_parked_local_adapter(runner, name, authority):
+    """A profile parked once *authority* fully retired keeps no LOCAL adapter of its own: restoring
+    its local sessions (boot, or the failed serve) created one bound to that authority, and shutdown
+    would otherwise tear down a transport of a profile it never served. Looked up by *name*:
+    ``local_adapter_map`` resolves the profile's map only while its authority is registered. A
+    retained writer's adapter stays (the caller never retired it)."""
+    from gateway.config import Platform
+    profile_adapters = getattr(runner, '_profile_adapters', None) or {}
+    adapters = profile_adapters.get(name)
+    if adapters is None:
+        return
+    if getattr(adapters.get(Platform.LOCAL), 'authority', None) is authority:
+        del adapters[Platform.LOCAL]
+    if not adapters:
+        del profile_adapters[name]
 
 
 def _recover_published_api_turns(runner, authority):
@@ -487,6 +505,7 @@ async def _recover_profile_bot_mailbox(runner, authority):
             park_profile(runner, name, f'startup recovery failed; ownership retained (a control-socket rescan, '
                                        f'`hermes -p {name} gateway run`, serves it once its writer stops): {exc}')
             return
+        _drop_parked_local_adapter(runner, name, authority)
         registry.remove(home)
         _publish_served_set(runner)
         release_profile_home(runner, home)

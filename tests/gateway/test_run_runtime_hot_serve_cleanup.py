@@ -136,6 +136,40 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
         db.close()
 
 @pytest.mark.asyncio
+async def test_a_failed_hot_serve_keeps_no_local_adapter(monkeypatch, tmp_path):
+    """The serve restored the profile's local sessions into a LOCAL adapter bound to the new
+    authority, then failed: once that authority retired, the parked profile keeps no adapter."""
+    from gateway.config import Platform
+    from gateway.session_local import LocalSessionAdapter
+    from gateway.session_local_recovery import local_adapter_map
+    runner = SimpleNamespace(session_authorities=_Registry(), session_control_server=None, _profile_adapters={})
+    authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path), sessions={}, waiters={},
+                                native_waiters=set(), hosted_room_service=None)
+
+    async def build(*args, **kwargs):
+        return authority
+
+    async def no_bot_deliveries(_authority):
+        return None
+
+    def restore_local(authority_, schedule):
+        local_adapter_map(authority_)[Platform.LOCAL] = LocalSessionAdapter(authority_)
+
+    async def fail_webhooks(_authority):
+        raise RuntimeError("serve-time failure")
+
+    monkeypatch.setattr(run_runtime, "_build_profile_authority", build)
+    monkeypatch.setattr("gateway.session_bot.recover_bot_deliveries", no_bot_deliveries)
+    monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions", restore_local)
+    monkeypatch.setattr("gateway.platforms.webhook_ingress.recover_webhook_finalizations", fail_webhooks)
+    monkeypatch.setattr("gateway.session_cron.unbind_owner", lambda value: None)
+    with pytest.raises(RuntimeError, match="serve-time failure"):
+        await run_runtime.serve_profile_runtime(runner, "cold", tmp_path)
+    assert runner.session_authorities.removed == [tmp_path.resolve()]
+    assert runner._profile_adapters == {}, runner._profile_adapters
+
+
+@pytest.mark.asyncio
 async def test_settle_gateway_runtime_waits_for_bot_receipt_tasks():
     release = asyncio.Event()
     finished = asyncio.Event()

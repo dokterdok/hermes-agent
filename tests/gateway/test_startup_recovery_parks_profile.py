@@ -74,6 +74,28 @@ def test_a_secondary_whose_recovery_fails_is_parked_and_the_rest_start(tmp_path,
         process_ownership.release(homes["beta"])
 
 
+def test_a_parked_secondary_keeps_no_local_adapter(tmp_path, monkeypatch):
+    """Boot restored the secondary's local sessions into a LOCAL adapter bound to its authority
+    before Bot Chat recovery parked it: that adapter goes with the retired authority (shutdown no
+    longer tears down a transport of a profile it never served), and every other map stays."""
+    from gateway.runtime_ownership import process_ownership
+    from gateway.session_local import LocalSessionAdapter
+    runner, _launch, homes, _recovered, _parked = _runtime(tmp_path, monkeypatch,
+                                                           failing=tmp_path / "profiles" / "beta")
+    beta, gamma = (runner.session_authorities.for_home(homes[n]) for n in ("beta", "gamma"))
+    gamma_local = LocalSessionAdapter(gamma)
+    runner._profile_adapters = {"beta": {Platform.LOCAL: LocalSessionAdapter(beta)},
+                                "gamma": {Platform.LOCAL: gamma_local}}
+    process_ownership.reserve([homes["beta"]])
+    try:
+        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        assert "beta" in runner.session_runtime_descriptor["parked_profiles"]
+        assert "beta" not in runner._profile_adapters, runner._profile_adapters
+        assert runner._profile_adapters == {"gamma": {Platform.LOCAL: gamma_local}}
+    finally:
+        process_ownership.release(homes["beta"])
+
+
 def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_started(tmp_path, monkeypatch):
     """A writer that outlives Stop keeps the profile's lock and retiring authority (shutdown still
     settles it), but nothing later in boot may serve it: no adapters, no served status, no cron
