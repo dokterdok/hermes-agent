@@ -1,6 +1,7 @@
 """Private discovery must not assume another process shares its temp root."""
 import json
 import socket
+import stat
 import tempfile
 import threading
 from pathlib import Path
@@ -175,6 +176,27 @@ def test_the_client_verdict_names_the_unsafe_node_and_its_fix(monkeypatch, reque
     assert verdict.reason_code == 'unsafe_control_path'
     assert verdict.detail == (f'{shown} is owned by uid {owner}, expected uid {owner + 1} (gateway user); '
                               'chown it to the gateway user'), verdict
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_an_unsafe_gateway_lock_is_named_in_the_inaccessible_verdict(tmp_path):
+    """No owner is up and ``gateway.lock`` is no regular file (a directory, a dangling symlink): the
+    client is told which node is wrong and why, as for an unsafe control socket, not a bare
+    ``inaccessible`` it cannot act on."""
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    home = tmp_path / 'home'
+    home.mkdir(mode=0o700)
+    lock = home.resolve() / 'gateway.lock'
+    lock.mkdir(mode=0o700)
+    verdict = discover_gateway_endpoint(home)
+    assert (verdict.state, verdict.reason_code) == ('inaccessible', 'unsafe_control_path'), verdict
+    assert verdict.detail == f'{lock} is {stat.filemode(lock.lstat().st_mode)}, expected file', verdict
+
+    lock.rmdir()
+    lock.symlink_to(tmp_path / 'elsewhere')
+    verdict = discover_gateway_endpoint(home)
+    assert (verdict.state, verdict.reason_code) == ('inaccessible', 'unsafe_control_path'), verdict
+    assert verdict.detail.startswith(f'{lock} is l') and verdict.detail.endswith('expected file'), verdict
 
 
 @pytest.mark.platforms("linux", "macos")

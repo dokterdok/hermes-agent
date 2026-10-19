@@ -292,7 +292,7 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
     A named profile served by the default multiplexer resolves to the multiplexer's endpoint
     with ``profile_id`` = the profile's own home, so clients attach to it with that identity.
     """
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError, missing_owner_state, query_identify
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, missing_owner_verdict, query_identify
 
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
@@ -303,11 +303,14 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
         served = _served_by_multiplexer(home, timeout=timeout)
         if served is not None:
             return served
-        state = missing_owner_state(home)
+        state, unsafe = missing_owner_verdict(home)
         if state == "inaccessible" and os.name != "nt":
             from gateway.runtime_ownership import unreadable_lock_recovery
             if detail := unreadable_lock_recovery(home / "gateway.lock"):
                 return GatewayDiscovery(state, reason_code="foreign_stale_lock", detail=detail)
+        if unsafe is not None:
+            # The lock's node is wrong: name it as the control-socket path below does.
+            return GatewayDiscovery(state, reason_code=unsafe.reason, detail=unsafe.bounded_detail(500))
         return GatewayDiscovery(state)
     except TimeoutError:
         return GatewayDiscovery("inaccessible", reason_code="control_timeout")

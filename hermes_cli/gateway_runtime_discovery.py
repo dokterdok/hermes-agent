@@ -232,13 +232,23 @@ def _private_lock(lock: Path) -> None:
 
 def missing_owner_state(home: Path) -> Literal["starting", "absent", "inaccessible"]:
     """A reservation before PID/control publication already excludes a new owner."""
+    return missing_owner_verdict(home)[0]
+
+
+def missing_owner_verdict(
+    home: Path,
+) -> tuple[Literal["starting", "absent", "inaccessible"], DiscoveryError | None]:
+    """``missing_owner_state`` with the ``DiscoveryError`` that made the lock ``inaccessible``, so
+    a client can name the unsafe node as it does for the control socket."""
     from gateway.status import _is_gateway_runtime_lock_active_strict
     lock = home / "gateway.lock"
     try:
         if os.name != "nt":
             _private_lock(lock)
-        return "starting" if _is_gateway_runtime_lock_active_strict(lock) else "absent"
+        return ("starting" if _is_gateway_runtime_lock_active_strict(lock) else "absent"), None
     except FileNotFoundError:
-        return "absent"
-    except (OSError, RuntimeError, DiscoveryError):
-        return "inaccessible"
+        return "absent", None
+    except DiscoveryError as exc:
+        return "inaccessible", exc
+    except (OSError, RuntimeError):
+        return "inaccessible", None
