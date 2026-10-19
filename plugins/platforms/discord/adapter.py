@@ -2715,16 +2715,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # A success reaction is only an ack, not evidence the substantive response completed.
         return not await self._message_has_non_down_bot_response(message)
 
-    def _is_down_notice_content(self, content: str) -> bool:
-        """Recognize only explicit Hermes/gateway outage notices."""
-        text = (content or "").lower()
-        subject = r"(?:hermes|the agent|agent|the gateway|gateway|bmo)"
-        state = r"(?:is|was|appears to be|is currently|was currently)"
-        condition = r"(?:down|offline|unavailable|not running)"
-        return re.search(rf"\b{subject}\s+{state}\s+{condition}\b", text) is not None
-
     async def _message_has_non_down_bot_response(self, message: Any) -> bool:
         """Detect an already-addressed message without trusting down notices."""
+        from plugins.platforms.discord.recovery import is_down_notice
         bot_user = getattr(self._client, "user", None) if self._client else None
         bot_id = getattr(bot_user, "id", None)
         if bot_id is None:
@@ -2739,7 +2732,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     author = getattr(candidate, "author", None)
                     if getattr(author, "id", None) != bot_id:
                         continue
-                    if self._is_down_notice_content(getattr(candidate, "content", "")):
+                    if is_down_notice(getattr(candidate, "content", "")):
                         continue
                     reference = getattr(candidate, "reference", None)
                     ref_id = str(getattr(reference, "message_id", "") or "")

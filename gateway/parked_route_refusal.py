@@ -68,7 +68,7 @@ def retryable_ingress():
         _retryable_ingress.reset(token)
 
 # Generic on purpose: the chat is not told which profile the route targets or why it is parked.
-# Worded as an outage notice Discord's backfill recognises (``_is_down_notice_content``): the reply
+# Discord's backfill recognises this text as an outage notice (``recovery.is_down_notice``): the reply
 # must not mark the never-admitted message answered, so backfill picks it up once it is served again.
 PARKED_ROUTE_NOTICE = 'The agent is currently unavailable; please resend your message in a moment.'
 # One notice per (profile, platform, chat) per window: a relay reconnect drains its whole backlog

@@ -1,9 +1,10 @@
 """A parked-profile refusal on Discord is an outage notice: it never hides the message from backfill.
 
 Discord's missed-message backfill re-dispatches an input that has no substantive bot reply, and skips
-the replies it recognises as outage notices (``_is_down_notice_content``). The refusal replies to the
+the replies it recognises as outage notices (``recovery.is_down_notice``). The refusal replies to the
 input it refuses, so unless it reads as an outage notice, the never-admitted message counts as
-answered and is not picked up after the profile is served again.
+answered and is not picked up after the profile is served again. It is recognised by the shared
+notice text, so rewording the notice cannot break that.
 """
 import asyncio
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.parked_route_refusal import drop_rejected_route
+from gateway.parked_route_refusal import PARKED_ROUTE_NOTICE, drop_rejected_route
 from tests.gateway import test_discord_missed_message_backfill as discord_tests
 
 adapter = discord_tests.adapter
@@ -35,7 +36,10 @@ def _replying_channel(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_parked_profile_refusal_leaves_the_message_to_backfill(adapter, monkeypatch):
+@pytest.mark.parametrize('notice', [PARKED_ROUTE_NOTICE, 'Please send that again in a minute.'],
+                         ids=['as-shipped', 'reworded'])
+async def test_a_parked_profile_refusal_leaves_the_message_to_backfill(adapter, monkeypatch, notice):
+    monkeypatch.setattr('gateway.parked_route_refusal.PARKED_ROUTE_NOTICE', notice)
     channel, message = _replying_channel(adapter, monkeypatch)
     assert await adapter._should_backfill_discord_message(message)
     adapter.gateway_runner = SimpleNamespace(

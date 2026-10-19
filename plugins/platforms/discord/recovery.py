@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import re
 import sqlite3
 import threading
 from contextlib import suppress
@@ -17,6 +18,20 @@ logger = logging.getLogger(__name__)
 
 _DB_FILENAME = "discord_message_recovery.db"
 _RETENTION_DAYS = 30
+
+
+def is_down_notice(content: str) -> bool:
+    """Recognize only explicit Hermes/gateway outage notices: a bot reply that never answers the
+    message it replies to. The gateway's parked-profile refusal is matched by its shared text, so
+    rewording it cannot hide the refused message from backfill."""
+    from gateway.parked_route_refusal import PARKED_ROUTE_NOTICE
+    if (content or "").strip() == PARKED_ROUTE_NOTICE:
+        return True
+    text = (content or "").lower()
+    subject = r"(?:hermes|the agent|agent|the gateway|gateway|bmo)"
+    state = r"(?:is|was|appears to be|is currently|was currently)"
+    condition = r"(?:down|offline|unavailable|not running)"
+    return re.search(rf"\b{subject}\s+{state}\s+{condition}\b", text) is not None
 
 
 class DiscordRecoveryStore:
