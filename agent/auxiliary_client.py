@@ -4919,7 +4919,7 @@ def _is_actual_auxiliary_route(req: _ResolveRequest, base_url: str) -> bool:
 
 
 def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
-                    base_url_str: str = "", api_key_str: str = ""):
+                    base_url_str: str = "", api_key_str: str = "", *, profile_wire: bool = True):
     """Wrap a plain OpenAI client in the right transport adapter; specialized wrappers pass through.
     Codex (Responses API): explicit ``api_mode=codex_responses``, else — with no
     explicit api_mode — api.openai.com + codex model. Anthropic (Messages): ``api_mode=anthropic_messages``,
@@ -4955,7 +4955,7 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
         return CodexAuxiliaryClient(client_obj, final_model_str)
     # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
-    api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
+    api_mode = req.api_mode or (_profile_declared_messages_wire(req.provider) if profile_wire else None)
     return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
 
 
@@ -5222,11 +5222,11 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
             req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base,
                                           is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), final_model)
     client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
-    # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
+    # codex_responses, or _wrap_transport on the entry's own mode or URL, never a same-named built-in's wire.
     if entry_api_mode == "codex_responses":
         client = CodexAuxiliaryClient(client, final_model)
     else:
-        client = _wrap_transport(req, client, final_model, custom_base, custom_key)
+        client = _wrap_transport(req._replace(api_mode=entry_api_mode or None), client, final_model, custom_base, custom_key, profile_wire=False)
     return _route_client(req, client, final_model)
 
 
@@ -5715,10 +5715,10 @@ def resolve_vision_provider_client(
             if client is not None:
                 return _finalize_vision_client(requested, client, final_model, resolved_model, async_mode)
         # Fallback: try without explicit base_url (old behavior)
-    client, final_model = _get_cached_client(
-        raw_requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
-    )
-    return requested, client, (final_model if client is not None else None)
+    client, final_model = _get_cached_client(raw_requested, resolved_model, async_mode, api_mode=resolved_api_mode,
+                                             main_runtime=runtime, is_vision=True)
+    label = raw_requested if str(raw_requested or "").strip().lower().startswith("custom:") else requested  # the entry
+    return label, client, (final_model if client is not None else None)
 
 
 def get_auxiliary_extra_body() -> dict:

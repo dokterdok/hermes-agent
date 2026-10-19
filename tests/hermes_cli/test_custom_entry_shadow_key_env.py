@@ -375,6 +375,58 @@ def test_aux_task_pinned_to_the_entry_sends_its_key_env(tmp_path, monkeypatch):
     assert sent == {(ENDPOINT, ENTRY_KEY)}
 
 
+@pytest.mark.parametrize("declared", [True, False], ids=["transport_declared", "transport_omitted"])
+def test_aux_task_pinned_to_an_entry_named_anthropic_keeps_the_entrys_transport(tmp_path, monkeypatch, declared):
+    """``custom:anthropic`` names the user's entry, which declares ``chat_completions`` (or nothing, which
+    main also resolves to chat completions at this URL): the aux call goes over that wire, as the entry's
+    main turns do, never the built-in's Anthropic Messages."""
+    from unittest.mock import MagicMock, patch
+
+    home = _home(tmp_path, monkeypatch, "anthropic", "ANTHROPIC_API_KEY")
+    if not declared:
+        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        del cfg["providers"]["anthropic"]["transport"]
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    _pin_title_generation(home, "custom:anthropic")
+    from agent import auxiliary_client as ac
+
+    monkeypatch.setattr(ac, "_client_cache", {})
+    with patch("agent.auxiliary_client.OpenAI") as mock_openai, \
+            patch("agent.anthropic_adapter.build_anthropic_client") as messages_client:
+        mock_openai.return_value.base_url = ENDPOINT
+        mock_openai.return_value.HERMES_SKIP_TRANSPORT_WRAP = False  # a plain OpenAI client, as in production
+        mock_openai.return_value.chat.completions.create.return_value = MagicMock()
+        ac.call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}])
+    assert not messages_client.called, "the entry's chat_completions transport was replaced by Anthropic Messages"
+    assert mock_openai.return_value.chat.completions.create.called
+    assert {(c.kwargs.get("base_url"), c.kwargs.get("api_key")) for c in mock_openai.call_args_list} == {
+        (ENDPOINT, ENTRY_KEY)}
+
+
+def test_vision_pinned_to_an_entry_named_minimax_shapes_the_request_for_the_entrys_wire(tmp_path, monkeypatch):
+    """The vision route is labelled ``custom:minimax`` like the text route, so the request keeps OpenAI
+    image blocks and no Messages-only kwarg on the entry's chat_completions client."""
+    from unittest.mock import MagicMock, patch
+
+    home = _home(tmp_path, monkeypatch, "minimax", "MINIMAX_API_KEY")
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    cfg["auxiliary"] = {"vision": {"provider": "custom:minimax", "model": "m", "reasoning_effort": "low"}}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    from agent import auxiliary_client as ac
+
+    monkeypatch.setattr(ac, "_client_cache", {})
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        mock_openai.return_value.base_url = ENDPOINT
+        mock_openai.return_value.HERMES_SKIP_TRANSPORT_WRAP = False  # a plain OpenAI client, as in production
+        create = mock_openai.return_value.chat.completions.create
+        create.return_value = MagicMock()
+        ac.call_llm(task="vision", messages=[{"role": "user", "content": [image]}])
+    sent = create.call_args.kwargs
+    assert sent["messages"][0]["content"] == [image]
+    assert "_reasoning_config" not in sent
+
+
 def test_aux_task_pinned_to_the_builtin_keeps_its_env_key(tmp_path, monkeypatch):
     from unittest.mock import patch
 
