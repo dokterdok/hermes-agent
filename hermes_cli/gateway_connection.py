@@ -71,6 +71,24 @@ def gateway_serving() -> bool:
     return found.state == "starting" or attachable(found)
 
 
+def _wait(ready, deadline, abandon):
+    """``ready(seconds)`` (an ``Event.wait``, or a join that reports the thread gone) until it is true or
+    ``deadline`` passes. ``abandon``, polled every 0.1 s, raises :class:`CallStopped` when true: this
+    caller stops waiting, and the dial it waited for goes on for the next one."""
+    while True:
+        left = max(deadline - time.monotonic(), 0)
+        if ready(left if abandon is None else min(left, 0.1)):
+            return True
+        if abandon is not None and abandon():
+            raise CallStopped("connect")
+        if time.monotonic() >= deadline:
+            return False
+
+
+def _joined(thread):
+    return lambda seconds: thread.join(seconds) or not thread.is_alive()
+
+
 def lost_before(frame, epoch) -> bool:
     """``frame`` is a transport error from a connection older than ``epoch``: a reconnect replaced it,
     so it is no outcome of anything submitted on ``epoch``."""
@@ -233,7 +251,9 @@ class GatewayConnection:
         return state
 
     # -- lifecycle ---------------------------------------------------------------------------
-    def start(self, timeout=90):
+    def start(self, timeout=90, abandon=None):
+        """Dial (or redial a hung-up gateway), or wait out a dial in progress. ``abandon`` (polled) true
+        stops this wait with :class:`CallStopped`; the dial goes on."""
         deadline = time.monotonic() + timeout
         while True:
             with self._start_lock:
@@ -245,7 +265,7 @@ class GatewayConnection:
                 if thread is not None and self.closed and thread.is_alive() and thread is not threading.current_thread():
                     # ``_run`` reports ready before its thread returns: that life is over, so let it
                     # end instead of reading it as a dial in progress (and re-raising its stale error).
-                    thread.join(max(deadline - time.monotonic(), 0))
+                    _wait(_joined(thread), deadline, abandon)
                 if thread is None or not thread.is_alive():
                     from agent.memory_provider import spawn_context_thread
 
@@ -258,14 +278,14 @@ class GatewayConnection:
                     thread = self._thread = spawn_context_thread(self._run, name="hermes-gateway-loop")
                     thread.start()
             # Every caller waits out a dial in progress, its own or another thread's.
-            if not self._ready.wait(max(deadline - time.monotonic(), 0)):
+            if not _wait(self._ready.wait, deadline, abandon):
                 raise GatewayClientError("Gateway connection timed out; no local fallback")
             if self._error is not None:
                 raise self._error
             if self.client is not None or self.final:
                 return
             # Hung up right after that dial: let its loop end, then dial again.
-            thread.join(max(deadline - time.monotonic(), 0))
+            _wait(_joined(thread), deadline, abandon)
             if time.monotonic() >= deadline:
                 raise GatewayClientError("Gateway connection timed out; no local fallback")
 
@@ -311,6 +331,9 @@ class GatewayConnection:
             self._live = None
 
     def _put_loss(self, error):
+        # Retired before its loss is read: a turn's recovery calls at once, and must redial instead of
+        # sending on the dead socket, whose answer would never come.
+        self.client = self._live = None
         error.connection_epoch = self.epoch
         self.events.put(error)
 
@@ -430,11 +453,11 @@ class GatewayConnection:
         state.attached_gaps = gaps  # a gap during this resume (or a wait given up) still owes one
         return snapshot
 
-    def _send(self, method, budget, params):
+    def _send(self, method, budget, params, abandon=None):
         """``(future, epoch)`` of one request sent on the live socket (see :meth:`call_tagged`)."""
         if self._thread is not None and threading.current_thread() is self._thread:
             raise RuntimeError("GatewayConnection.call() on the gateway loop thread would deadlock")
-        self.start()
+        self.start(abandon=abandon)
         live, loop = self._live, self.loop
         if live is None or loop is None:
             raise GatewayClientError(NOT_SENT)
@@ -504,12 +527,13 @@ class GatewayConnection:
     def call_tagged(self, method, *, timeout=None, abandon=None, **params):
         """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
         is tied to that gateway life even if another caller redials before this one reads ``epoch``.
-        ``abandon`` (polled) true stops the wait with :class:`CallStopped`; the answer is dropped."""
+        ``abandon`` (polled) true stops the wait with :class:`CallStopped`, also while a redial is still
+        connecting (nothing was sent then); an answer is dropped."""
         from concurrent.futures import wait
         budget = DEFAULT_RPC_TIMEOUT if timeout is None else timeout
         if abandon is not None and abandon():
             raise CallStopped(method)
-        future, epoch = self._send(method, budget, params)
+        future, epoch = self._send(method, budget, params, abandon)
         deadline = time.monotonic() + budget + 5
         try:
             while abandon is not None and not wait([future], 0.1).done and time.monotonic() < deadline:

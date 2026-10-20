@@ -77,6 +77,15 @@ class _Turn:
         # Parts, joined on read: ``+=`` on an attribute copies the whole segment per delta (quadratic).
         self._shown, self._spoken = [], []
         self.seen, self.answered, self.gapped = set(), set(), False
+        # Controls whose answer failed on the transport: the owner may have taken it (only the ack was
+        # lost), so a buffered copy of the request never reopens one; only a re-attach that lists it does.
+        self.unconfirmed = set()
+
+    def reopen(self, prompt_id):
+        """A re-attach snapshot still lists ``prompt_id`` pending: an answer that never arrived is asked again."""
+        if prompt_id in self.unconfirmed:
+            self.unconfirmed.discard(prompt_id)
+            self.answered.discard(prompt_id)
 
     @property
     def shown(self):
@@ -554,7 +563,7 @@ class GatewayAgent:
             generation = self._state().execution_generation
         try:
             self.connection.call("session.interrupt", session_id=self.session_id,
-                                 execution_generation=generation, timeout=5)
+                                 execution_generation=generation, timeout=5, abandon=self._offline_past_bound)
         except Exception as exc:  # health: allow BLE001 -- the settle wait below bounds a lost interrupt
             logger.debug("session.interrupt failed: %s", exc)
 
@@ -790,6 +799,18 @@ class GatewayAgent:
     def _expired(self):
         return self._interrupt_sent_at is not None and time.monotonic() - self._interrupt_sent_at > INTERRUPT_SETTLE_SECONDS
 
+    def _offline_past_bound(self):
+        """Past Ctrl-C's settle bound with no open socket: a call would wait out a redial, so it stops."""
+        return self._expired() and self.connection.client is None
+
+    def _reachable(self):
+        """Whether a turn's end-of-turn reads (receipt, stats) may go out: on an open socket, or by a redial
+        to a gateway that still serves this home. After ``gateway stop`` that redial would start one."""
+        if self.connection.client is not None:
+            return True
+        from hermes_cli.gateway_connection import gateway_serving
+        return gateway_serving()
+
     def _owns(self, turn):
         return self._turn is turn and self.session_id == turn.session_id
 
@@ -799,12 +820,13 @@ class GatewayAgent:
 
     def _lost(self, turn):
         """The ``abandon`` of a turn's end-of-turn reads (its receipt, the cumulative stats): only losing the
-        terminal stops them. Past Ctrl-C's settle bound they still run, bounded by their own timeouts."""
-        return lambda: not self._owns(turn)
+        terminal stops them. Past Ctrl-C's settle bound they still run, bounded by their own timeouts, but
+        only on an open socket: one that would wait for a redial is dropped."""
+        return lambda: not self._owns(turn) or self._offline_past_bound()
 
     def _pump(self, stream_callback, starts, turn):
         """Dispatch frames until this admission's ``message.complete``; returns its payload, or the
-        transport error (disconnect)."""
+        transport error (disconnect) the redial could not settle."""
         events = self.connection.events
         while self._owns(turn):
             if self._expired():
@@ -820,7 +842,15 @@ class GatewayAgent:
             if isinstance(frame, Exception):
                 if lost_before(frame, self._epoch):
                     continue  # the previous connection's loss, already reported; this turn is live
-                return frame
+                # The owner may still run the turn (its send deadline closed a stopped viewer's socket):
+                # the redial re-attaches as after a gap. No gateway serving (stopped: a redial would start
+                # one), a redial that fails, or an owner that lost the turn keeps this loss as the outcome;
+                # nothing is resent.
+                from hermes_cli.gateway_connection import gateway_serving
+                outcome = self._recover(turn, lost=frame) if gateway_serving() else frame
+                if outcome is not None:
+                    return outcome
+                continue
             params = frame.get("params") if isinstance(frame, dict) else None
             if not isinstance(params, dict) or params.get("session_id") != self.session_id:
                 continue
@@ -849,11 +879,12 @@ class GatewayAgent:
                 logger.debug("event %s dispatch failed", kind, exc_info=True)
         return None
 
-    def _recover(self, turn):
+    def _recover(self, turn, lost=None):
         """``gateway_replay_gap``: re-attach, answer the controls the hole hid, stop painting live text. A
-        turn the snapshot no longer lists settles from its receipt; None waits for the live completion."""
+        turn the snapshot no longer lists settles from its receipt; None waits for the live completion.
+        ``lost``: the socket's loss, the outcome when this cannot settle (else the gap's own error)."""
         from hermes_cli.gateway_replay_gap import settled
-        lost, stop = GatewayClientError("session_replay_gap: " + DISCONNECTED), self._stop(turn)
+        lost, stop = lost or GatewayClientError("session_replay_gap: " + DISCONNECTED), self._stop(turn)
         try:
             snapshot = self.connection.reattach(turn.session_id, abandon=stop)
             row = next((r for r in snapshot.get("pending") or [] if r.get("admission_id") == turn.admission), {})
@@ -862,8 +893,8 @@ class GatewayAgent:
             turn.gapped |= row.get("status") != "queued"  # one still queued lost nothing
             for prompt in snapshot.get("prompts") or []:
                 if row.get("status") == "started" and prompt.get("execution_generation") == row.get("execution_generation") \
-                        and prompt.get("prompt_id") not in turn.answered and not stop():
-                    turn.answered.add(prompt.get("prompt_id"))
+                        and not stop():
+                    turn.reopen(prompt.get("prompt_id"))
                     try:
                         self._dispatch(f"{prompt.get('kind')}.request", prompt, None, {})
                     except Exception:  # a broken modal is a skipped answer, never a failed turn
@@ -881,8 +912,22 @@ class GatewayAgent:
 
     def _dispatch(self, kind, payload, stream_callback, starts):
         handler = _HANDLERS.get(kind)
-        if handler is not None:
+        if handler is None:
+            return
+        # A control is asked once per turn, live or from a re-attach snapshot: a redial resumes twice, so
+        # one published between the two arrives both ways. One whose answer failed with the socket is
+        # asked again only from a re-attach that still lists it (``_Turn.reopen``).
+        prompt_id = payload.get("prompt_id") if kind in _PROMPT_REQUESTS else None
+        if prompt_id is not None:
+            if prompt_id in self._turn.answered:
+                return
+            self._turn.answered.add(prompt_id)
+        try:
             handler(self, payload, stream_callback, starts)
+        except GatewayClientError:
+            if prompt_id is not None:
+                self._turn.unconfirmed.add(prompt_id)
+            raise
 
     # event handlers (agent thread) ------------------------------------------------------------
     def _on_delta(self, payload, stream_callback, starts):
@@ -1160,7 +1205,7 @@ class GatewayAgent:
         receipt = (complete or {}).get("_receipt") or {}
         if receipt:  # settled from it after a replay gap
             complete = {"outcome": receipt.get("outcome")}
-        elif turn.admission:
+        elif turn.admission and self._reachable():
             try:
                 receipt = self.connection.call("prompt.receipt", session_id=turn.session_id, abandon=self._lost(turn),
                                                admission_id=turn.admission, include_result=True) or {}
@@ -1252,6 +1297,8 @@ class GatewayAgent:
 
     def _refresh_stats(self, turn=None):
         """``session.stats`` → the same attributes ``session.usage`` sets; False when unavailable."""
+        if turn is not None and not self._reachable():
+            return False
         try:
             stats = self.connection.call("session.stats", session_id=self.session_id, timeout=10,
                                          abandon=turn and self._lost(turn))
@@ -1341,6 +1388,7 @@ _SERVER_REQUESTS = {
     "clarify": GatewayAgent._ask_clarify,
 }
 
+_PROMPT_REQUESTS = frozenset({"approval.request", "clarify.request"})
 _HANDLERS = {
     "message.delta": GatewayAgent._on_delta,
     "message.interim": GatewayAgent._on_interim,

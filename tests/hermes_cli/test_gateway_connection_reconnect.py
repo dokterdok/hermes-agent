@@ -3,9 +3,14 @@
 GatewayConnection kept its finished loop thread, so after a gateway restart every call raised
 "Gateway disconnected" and the CLI never re-attached, even once another client had started a new
 gateway. Each prompt then failed with copy that read as a model failure ("Run /model to switch").
+
+A socket the owner closed while it ran the turn on (its send deadline, #106369) left that turn "outcome
+unknown" though it completed: the turn's own redial now re-attaches and settles it from its receipt.
 """
 import asyncio
+import json
 import threading
+import time
 import types
 from contextlib import asynccontextmanager
 
@@ -13,8 +18,9 @@ import pytest
 
 from hermes_cli.cli_chat_error_copy import chat_error_response
 from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection, lost_before
+from hermes_cli.gateway_client import GatewayClient, GatewayClientError
+from hermes_cli.gateway_connection import DISCONNECTED, GatewayConnection, lost_before
+from tests.gateway.fixtures.replay_gap_owner import FINAL, Owner
 
 SID = "local-abc"
 
@@ -27,29 +33,37 @@ def _frame(kind, payload):
 class Life:
     """One gateway process as one client sees it: from a dial until it hangs up."""
 
-    def __init__(self, number, *, drop_on_submit=False, resume_errors=None):
+    def __init__(self, number, *, drop_on_submit=False, resume_errors=None, lost=None):
         self.number = number
         self.events = asyncio.Queue()
         self.calls = []
         self.drop_on_submit = drop_on_submit
         self.resume_errors = resume_errors if resume_errors is not None else []
+        self.lost = lost if lost is not None else []  # admissions a life went away while running
+        self.stop_after_receipt = False  # ``gateway stop`` once the receipt has been answered
 
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
         if method == "session.resume" and self.resume_errors:
             raise self.resume_errors.pop(0)
         if method == "session.resume":
-            return {"stored_session_id": params["session_id"], "subscription_id": f"sub-{self.number}",
-                    "revision": 1, "execution_generation": 7, "messages": []}
+            snapshot = {"stored_session_id": params["session_id"], "subscription_id": f"sub-{self.number}",
+                        "revision": 1, "execution_generation": 7, "messages": []}
+            if self.lost:  # a restarted owner lists the turn its last life was running as unknown
+                snapshot["pending"] = [{"admission_id": admission, "status": "unknown"} for admission in self.lost]
+            return snapshot
         if method == "prompt.submit":
             loop = asyncio.get_running_loop()
             if self.drop_on_submit:  # restarted mid-turn: the outcome is unknown to this client
+                self.lost.append("adm-1")
                 loop.call_soon(self.events.put_nowait, GatewayClientError("Gateway disconnected"))
             else:
                 loop.call_soon(self.events.put_nowait, _frame(
                     "message.complete", {"text": f"reply {self.number}", "outcome": "completed", "status": "complete"}))
             return {"admission_id": "adm-1", "status": "queued", "execution_generation": 7}
         if method == "prompt.receipt":
+            if self.stop_after_receipt:  # the loss is read before the answer: the next call finds no socket
+                self.events.put_nowait(GatewayClientError("Gateway disconnected"))
             return {"result": {"final_response": f"reply {self.number}", "completed": True}, "usage": {}}
         if method in ("prompt.background", "prompt.btw"):
             return {"task_id": f"task-{self.number}"}
@@ -71,6 +85,7 @@ class Gateway:
         self.refusals = 0
         self.drop_next_submit = False
         self.resume_errors = []  # raised by the next session.resume calls, across lives
+        self.lost = []  # admissions lost with a life, which every later life lists as unknown
         self.dialing = threading.Event()
         self.hold = None  # an Event the next dials wait on before the socket opens
 
@@ -87,7 +102,8 @@ class Gateway:
         elif not self.up:
             self.started.append(len(self.lives) + 1)
             self.up = True
-        life = Life(len(self.lives) + 1, drop_on_submit=self.drop_next_submit, resume_errors=self.resume_errors)
+        life = Life(len(self.lives) + 1, drop_on_submit=self.drop_next_submit, resume_errors=self.resume_errors,
+                    lost=self.lost)
         self.drop_next_submit = False
         self.lives.append(life)
         yield life
@@ -206,11 +222,39 @@ def test_a_turn_lost_to_a_restart_is_reported_plainly_and_the_next_turn_runs(gat
     assert "turn outcome is unknown" in lost["error"] or "Gateway disconnected" in lost["error"]
     # The panel shows the transport error itself, not "The model request failed. Run /model ...".
     assert chat_error_response(lost["error"], failure_reason=lost["failure_reason"]) == lost["error"]
+    # The turn's redial re-attached to the restarted gateway, which lists the turn as unknown: nothing resent.
+    assert [method for method, _ in gateway.lives[1].calls] == ["session.resume", "session.resume"]
 
-    conn._thread.join(5)
     result = agent.run_conversation("second")
     assert not result.get("failed") and result["final_response"] == "reply 2"
-    assert [method for method, _ in gateway.lives[1].calls][:2] == ["session.resume", "prompt.submit"]
+    assert [params["text"] for method, params in gateway.lives[1].calls if method == "prompt.submit"] == ["second"]
+
+
+def test_a_turn_lost_to_gateway_stop_reports_it_and_starts_no_gateway(gateway, conn):
+    """``gateway stop`` mid-turn: the turn's recovery would redial through ``connect_gateway``, which
+    starts a gateway when none serves the home. With none serving it keeps the unknown outcome and dials
+    nothing; the next prompt starts one, as before."""
+    agent = GatewayAgent(connection=conn, session_id=SID)
+    gateway.lives[0].drop_on_submit = True
+    gateway.up = False  # stopped: its loss is the turn's
+
+    lost = agent.run_conversation("first")
+    assert lost["failed"] and lost["failure_reason"] == "gateway_connection" and lost["error"] == "Gateway disconnected"
+    assert gateway.probes == 1 and gateway.started == [] and len(gateway.lives) == 1
+
+
+def test_a_gateway_stop_after_the_receipt_dials_no_gateway_for_the_stats(gateway, conn):
+    """``gateway stop`` once the turn's receipt was read on the open socket: the end-of-turn
+    ``session.stats`` read redialed through ``connect_gateway`` and started a gateway. It is skipped; the
+    turn's result is the receipt's."""
+    agent = GatewayAgent(connection=conn, session_id=SID)
+    gateway.lives[0].stop_after_receipt = True
+    gateway.up = False
+
+    result = agent.run_conversation("first")
+    assert not result.get("failed") and result["final_response"] == "reply 1"
+    assert [method for method, _ in gateway.lives[0].calls][-1] == "prompt.receipt"
+    assert gateway.started == [] and len(gateway.lives) == 1
 
 
 def test_the_previous_connections_loss_never_fails_a_live_turn(gateway, conn):
@@ -220,6 +264,276 @@ def test_the_previous_connections_loss_never_fails_a_live_turn(gateway, conn):
     gateway.hang_up(conn)
     result = agent.run_conversation("hi")
     assert not result.get("failed") and result["final_response"] == "reply 2"
+
+
+class Socket:
+    """One socket of a real ``GatewayClient`` to the real owner (``replay_gap_owner.Owner``). ``close_at``:
+    the owner closes it at that delta of the turn, as its send deadline closes the socket of a viewer
+    stopped mid-stream (#106369). ``hold``: its re-attach (the second ``session.resume``) sets ``held`` and
+    waits on it."""
+
+    def __init__(self, owner, close_at=None, hold=None, held=None):
+        from gateway.session_controls import AuthorityConnection
+        self.owner, self.close_at, self.hold, self.held, self.deltas, self.resumes = owner, close_at, hold, held, 0, 0
+        self.loop, self.inbox = asyncio.get_running_loop(), asyncio.Queue()
+        self.viewer = AuthorityConnection(owner.authority, self, {"user_id": "viewer"})
+
+    def write(self, frame):  # the owner's fanout writer
+        self.deltas += frame["params"]["type"] == "message.delta"
+        if self.deltas == self.close_at:
+            self.loop.call_soon_threadsafe(self.inbox.put_nowait, None)
+            return False
+        self.loop.call_soon_threadsafe(self.inbox.put_nowait, json.dumps(frame))
+        return True
+
+    def close(self):
+        return None
+
+    async def send(self, raw):
+        request = json.loads(raw)
+        method, params = request["method"], request["params"]
+        self.resumes += method == "session.resume"
+        if method == "session.resume" and self.hold is not None and self.resumes == 2:
+            self.held.set()
+            await asyncio.to_thread(self.hold.wait, 30)
+        verb = {"session.resume": "resume", "prompt.receipt": "receipt"}.get(method)
+        if method == "prompt.submit":
+            result = await self.owner.rpc(method, **params)
+        elif verb:
+            result = await getattr(self.viewer, verb)(self.owner.ref, {} if verb == "resume" else params)
+        else:
+            result = {}
+        self.inbox.put_nowait(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+
+    async def __aiter__(self):
+        while (raw := await self.inbox.get()) is not None:
+            yield raw
+        await self.viewer.close()  # the owner's teardown of the socket it closed
+
+
+def _discovers(monkeypatch, state):
+    """``discover_gateway_endpoint`` answers ``state()`` for this home (ready, starting or absent), so
+    ``gateway_serving`` decides on a discovery as it does live."""
+    from hermes_cli.gateway_runtime import GatewayDiscovery
+    monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
+    monkeypatch.setattr("hermes_cli.gateway_runtime.discover_gateway_endpoint", lambda _home, timeout: GatewayDiscovery(
+        state(), endpoint=object() if state() == "ready" else None))
+
+
+@pytest.fixture
+def owned(tmp_path, monkeypatch):
+    """A connection whose first socket the owner closes mid-turn, while the owner keeps serving the home.
+    That socket's teardown lasts until the turn has completed (the viewer was away while it finished, and
+    its loss is read before the teardown ends); a redial then reaches the owner, is ``refused`` (no gateway
+    to come back to), or is held on ``dial_hold`` (a slow connect) after setting ``dialing``. ``discovered``:
+    what owner discovery reports meanwhile."""
+    rig = types.SimpleNamespace(owner=None, sockets=[], refused=False, hold=None, held=threading.Event(),
+                                dial_hold=None, dialing=threading.Event(), discovered="ready")
+    _discovers(monkeypatch, lambda: rig.discovered)
+
+    @asynccontextmanager
+    async def dial():
+        if rig.owner is None:
+            rig.owner = Owner(tmp_path / "state.db", pause=None)
+        elif rig.refused:
+            raise GatewayClientError("Gateway starting: deadline. Your message was not sent.")
+        elif rig.dial_hold is not None:
+            rig.dialing.set()
+            await asyncio.to_thread(rig.dial_hold.wait, 15)
+        first = not rig.sockets
+        rig.sockets.append(Socket(rig.owner, close_at=300 if first else None, hold=None if first else rig.hold,
+                                  held=rig.held))
+        async with GatewayClient(rig.sockets[-1]) as client:
+            yield client
+        if first and rig.owner.turns:
+            await asyncio.to_thread(rig.owner.turns[-1].join, 10)
+
+    rig.connection = GatewayConnection(connect=dial)
+    rig.connection.start(timeout=30)
+    rig.connection.state("s").adopt_snapshot(rig.connection.call("session.resume", session_id="s"))
+    rig.agent, rig.streamed = GatewayAgent(connection=rig.connection, session_id="s"), []
+    rig.agent.stream_delta_callback = rig.streamed.append
+    yield rig
+    for hold in (rig.hold, rig.dial_hold):
+        if hold is not None:
+            hold.set()
+    rig.connection.close()
+    rig.owner.finish()
+
+
+def _turn_in_thread(agent, text):
+    out = {}
+    worker = threading.Thread(target=lambda: out.setdefault("result", agent.run_conversation(text)), daemon=True)
+    worker.start()
+    return worker, out
+
+
+def _admissions(owner):
+    from hermes_state_runtime import list_session_admissions
+    return list_session_admissions(owner.db, session_id="s", pending_only=False)
+
+
+@pytest.mark.parametrize("discovered", ["ready", "starting"])
+def test_a_turn_whose_socket_the_owner_closed_settles_from_its_receipt(owned, discovered):
+    """The owner closed the socket of a CLI stopped past its send deadline (Ctrl-Z, then ``fg``) and
+    finished the turn: the CLI said "turn outcome is unknown" and never showed the reply. The redial
+    re-attaches and settles the turn from its receipt, painted once, never resent. An owner discovery
+    still ``starting`` (a replacement coming up) serves too: the redial waits for it."""
+    owned.discovered = discovered
+    worker, out = _turn_in_thread(owned.agent, "write a long answer")
+    worker.join(30)
+    result = out.get("result")
+    assert result is not None and not result["failed"], result
+    assert result["final_response"] == FINAL
+    assert "".join(text for text in owned.streamed if text) == FINAL  # the live prefix, then the rest once
+    assert len(owned.sockets) == 2 and not owned.owner.gaps  # a lost socket, not a replay gap
+    assert len(_admissions(owned.owner)) == 1
+
+
+def test_a_lost_socket_whose_redial_fails_keeps_the_unknown_outcome(owned):
+    owned.refused = True
+    worker, out = _turn_in_thread(owned.agent, "write a long answer")
+    worker.join(30)
+    result = out.get("result")
+    assert result is not None and result["failed"] and result["error"] == DISCONNECTED
+    assert result["failure_reason"] == "gateway_connection"
+    assert len(_admissions(owned.owner)) == 1
+
+
+def test_a_stop_during_the_recovery_ends_the_turn_without_a_resend(owned, monkeypatch):
+    """Ctrl-C while the redial's re-attach goes unanswered (held 30 s): the turn ends at the settle bound."""
+    monkeypatch.setattr("hermes_cli.gateway_agent.INTERRUPT_SETTLE_SECONDS", 0)
+    owned.hold = threading.Event()
+    worker, out = _turn_in_thread(owned.agent, "write a long answer")
+    assert owned.held.wait(15), "the re-attach never started"
+    owned.agent.interrupt()
+    worker.join(10)
+    assert not worker.is_alive(), "the stop waited out the re-attach"
+    assert out["result"]["interrupted"] and not out["result"]["failed"]
+    assert len(_admissions(owned.owner)) == 1 and len(owned.owner.turns) == 1
+
+
+def test_ctrl_c_while_the_redial_still_connects_ends_the_turn_at_the_settle_bound(owned, monkeypatch):
+    """The redial's connect (a cold start, the WebSocket open, the resubscribe) has not answered: Ctrl-C
+    ends the turn at its settle bound, and neither the interrupt nor the end-of-turn reads wait it out."""
+    monkeypatch.setattr("hermes_cli.gateway_agent.INTERRUPT_SETTLE_SECONDS", 1.0)
+    owned.dial_hold = threading.Event()
+    worker, out = _turn_in_thread(owned.agent, "write a long answer")
+    assert owned.dialing.wait(20), "the redial never started"
+    pressed = time.monotonic()
+    owned.agent.interrupt()
+    interrupt_took = time.monotonic() - pressed
+    worker.join(5)
+    assert not worker.is_alive(), "the turn waited out the redial"
+    assert interrupt_took < 5, f"the interrupt waited out the redial ({interrupt_took:.1f}s)"
+    assert out["result"]["interrupted"] and not out["result"]["failed"]
+    assert not owned.dial_hold.is_set() and len(_admissions(owned.owner)) == 1
+
+
+class _View:
+    """One socket to :class:`PromptOwner`."""
+
+    def __init__(self, owner, number):
+        self.owner, self.number, self.resumes, self.events = owner, number, 0, asyncio.Queue()
+
+    async def rpc(self, method, *, _timeout=None, **params):
+        return self.owner.answer(self, method, params)
+
+
+class PromptOwner:
+    """One owner across sockets. The first is lost after the submit; on the second, the turn's ``kind``
+    control is published live right after the redial's own resume, so the turn's re-attach (the second
+    resume) lists it too. An answer completes the turn. ``drops`` closes the socket on the next answers
+    instead of acknowledging them: ``"lost_ack"`` after the owner took the answer, ``"undelivered"`` before."""
+
+    def __init__(self, kind, drops=()):
+        self.kind, self.views, self.answers, self.drops = kind, [], [], list(drops)
+        self.prompt = {"kind": kind, "prompt_id": "p1", "execution_generation": 7, "command": "rm x",
+                       "description": "d", "question": "which?", "choices": ["once", "deny"]}
+
+    @asynccontextmanager
+    async def dial(self):
+        self.views.append(_View(self, len(self.views) + 1))
+        yield self.views[-1]
+
+    def answer(self, view, method, params):
+        if method == "session.resume":
+            view.resumes += 1
+            running = view.number > 1 and not self.answers
+            if view.number == 2 and view.resumes == 1:
+                view.events.put_nowait(_frame(f"{self.kind}.request", self.prompt))
+            pending = [{"admission_id": "adm-1", "status": "started", "execution_generation": 7}]
+            return {"stored_session_id": SID, "subscription_id": f"sub-{view.number}", "messages": [],
+                    "pending": pending if running else [],
+                    "prompts": [self.prompt] if running and (view.number > 2 or view.resumes == 2) else []}
+        if method == "prompt.submit":
+            asyncio.get_running_loop().call_soon(view.events.put_nowait, GatewayClientError(DISCONNECTED))
+            return {"admission_id": "adm-1", "status": "queued", "execution_generation": 7}
+        if method in ("approval.respond", "clarify.respond"):
+            drop = self.drops.pop(0) if self.drops else None
+            if drop != "undelivered":
+                self.answers.append(params["prompt_id"])
+            if drop:
+                view.events.put_nowait(GatewayClientError(DISCONNECTED))
+                raise GatewayClientError(DISCONNECTED)
+            view.events.put_nowait(_frame("message.complete", {"text": "done", "outcome": "completed"}))
+            return {"status": "resolved", "prompt_id": params["prompt_id"]}
+        if method == "prompt.receipt":
+            if not self.answers:
+                return {"admission_id": "adm-1", "status": "started"}
+            return {"admission_id": "adm-1", "status": "terminal", "outcome": "completed",
+                    "result": {"final_response": "done", "completed": True}}
+        return {}
+
+
+def _prompted_turn(owner, monkeypatch):
+    """One turn against ``owner``; returns ``(result, asked)``, every question its modals showed."""
+    from tools.terminal_tool import set_approval_callback
+    _discovers(monkeypatch, lambda: "ready")
+    asked = []
+    connection = GatewayConnection(connect=owner.dial)
+    connection.start(5)
+    connection.state(SID).adopt_snapshot(connection.call("session.resume", session_id=SID))
+    agent = GatewayAgent(connection=connection, session_id=SID,
+                         clarify_callback=lambda questions: asked.append(questions) or "a")
+    out = {}
+
+    def turn():  # the approval callback is per-thread, as main registers it on the agent thread
+        set_approval_callback(lambda command, description, **kw: asked.append(command) or "once")
+        out["result"] = agent.run_conversation("q")
+    worker = threading.Thread(target=turn, daemon=True)
+    worker.start()
+    try:
+        worker.join(15)
+    finally:
+        connection.close()
+    assert out.get("result") is not None and not out["result"]["failed"], out
+    return out["result"], asked
+
+
+@pytest.mark.parametrize("kind", ["approval", "clarify"])
+def test_a_control_published_between_the_redials_two_resumes_is_asked_once(kind, monkeypatch):
+    owner = PromptOwner(kind)
+    _result, asked = _prompted_turn(owner, monkeypatch)
+    assert len(owner.views) == 2 and len(asked) == 1 and owner.answers == ["p1"]
+
+
+@pytest.mark.parametrize("kind", ["approval", "clarify"])
+def test_a_control_the_owner_took_is_not_reopened_after_its_ack_was_lost(kind, monkeypatch):
+    """The owner took the answer, then the socket closed before its acknowledgement: the request still
+    buffered from before the loss must not reopen it, and the next re-attach no longer lists it."""
+    owner = PromptOwner(kind, drops=["lost_ack"])
+    result, asked = _prompted_turn(owner, monkeypatch)
+    assert result["final_response"] == "done"
+    assert len(owner.views) == 3 and len(asked) == 1 and owner.answers == ["p1"]
+
+
+@pytest.mark.parametrize("kind", ["approval", "clarify"])
+def test_a_control_whose_answer_never_arrived_is_asked_again_from_the_next_snapshot(kind, monkeypatch):
+    owner = PromptOwner(kind, drops=["undelivered"])
+    result, asked = _prompted_turn(owner, monkeypatch)
+    assert result["final_response"] == "done"
+    assert len(owner.views) == 3 and len(asked) == 2 and owner.answers == ["p1"]
 
 
 def _resumes(life):
