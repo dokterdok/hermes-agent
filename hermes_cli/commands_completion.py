@@ -531,5 +531,5 @@ def cli_slash_completer(cli):
     from cli import _session_skill_commands, get_skill_bundles
     from hermes_cli import gateway_plugin_commands
     return SlashCommandCompleter(
-        skill_commands_provider=lambda: _session_skill_commands(cli), command_filter=cli._command_available,
+        skill_commands_provider=lambda: _session_skill_commands(cli, redial=False), command_filter=cli._command_available,
         skill_bundles_provider=lambda: get_skill_bundles(), plugin_commands_provider=lambda: gateway_plugin_commands.names(cli))

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import queue
 import threading
 import time
@@ -47,6 +48,27 @@ def _resume_plain(exc, session_id, typed):
     if typed or str(exc) not in _KEY_NOT_TAKEN:
         raise exc
     logger.debug("session.resume %s: launch key not taken (%s); resuming without it", session_id, exc)
+
+
+def gateway_serving() -> bool:
+    """Whether a gateway already serves this home, by discovery only (never starts one): checked before
+    the CLI's exit or a ``pre_command`` observation redials a hung-up connection, so after ``gateway
+    stop`` they start none. A ready owner serves, and so does a replacement still ``starting`` (its
+    reservation or its published control): main's redial waits for it and starts no competing owner. An
+    explicit ``HERMES_TUI_GATEWAY_URL`` serves; an absent, unreadable or unknown owner, or a discovery
+    that fails, does not (nothing is dialed). The redial itself is main's: a gateway that dies between
+    this check and the dial is started again, and one slow to start or answer is waited on as any call
+    waits."""
+    if os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip():
+        return True
+    try:
+        from hermes_cli.gateway_runtime import attachable, discover_gateway_endpoint, gateway_profile_home
+        from hermes_constants import get_hermes_home
+        found = discover_gateway_endpoint(gateway_profile_home(get_hermes_home()), timeout=1.5)
+    except Exception as exc:  # health: allow BLE001 -- an unknown owner is no owner to dial
+        logger.debug("gateway discovery failed: %s", exc)
+        return False
+    return found.state == "starting" or attachable(found)
 
 
 def lost_before(frame, epoch) -> bool:
@@ -191,6 +213,12 @@ class GatewayConnection:
             if cls._shared is None or cls._shared.final:
                 cls._shared = cls()
             return cls._shared
+
+    @property
+    def connected(self) -> bool:
+        """A socket is open now. Not while hung up, nor while a dial is in progress (``closed`` is
+        already False then)."""
+        return self._live is not None
 
     @property
     def final(self) -> bool:

@@ -248,7 +248,8 @@ def test_a_hung_up_connection_rereads_the_catalog_before_a_cached_name_runs(monk
 
 
 def test_a_hung_up_connection_rereads_the_sessions_skills(monkeypatch):
-    """/help and completion: the old gateway life's skills are not served after it hung up."""
+    """/help and dispatch: the old gateway life's skills are not served after it hung up (completion
+    lists none and never redials: test_gateway_connection_reconnect)."""
     from hermes_cli import gateway_plugin_commands
     conn = _Conn({})
     conn.extra = {"skills": ["/old-skill"]}

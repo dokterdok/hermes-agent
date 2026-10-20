@@ -305,10 +305,16 @@ class GatewaySessionStore:
 
     def end_session(self, session_id, reason=None):
         """Main's ``end_session(sid, reason)``: detach this viewer with ``end_reason``; the owner ends
-        the idle local row with that reason once no viewer is left (``ended_at`` / ``end_reason``)."""
+        the idle local row with that reason once no viewer is left (``ended_at`` / ``end_reason``).
+        The CLI's exit (``cli_close``) with no open socket redials only while a gateway serves this home
+        (a restarted one, which then ends the row): after ``gateway stop`` it starts none just to detach,
+        and the row is left as the stopped gateway left it (``gateway_serving``)."""
+        from hermes_cli.gateway_connection import gateway_serving
         snapshot = self.snapshots.pop(session_id, None)
         state = self.connection.states.get(session_id)
         reachable = state is not None and state.subscription_id is not None and not self.connection.final
+        if reachable and reason == "cli_close" and not self.connection.connected and not gateway_serving():
+            reachable = False
         if reachable:
             try:
                 # Hung up: redial first, so the detach names the subscription the reconnect resumed.
@@ -330,7 +336,10 @@ class GatewaySessionStore:
 
     def delete_session_if_empty(self, session_id, sessions_dir=None):
         """Main's quit-immediately prune, as a gateway delete: only a row with no messages, no title
-        and no children (checked on the read-only reader; the gateway deletes the lineage)."""
+        and no children (checked on the read-only reader; the gateway deletes the lineage). With no open
+        socket it redials only while a gateway serves this home: with none (``/quit`` after ``gateway
+        stop``) the row is kept, never starting a gateway to delete it (``gateway_serving``)."""
+        from hermes_cli.gateway_connection import gateway_serving
         db = self._db()
         if db is None:
             return False
@@ -344,7 +353,7 @@ class GatewaySessionStore:
         except Exception as exc:  # health: allow BLE001 -- a failed probe keeps the row (never deletes on doubt)
             logger.debug("empty-session probe failed: %s", exc)
             return False
-        if not empty:
+        if not empty or (not self.connection.connected and not gateway_serving()):
             return False
         try:
             return self.delete_session(session_id)

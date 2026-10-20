@@ -93,6 +93,11 @@ def _hung_up(connection):
     return getattr(connection, "closed", False)
 
 
+def _connected(connection):
+    """A socket is open now (``GatewayConnection.connected``): a call needs no dial."""
+    return getattr(connection, "connected", True)
+
+
 def _cached(cli, connection):
     if _hung_up(connection):
         return None
@@ -100,14 +105,18 @@ def _cached(cli, connection):
     return found if boundary == _boundary(cli, connection) else None
 
 
-def skills(cli, *, notes=False):
+def skills(cli, *, notes=False, redial=True):
     """``{"/key": {name, description}}`` of the session's skill commands from the gateway's catalog
     (``notes``: its one-line notice instead, e.g. skills a built-in command shadows), or None off the
-    gateway. A failed read is printed once per input and lists none; nothing is scanned here."""
+    gateway. A failed read is printed once per input and lists none; nothing is scanned here. Not
+    ``redial`` (completion, as the user types): a connection with no open socket (hung up, or a dial in
+    progress) lists none and is neither dialed nor waited on; with the gateway down a dial starts one."""
     from hermes_cli.gateway_side import connection_for
     connection = connection_for(cli)
     if connection is None:
         return None
+    if not redial and not _connected(connection):
+        return "" if notes else {}
     boundary, found, warning = getattr(cli, "_gateway_skills", None) or (None, None, "")
     if _hung_up(connection) or boundary != _boundary(cli, connection):
         try:
@@ -179,11 +188,14 @@ def toolsets(cli):
 
 def names(cli):
     """``{name: description}`` of the gateway's plugin commands for completion, or None off the
-    gateway. A failed read degrades quietly to none; dispatch uses :func:`lookup`."""
+    gateway. A failed read degrades quietly to none; dispatch uses :func:`lookup`. A connection with no
+    open socket lists none and is not dialed (see :func:`skills`)."""
     from hermes_cli.gateway_side import connection_for
     connection = connection_for(cli)
     if connection is None:
         return None
+    if not _connected(connection):
+        return {}
     found = _cached(cli, connection)
     if found is None:
         try:
@@ -284,12 +296,18 @@ def observe(cli, name, arg, *, runs=True):
     in-process hook applies). A command that ``runs`` nothing here (a refusal) is not reported. The
     gateway replies before any plugin runs. One older than this CLI (no such method) gets one printed
     line, and is not asked again on that connection life: local commands then reach no ``pre_command``
-    observer, and this process still fires none itself."""
+    observer, and this process still fires none itself. With no open socket the observation is sent (the
+    call redials) only while a gateway serves this home (after a restart); with none (``gateway stop``)
+    it is skipped as an undelivered one is, never starting a gateway that ``/quit`` would wait for."""
     from hermes_cli.gateway_side import connection_for
     connection = connection_for(cli)
     if connection is None:
         return False
     if not runs:
+        return True
+    from hermes_cli.gateway_connection import gateway_serving
+    if not _connected(connection) and not gateway_serving():
+        logger.debug("command.observe /%s not delivered: no gateway is serving", name)
         return True
     epoch = getattr(connection, "epoch", None)
     if getattr(cli, "_observe_unsupported", None) == (connection, epoch):

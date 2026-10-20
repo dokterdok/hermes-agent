@@ -726,11 +726,12 @@ def get_skill_commands() -> dict:
     return _ensure_skill_commands()
 
 
-def _session_skill_commands(cli) -> dict:
+def _session_skill_commands(cli, *, redial=True) -> dict:
     """Skill commands for ``cli``: on its gateway session the gateway's (its plugin skills included), so
-    this process scans no plugin to list them; otherwise this process's own."""
+    this process scans no plugin to list them; otherwise this process's own. Completion passes
+    ``redial=False``: a hung-up gateway is not dialed (:func:`hermes_cli.gateway_plugin_commands.skills`)."""
     from hermes_cli import gateway_plugin_commands
-    found = gateway_plugin_commands.skills(cli)
+    found = gateway_plugin_commands.skills(cli, redial=redial)
     return _ensure_skill_commands() if found is None else found
 
 
