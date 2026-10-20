@@ -160,7 +160,9 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
     (EX_CONFIG): the dispatcher blocks the card at once. The same code applies
     before a turn when credential resolution explicitly requires re-authentication;
-    unknown startup failures retain exit 1.
+    unknown startup failures retain exit 1. 3 when a turn lost in a gateway restart blocks the
+    session and the prompt was refused or is retained behind it (``detached``): the transport
+    client's code.
 
     The worker predicate is the STRIPPED ``kanban_task_id()`` (from
     ``agent.kanban_turn_recovery``) so a whitespace-only value is not a worker here
@@ -171,6 +173,8 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     from cli import _TRANSIENT_PROVIDER_REASONS as transient_reasons
     from agent.kanban_turn_recovery import kanban_task_id
     from hermes_cli.turn_exit import turn_exit_code
+    if isinstance(result, dict) and result.get("detached") is True:
+        return 3
     return turn_exit_code(
         result, kanban_worker=kanban_task_id() is not None,
         credentials_rate_limited=credentials_rate_limited,

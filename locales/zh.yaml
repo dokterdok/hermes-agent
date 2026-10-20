@@ -2394,6 +2394,7 @@ cli:
     already_started: "队列项 {index} 已开始执行；将按原样执行。"
     started_stopped: "队列项 {index} 已开始执行；网关已将其停止。"
     change_unknown: "网关未回应队列项 {index}（{error}）；请先查看 /queue list 再重试。"
+    paused_lost_turn: "⏸️ 此会话已暂停：Hermes 重启时上一个回合未完成，只有你知道是否需要重新发送。你的消息已保存。发送 /discard 丢弃这个丢失的回合（不会重新执行）；随后会运行你的消息。如果改为退出或开始 /new，它同样会被丢弃，你的消息会在此处不显示的情况下运行。"
   reload:
     env_reloaded: "已重新加载 .env（更新了 {count} 个变量）"
   steer:

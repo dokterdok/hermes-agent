@@ -10,6 +10,9 @@ The CLI keeps no copy to resend. It remembers only which admissions it queued
 (``SessionState.queued_inputs``) so the turn the owner runs for one is painted like a typed turn
 (``gateway_tools_notify.queue_admitted_turn`` adopts it), and ``/queue list|edit|rm|clear`` read and
 change the owner's queue (``prompt.receipt`` / ``prompt.replace_queued`` / ``prompt.cancel``).
+
+A typed prompt the owner holds behind a turn lost in its restart (#134889 GW-10) joins that set too:
+the turn ends with the paused notice, and ``/discard`` (``prompt.resolve_unknown``) lets it run.
 """
 from __future__ import annotations
 
@@ -66,6 +69,55 @@ def submit_queued(cli, store, text: str) -> str:
     state.queued_inputs[admission] = text
     state.queued_at[admission] = state.pending_seq
     return admission
+
+
+def lost_turns(state) -> list:
+    """This session's ``unknown`` rows (turns lost in an owner restart) in the last published list: any one
+    pauses its FIFO until a person discards it (GW-10)."""
+    return [row for row in state.pending or () if isinstance(row, dict) and row.get("status") == "unknown"]
+
+
+def held_by_lost_turn(state, admission) -> bool:
+    """The owner holds ``admission`` behind a turn lost in its restart: in one published list it is still
+    ``queued`` and a lost turn pauses the FIFO, so it does not run until a person discards that turn. An
+    admission that already ran is never held, whatever became unknown after it."""
+    rows = [row for row in state.pending or () if isinstance(row, dict)]
+    own = next((row.get("status") for row in rows if row.get("admission_id") == admission), None)
+    return own == "queued" and any(row.get("status") == "unknown" for row in rows)
+
+
+def keep_held(state, admission, text) -> None:
+    """A typed prompt the owner holds behind a lost turn is remembered like a ``/queue`` admission, so the
+    turn the owner runs for it after ``/discard`` is painted here; it is never submitted again."""
+    state.queued_inputs[admission] = text
+    state.queued_at[admission] = state.pending_seq
+
+
+def discard_lost(cli, store, admission=None) -> list[str]:
+    """``/discard [admission]``: acknowledge this session's turns lost in an owner restart (every one, or
+    the one named) through the owner's fenced ``prompt.resolve_unknown``, what the TUI's Ctrl+X, Desktop's
+    Discard and ``hermes sessions discard`` send. The lost input is never sent again; the prompts held
+    behind it then run. Returns the lines to print; a refusal is reported as one."""
+    from agent.i18n import t
+    from hermes_cli.gateway_client import GatewayRPCError
+    store.connection.start()  # a gateway that hung up is redialled first: its resume lists what it fenced
+    lost = lost_turns(_state(cli, store))
+    if admission:
+        lost = [row for row in lost if row.get("admission_id") == admission]
+        if not lost:
+            raise GatewayClientError("No unknown (lost) admission with that id")
+    lines, done = [], 0
+    for row in lost:
+        try:
+            store.call("prompt.resolve_unknown", session_id=cli.session_id, admission_id=row["admission_id"],
+                       execution_generation=row["execution_generation"])
+        except GatewayRPCError as exc:
+            lines.append(f"/discard {row['admission_id']}: {exc}")
+            continue
+        done += 1
+    if done:
+        lines.insert(0, t("gateway.discard.done", count=done))
+    return lines or [t("gateway.discard.nothing")]
 
 
 def queued_rows(cli, store) -> list[tuple[str, str]]:

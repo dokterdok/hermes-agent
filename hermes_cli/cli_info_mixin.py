@@ -330,8 +330,8 @@ class CLIInfoMixin:
         # ``CommandDef.describe()`` accessor (names/aliases stay identifiers).
         by_category: dict[str, list[tuple[str, str]]] = {}
         for cmd_def in COMMAND_REGISTRY:
-            if cmd_def.gateway_only:
-                continue
+            if cmd_def.gateway_only and self._slash_handler(cmd_def.name) is None:
+                continue  # a messaging command this CLI also handles (/discard) is listed
             desc = cmd_def.describe()
             rows = by_category.setdefault(cmd_def.category, [])
             rows.append((f"/{cmd_def.name}", t("cli.help.usage_suffix", description=desc, command=cmd_def.name,

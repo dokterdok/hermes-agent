@@ -2394,6 +2394,7 @@ cli:
     already_started: "O item {index} da fila já começou; ele roda como foi enviado."
     started_stopped: "O item {index} da fila já tinha começado; o gateway o parou."
     change_unknown: "O gateway não respondeu sobre o item {index} da fila ({error}); confira /queue list antes de tentar de novo."
+    paused_lost_turn: "⏸️ Esta sessão está em pausa: um turno anterior não terminou quando o Hermes reiniciou, e só você sabe se deve enviá-lo novamente. Sua mensagem está salva. Envie /discard para descartar o turno perdido (ele não é executado novamente); depois sua mensagem é executada. Se você sair ou iniciar /new em vez disso, ele também é descartado, e sua mensagem é executada sem aparecer aqui."
   reload:
     env_reloaded: ".env recarregado ({count} variável(is) atualizada(s))"
   steer:

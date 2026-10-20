@@ -29,6 +29,19 @@ def _pending_preview(text):
 _UNKNOWN_OUTCOME = ("Execution outcome is unknown. Resume this session to inspect the lost turn "
                     "and /discard it; do not resend the input.")
 
+# A finite run on a session a turn lost in an owner restart blocks: it exits 3 (the classic CLI's ``-q``
+# says the same, ``hermes_cli/gateway_agent.py``).
+LOST_TURN_RETAINED = ("Unknown execution blocks this session; your accepted input is retained. "
+                      "Resume interactively to resolve the lost turn; do not resend the input.")
+
+
+def lost_turn_refusal(session_id, lost):
+    """A finite run refused before its submit on a session the ``lost`` admissions block."""
+    return (f"Unknown execution blocks this session; nothing was submitted. Resolve it with `hermes sessions "
+            f"discard {session_id} --yes` (or /discard {' '.join(lost)} interactively; both are "
+            "prompt.resolve_unknown), then retry.")
+
+
 _BLOCKING_CONTROL_EVENTS = frozenset({
     "approval.request", "approval.settled", "clarify.request", "clarify.settled",
     "session.info",
@@ -441,8 +454,7 @@ class GatewayChatView:
             self.completions[admission] = {"outcome": "unknown", "text": _UNKNOWN_OUTCOME}
             return None
         if own == "queued" and self.unknown_admissions():
-            return ("Unknown execution blocks this session; your accepted input is retained. "
-                    "Resume interactively to resolve the lost turn; do not resend the input.")
+            return LOST_TURN_RETAINED
         if self.prompts and (own or not self.gaps):  # a control blocks only a turn still pending
             return "Input required; detached without cancelling. Resume this session interactively."
         return None
@@ -502,10 +514,7 @@ class GatewayChatView:
         if oneshot and self.unknown_admissions():
             # A new admission would queue behind the unknown row and never run; refuse BEFORE
             # submitting so nothing is left queued for the next interactive resume to find.
-            lost = " ".join(self.unknown_admissions())
-            return self._detach("Unknown execution blocks this session; nothing was submitted. Resolve it "
-                                f"with `hermes sessions discard {self.session_id} --yes` (or /discard {lost} "
-                                "interactively; both are prompt.resolve_unknown), then retry.")
+            return self._detach(lost_turn_refusal(self.session_id, self.unknown_admissions()))
         renderer = asyncio.create_task(self.render())
         try:
             receipt = await self.submit(query) if query else None

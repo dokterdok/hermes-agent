@@ -528,8 +528,14 @@ If the title is already in use by another session, an error is shown.
 ### Discard a Turn Lost in a Gateway Crash
 
 If the gateway stops in the middle of a turn, that turn's outcome is unknown and it is never replayed. It blocks
-the session until you acknowledge it. Interactive `hermes chat --resume <id>` lists it and accepts
-`/discard <admission_id>`. A scripted `hermes chat --resume <id> -q` refuses with exit code 3 and submits nothing.
+the session until you acknowledge it. In interactive `hermes chat`, a prompt you send meanwhile is saved
+behind it and the CLI says the session is paused; `/discard` (or `/discard <admission_id>`) acknowledges the
+lost turn, and the saved prompt then runs. The `--safe-mode` / `--format stream-json` client lists it and
+accepts `/discard <admission_id>`. A scripted `hermes chat --resume <id> -q` exits with code 3: "nothing
+was submitted" means retry once the lost turn is acknowledged; "your accepted input is retained" (the loss
+showed up after the submit) means the prompt runs once the lost turn is acknowledged (or, for the classic
+`-q`, as it exits if it was the session's last viewer; the `--format stream-json`, `--safe-mode` and
+`--ignore-user-config` clients leave it paused until you discard it); do not resend it.
 To clear it from a script:
 
 ```bash

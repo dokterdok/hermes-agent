@@ -28,6 +28,8 @@ _POLL = 0.1
 # ``steer()`` / ``redirect()``'s reply when the owner consumed the text as a typed voice stop (TUI-26):
 # truthy, so a caller that only asks "taken?" never re-queues it.
 VOICE_STOPPED = "voice_stopped"
+# ``_pump``'s verdict for a prompt the owner holds behind a turn lost in its restart (``_held``).
+_HELD = object()
 
 _RESULT_DEFAULTS = {
     "final_response": "", "failed": False, "partial": False, "error": None, "failure_reason": None,
@@ -74,6 +76,7 @@ class _Turn:
 
     def __init__(self, session_id):
         self.session_id, self.admission = session_id, None
+        self.text = None  # the prompt this turn submitted (None: a turn the owner admitted itself)
         # Parts, joined on read: ``+=`` on an attribute copies the whole segment per delta (quadratic).
         self._shown, self._spoken = [], []
         self.seen, self.answered, self.gapped = set(), set(), False
@@ -725,10 +728,13 @@ class GatewayAgent:
                 state = self._state()
                 if state.gaps != state.attached_gaps:  # a replay gap between turns retired the subscription
                     self.connection.reattach(turn.session_id, abandon=self._stop(turn))
+                if (refused := self._oneshot_refusal(turn, state)) is not None:
+                    return self._blocked(history, user_message, refused)
                 params = self._submit_params(user_message, persist_user_message, turn_author)
                 if self._stop(turn)():
                     raise CallStopped("prompt.submit")
                 receipt = self.connection.call("prompt.submit", **{**params, "session_id": turn.session_id})
+                turn.text = params["text"]
             except CallStopped:  # main moved on (a later turn, /new, Ctrl-C's bound) before the submit
                 self._give_back_turn_route()  # nothing was sent: the pick is still owed
                 return self._failed(history, user_message, "Stopped before the prompt was sent; nothing was sent.")
@@ -759,6 +765,8 @@ class GatewayAgent:
         if isinstance(outcome, Exception) and self._owns(turn):
             return self._failed(history, user_message, str(outcome) or DISCONNECTED,
                                 failure_reason="gateway_connection")
+        if outcome is _HELD and self._owns(turn):
+            return self._held(history, user_message, turn)
         result = self._result(history, user_message, outcome, turn) if self._owns(turn) else None
         if not self._owns(turn):  # a later turn or a session switch took over: it reads and paints nothing
             return self._failed(history, user_message, "A later turn took over this terminal.")
@@ -803,12 +811,15 @@ class GatewayAgent:
         return lambda: not self._owns(turn)
 
     def _pump(self, stream_callback, starts, turn):
-        """Dispatch frames until this admission's ``message.complete``; returns its payload, or the
-        transport error (disconnect)."""
+        """Dispatch frames until this admission's ``message.complete``; returns its payload, the
+        transport error (disconnect), or ``_HELD`` (the owner holds it behind a lost turn)."""
+        from hermes_cli.gateway_queue import held_by_lost_turn
         events = self.connection.events
         while self._owns(turn):
             if self._expired():
                 return {"status": "interrupted", "outcome": "cancelled", "_settle_timeout": True}
+            if turn.text is not None and held_by_lost_turn(self._state(), turn.admission):
+                return _HELD
             try:
                 frame = events.get(timeout=_POLL)
             except queue.Empty:
@@ -1146,6 +1157,39 @@ class GatewayAgent:
         self._give_back_turn_route()  # nothing was admitted: a ``/model --once`` pick is still owed
         self._emit_print(t("cli.voice.stop_phrase_typed"))
         return {**_RESULT_DEFAULTS, "messages": list(history), "voice_stopped": True, "session_id": self.session_id}
+
+    def _held(self, history, user_message, turn):
+        """The owner holds this prompt behind a turn lost in its restart (#134889 GW-10): nothing behind that
+        turn runs until a person discards it, so no completion comes and waiting would spin forever. The turn
+        ends here, saying why and how to go on. The prompt stays saved in the owner's FIFO and is this
+        viewer's ``/queue`` admission from now on: after ``/discard`` it runs once, painted as a typed turn.
+        A one-shot (``-q``) cannot wait for that: it exits 3 and says its input is retained (``_blocked``),
+        as the transport client does; nothing is cancelled or interrupted."""
+        if getattr(self, "_finite", False):
+            from hermes_cli.gateway_chat_view import LOST_TURN_RETAINED
+            return self._blocked(history, user_message, LOST_TURN_RETAINED)
+        from agent.i18n import t
+        from hermes_cli.gateway_queue import keep_held
+        keep_held(self._state(), turn.admission, turn.text)
+        self._emit_print(t("cli.queue.paused_lost_turn"))
+        return {**_RESULT_DEFAULTS, "messages": list(history), "completed": False, "session_id": self.session_id}
+
+    def _oneshot_refusal(self, turn, state):
+        """A one-shot's refusal when a turn lost in a restart already blocks the session, before anything
+        is staged or sent (as the transport client refuses); None to go on."""
+        if not getattr(self, "_finite", False):
+            return None
+        from hermes_cli.gateway_chat_view import lost_turn_refusal
+        from hermes_cli.gateway_queue import lost_turns
+        lost = [row["admission_id"] for row in lost_turns(state)]
+        return lost_turn_refusal(turn.session_id, lost) if lost else None
+
+    def _blocked(self, history, user_message, error):
+        """A one-shot (``-q``) on a session a turn lost in a restart blocks: nothing can discard that turn
+        before this process exits. Refused before its submit (nothing to run: retry once the turn is
+        acknowledged), or its prompt retained behind it (it runs once the turn is; never resend it).
+        ``detached``: exit 3, the transport client's contract (``cli_single_query._single_query_exit_code``)."""
+        return {**self._failed(history, user_message, error, failure_reason="gateway_connection"), "detached": True}
 
     def _failed(self, history, user_message, error, *, failure_reason=None, retryable=False):
         """``failure_reason="gateway_connection"``: the CLI shows ``error`` as written instead of

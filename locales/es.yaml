@@ -2394,6 +2394,7 @@ cli:
     already_started: "El elemento {index} de la cola ya empezó; se ejecuta tal como se envió."
     started_stopped: "El elemento {index} de la cola ya había empezado; el gateway lo detuvo."
     change_unknown: "El gateway no respondió sobre el elemento {index} de la cola ({error}); revisa /queue list antes de reintentarlo."
+    paused_lost_turn: "⏸️ Esta sesión está en pausa: un turno anterior no terminó cuando Hermes se reinició, y solo tú sabes si debe enviarse de nuevo. Tu mensaje está guardado. Envía /discard para descartar el turno perdido (no se vuelve a ejecutar); después se ejecuta tu mensaje. Si sales o empiezas /new en su lugar, también se descarta, y tu mensaje se ejecuta sin mostrarse aquí."
   reload:
     env_reloaded: "Se recargó .env ({count} variable(s) actualizada(s))"
   steer:

@@ -2394,6 +2394,7 @@ cli:
     already_started: "Tou-item {index} het reeds begin; dit loop soos dit gestuur is."
     started_stopped: "Tou-item {index} het reeds begin; die gateway het dit gestop."
     change_unknown: "Die gateway het nie oor tou-item {index} geantwoord nie ({error}); kyk na /queue list voordat jy weer probeer."
+    paused_lost_turn: "⏸️ Hierdie sessie is gepouseer: 'n vorige beurt is nie voltooi toe Hermes herbegin het nie, en net jy weet of dit weer gestuur moet word. Jou boodskap is gestoor. Stuur /discard om die verlore beurt weg te gooi (dit word nie weer uitgevoer nie); jou boodskap word dan uitgevoer. As jy eerder afsluit of /new begin, word die verlore beurt ook weggegooi en jou boodskap word dan uitgevoer sonder om hier te wys."
   reload:
     env_reloaded: ".env herlaai ({count} veranderlike(s) opgedateer)"
   steer:

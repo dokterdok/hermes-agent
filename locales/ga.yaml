@@ -2394,6 +2394,7 @@ cli:
     already_started: "Tá mír {index} den scuaine tosaithe cheana; ritheann sí mar a seoladh í."
     started_stopped: "Bhí mír {index} den scuaine tosaithe cheana; stop an geata í."
     change_unknown: "Níor fhreagair an geata faoi mhír {index} den scuaine ({error}); seiceáil /queue list sula ndéanann tú iarracht arís."
+    paused_lost_turn: "⏸️ Tá an seisiún seo ar sos: níor chríochnaigh seal roimhe seo nuair a atosaíodh Hermes, agus is tusa amháin a bhfuil a fhios agat ar cheart é a sheoladh arís. Tá do theachtaireacht sábháilte. Seol /discard chun an seal caillte a chaitheamh amach (ní ritear arís é); ritear do theachtaireacht ansin. Má scoireann tú nó má thosaíonn tú /new ina ionad, caitear amach é freisin, agus ritear do theachtaireacht gan í a thaispeáint anseo."
   reload:
     env_reloaded: "Athlódáladh .env ({count} athróg nuashonraithe)"
   steer:

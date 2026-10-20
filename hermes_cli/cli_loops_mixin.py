@@ -541,6 +541,22 @@ class CLILoopsMixin:
         else:
             self._queue_enqueue(payload)
 
+    def _handle_discard_command(self, cmd_original: str):
+        """``/discard [admission]``: drop this session's turns lost in a gateway restart (#134889 GW-10), or
+        the one named, so the prompts the gateway saved behind them run: the owner verb messaging's
+        ``/discard`` and the TUI's Ctrl+X use."""
+        from cli import _cprint, _slash_args
+        store = self._gateway_queue_store()
+        if store is None:
+            _cprint(f"  {t('gateway.discard.nothing')}")
+            return
+        from hermes_cli import gateway_queue
+        try:
+            for line in gateway_queue.discard_lost(self, store, _slash_args(cmd_original).strip() or None):
+                _cprint(f"  {line}")
+        except GatewayClientError as exc:
+            _cprint(f"  /discard: {exc}")
+
     def _cmd_steer(self, cmd_original: str):
         # Inject a message after the next tool call without interrupting: while the
         # agent runs, push into its pending_steer slot (drained by _execute_tool_calls_*

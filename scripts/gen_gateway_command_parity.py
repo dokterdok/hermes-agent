@@ -79,7 +79,8 @@ def _base_note(cmd):
     if cmd.name in NOT_A_LOCAL_READ:
         return NOT_A_LOCAL_READ[cmd.name]
     if cmd.gateway_only:
-        return "messaging-only"
+        from cli import HermesCLI
+        return "messaging and classic CLI" if HermesCLI._slash_handler(cmd.name) else "messaging-only"
     if cmd.cli_only:
         return "client-local (cli_only)"
     return ""
@@ -88,7 +89,8 @@ def _base_note(cmd):
 def classic_cell(cmd):
     """``hermes chat`` is main's ``HermesCLI`` with a gateway-backed agent and session store
     (``hermes_cli/gateway_agent.py``, ``gateway_session_store.py``): every command runs main's own
-    handler in the CLI process. The cell names that handler; a gateway-only command has none."""
+    handler in the CLI process. The cell names that handler; a gateway-only command has none unless
+    the classic CLI handles it too (``/discard``)."""
     from cli import HermesCLI
     entry = HermesCLI._slash_handler(cmd.name)
     if entry is None:

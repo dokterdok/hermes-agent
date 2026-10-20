@@ -2411,6 +2411,7 @@ cli:
     already_started: "A(z) {index}. sorelem már elindult; úgy fut, ahogy elküldték."
     started_stopped: "A(z) {index}. sorelem már elindult; az átjáró leállította."
     change_unknown: "Az átjáró nem válaszolt a(z) {index}. sorelemről ({error}); nézd meg a /queue list kimenetét, mielőtt újra próbálod."
+    paused_lost_turn: "⏸️ Ez a munkamenet szünetel: egy korábbi kör nem fejeződött be a Hermes újraindításakor, és csak te tudod, hogy újra el kell-e küldeni. Az üzeneted el van mentve. Küldd el a /discard parancsot az elveszett kör elvetéséhez (nem fut le újra); ezután lefut az üzeneted. Ha helyette kilépsz vagy /new-t indítasz, az elveszett kör ugyanúgy elvetésre kerül, és az üzeneted úgy fut le, hogy itt nem jelenik meg."
   reload:
     env_reloaded: ".env újratöltve ({count} változó frissült)"
   steer:

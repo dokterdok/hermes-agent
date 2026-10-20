@@ -2494,6 +2494,7 @@ cli:
     already_started: "Queue item {index} already started; it runs as it was sent."
     started_stopped: "Queue item {index} had already started; the gateway stopped it."
     change_unknown: "The gateway did not answer about queue item {index} ({error}); check /queue list before trying again."
+    paused_lost_turn: "⏸️ This session is paused: a previous turn did not finish when Hermes restarted, and only you know whether to send it again. Your message is saved. Send /discard to drop the lost turn (it is not re-run); your message then runs. Quitting or /new instead drops it too, and your message then runs without showing here."
   reload:
     env_reloaded: "Reloaded .env ({count} var(s) updated)"
   steer:

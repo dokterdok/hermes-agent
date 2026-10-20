@@ -2394,6 +2394,7 @@ cli:
     already_started: "Warteschlangeneintrag {index} hat bereits begonnen; er läuft wie gesendet."
     started_stopped: "Warteschlangeneintrag {index} hatte bereits begonnen; das Gateway hat ihn gestoppt."
     change_unknown: "Das Gateway hat zu Warteschlangeneintrag {index} nicht geantwortet ({error}); prüfe /queue list, bevor du es erneut versuchst."
+    paused_lost_turn: "⏸️ Diese Sitzung ist pausiert: Ein vorheriger Turn wurde beim Neustart von Hermes nicht beendet, und nur du weißt, ob er erneut gesendet werden soll. Deine Nachricht ist gespeichert. Sende /discard, um den verlorenen Turn zu verwerfen (er wird nicht erneut ausgeführt); danach läuft deine Nachricht. Wenn du stattdessen beendest oder /new startest, wird er ebenfalls verworfen, und deine Nachricht läuft, ohne hier angezeigt zu werden."
   reload:
     env_reloaded: ".env neu geladen ({count} Variable(n) aktualisiert)"
   steer:

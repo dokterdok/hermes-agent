@@ -2667,6 +2667,7 @@ cli:
     already_started: "L'élément {index} de la file a déjà démarré ; il s'exécute tel qu'envoyé."
     started_stopped: "L'élément {index} de la file avait déjà démarré ; le gateway l'a arrêté."
     change_unknown: "Le gateway n'a pas répondu pour l'élément {index} de la file ({error}) ; vérifiez /queue list avant de réessayer."
+    paused_lost_turn: "⏸️ Cette session est en pause : un tour précédent ne s'est pas terminé lors du redémarrage de Hermes, et vous seul savez s'il faut le renvoyer. Votre message est enregistré. Envoyez /discard pour ignorer le tour perdu (il n'est pas relancé) ; votre message s'exécute ensuite. Si vous quittez ou lancez /new à la place, il est aussi ignoré, et votre message s'exécute sans être affiché ici."
   reload:
     env_reloaded: ".env rechargé ({count} variable(s) mise(s) à jour)"
   steer:
