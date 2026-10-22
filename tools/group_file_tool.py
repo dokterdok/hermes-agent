@@ -33,11 +33,13 @@ _REMOTE_COPY = re.compile(r"remote_[0-9a-f]{12}_(?P<name>.+)")
 
 def _hermes_homes(turn) -> list[Path]:
     """Every Hermes home on this host, resolved: the active one, the root and each of its profiles
-    (main's credential-denylist homes), plus the room owner's."""
+    (main's credential-denylist homes), plus the room owner's when it runs elsewhere."""
     from gateway.platforms.base import _credential_home_roots
     from hermes_constants import get_default_hermes_root, get_hermes_home
     root = get_default_hermes_root()
     homes = [get_hermes_home(), root, *_credential_home_roots(), Path(turn.db_path).parent]
+    if turn.transport and turn.transport.get("source_home"):
+        homes.append(Path(str(turn.transport["source_home"])))
     with suppress(OSError):
         homes.extend(path for path in (root / "profiles").iterdir() if path.is_dir())
     resolved: list[Path] = []
@@ -83,7 +85,7 @@ def _hard_linked(info: os.stat_result, homes: list[Path]) -> bool:
     if info.st_nlink < 2:
         return False
     from agent.file_safety import _CREDENTIAL_FILE_NAMES
-    from gateway.hosted_room_attachments import default_attachment_root
+    from gateway.hosted_room_attachments import INCOMING_DIR, default_attachment_root
 
     def same(found: os.stat_result) -> bool:
         return (found.st_dev, found.st_ino) == (info.st_dev, info.st_ino)
@@ -93,7 +95,7 @@ def _hard_linked(info: os.stat_result, homes: list[Path]) -> bool:
                 if same(os.stat(home / name, follow_symlinks=False)):
                     return True
         store = default_attachment_root(home / "state.db")
-        for folder in (*(home.joinpath(*tree) for tree in _PRIVATE_TREES), store / "blobs"):
+        for folder in (*(home.joinpath(*tree) for tree in _PRIVATE_TREES), store / "blobs", store / INCOMING_DIR):
             with suppress(OSError):
                 with os.scandir(folder) as entries:
                     if any(entry.inode() == info.st_ino and same(entry.stat(follow_symlinks=False))

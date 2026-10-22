@@ -46,6 +46,9 @@ UNCOMMITTED_TTL_SECONDS = 60 * 60
 # Upload ids a Bot's shared files stage under (gateway.hosted_room_outputs); no client upload may
 # use them. Such an upload is held, not expired, until the room publishes or releases it.
 OUTPUT_UPLOAD_PREFIX = "out:"
+# Private directory beside ``blobs/`` where such a file pushed from another profile arrives in
+# chunks; ``prune`` drops a partial file left longer than the uncommitted-upload expiry.
+INCOMING_DIR = "incoming"
 DISBANDED_GRACE_SECONDS = 15 * 60
 CLASSIC_ATTACHMENT_TTL_SECONDS = 7 * 24 * 60 * 60
 
@@ -317,6 +320,7 @@ class HostedRoomAttachmentStore:
         self.db_path = Path(db_path)
         self.root = Path(root or default_attachment_root(self.db_path))
         self.blob_root = self.root / "blobs"
+        self.incoming_root = self.root / INCOMING_DIR
         self.clock = clock
         self.room_quota_bytes = max(1, int(room_quota_bytes))
         self.gateway_quota_bytes = max(1, int(gateway_quota_bytes))
@@ -1118,7 +1122,21 @@ class HostedRoomAttachmentStore:
         for blob_id in removed_blob_ids:
             self._blob_path(blob_id).unlink(missing_ok=True)
         self._sweep_orphans()
+        self._sweep_incoming(now)
         return removed
+
+    def _sweep_incoming(self, now: float) -> None:
+        """Drop chunked transfers abandoned for longer than the uncommitted-upload expiry."""
+        try:
+            parts = tuple(self.incoming_root.glob("*.part"))
+        except OSError:
+            return
+        for part in parts:
+            try:
+                if part.stat(follow_symlinks=False).st_mtime < now - UNCOMMITTED_TTL_SECONDS:
+                    part.unlink(missing_ok=True)
+            except OSError:
+                continue
 
     def _sweep_orphans(self) -> None:
         quarantined: list[Path] = []
