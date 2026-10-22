@@ -315,7 +315,8 @@ def promote_replica(
             raise ReplicaError("this gateway already holds the room authority")
         if conn.execute("SELECT 1 FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone():
             raise RoomConflictError("room_id already exists in the local authoritative store")
-        if conn.execute("SELECT 1 FROM hosted_room_retired_ids WHERE room_id=?", (room_id,)).fetchone():
+        if conn.execute("SELECT 1 FROM hosted_room_retired_ids WHERE room_id=?", (room_id,)).fetchone() or (
+                _holds_disband(conn, room_id)):
             raise RoomConflictError("room_id belongs to a disbanded room")
         previous_gateway, previous_epoch = str(replica["authority_gateway_id"]), int(replica["authority_epoch"])
         target_epoch, claim_seq = previous_epoch + 1, int(replica["last_seq"]) + 1
