@@ -28,6 +28,7 @@ vi.mock('./canonical-group-labels', async () => {
     send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel' }) }
 })
 
+import { CANONICAL_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const binding = { connectionId: 'original-owner', profile: 'reviewer', roomId: 'room-one' }
@@ -41,6 +42,8 @@ it('keeps a committed file downloadable in history after Send clears the compose
   window.hermesDesktop = { saveImageBuffer: save } as unknown as typeof window.hermesDesktop
   let sent = false
   request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
 
     if (method === 'groups.log') {return { events: sent ? [{ seq: 1, room_id: binding.roomId, event_id: 'committed-user-event',
@@ -91,6 +94,8 @@ it('binds user/member history downloads to their real event and refuses missing 
   ].map(event => ({ ...event, payload: { attachments: [{ ...manifest, event_id: 'not-the-event' }] } }))
 
   request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
     if (method === 'groups.state') {return { room: { name: 'Room' } }}
 
     if (method === 'groups.log') {return { events }}
@@ -116,6 +121,8 @@ it('binds user/member history downloads to their real event and refuses missing 
 
 it('renders only room messages with their author and markdown presentation', async () => {
   request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
     if (method === 'groups.state') {return { room: { name: 'Room', members: [{ member_id: 'helper', handle: 'helper', profile: 'helper' }] }, driver_status: {} }}
 
     if (method === 'groups.log') {
