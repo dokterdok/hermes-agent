@@ -165,6 +165,27 @@ describe('useBackgroundQueueDrain', () => {
     }
   })
 
+  it('submits a queued entry once when two idle windows both drain it without Web Locks (plain-HTTP origin)', async () => {
+    expect(window.navigator.locks).toBeUndefined()
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    let accept!: (accepted: boolean) => void
+    const submitText = vi.fn(() => new Promise<boolean>(resolve => (accept = resolve)))
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'send me once', attachments: [] })
+    clearAllSessionStates()
+    render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-b" submitText={submitText} />)
+    render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-c" submitText={submitText} />)
+
+    await waitFor(() => expect(submitText).toHaveBeenCalled())
+    await new Promise(resolve => window.setTimeout(resolve, 300))
+    await act(async () => accept(true))
+    await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+    // The waiting window takes the lease once it is released, then finds the entry gone.
+    await new Promise(resolve => window.setTimeout(resolve, 400))
+
+    expect(submitText).toHaveBeenCalledTimes(1)
+  })
+
   it('forwards queued displayText so frozen @terminal chips render in the bubble', async () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
