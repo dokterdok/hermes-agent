@@ -115,6 +115,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
+import { isGroupChatSelf } from './group-round-prompt'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
@@ -697,6 +698,16 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
         .catch(e => { if (sourceCurrent()) {setError(String(e))} }).finally(() => setBusy(false))
     }}>Start gateway group</Button>
   </div>
+}
+
+/** A row written on another machine, or whose author no seat here proves, cannot resolve this
+ *  gateway's files, images or directive cards: a connection label is presentation, not provenance. */
+function groupHistoryIsForeign(entry: GroupMessage, member: GroupMember | null): boolean {
+  if (member?.remoteSource) {return true}
+
+  if (entry.from.gateway) {return !member?.installId || member.installId !== entry.from.gateway}
+
+  return Boolean(entry.from.source)
 }
 
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
@@ -1358,13 +1369,8 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     // names and disambiguating handles come from the roster (the
     // primary "default" profile renders as Hermes, remote dupes
     // carry their @name-device handle) instead of raw profile ids.
-    const member = isUser
-      ? null
-      : members.find(
-          b =>
-            b.name === entry.from.name &&
-            (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
-        ) || null
+    const member = isUser ? null : members.find(candidate => isGroupChatSelf(entry.from, candidate)) || null
+    const foreignHistory = groupHistoryIsForeign(entry, member)
 
     const display = isUser
       ? b.group.you
@@ -1458,7 +1464,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             data-slot="group-chat-message-content"
           >
             {MessageTextContent ? (
-              <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />
+              <MessageTextContent decorateText={mentionText} media={!foreignHistory} previewOnly={foreignHistory} text={entry.text} />
             ) : Streamdown ? (
               <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
             ) : (

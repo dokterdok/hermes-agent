@@ -20,7 +20,7 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
-import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -276,6 +276,24 @@ function flattenChildrenToText(node: unknown): string {
   }
 
   return ''
+}
+
+/** In foreign history only an explicit web URL navigates, and only on a click: no preview card,
+ *  title fetch, session reference or foreground file resolution, and no credential-bearing URL. */
+function PreviewOnlyMarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  let target: URL | null = null
+
+  try {
+    target = href && /^https?:\/\//i.test(href.trim()) ? new URL(href.trim()) : null
+  } catch {
+    target = null
+  }
+
+  if (!target || !['http:', 'https:'].includes(target.protocol) || target.username || target.password) {
+    return <span>{children}</span>
+  }
+
+  return <ExternalLink className={cn('wrap-anywhere', className)} href={target.href} {...props}>{children}</ExternalLink>
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
@@ -657,7 +675,7 @@ function MarkdownTextSurface({
               {decorateText ? decorateText(children) : children}
             </MarkdownParagraph>
           ),
-        a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
+        a: previewOnly ? PreviewOnlyMarkdownLink : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
         // mirroring the CSS isolate that already keeps it out of the
@@ -814,17 +832,21 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
  * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
  * against the ACTIVE gateway, so a message written on another machine (a
  * Connections Bot in a cross-machine room) must not have its path read here —
- * that is a broken image at best and a same-path local file at worst. */
+ * that is a broken image at best and a same-path local file at worst. Such
+ * history also passes `previewOnly`: Markdown images, file links and live
+ * directive cards stay inert, and only an explicit web link opens, on a click. */
 export function MessageTextContent({
   decorateText,
   media = true,
+  previewOnly = false,
   text
-}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
+}: Pick<MarkdownTextSurfaceProps, 'decorateText' | 'previewOnly'> & { media?: boolean; text: string }) {
   return (
     <MarkdownTextContent
       decorateText={decorateText}
       disableArtifacts
       isRunning={false}
+      previewOnly={previewOnly}
       text={media ? renderMediaTags(text) : text}
     />
   )
