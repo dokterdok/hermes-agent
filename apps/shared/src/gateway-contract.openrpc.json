@@ -47733,7 +47733,7 @@
     },
     {
       "name": "groups.attachment.download",
-      "summary": "Read one committed attachment for a live room viewer.",
+      "summary": "Read one committed attachment for a live room viewer. A version the room log publishes whose bytes are gone here is refused with attachment_unavailable.",
       "params": [
         {
           "name": "params",

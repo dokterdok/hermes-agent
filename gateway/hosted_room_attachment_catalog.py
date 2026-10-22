@@ -217,6 +217,28 @@ def _availability(conn, *, room_id, event_id, entry, now, blob_root) -> bool | N
     return _servable(conn, room_id=room_id, event_id=event_id, entry=entry, now=now, blob_root=blob_root)
 
 
+def published_reference(db_path, *, room_id, event_id, attachment_id,
+                        authority_gateway_id, authority_epoch) -> bool:
+    """Recheck a failed download against public log metadata, never private attachment metadata."""
+    with closing(_snapshot(Path(db_path))) as conn:
+        HostedRoomAttachmentStore._require_viewer_room(
+            conn, room_id=room_id, authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch)
+        event = conn.execute(
+            "SELECT kind, actor_json, payload_json FROM hosted_room_events WHERE room_id=? AND event_id=?",
+            (room_id, event_id)).fetchone()
+        if event is None or _sharer(event["kind"], event["actor_json"], {}) is None:
+            return False
+        try:
+            payload = json.loads(event["payload_json"])
+            raw = json.dumps(payload.get("attachments")) if isinstance(payload, dict) else "null"
+        except (TypeError, ValueError):
+            return False
+        return any(entry["attachment_id"] == attachment_id and _availability(
+            conn, room_id=room_id, event_id=event_id, entry=entry, now=time.time(),
+            blob_root=default_attachment_root(db_path) / "blobs") is not None
+            for entry in _manifest(raw))
+
+
 def _file_events(conn, *, room_id, snapshot, position, roster, query, producer, you):
     """Page the authorized room log, including references whose local attachment store is absent."""
     filters = ""
