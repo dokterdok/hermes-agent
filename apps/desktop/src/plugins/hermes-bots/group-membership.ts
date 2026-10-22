@@ -117,6 +117,18 @@ export function groupSessionThread(key: string): string {
   return (boundary === -1 ? rest : rest.slice(0, boundary)) || 'legacy'
 }
 
+/** Whether this Desktop already ran `room` on `member`'s connection: one of its
+ *  plumbing sessions there is keyed `<connectionId>::<name>`. Sessions are
+ *  local-only (the gateway mirror never carries them), so a room mirrored in
+ *  from another Desktop — whose `local`, and whose other connection ids, name
+ *  that Desktop's machines — never passes until this Desktop runs it itself. */
+export function groupRanOnConnection(room: Pick<GroupChat, 'sessions'> | undefined, member: GroupMember): boolean {
+  const connectionId = member.connectionId
+
+  return Boolean(connectionId) &&
+    Object.keys(room?.sessions || {}).some(key => groupSessionMemberKey(key).startsWith(`${connectionId}::`))
+}
+
 /** Whether this member already owns a thread-scoped session anywhere in the
  *  room — i.e. the room has been through the pre-thread migration. */
 export function hasThreadScopedGroupSession(sessions: Record<string, unknown>, memberKey: string): boolean {

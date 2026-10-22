@@ -42,6 +42,7 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
+import type { CanonicalGroupMessages } from './canonical-group-locales'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import {
   $canonicalGroupBindings,
@@ -54,7 +55,7 @@ import {
   resolveCanonicalGroup
 } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
-import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
+import { canonicalGroupCreateError, canonicalGroupRequest, canonicalGroupRoster, createCanonicalGroup, onCanonicalConnection } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -99,6 +100,7 @@ import {
   groupChatMemberBots,
   groupDisbandMetadataPlan,
   groupMemberKey,
+  groupRanOnConnection,
   groupWorkspaceOwnerKey,
   liveGroupChatNames
 } from './group-membership'
@@ -599,6 +601,48 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   return <GroupExecutionGate {...props} />
 }
 
+type GateLookup = 'pending' | 'missing' | 'failed'
+interface GateOpenCopy { opening: string; lookupFailed: string; missing: string }
+
+function gateMessage(mode: GroupExecutionMode | 'checking', lookup: GateLookup, offer: boolean,
+  canonical: CanonicalGroupMessages, open: GateOpenCopy): string {
+  if (mode !== 'canonical') {return mode === 'unavailable' ? canonical.driverUnavailable : canonical.checkingDriver}
+
+  return offer ? canonical.legacyRoom : lookup === 'pending' ? open.opening : lookup === 'failed' ? open.lookupFailed : open.missing
+}
+
+/** What a room with no gateway binding shows: its classic workspace, or the gate's words and actions. */
+function groupGatePlan({ mode, lookup, props, classicRoom, route, canonical, open }: {
+  mode: GroupExecutionMode | 'checking'
+  lookup: GateLookup
+  props: GroupChatWorkspaceProps
+  classicRoom: GroupChatRoom | undefined
+  route: { connectionId: string; profile: string }
+  canonical: CanonicalGroupMessages
+  open: GateOpenCopy
+}): { classic: true } | { classic: false; message: string; problem: string; canCreate: boolean; retry: 'capability' | 'lookup' | null } {
+  const missing = mode === 'canonical' && lookup === 'missing'
+
+  // A classic room with no Bot on this gateway never reaches its owner: Desktop still runs it here,
+  // once the lookup answered or failed (a failed lookup on a gateway the room never uses must not hide
+  // it), and only on connections this Desktop already ran it on. A connection id is this Desktop's
+  // name, so a room mirrored from another Desktop (whose `local` is that machine) keeps the gate.
+  if (mode === 'legacy' || (mode === 'canonical' && lookup !== 'pending' && classicRoom && props.members.length > 0 &&
+    props.members.every(member => !onCanonicalConnection(route, member) && groupRanOnConnection(classicRoom, member)))) {
+    return { classic: true }
+  }
+
+  // A `canonical:` key names an existing room; it never seeds a new one.
+  const offer = missing && canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null
+  const checked = canonicalGroupRoster(route, props.members)
+  const problem = offer && 'problem' in checked ? canonicalGroupCreateError({ canonicalGroupProblem: checked.problem }, canonical) : ''
+
+  const message = gateMessage(mode, lookup, offer, canonical, open)
+  const retry = mode === 'unavailable' ? 'capability' : mode === 'canonical' && lookup !== 'pending' && !offer ? 'lookup' : null
+
+  return { classic: false, message, problem, canCreate: offer && !problem, retry }
+}
+
 function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const b = useBots()
   const { t } = useI18n()
@@ -613,8 +657,10 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const [busy, setBusy] = useState(false)
   // #140805: 'found' means the binding was adopted and the workspace re-renders
   // onto it; only 'missing' (the authority answered, no such room) may offer creation.
-  const [lookup, setLookup] = useState<{ source: string; status: 'pending' | 'missing' | 'failed' } | null>(null)
+  const [lookup, setLookup] = useState<{ source: string; status: GateLookup } | null>(null)
   const [lookupAttempt, setLookupAttempt] = useState(0)
+  const [capabilityAttempt, setCapabilityAttempt] = useState(0)
+  const classicRoom = useValue($groupChats)[props.group]
   const lookupStatus = lookup?.source === source ? lookup.status : 'pending'
   useEffect(() => {
     if (mode !== 'canonical') {return}
@@ -661,29 +707,23 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
       })
 
     return () => { cancelled = true }
-  }, [connectionId, profile, gateway, source])
+  }, [connectionId, profile, gateway, source, capabilityAttempt])
 
-  if (mode === 'legacy') {return <LegacyGroupChatWorkspace {...props} />}
+  const route = { connectionId: connectionId ?? '', profile }
 
-  // A `canonical:` key names an existing room; it never seeds a new one.
-  const canCreate = mode === 'canonical' && lookupStatus === 'missing' && canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null
+  const plan = groupGatePlan({ mode, lookup: lookupStatus, props, classicRoom, route, canonical: b.canonical, open: t.gatewayGroupOpen })
 
-  const message = mode !== 'canonical'
-    ? mode === 'unavailable' ? b.canonical.driverUnavailable : 'Checking group driver…'
-    : lookupStatus === 'pending' ? t.gatewayGroupOpen.opening
-      : lookupStatus === 'failed' ? t.gatewayGroupOpen.lookupFailed
-        : canCreate ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.'
-          : t.gatewayGroupOpen.missing
+  if (plan.classic) {return <LegacyGroupChatWorkspace {...props} />}
+  const { canCreate } = plan
 
   return <div className="grid gap-3 p-3">
     <h2>{props.group}</h2>
-    <p>{message}</p>
+    <p>{plan.message}</p>
+    {plan.problem && <p role="status">{plan.problem}</p>}
     {error && <p role="alert">{error}</p>}
-    {mode === 'canonical' && lookupStatus !== 'pending' && !canCreate &&
-      <Button onClick={() => setLookupAttempt(value => value + 1)} variant="secondary">{t.common.retry}</Button>}
+    {plan.retry && <Button onClick={() => (plan.retry === 'capability' ? setCapabilityAttempt : setLookupAttempt)(value => value + 1)}
+      variant="secondary">{t.common.retry}</Button>}
     <Button disabled={!canCreate || busy} onClick={() => {
-      const route = { connectionId: connectionId ?? '', profile }
-
       const sourceCurrent = groupCreationSource(route, activationEpoch)
 
       if (!canCreate || !sourceCurrent()) {
@@ -697,8 +737,8 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
         .then(({ room }) => {
           if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room), 'key')}
         })
-        .catch(e => { if (sourceCurrent()) {setError(String(e))} }).finally(() => setBusy(false))
-    }}>Start gateway group</Button>
+        .catch(e => { if (sourceCurrent()) {setError(canonicalGroupCreateError(e, b.canonical))} }).finally(() => setBusy(false))
+    }}>{b.canonical.startGatewayGroup}</Button>
   </div>
 }
 

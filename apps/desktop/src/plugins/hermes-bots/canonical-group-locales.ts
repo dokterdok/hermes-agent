@@ -52,6 +52,13 @@ export interface CanonicalGroupMessages {
   disbandWarning: string
   disbandUnconfirmed: string
   you: string
+  checkingDriver: string
+  legacyRoom: string
+  startGatewayGroup: string
+  createRefused: string
+  createGroupSize: string
+  createOtherConnection: string
+  createDuplicateMember: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -108,7 +115,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'End group chat',
     disbandWarning: 'End this group chat permanently? The Bots will be asked to stop. Actions already taken won’t be undone.',
     disbandUnconfirmed: 'We couldn’t confirm that the group chat ended. Check its status before trying again.',
-    you: 'You'
+    you: 'You',
+    checkingDriver: 'Checking group driver…',
+    legacyRoom: 'Desktop ran this group chat itself, so it can’t continue on this gateway. Start a new group with the same Bots: it keeps working when Desktop is closed. Earlier messages aren’t copied into it.',
+    startGatewayGroup: 'Start new group',
+    createRefused: 'The gateway couldn’t create this group chat.',
+    createGroupSize: 'A gateway group needs two to six Bots.',
+    createOtherConnection: 'A gateway group can only seat Bots on this connection.',
+    createDuplicateMember: 'A gateway group needs Bots with different profiles and handles; @all and @everyone are reserved.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -163,7 +177,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'グループチャットを終了',
     disbandWarning: 'このグループチャットを完全に終了しますか？Botに停止を要求します。すでに行われた操作は元に戻りません。',
     disbandUnconfirmed: 'グループチャットの終了を確認できませんでした。再試行する前に状態を確認してください。',
-    you: 'あなた'
+    you: 'あなた',
+    checkingDriver: 'グループの実行機能を確認中…',
+    legacyRoom: 'このグループチャットは Desktop 自身が動かしていたため、このゲートウェイでは続けられません。同じ Bot で新しいグループを始めると、Desktop を閉じても動き続けます。以前のメッセージは新しいグループにコピーされません。',
+    startGatewayGroup: '新しいグループを始める',
+    createRefused: 'ゲートウェイはこのグループチャットを作成できませんでした。',
+    createGroupSize: 'ゲートウェイのグループには 2〜6 個の Bot が必要です。',
+    createOtherConnection: 'ゲートウェイのグループには、この接続上の Bot だけを参加させられます。',
+    createDuplicateMember: 'ゲートウェイのグループには、プロファイルとハンドルが異なる Bot が必要です。@all と @everyone は予約済みです。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -218,7 +239,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: '结束群聊',
     disbandWarning: '永久结束此群聊？系统会请求Bot停止。已经执行的操作不会被撤销。',
     disbandUnconfirmed: '无法确认群聊是否已经结束。请先检查其状态，再重试。',
-    you: '你'
+    you: '你',
+    checkingDriver: '正在检查群组运行程序…',
+    legacyRoom: '这个群聊由 Desktop 自己运行，因此无法在此网关上继续。用相同的 Bot 开始一个新群组：关闭 Desktop 后它仍会继续工作。之前的消息不会复制到新群组。',
+    startGatewayGroup: '开始新群聊',
+    createRefused: '网关无法创建此群聊。',
+    createGroupSize: '网关群组需要 2 到 6 个 Bot。',
+    createOtherConnection: '网关群组只能加入此连接上的 Bot。',
+    createDuplicateMember: '网关群组中的 Bot 需要使用不同的配置文件和名称标识；@all 和 @everyone 为保留名称。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -273,7 +301,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: '結束群聊',
     disbandWarning: '永久結束此群聊？系統會要求Bot停止。已經執行的操作不會被復原。',
     disbandUnconfirmed: '無法確認群聊是否已經結束。請先檢查其狀態，再重試。',
-    you: '你'
+    you: '你',
+    checkingDriver: '正在檢查群組執行程式…',
+    legacyRoom: '這個群聊由 Desktop 自行執行，因此無法在此閘道上繼續。用相同的 Bot 開始新群組：關閉 Desktop 後它仍會繼續運作。先前的訊息不會複製到新群組。',
+    startGatewayGroup: '開始新群聊',
+    createRefused: '閘道無法建立此群聊。',
+    createGroupSize: '閘道群組需要 2 到 6 個 Bot。',
+    createOtherConnection: '閘道群組只能加入此連線上的 Bot。',
+    createDuplicateMember: '閘道群組中的 Bot 需要使用不同的設定檔和代稱；@all 與 @everyone 為保留名稱。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -328,7 +363,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'إنهاء محادثة المجموعة',
     disbandWarning: 'إنهاء محادثة المجموعة نهائيًا؟ سيُطلب من البوتات التوقف. لن يتم التراجع عن الإجراءات التي نُفّذت بالفعل.',
     disbandUnconfirmed: 'لم نتمكن من تأكيد انتهاء محادثة المجموعة. تحقّق من حالتها قبل إعادة المحاولة.',
-    you: 'أنت'
+    you: 'أنت',
+    checkingDriver: 'جارٍ التحقق من مشغّل المجموعة…',
+    legacyRoom: 'شغّل Desktop محادثة المجموعة هذه بنفسه، لذا لا يمكنها المتابعة على هذه البوابة. ابدأ مجموعة جديدة بالبوتات نفسها: ستستمر في العمل عند إغلاق Desktop. لن تُنسخ الرسائل السابقة إليها.',
+    startGatewayGroup: 'بدء مجموعة جديدة',
+    createRefused: 'تعذّر على البوابة إنشاء محادثة المجموعة هذه.',
+    createGroupSize: 'تحتاج مجموعة البوابة إلى ما بين اثنين وستة بوتات.',
+    createOtherConnection: 'لا يمكن لمجموعة البوابة أن تضم إلا البوتات الموجودة على هذا الاتصال.',
+    createDuplicateMember: 'تحتاج مجموعة البوابة إلى بوتات بملفات تعريف ومعرّفات مختلفة؛ ‎@all و‎@everyone محجوزان.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -386,7 +428,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Завершить групповой чат',
     disbandWarning: 'Завершить этот групповой чат навсегда? Ботам будет отправлен запрос на остановку. Уже выполненные действия не будут отменены.',
     disbandUnconfirmed: 'Не удалось подтвердить завершение чата. Проверьте его состояние перед повторной попыткой.',
-    you: 'Вы'
+    you: 'Вы',
+    checkingDriver: 'Проверка исполнителя группы…',
+    legacyRoom: 'Этим групповым чатом управлял сам Desktop, поэтому он не может продолжиться на этом шлюзе. Начните новую группу с теми же ботами: она продолжит работать, когда Desktop закрыт. Прежние сообщения в неё не копируются.',
+    startGatewayGroup: 'Начать новую группу',
+    createRefused: 'Шлюз не смог создать этот групповой чат.',
+    createGroupSize: 'В группе шлюза должно быть от двух до шести ботов.',
+    createOtherConnection: 'В группу шлюза можно добавить только ботов этого подключения.',
+    createDuplicateMember: 'Для группы шлюза нужны боты с разными профилями и именами; @all и @everyone зарезервированы.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -443,7 +492,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Terminer la discussion',
     disbandWarning: 'Terminer définitivement cette discussion ? Il sera demandé aux Bots de s’arrêter. Les actions déjà effectuées ne seront pas annulées.',
     disbandUnconfirmed: 'La fin de la discussion n’a pas pu être confirmée. Vérifiez son état avant de réessayer.',
-    you: 'Vous'
+    you: 'Vous',
+    checkingDriver: 'Vérification du pilote de groupe…',
+    legacyRoom: 'Desktop gérait lui-même cette discussion de groupe, elle ne peut donc pas continuer sur cette passerelle. Démarrez un nouveau groupe avec les mêmes Bots : il continue de fonctionner quand Desktop est fermé. Les messages précédents n’y sont pas copiés.',
+    startGatewayGroup: 'Démarrer un nouveau groupe',
+    createRefused: 'La passerelle n’a pas pu créer cette discussion de groupe.',
+    createGroupSize: 'Un groupe de passerelle nécessite de deux à six Bots.',
+    createOtherConnection: 'Un groupe de passerelle ne peut accueillir que des Bots de cette connexion.',
+    createDuplicateMember: 'Un groupe de passerelle nécessite des Bots aux profils et identifiants distincts ; @all et @everyone sont réservés.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -501,7 +557,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Gruppenchat beenden',
     disbandWarning: 'Diesen Gruppenchat endgültig beenden? Die Bots werden gebeten, anzuhalten. Bereits ausgeführte Aktionen werden nicht rückgängig gemacht.',
     disbandUnconfirmed: 'Das Ende des Gruppenchats konnte nicht bestätigt werden. Prüfen Sie seinen Status, bevor Sie es erneut versuchen.',
-    you: 'Sie'
+    you: 'Sie',
+    checkingDriver: 'Gruppentreiber wird geprüft…',
+    legacyRoom: 'Desktop hat diesen Gruppenchat selbst ausgeführt, daher kann er auf diesem Gateway nicht weiterlaufen. Starten Sie eine neue Gruppe mit denselben Bots: Sie arbeitet weiter, wenn Desktop geschlossen ist. Frühere Nachrichten werden nicht in sie kopiert.',
+    startGatewayGroup: 'Neue Gruppe starten',
+    createRefused: 'Das Gateway konnte diesen Gruppenchat nicht erstellen.',
+    createGroupSize: 'Eine Gateway-Gruppe braucht zwei bis sechs Bots.',
+    createOtherConnection: 'Eine Gateway-Gruppe kann nur Bots dieser Verbindung aufnehmen.',
+    createDuplicateMember: 'Eine Gateway-Gruppe braucht Bots mit unterschiedlichen Profilen und Kennungen; @all und @everyone sind reserviert.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -558,6 +621,13 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Finalizar chat de grupo',
     disbandWarning: '¿Finalizar este chat de forma permanente? Se pedirá a los Bots que se detengan. Las acciones ya realizadas no se desharán.',
     disbandUnconfirmed: 'No pudimos confirmar que el chat haya terminado. Comprueba su estado antes de reintentarlo.',
-    you: 'Tú'
+    you: 'Tú',
+    checkingDriver: 'Comprobando el controlador de grupo…',
+    legacyRoom: 'Desktop ejecutaba este chat de grupo por sí mismo, así que no puede continuar en esta pasarela. Inicia un grupo nuevo con los mismos Bots: seguirá funcionando cuando Desktop esté cerrado. Los mensajes anteriores no se copian en él.',
+    startGatewayGroup: 'Iniciar nuevo grupo',
+    createRefused: 'La pasarela no pudo crear este chat de grupo.',
+    createGroupSize: 'Un grupo de la pasarela necesita de dos a seis Bots.',
+    createOtherConnection: 'Un grupo de la pasarela solo puede incluir Bots de esta conexión.',
+    createDuplicateMember: 'Un grupo de la pasarela necesita Bots con perfiles e identificadores distintos; @all y @everyone están reservados.'
   }
 } satisfies Record<string, CanonicalGroupMessages>
