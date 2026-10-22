@@ -197,3 +197,33 @@ export async function withWebLock<T>(name: string, task: () => Promise<T>, signa
     releaseLease(key, token)
   }
 }
+
+/** `navigator.locks.request(name, { ifAvailable: true }, …)` held open: resolves to the release of
+ *  the cross-window lock `name`, or null while another holder (this window included) has it. */
+export async function holdWebLock(name: string): Promise<(() => void) | null> {
+  const locks = webLocks()
+
+  if (!locks) {
+    const key = LEASE_PREFIX + name
+    const token = randomHex()
+    const claimed = await claimLease(key, token)
+
+    if (claimed === null) {
+      return () => undefined
+    }
+
+    return claimed ? () => releaseLease(key, token) : null
+  }
+
+  return new Promise(acquired => {
+    void locks.request(name, { ifAvailable: true }, lock => {
+      if (!lock) {
+        acquired(null)
+
+        return null
+      }
+
+      return new Promise<void>(release => acquired(release))
+    })
+  })
+}
