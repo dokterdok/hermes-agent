@@ -21,13 +21,16 @@ from hermes_cli.profile_incarnation import (
 )
 from hermes_cli.pty_session import (
     WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry,
-    RegistryFull, _close_ws, run_reaper,
+    RegistryFull, RegistryShuttingDown, _close_ws, run_reaper,
 )
 from hermes_cli.web_host_terminal import META_PREFIX
 from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60
+# A full registry needs the user to close a shell, so it is not 1013 (Try Again Later): the
+# client retries 1013, as it must for a server shutting down or a listener not yet ready.
+WS_CLOSE_CAPACITY = 4429
 _MAX_SHELLS = 16
 # Inbound frames buffered while one batch is written (backpressure bound).
 _INPUT_BATCH_FRAMES = 64
@@ -376,8 +379,10 @@ async def host_terminal(ws: WebSocket) -> None:
         await ws.close(code=4403, reason="Terminal belongs to another identity or profile")
     except (TerminalExpired, FileNotFoundError, HTTPException):
         await ws.close(code=4410, reason="Terminal or profile expired; open a new terminal")
+    except RegistryShuttingDown:
+        await ws.close(code=1013, reason="Terminal service is shutting down; try again shortly")
     except RegistryFull:
-        await ws.close(code=1013, reason="Terminal capacity reached; close a terminal and retry")
+        await ws.close(code=WS_CLOSE_CAPACITY, reason="Terminal capacity reached; close a terminal and retry")
     except WebSocketDisconnect:
         pass
     except (OSError, RuntimeError) as exc:

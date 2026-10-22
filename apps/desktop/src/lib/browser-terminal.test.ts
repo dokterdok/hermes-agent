@@ -171,6 +171,27 @@ describe('persistent browser terminals', () => {
     expect(localStorage.length).toBe(0)
   })
 
+  // 1013 is Try Again Later (host shutting down, listener not ready): only 4429 means capacity.
+  it('retries a 1013 refusal and stops only on a capacity refusal', async () => {
+    const api = install()
+    Socket.reply = socket => socket.close(1013)
+    await expect(api.start({ cwd: '/original', restoreKey: 'tab-two' })).rejects.toThrow('not ready')
+    Socket.reply = socket => socket.metadata()
+    const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    const exit = vi.fn()
+    api.onExit(session.id, exit)
+    Socket.reply = socket => socket.close(1013, 'Terminal service is shutting down; try again shortly')
+    Socket.instances.at(-1)!.close(1006)
+    await vi.advanceTimersByTimeAsync(1000)
+    Socket.reply = socket => socket.metadata()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(exit).not.toHaveBeenCalled()
+    Socket.reply = socket => socket.close(4429, 'Terminal capacity reached')
+    Socket.instances.at(-1)!.close(1006)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(exit).toHaveBeenCalledWith({ code: null, signal: 'capacity' })
+  })
+
   it('never retries denied attachments or silently adopts the active profile', async () => {
     const api = install()
     const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })

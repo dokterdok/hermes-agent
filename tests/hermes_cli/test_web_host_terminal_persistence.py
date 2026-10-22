@@ -430,7 +430,7 @@ def test_capacity_expiry_close_idempotence_and_lifespan(host_app, fake_bridges):
         registry._max = 1
         with client.websocket_connect(url()) as ws:
             token = metadata(ws)["terminalId"]
-            rejection(client, url(), 1013)
+            rejection(client, url(), 4429)
             assert not fake_bridges[0].closed.is_set()
         detached = registry._sessions[token].last_detached_at
         assert detached is not None
@@ -449,6 +449,25 @@ def test_capacity_expiry_close_idempotence_and_lifespan(host_app, fake_bridges):
     assert all(bridge.closed.is_set() for bridge in fake_bridges)
     assert not registry._sessions and not registry.owners
     assert not hasattr(host_app.state, "host_terminals")
+
+
+def test_admission_overtaken_by_shutdown_refuses_with_retryable_1013(host_app, fake_bridges):
+    # 1013 (Try Again Later) is what the browser retries; 4429 is the capacity refusal it does not.
+    with TestClient(host_app) as client:
+        registry = host_app.state.host_terminals
+        create = registry.create
+
+        async def create_after_shutdown_began(*args, **kwargs):
+            registry._closed = True  # close_all started after the route found the registry running
+            return await create(*args, **kwargs)
+
+        registry.create = create_after_shutdown_began
+        with pytest.raises(WebSocketDisconnect) as error:
+            with client.websocket_connect(url()) as ws:
+                ws.receive_text()
+        assert error.value.code == 1013
+        assert "shutting down" in error.value.reason
+    assert not fake_bridges
 
 
 def test_simultaneous_viewer_supersedes_without_respawn(host_app, fake_bridges):
