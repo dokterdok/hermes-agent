@@ -11,15 +11,19 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
   const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
+  const { ConfirmDialog } = await import('@/components/ui/confirm-dialog')
+  const { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } = await import('@/components/ui/dialog')
+  const { Input } = await import('@/components/ui/input')
 
   return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore,
+    ConfirmDialog, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, Input,
     useI18n: () => ({ t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
     host: { ...gateway.host, requestProfile: captureGroupRequests(request).request } }
 })
 import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
-import { registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { GroupChatWorkspace } from './group-chat-view'
@@ -521,4 +525,89 @@ it('names the Bot behind each pending action and shows what an approval would al
   expect(request.mock.calls.filter(call => call[1] === 'groups.approve')[1][2]).toEqual({
     room_id: 'approvals', member_id: 'guard', task_id: 'pwd', execution_generation: 4, request_id: 'r-pwd', choice: 'once', profile: 'team'
   })
+})
+
+it('renames the room under one event id per intended name and updates its bindings', async () => {
+  const route = { connectionId: 'local', profile: 'team' }
+  const key = registerCanonicalGroup(route, { room_id: 'named', name: 'Planning', members: [] })
+  let name = 'Planning'
+  let renames = 0
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.state') {return { room: { name }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.rename' && ++renames === 1) {throw new Error('request timed out: groups.rename')}
+
+    if (method === 'groups.rename') {name = params.name}
+
+    return { room: { room_id: 'named', name } }
+  })
+  render(<CanonicalGroupWorkspace binding={$canonicalGroupBindings.get()[key]} />)
+  await screen.findByText('Planning')
+  fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+  const input = await screen.findByRole('textbox', { name: 'Room name' }) as HTMLInputElement
+  expect(input.value).toBe('Planning')
+  fireEvent.change(input, { target: { value: 'Launch planning' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await screen.findByText('request timed out: groups.rename')
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Room name' })).toBeNull())
+  await screen.findByText('Launch planning')
+
+  const sent = request.mock.calls.filter(call => call[1] === 'groups.rename').map(call => call[2])
+  expect(sent).toHaveLength(2)
+  expect(sent[1]).toEqual(sent[0])
+  expect(sent[0]).toMatchObject({ room_id: 'named', name: 'Launch planning' })
+  expect($canonicalGroupBindings.get()[key].roomName).toBe('Launch planning')
+})
+
+it('ends the room only on the gateway\'s tombstone, then forgets it and leaves', async () => {
+  const route = { connectionId: 'local', profile: 'team' }
+  const key = registerCanonicalGroup(route, { room_id: 'ending', name: 'Wrap-up', members: [] })
+  const onBack = vi.fn()
+  let ends = 0
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Wrap-up' }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.disband') {
+      ends += 1
+
+      if (ends === 1) {throw new Error('room work is still stopping; retry deletion after Stop completes')}
+
+      return ends === 2 ? {} : { tombstone: { room_id: 'ending', disbanded_at: 1_792_152_000 } }
+    }
+
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={$canonicalGroupBindings.get()[key]} onBack={onBack} />)
+  await screen.findByText('Wrap-up')
+  fireEvent.click(screen.getByRole('button', { name: 'End group chat' }))
+  await screen.findByText(/End this group chat permanently\?/)
+  const confirm = () => fireEvent.click(screen.getAllByRole('button', { name: 'End group chat' }).at(-1)!)
+
+  for (const attempt of [1, 2]) {
+    confirm()
+    await waitFor(() => expect(ends).toBe(attempt))
+    await screen.findByText('We couldn’t confirm that the group chat ended. Check its status before trying again.')
+    expect(onBack).not.toHaveBeenCalled()
+    expect($canonicalGroupBindings.get()[key]).toBeDefined()
+  }
+
+  confirm()
+  await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
+  expect($canonicalGroupBindings.get()[key]).toBeUndefined()
+  const cancelIds = request.mock.calls.filter(call => call[1] === 'groups.disband').map(call => call[2].cancel_id)
+  expect(new Set(cancelIds).size).toBe(1)
+})
+
+it('offers Rename and End group chat only when the gateway lists them', async () => {
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities'
+    ? { ...CANONICAL_GROUP_CAPABILITIES, methods: CANONICAL_GROUP_CAPABILITIES.methods.filter(name => name !== 'groups.disband') }
+    : method === 'groups.state' ? { room: { name: 'Narrow' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'narrow' }} />)
+  await screen.findByRole('button', { name: 'Rename' })
+  expect(screen.queryByRole('button', { name: 'End group chat' })).toBeNull()
 })
