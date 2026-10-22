@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.profile_incarnation import (
-    PROFILE_INCARNATION_FILENAME, ensure_profile_incarnation, profile_incarnation_matches,
+    PROFILE_INCARNATION_FILENAME, ensure_profile_incarnation,
     read_profile_deletion_incarnation, read_profile_incarnation, write_fresh_profile_incarnation)
 from hermes_cli.profile_lifecycle import (
     begin_profile_retirement,
@@ -35,11 +35,12 @@ from hermes_cli.profile_lifecycle import (
 )
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_cli.process_identity import WEB_SERVER_PURPOSES
+from hermes_cli.profiles_clone_source import _assert_clone_source_unchanged, _clone_source_generation
 from hermes_cli.profiles_process_stop import _stop_bot_desktop, _stop_gateway_process, _stop_profile_backends
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, named_profile_has_identity,
-    named_profile_home_is_unavailable, named_profile_is_deleted, named_profile_is_live,
+    named_profile_is_deleted, named_profile_is_live,
 )
 
 logger = logging.getLogger(__name__)
@@ -1441,23 +1442,6 @@ def _initialize_profile(
     write_fresh_profile_incarnation(profile_dir)
 
 
-def _assert_clone_source_unchanged(source_dir: Path, incarnation: str) -> None:
-    """Refuse to publish a clone whose copy overlapped a delete, rename or replacement of its source.
-
-    Lock-free: only the target name is leased here (taking the source now could invert the name
-    order). Delete and rename tombstone the source before removing or moving anything, and only a
-    rollback that removed nothing or a published generation lifts it; so checking the tombstone
-    first and the incarnation second proves nothing of ``incarnation`` went away mid-copy.
-    """
-    if named_profile_home_is_unavailable(source_dir) or not profile_incarnation_matches(
-        source_dir, incarnation,
-    ):
-        raise FileNotFoundError(
-            f"Source profile '{source_dir.name}' was deleted, renamed or replaced while it was "
-            "being cloned; retry the clone."
-        )
-
-
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -1506,10 +1490,9 @@ def create_profile(
         refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
         if refusal:
             raise ValueError(refusal)
-    # Pin the source GENERATION (a short lease; legacy homes are backfilled), never hold its name
-    # across the copy: every cold SessionDB open of the source takes that lease, and a --clone-all
-    # copy is unbounded. None = default/custom source, which is not a reusable lifecycle object.
-    source_incarnation = ensure_profile_incarnation(source_dir) if source_dir is not None else None
+    # Pin the source GENERATION, never hold its name across the copy: every cold SessionDB open of
+    # the source takes that lease, and a --clone-all copy is unbounded.
+    source_generation = _clone_source_generation(source_dir) if source_dir is not None else None
     with profile_lifecycle_lease(profile_dir):
         _prepare_profile_creation_target(canon, profile_dir)
 
@@ -1523,8 +1506,8 @@ def create_profile(
             finally:
                 # Also on failure: a copy racing the source's rmtree fails with one
                 # shutil.Error entry per vanished file; report the cause instead.
-                if source_incarnation is not None:
-                    _assert_clone_source_unchanged(source_dir, source_incarnation)
+                if source_generation is not None:
+                    _assert_clone_source_unchanged(source_dir, source_generation)
 
         create_profile_generation(canon, profile_dir, _get_profiles_root(), initialize)
         _maybe_register_gateway_service(canon)

@@ -1,5 +1,6 @@
 """Profile metadata refuses a retiring home, and a copy (clone, import) never carries its source's generation."""
 
+import os
 from pathlib import Path
 import tarfile
 
@@ -70,3 +71,23 @@ def test_profile_copies_publish_a_fresh_generation_behind_the_tombstone(profile_
     assert published == [read_profile_incarnation(target)]
     assert profiles.profile_exists("copied-guide") is True
     assert read_profile_incarnation(source) == source_incarnation
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes any directory")
+def test_clone_reads_a_legacy_source_this_user_cannot_write(profile_root, monkeypatch):
+    """A template profile from before markers that another user owns clones as on the merge base:
+    the clone reads it and writes nothing into it, instead of failing on a marker backfill."""
+    from hermes_cli import config
+    source = profiles.create_profile("template", no_alias=True, no_skills=True)
+    (source / ".profile-incarnation").unlink()
+    (source / "config.yaml").write_text("model:\n  default: template-model\n")
+    monkeypatch.setattr(config, "_secure_dir", lambda _path: None)  # nor could it chmod another user's dir
+    before = sorted(p.name for p in source.iterdir())
+    source.chmod(0o555)
+    try:
+        clone = profiles.create_profile("mine", clone_from="template", clone_config=True, no_alias=True)
+    finally:
+        source.chmod(0o755)
+    assert "template-model" in (clone / "config.yaml").read_text()
+    assert sorted(p.name for p in source.iterdir()) == before
