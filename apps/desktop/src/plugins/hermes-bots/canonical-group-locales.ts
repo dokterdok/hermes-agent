@@ -44,6 +44,10 @@ export interface CanonicalGroupMessages {
   showLatest: string
   refreshFiles: string
   filesYou: string
+  fileVersionUnavailable: string
+  fileDownloadFailed: string
+  fileVerificationFailed: string
+  fileTimeout: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -92,7 +96,11 @@ export const CANONICAL_GROUP_LOCALES = {
     newerFiles: 'Newer files',
     showLatest: 'Show latest',
     refreshFiles: 'Refresh list',
-    filesYou: 'You'
+    filesYou: 'You',
+    fileVersionUnavailable: 'This version can no longer be downloaded.',
+    fileDownloadFailed: 'This file could not be downloaded.',
+    fileVerificationFailed: 'This file couldn’t be verified. Nothing was downloaded.',
+    fileTimeout: 'The download timed out.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -139,7 +147,11 @@ export const CANONICAL_GROUP_LOCALES = {
     newerFiles: '新しいファイル',
     showLatest: '最新を表示',
     refreshFiles: '一覧を更新',
-    filesYou: 'あなた'
+    filesYou: 'あなた',
+    fileVersionUnavailable: 'このバージョンはダウンロードできなくなりました。',
+    fileDownloadFailed: 'このファイルをダウンロードできませんでした。',
+    fileVerificationFailed: 'このファイルを検証できませんでした。何もダウンロードされていません。',
+    fileTimeout: 'ダウンロードがタイムアウトしました。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -186,7 +198,11 @@ export const CANONICAL_GROUP_LOCALES = {
     newerFiles: '较新的文件',
     showLatest: '显示最新内容',
     refreshFiles: '刷新列表',
-    filesYou: '你'
+    filesYou: '你',
+    fileVersionUnavailable: '此版本已无法下载。',
+    fileDownloadFailed: '无法下载此文件。',
+    fileVerificationFailed: '无法验证此文件。未下载任何内容。',
+    fileTimeout: '下载超时。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -233,7 +249,11 @@ export const CANONICAL_GROUP_LOCALES = {
     newerFiles: '較新的檔案',
     showLatest: '顯示最新內容',
     refreshFiles: '重新整理清單',
-    filesYou: '您'
+    filesYou: '您',
+    fileVersionUnavailable: '此版本已無法下載。',
+    fileDownloadFailed: '無法下載此檔案。',
+    fileVerificationFailed: '無法驗證此檔案。未下載任何內容。',
+    fileTimeout: '下載逾時。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -280,7 +300,11 @@ export const CANONICAL_GROUP_LOCALES = {
     newerFiles: 'ملفات أحدث',
     showLatest: 'عرض الأحدث',
     refreshFiles: 'تحديث القائمة',
-    filesYou: 'أنت'
+    filesYou: 'أنت',
+    fileVersionUnavailable: 'لم يعد بالإمكان تنزيل هذا الإصدار.',
+    fileDownloadFailed: 'تعذر تنزيل هذا الملف.',
+    fileVerificationFailed: 'تعذر التحقق من هذا الملف. لم يتم تنزيل أي شيء.',
+    fileTimeout: 'انتهت مهلة التنزيل.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -330,7 +354,11 @@ export const CANONICAL_GROUP_LOCALES = {
     newerFiles: 'Более новые файлы',
     showLatest: 'Показать последние',
     refreshFiles: 'Обновить список',
-    filesYou: 'Вы'
+    filesYou: 'Вы',
+    fileVersionUnavailable: 'Эту версию больше нельзя скачать.',
+    fileDownloadFailed: 'Не удалось скачать этот файл.',
+    fileVerificationFailed: 'Не удалось проверить этот файл. Ничего не скачано.',
+    fileTimeout: 'Время ожидания скачивания истекло.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -379,7 +407,11 @@ export const CANONICAL_GROUP_LOCALES = {
     newerFiles: 'Fichiers plus récents',
     showLatest: 'Afficher les plus récents',
     refreshFiles: 'Actualiser la liste',
-    filesYou: 'Vous'
+    filesYou: 'Vous',
+    fileVersionUnavailable: 'Cette version ne peut plus être téléchargée.',
+    fileDownloadFailed: 'Impossible de télécharger ce fichier.',
+    fileVerificationFailed: 'Impossible de vérifier ce fichier. Rien n’a été téléchargé.',
+    fileTimeout: 'Le téléchargement a expiré.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -429,7 +461,11 @@ export const CANONICAL_GROUP_LOCALES = {
     newerFiles: 'Neuere Dateien',
     showLatest: 'Neueste anzeigen',
     refreshFiles: 'Liste aktualisieren',
-    filesYou: 'Sie'
+    filesYou: 'Sie',
+    fileVersionUnavailable: 'Diese Version kann nicht mehr heruntergeladen werden.',
+    fileDownloadFailed: 'Diese Datei konnte nicht heruntergeladen werden.',
+    fileVerificationFailed: 'Diese Datei konnte nicht überprüft werden. Es wurde nichts heruntergeladen.',
+    fileTimeout: 'Der Download hat zu lange gedauert.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -478,6 +514,10 @@ export const CANONICAL_GROUP_LOCALES = {
     newerFiles: 'Archivos más recientes',
     showLatest: 'Mostrar lo más reciente',
     refreshFiles: 'Actualizar lista',
-    filesYou: 'Tú'
+    filesYou: 'Tú',
+    fileVersionUnavailable: 'Esta versión ya no se puede descargar.',
+    fileDownloadFailed: 'No se pudo descargar este archivo.',
+    fileVerificationFailed: 'No se pudo verificar este archivo. No se descargó nada.',
+    fileTimeout: 'La descarga tardó demasiado.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

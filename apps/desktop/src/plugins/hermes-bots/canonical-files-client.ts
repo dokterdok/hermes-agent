@@ -1,4 +1,6 @@
-/** Client for a gateway room's Files catalog (`groups.attachment.list`): pages of exact versions. */
+/** Client for a gateway room's Files catalog (`groups.attachment.list`): pages of exact versions,
+ *  and Save of one version's exact bytes through the existing download. */
+import { downloadCanonicalAttachment } from './canonical-attachment-download'
 import { type CanonicalGroupBinding, canonicalGroupRequest } from './canonical-groups'
 
 export const FILES_PAGE_SIZE = 8
@@ -17,6 +19,8 @@ export interface CanonicalFile {
   size: number
   sharer: { kind: 'member' | 'user'; id: string; label: string }
   sharedAt: number
+  /** False when the log still publishes this version but its bytes are gone from this gateway. */
+  available: boolean
 }
 
 export interface CanonicalFilesPage {
@@ -26,7 +30,7 @@ export interface CanonicalFilesPage {
   authority: string
 }
 
-export type FilesFailure = 'access' | 'cursor' | 'error' | 'timeout' | 'unavailable' | 'verification'
+export type FilesFailure = 'access' | 'cursor' | 'error' | 'missing' | 'timeout' | 'unavailable' | 'verification'
 
 export class CanonicalFilesError extends Error {
   constructor(readonly kind: FilesFailure) {
@@ -36,6 +40,7 @@ export class CanonicalFilesError extends Error {
 
 const REASONS: Record<string, FilesFailure> = {
   attachment_cursor_invalid: 'cursor',
+  attachment_unavailable: 'missing',
   authority_conflict: 'access',
   permission_denied: 'access',
   profile_mismatch: 'access',
@@ -100,13 +105,14 @@ function parseFile(value: unknown, snapshotSeq: number): CanonicalFile {
   if (!text(item.event_id) || !text(item.attachment_id) || !whole(item.seq, 1) || item.seq > snapshotSeq ||
     !whole(item.manifest_index) || !text(item.kind) || !text(item.name) || !text(item.mime) || !whole(item.size, 1) ||
     (sharer.kind !== 'member' && sharer.kind !== 'user') || !text(sharer.id) || !text(sharer.label) ||
-    !timestamp(item.shared_at)) {
+    !timestamp(item.shared_at) || (item.available !== undefined && typeof item.available !== 'boolean')) {
     throw new CanonicalFilesError('verification')
   }
 
   return { eventId: item.event_id, attachmentId: item.attachment_id, seq: item.seq, index: item.manifest_index,
     kind: item.kind, name: item.name, mime: item.mime, size: item.size,
-    sharer: { kind: sharer.kind, id: sharer.id, label: sharer.label }, sharedAt: item.shared_at }
+    sharer: { kind: sharer.kind, id: sharer.id, label: sharer.label }, sharedAt: item.shared_at,
+    available: item.available !== false }
 }
 
 /** True when `next` comes strictly after `previous` in newest-first, message-order listing. */
@@ -147,4 +153,37 @@ export async function listCanonicalFiles(
   }), signal)
 
   return parseFilesPage(response, binding.roomId)
+}
+
+/** Fetch one listed version with the existing download and save it only if the bytes are exactly it. */
+export async function saveCanonicalFile(binding: CanonicalGroupBinding, file: CanonicalFile, signal: AbortSignal) {
+  if (!file.available) {throw new CanonicalFilesError('missing')}
+
+  const reply = record(await withFilesDeadline(canonicalGroupRequest<unknown>(binding, 'groups.attachment.download', {
+    room_id: binding.roomId, event_id: file.eventId, attachment_id: file.attachmentId
+  }), signal))
+
+  // The reply must be this version, and its encoding exactly this size, before anything is decoded.
+  if (reply.event_id !== file.eventId || reply.attachment_id !== file.attachmentId || reply.name !== file.name ||
+    reply.kind !== file.kind || reply.mime !== file.mime || reply.size !== file.size ||
+    typeof reply.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(reply.sha256) ||
+    typeof reply.data_base64 !== 'string' || reply.data_base64.length !== 4 * Math.ceil(file.size / 3)) {
+    throw new CanonicalFilesError('verification')
+  }
+
+  let bytes: Uint8Array<ArrayBuffer>
+
+  try {
+    bytes = Uint8Array.from(atob(reply.data_base64), char => char.charCodeAt(0))
+  } catch {
+    throw new CanonicalFilesError('verification')
+  }
+
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+  const hex = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')
+
+  if (bytes.length !== file.size || hex !== reply.sha256) {throw new CanonicalFilesError('verification')}
+
+  if (signal.aborted) {throw new DOMException('Cancelled', 'AbortError')}
+  downloadCanonicalAttachment(bytes, file.name, file.mime, signal)
 }

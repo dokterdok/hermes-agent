@@ -1,4 +1,5 @@
-/** Files for a gateway room: its shared versions, newest first, searchable, in exact same-name rows. */
+/** Files for a gateway room: its shared versions, newest first, searchable, in exact same-name rows,
+ *  each saved only as its exact bytes. */
 import {
   Button,
   Codicon,
@@ -24,7 +25,8 @@ import {
   filesFailure,
   filesFollow,
   listCanonicalFiles,
-  offersFilesCatalog
+  offersFilesCatalog,
+  saveCanonicalFile
 } from './canonical-files-client'
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
@@ -179,24 +181,75 @@ function fileDetails(file: CanonicalFile, labels: Labels) {
   return { sharer, details: ` · ${time} · ${type} · ${fileSize(file.size, labels.locale)}` }
 }
 
-function FileRow({ file, labels, active, onFocus }: {
-  file: CanonicalFile; labels: Labels; active: boolean; onFocus: () => void
-}) {
-  const { sharer, details } = fileDetails(file, labels)
+function saveProblem(failure: FilesFailure, labels: Labels) {
+  return failure === 'verification' ? labels.fileVerificationFailed : failure === 'timeout' ? labels.fileTimeout
+    : failure === 'access' ? labels.filesAccess : failure === 'unavailable' ? labels.filesUnavailable
+      : labels.fileDownloadFailed
+}
 
-  return <div aria-label={`${file.name} · ${sharer}${details}`} className="min-w-0 py-1.5 outline-none focus-visible:ring-1"
-    data-file-row onFocus={onFocus} role="listitem" tabIndex={active ? 0 : -1}>
+/** One version's Save. Leaving the page or closing the dialog retires a Save that has not delivered
+ *  its bytes yet; a version the gateway says is gone stays listed with Download disabled. */
+function useFileSave(binding: CanonicalGroupBinding, file: CanonicalFile) {
+  const [saving, setSaving] = useState<{ pending: boolean; failure: FilesFailure | null }>({ pending: false, failure: null })
+  const request = useRef<AbortController | null>(null)
+
+  useEffect(() => () => request.current?.abort(), [])
+
+  const unavailable = !file.available || saving.failure === 'missing'
+
+  const save = async () => {
+    if (request.current || unavailable) {return}
+    const controller = request.current = new AbortController()
+    setSaving({ pending: true, failure: null })
+
+    try {
+      await saveCanonicalFile(binding, file, controller.signal)
+
+      if (!controller.signal.aborted) {setSaving({ pending: false, failure: null })}
+    } catch (error) {
+      if (!controller.signal.aborted) {setSaving({ pending: false, failure: filesFailure(error) })}
+    } finally {
+      if (request.current === controller) {request.current = null}
+    }
+  }
+
+  return { ...saving, unavailable, save }
+}
+
+function FileRow({ binding, file, labels, active, onFocus }: {
+  binding: CanonicalGroupBinding; file: CanonicalFile; labels: Labels; active: boolean; onFocus: () => void
+}) {
+  const saving = useFileSave(binding, file)
+  const { sharer, details } = fileDetails(file, labels)
+  const { unavailable } = saving
+
+  return <div aria-label={`${file.name} · ${sharer}${details}${unavailable ? ` · ${labels.fileVersionUnavailable}` : ''}`}
+    className="min-w-0 py-1.5 outline-none focus-visible:ring-1" data-file-row onFocus={onFocus} role="listitem"
+    tabIndex={active ? 0 : -1}>
     <div className="flex min-w-0 items-center gap-2">
       <Codicon className="shrink-0" name={file.kind === 'pdf' ? 'file-pdf' : file.kind === 'image' ? 'file-media' : 'file'} />
       <div className="min-w-0 flex-1">
         <bdi className="block truncate text-xs font-medium" title={file.name}>{file.name}</bdi>
         <div className="truncate text-[0.65rem]"><bdi>{sharer}</bdi>{details}</div>
       </div>
+      <Tip label={unavailable ? labels.fileVersionUnavailable : `${labels.download}: ${file.name}`}>
+        <Button aria-busy={saving.pending} aria-label={`${labels.download}: ${file.name}`} data-file-save
+          disabled={saving.pending || unavailable} onClick={() => void saving.save()} size="icon-xs" type="button" variant="ghost">
+          <Codicon name={saving.pending ? 'loading' : 'cloud-download'} spinning={saving.pending} />
+        </Button>
+      </Tip>
     </div>
+    {unavailable && <p className="mt-1 text-xs text-(--ui-text-tertiary)" role="status">{labels.fileVersionUnavailable}</p>}
+    {saving.failure && !unavailable && <div className="mt-1 flex flex-wrap items-center gap-2 text-xs" role="alert">
+      <span>{saveProblem(saving.failure, labels)}</span>
+      <Button onClick={() => void saving.save()} size="inline" type="button" variant="textStrong">{labels.retry}</Button>
+    </div>}
   </div>
 }
 
-function FileRows({ items, labels, loading }: { items: CanonicalFile[]; labels: Labels; loading: boolean }) {
+function FileRows({ binding, items, labels, loading }: {
+  binding: CanonicalGroupBinding; items: CanonicalFile[]; labels: Labels; loading: boolean
+}) {
   const [active, setActive] = useState(0)
 
   return <div aria-busy={loading} className="min-h-0 flex-1 overflow-y-auto" onKeyDown={event => {
@@ -206,9 +259,13 @@ function FileRows({ items, labels, loading }: { items: CanonicalFile[]; labels: 
     if (row && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault()
       rows[Math.max(0, Math.min(rows.length - 1, rows.indexOf(row) + (event.key === 'ArrowDown' ? 1 : -1)))]?.focus()
+    } else if (row && event.key === 'Enter' && event.target === row) {
+      // The row's own Download, so a disabled one (busy or unavailable) stays inert.
+      event.preventDefault()
+      row.querySelector<HTMLButtonElement>('[data-file-save]')?.click()
     }
   }} role="list">
-    {items.map((file, index) => <FileRow active={active === index} file={file}
+    {items.map((file, index) => <FileRow active={active === index} binding={binding} file={file}
       key={`${file.eventId}:${file.attachmentId}`} labels={labels} onFocus={() => setActive(index)} />)}
   </div>
 }
@@ -230,11 +287,11 @@ function FilesRecovery({ files, labels }: { files: FilesListing; labels: Labels 
     : <Button onClick={files.retry} size="inline" type="button" variant="textStrong">{labels.retry}</Button>
 }
 
-function FilesBody({ files, labels }: { files: FilesListing; labels: Labels }) {
+function FilesBody({ binding, files, labels }: { binding: CanonicalGroupBinding; files: FilesListing; labels: Labels }) {
   const { page, failure } = files
 
   if (page?.items.length) {
-    return <FileRows items={page.items} key={`${files.index}:${page.snapshotSeq}`} labels={labels} loading={files.loading} />
+    return <FileRows binding={binding} items={page.items} key={`${files.index}:${page.snapshotSeq}`} labels={labels} loading={files.loading} />
   }
 
   if (files.loading) {return <Loader className="m-auto size-16" label={labels.filesLoading} type="lemniscate-bloom" />}
@@ -312,7 +369,7 @@ function FilesDialog({ binding, roomName, latest, onClose }: {
       </DialogHeader>
       <SearchField aria-label={labels.searchFiles} containerClassName="w-full" inputClassName="w-full" inputRef={search}
         loading={files.loading && Boolean(files.page)} onChange={files.setQuery} placeholder={labels.searchFiles} value={files.query} />
-      <FilesBody files={files} labels={labels} />
+      <FilesBody binding={binding} files={files} labels={labels} />
       <FilesFooter files={files} labels={labels} latest={latest} />
     </DialogContent>
   </Dialog>
