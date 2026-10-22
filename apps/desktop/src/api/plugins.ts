@@ -1,6 +1,7 @@
 import { isStableOpen, reconnectBackoffDelayMs } from '@hermes/shared'
 
 import type { HermesConnection } from '@/global'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 
 import { $apiRequestScope, getApiRequestConnection, getApiRequestProfile, hermesApi, profileScoped } from './client'
@@ -95,9 +96,11 @@ type PluginSocketTarget = null | string | { refused: 'permission' }
 
 /** The URL a plugin socket dials, or null to stay on polling. A local gateway
  *  (`authMode: 'native'`, no static token) gets a fresh one-use URL from main:
- *  its native grant rides a request header main attaches to that one dial. */
+ *  its native grant rides a request header main attaches to that one dial. The
+ *  browser-hosted Desktop's bridge mints a one-use ticket per dial the same way:
+ *  its session token grants host shells and must never ride a socket URL. */
 async function pluginSocketUrl(connection: HermesConnection, pluginId: string, suffix: string): Promise<PluginSocketTarget> {
-  if (connection.authMode === 'native') {
+  if (connection.authMode === 'native' || isBrowserHostedDesktop()) {
     const mint = window.hermesDesktop.getPluginWsUrl
 
     // An IPC round-trip with no deadline of its own, bounded like activeConnection().
@@ -120,9 +123,10 @@ const requestScopeKey = () => `${getApiRequestConnection() ?? ''}\n${getApiReque
 
 /** The plugin WebSocket door — the live twin of `pluginRest`, scoped the same
  *  way: `path` is relative to `/api/plugins/<pluginId>` ('/events' → the
- *  plugin's own event stream). Token-mode backends auth via the same query
+ *  plugin's own event stream). Token-mode remotes auth via the same query
  *  credential the app's own sockets use, a local gateway via the native grant
- *  its REST twin uses; OAuth remotes resolve null (callers keep their polling
+ *  its REST twin uses, the browser-hosted Desktop via a one-use ticket per dial;
+ *  OAuth remotes resolve null (callers keep their polling
  *  fallback — every consumer must have one anyway, since a socket can drop).
  *
  *  Auto-reconnects with capped backoff until disposed. A dial that never opens,

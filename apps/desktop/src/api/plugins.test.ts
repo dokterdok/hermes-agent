@@ -2,7 +2,9 @@ import { RECONNECT_STABLE_OPEN_MS } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
+import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS } from '@/lib/with-timeout'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { activeConnection, pluginSocket } from './plugins'
 
@@ -443,5 +445,40 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     expect(mint).toHaveBeenCalledTimes(2)
     expect(FakeSocket.all).toHaveLength(1)
     dispose()
+  })
+})
+
+// #93508 item 5: the browser-hosted Desktop's session token grants host shells, so its plugin socket
+// carries a one-use ticket bound to the socket's path and profile instead of `?token=`.
+describe('pluginSocket in the browser-hosted Desktop', () => {
+  afterEach(() => {
+    clearWebappSession()
+    setApiRequestProfile(null)
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    document.documentElement.removeAttribute('data-hermes-desktop-host')
+    vi.unstubAllGlobals()
+  })
+
+  it('dials with a ticket minted for its route and profile, never the session token', async () => {
+    seedWebappSession('SECRET-SESSION-TOKEN')
+    const dialed: string[] = []
+    vi.stubGlobal('WebSocket', class { constructor(url: string) { dialed.push(url) } close() {} })
+    const fetchMock = vi.fn(async (_url: URL, _init: RequestInit) => new Response('{"ticket":"one-use"}'))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(installBrowserDesktopBridge()).toBe(true)
+    setApiRequestProfile('bee')
+
+    const dispose = pluginSocket('kanban', '/events?board=b', () => undefined)
+    await vi.waitFor(() => expect(dialed).toHaveLength(1))
+    dispose()
+
+    const socket = new URL(dialed[0])
+    expect(dialed[0]).not.toContain('SECRET-SESSION-TOKEN')
+    expect([socket.pathname, ...['board', 'profile', 'ticket', 'token'].map(key => socket.searchParams.get(key))])
+      .toEqual(['/api/plugins/kanban/events', 'b', 'bee', 'one-use', null])
+    const [mint, init] = fetchMock.mock.calls[0]
+    expect([mint.pathname, mint.searchParams.get('route'), mint.searchParams.get('profile')])
+      .toEqual(['/api/auth/ws-ticket', '/api/plugins/kanban/events', 'bee'])
+    expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe('SECRET-SESSION-TOKEN')
   })
 })

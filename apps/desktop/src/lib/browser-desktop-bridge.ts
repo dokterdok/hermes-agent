@@ -3,13 +3,13 @@ import { externalUrlTarget } from '@hermes/shared'
 import type { HermesApiRequest } from '@/global'
 import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
 import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
-import { createBrowserConnectionBridge } from '@/lib/browser-connection'
+import { createBrowserConnectionBridge, requireBrowserConnection } from '@/lib/browser-connection'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { watchWebappLaunchLink } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
-import { authenticatedWebsocketUrl, browserApi, browserBootstrap } from '@/lib/browser-transport'
+import { authenticatedWebsocketUrl, browserApi, browserBootstrap, endpointUrl, socketTicket } from '@/lib/browser-transport'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
 import { createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
@@ -105,6 +105,18 @@ export function installBrowserDesktopBridge(): boolean {
       return true
     },
     openExternal,
+    // Each plugin socket dial gets a one-use ticket bound to its path and profile, as Electron's
+    // native grant does: the session token never rides a socket URL.
+    getPluginWsUrl: async ({ connectionId, path, pluginId, profile }) => {
+      requireBrowserConnection(connectionId)
+      const url = endpointUrl(`/api/plugins/${pluginId}${path}`, bootstrap.basePath, profile)
+      // The ticket names the path the server routes (decoded, without the proxy's base path).
+      const route = decodeURIComponent(url.pathname.slice(bootstrap.basePath.length))
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+      url.searchParams.set('ticket', await socketTicket(bootstrap, route, url.searchParams.get('profile')))
+
+      return url.toString()
+    },
     openPreviewInBrowser: async url => {
       // Only this install's sandbox wrappers may open as same-origin blobs.
       if (previewUrls.has(url)) {

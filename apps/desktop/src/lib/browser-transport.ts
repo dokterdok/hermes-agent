@@ -319,6 +319,25 @@ export async function gatewayWebsocketUrl(bootstrap: BrowserBootstrap, profile?:
   return url.toString()
 }
 
+/**
+ * A one-use ticket for one dial of the socket at `route` (its exact path, without the base path)
+ * for `profile`. The session credential rides only this request's header: a socket URL is
+ * copyable, and the private session token grants host shells.
+ */
+export async function socketTicket(bootstrap: BrowserBootstrap, route: string, profile?: null | string): Promise<string> {
+  const result = await browserApi<null | { ticket?: string }>(bootstrap, {
+    method: 'POST',
+    path: `/api/auth/ws-ticket?route=${encodeURIComponent(route)}`,
+    profile
+  })
+
+  const ticket = String(result?.ticket || '').trim()
+
+  if (!ticket) {throw new Error('Hermes did not return a WebSocket ticket')}
+
+  return ticket
+}
+
 /** The credential-free canonical socket URL a browser connection descriptor reports. */
 export function gatewaySocketUrl(bootstrap: BrowserBootstrap, profile?: null | string): string {
   const url = new URL(websocketUrl(bootstrap.basePath, '/api/ws', {}, profile))
