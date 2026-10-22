@@ -705,6 +705,23 @@ describe('browser-hosted Desktop bridge', () => {
     expect(payload.data_url).toBe('data:image/png;base64,iVBORw==')
   })
 
+  // The Webapp sends image chips through /api/chat/image-upload, which takes sniffable rasters only:
+  // a blob: URL for SVG/ICO became a chip whose Send failed.
+  it.each(['.svg', '.ico'])('refuses %s image bytes instead of handing the composer a blob: URL', async ext => {
+    seedWebappSession('served-token')
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL')
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    await expect(
+      mutableWindow().hermesDesktop!.saveImageBuffer(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>'), ext)
+    ).rejects.toThrow("SVG and ICO images can't be attached in the browser")
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
+
   it('stages user-selected browser files on the host before returning paths', async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')

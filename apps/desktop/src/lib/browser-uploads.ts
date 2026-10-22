@@ -15,6 +15,11 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   '.webp': 'image/webp'
 }
 
+// Image types the composer attaches but the server's image route cannot take:
+// it accepts only raster formats it can sniff, and the Webapp sends every image
+// chip through it. A blob: URL here would become a chip whose Send fails.
+const UNSENDABLE_IMAGE_EXTENSIONS = new Set(['.ico', '.svg'])
+
 export const IMAGE_EXTENSION_BY_MIME: Record<string, string> = Object.fromEntries(
   Object.entries(IMAGE_MIME_BY_EXTENSION).map(([extension, mime]) => [mime, extension])
 )
@@ -206,6 +211,10 @@ export function createBrowserUploadsBridge({
 
     const extension = normalizedExtension(ext)
     const imageMime = IMAGE_MIME_BY_EXTENSION[extension]
+
+    if (UNSENDABLE_IMAGE_EXTENSIONS.has(extension)) {
+      throw new Error("SVG and ICO images can't be attached in the browser. Attach a PNG, JPEG, GIF, WebP or BMP instead.")
+    }
 
     if (imageMime) {
       // Route by the profile active at the paste, not after the encode.
