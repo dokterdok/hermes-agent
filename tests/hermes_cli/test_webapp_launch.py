@@ -13,7 +13,9 @@ from urllib.request import Request, urlopen
 import pytest
 
 
-def test_private_launch_uses_existing_token_and_never_hands_it_to_the_browser_launcher(monkeypatch, tmp_path, capsys, caplog):
+@pytest.fixture
+def launcher(monkeypatch, tmp_path):
+    """A loopback Webapp's private launch, its scheduled browser opener run inline and recorded."""
     import webbrowser
     from hermes_cli import web_server as server, web_server_lifecycle as lifecycle
 
@@ -27,17 +29,22 @@ def test_private_launch_uses_existing_token_and_never_hands_it_to_the_browser_la
     monkeypatch.setattr(lifecycle.time, "sleep", lambda seconds: None)
     opened = []
     monkeypatch.setattr(webbrowser, "open", opened.append)
+    return SimpleNamespace(server=server, lifecycle=lifecycle, opened=opened)
+
+
+def _printed_launch_link(out: str) -> str:
+    return out.split(": ", 1)[1].split()[0]
+
+
+def test_private_launch_uses_existing_token_and_never_hands_it_to_the_browser_launcher(launcher, monkeypatch, capsys, caplog):
+    server, lifecycle, opened = launcher.server, launcher.lifecycle, launcher.opened
     lifecycle._maybe_open_browser("::1", 9123, False, "coder")
-    launch = capsys.readouterr().out.split(": ", 1)[1].strip()
+    launch = _printed_launch_link(capsys.readouterr().out)
     parsed = urlsplit(launch)
     assert parsed.hostname == "::1"
     assert parse_qs(parsed.query) == {"profile": ["coder"]}
     assert parse_qs(parsed.fragment) == {"hermes-session": [server._SESSION_TOKEN]}
     assert not opened
-    lifecycle._maybe_open_browser("::1", 9123, True, "coder")
-    capsys.readouterr()
-    assert len(opened) == 1 and server._SESSION_TOKEN not in opened[0]
-    assert str(tmp_path) not in opened[0]
     assert server._SESSION_TOKEN not in caplog.text
 
     # Real startup credential branch, stopping at the socket construction seam.
@@ -61,6 +68,26 @@ def test_private_launch_uses_existing_token_and_never_hands_it_to_the_browser_la
     lifecycle._maybe_open_browser("127.0.0.1", 9123, True, "coder")
     assert not capsys.readouterr().out
     assert urlsplit(opened[-1]).fragment == ""
+
+
+@pytest.mark.platforms("linux", "windows")
+def test_private_auto_open_hands_the_launcher_neither_the_token_nor_a_home_path(launcher, tmp_path, capsys, caplog):
+    launcher.lifecycle._maybe_open_browser("::1", 9123, True, "coder")
+    capsys.readouterr()
+    assert len(launcher.opened) == 1 and launcher.server._SESSION_TOKEN not in launcher.opened[0]
+    assert str(tmp_path) not in launcher.opened[0]
+    assert launcher.server._SESSION_TOKEN not in caplog.text
+
+
+@pytest.mark.platforms("macos")
+def test_macos_private_launch_opens_no_browser_and_prints_the_link(launcher, capsys):
+    """macOS launch arguments are no same-user credential channel: the operator gets the link."""
+    launcher.lifecycle._maybe_open_browser("::1", 9123, True, "coder")
+    out = capsys.readouterr().out
+    assert launcher.opened == []
+    fragment = urlsplit(_printed_launch_link(out)).fragment
+    assert parse_qs(fragment) == {"hermes-session": [launcher.server._SESSION_TOKEN]}
+    assert "open the private launch link above in your browser" in out
 
 
 _SERVER = """
