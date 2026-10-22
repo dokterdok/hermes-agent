@@ -7,7 +7,7 @@ import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { watchWebappLaunchLink } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
-import { createBrowserSettings } from '@/lib/browser-settings'
+import { createBrowserSettings, followProfileDefaultProjectDir } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { authenticatedWebsocketUrl, browserApi, browserBootstrap } from '@/lib/browser-transport'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
@@ -69,14 +69,18 @@ export function installBrowserDesktopBridge(): boolean {
   // deleted a profile, what this bridge keeps under the old name follows it.
   // A refused request changes nothing, and bookkeeping that fails must not
   // turn a rename the server accepted into one the caller reports as failed.
-  const afterProfileChange = (change: { newName: null | string; oldName: string }, response: unknown) => {
+  const afterProfileChange = async (change: { newName: null | string; oldName: string }, response: unknown) => {
     if (profileRequestRefused(response)) {return}
 
+    // Each preference follows on its own: storage refusing one skips neither
+    // the other nor the caller's success.
     try {
       profileBridge.profileChanged(change.oldName, change.newName)
     } catch {
       // Storage refused: the server-side change still stands.
     }
+
+    await followProfileDefaultProjectDir(bootstrap.basePath, change.oldName, change.newName).catch(() => undefined)
   }
 
   const api = <T>(request: HermesApiRequest): Promise<T> => {
@@ -84,8 +88,8 @@ export function installBrowserDesktopBridge(): boolean {
     const change = profileChangeFromRequest(request)
 
     return change
-      ? response.then(result => {
-          afterProfileChange(change, result)
+      ? response.then(async result => {
+          await afterProfileChange(change, result)
 
           return result
         })

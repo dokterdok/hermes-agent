@@ -51,6 +51,43 @@ describe('browser default project folder', () => {
     expect((await reload('/first').getDefaultProjectDir()).dir).toBeNull()
   })
 
+  it('moves a folder with a rename the server accepted, and forgets it on delete', async () => {
+    const replies: unknown[] = [409, { ok: true }, { ok: true }]
+
+    const reply = vi.fn(async () => {
+      const next = replies.shift()
+
+      return typeof next === 'number' ? new Response('{}', { status: next }) : new Response(JSON.stringify(next))
+    })
+
+    vi.stubGlobal('fetch', reply)
+    const settings = reload()
+
+    const dirs = async () => {
+      onProfile('work')
+      const work = (await settings.getDefaultProjectDir()).dir
+      onProfile('renamed')
+
+      return { renamed: (await settings.getDefaultProjectDir()).dir, work }
+    }
+
+    onProfile('work')
+    await settings.setDefaultProjectDir('/srv/work')
+    onProfile('renamed') // left behind by an earlier profile of that name
+    await settings.setDefaultProjectDir('/srv/stale')
+    const rename = { body: { new_name: 'renamed' }, method: 'PATCH', path: '/api/profiles/work' }
+
+    await expect(win.hermesDesktop!.api(rename)).rejects.toThrow('409')
+    expect(await dirs()).toEqual({ renamed: '/srv/stale', work: '/srv/work' })
+
+    await win.hermesDesktop!.api(rename)
+    expect(await dirs()).toEqual({ renamed: '/srv/work', work: null })
+
+    await win.hermesDesktop!.api({ method: 'DELETE', path: '/api/profiles/renamed' })
+    expect(await dirs()).toEqual({ renamed: null, work: null })
+    vi.unstubAllGlobals()
+  })
+
   it('rejects a choice this browser cannot keep instead of reporting it saved', async () => {
     vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
       throw new Error('storage denied')

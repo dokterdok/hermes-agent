@@ -42,3 +42,28 @@ export function createBrowserSettings({
     }
   }
 }
+
+/**
+ * After the server renamed or deleted `oldName` on this gateway. A renamed
+ * profile keeps exactly its folder (none if it had none, whatever an earlier
+ * profile of the new name left); a deleted one's is forgotten, so a profile
+ * later created under that name starts clean.
+ */
+export async function followProfileDefaultProjectDir(
+  basePath: string,
+  oldName: string,
+  newName: null | string
+): Promise<void> {
+  if (newName === oldName) {
+    return
+  }
+
+  const settingsOf = (profile: string) => createBrowserSettings({ basePath, currentProfile: () => profile })
+  const { dir } = await settingsOf(oldName).getDefaultProjectDir()
+
+  if (newName) {
+    await settingsOf(newName).setDefaultProjectDir(dir)
+  }
+
+  await settingsOf(oldName).setDefaultProjectDir(null)
+}
