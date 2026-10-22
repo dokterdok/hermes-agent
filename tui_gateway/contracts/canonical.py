@@ -548,7 +548,9 @@ class RoomAttachmentBytes(RoomAttachment):
 
 
 canonical_method("groups.attachment.download", params=GroupsAttachmentDownloadParams,
-                 result=RoomAttachmentBytes, doc="Read one committed attachment for a live room viewer.")
+                 result=RoomAttachmentBytes, doc="Read one committed attachment for a live room viewer. A version "
+                                                 "the room log publishes whose bytes are gone here is refused "
+                                                 "with attachment_unavailable.")
 
 
 class GroupsAttachmentListParams(RoomParams):
