@@ -631,6 +631,25 @@ def test_oversized_member_reply_is_truncated_and_next_turn_stays_serviceable(
     assert "Earlier content omitted" in followup.payload["prompt"]
 
 
+def test_a_bots_own_replies_never_appear_in_its_next_prompt(room_db: tuple[Path, dict]):
+    """The watermark normally covers them; the prompt also drops any that sit past it."""
+    db, room = room_db
+    _append_user(db, event_id="user-1", text="@build Draft the plan.")
+    _settle_next(room, db, text="My own earlier draft.")
+    _append_user(db, event_id="user-2", text="@build Now the details.")
+    checked = discussion.validate_room(room, local_profiles=LOCAL_PROFILES)
+    messages = [event for event in discussion._validated_events(_events(db), room=checked)
+                if event.kind in {"message.user", "message.member"}]
+    build, review = (next(m for m in checked.members if m.member_id == f"member-{name}")
+                     for name in ("build", "review"))
+    prompt = discussion._build_prompt(room=checked, member=build, messages=messages, watermark=0,
+                                      seen_through_seq=messages[-1].seq)
+    assert "Now the details." in prompt and "Draft the plan." in prompt
+    assert "My own earlier draft." not in prompt
+    assert "My own earlier draft." in discussion._build_prompt(
+        room=checked, member=review, messages=messages, watermark=0, seen_through_seq=messages[-1].seq)
+
+
 def test_three_round_bound(room_db: tuple[Path, dict]):
     db, room = room_db
     room["members"] = MEMBERS[:2]
