@@ -17,6 +17,24 @@ import { $connection } from '@/store/session'
 import { windowProfileOverride } from '@/store/windows'
 
 import { resolveGatewayVersion } from '../../electron/gateway-version'
+import { profileNameFromDeleteRequest } from '../../electron/profile-delete-routing'
+import { type ProfileRename, profileRenameFromRequest } from '../../electron/profile-rename-routing'
+
+/** The rename (or delete: `newName` null) a profile request asks for, parsed as native Desktop does. */
+function profileChangeFromRequest(request: HermesApiRequest): null | { newName: null | string; oldName: string } {
+  const renamed: null | ProfileRename = profileRenameFromRequest(request)
+  const deleted = renamed ? null : profileNameFromDeleteRequest(request)
+
+  return renamed ?? (deleted ? { newName: null, oldName: deleted } : null)
+}
+
+/** Native Desktop's failure test for a 2xx profile reply (`afterProfileRequest`). */
+function profileRequestRefused(response: unknown): boolean {
+  if (!response || typeof response !== 'object') {return false}
+  const result = response as Record<string, unknown>
+
+  return result.ok === false || result.success === false || Boolean(result.error)
+}
 
 /**
  * Install a capability-limited Desktop bridge when the real renderer is served
@@ -39,9 +57,40 @@ export function installBrowserDesktopBridge(): boolean {
     watchWebappLaunchLink(() => window.location.reload())
   }
 
-  const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
-
   const currentProfile = () => $connection.get()?.profile?.trim() || windowProfileOverride()
+
+  const profileBridge = createBrowserProfileBridge({
+    basePath: bootstrap.basePath,
+    currentProfile,
+    openWindow: target => openWindow(target)
+  })
+
+  // Native Desktop's afterProfileRequest: once the server has renamed or
+  // deleted a profile, what this bridge keeps under the old name follows it.
+  // A refused request changes nothing, and bookkeeping that fails must not
+  // turn a rename the server accepted into one the caller reports as failed.
+  const afterProfileChange = (change: { newName: null | string; oldName: string }, response: unknown) => {
+    if (profileRequestRefused(response)) {return}
+
+    try {
+      profileBridge.profileChanged(change.oldName, change.newName)
+    } catch {
+      // Storage refused: the server-side change still stands.
+    }
+  }
+
+  const api = <T>(request: HermesApiRequest): Promise<T> => {
+    const response = browserApi<T>(bootstrap, request)
+    const change = profileChangeFromRequest(request)
+
+    return change
+      ? response.then(result => {
+          afterProfileChange(change, result)
+
+          return result
+        })
+      : response
+  }
 
   const objectUrls = new Set<string>()
   const previewUrls = new Set<string>()
@@ -144,7 +193,8 @@ export function installBrowserDesktopBridge(): boolean {
       websocketUrl: profile => authenticatedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
       defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || ''
     }),
-    ...createBrowserProfileBridge({ basePath: bootstrap.basePath, currentProfile, openWindow }),
+    openWindow: profileBridge.openWindow,
+    profile: profileBridge.profile,
     zoom: createBrowserZoom(bootstrap.basePath)
   }
 
