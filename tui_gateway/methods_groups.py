@@ -494,7 +494,8 @@ _passthrough(
 _passthrough(
     "groups.replicate", "gateway.hosted_room_replicas", "ingest_page",
     """Persist one authority-stamped replay page (a verbatim ``groups.log`` result) into
-    the local replica store; idempotent, refuses sequence gaps and epoch regressions.""",
+    the local replica store; idempotent, refuses sequence gaps, epoch regressions and pages
+    that contradict the stored copy (see ``ingest_page``).""",
     code=5116, room_code=4116, params=("room_id", "room_name", "members", "page"),
     replica_only=True)
 _passthrough(

@@ -45,6 +45,35 @@ def _seed_room(db, *, gateway_id=AUTH_A, n_events=3, room_id="room-1"):
     return rooms.read_events(db, room_id=room_id, since_seq=0, limit=100)
 
 
+def _ingest(db, page, room_name="Field Room"):
+    return replicas.ingest_page(
+        db, room_id="room-1", room_name=room_name, members=MEMBERS, page=page
+    )
+
+
+def _read(db, since_seq=0, limit=100, **kwargs):
+    return rooms.read_events(
+        db, room_id="room-1", since_seq=since_seq, limit=limit, **kwargs
+    )
+
+
+def _take_over(db, page, monkeypatch):
+    """B promotes its copy ``page`` of the room and posts one message at epoch 2."""
+    _ingest(db, page)
+    monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
+    replicas.promote_replica(db, room_id="room-1")
+    rooms.append_event(
+        db,
+        room_id="room-1",
+        event_id="b-work",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "on B"},
+        authority_gateway_id=AUTH_B,
+        authority_epoch=2,
+    )
+
+
 def test_ingest_page_persists_events_and_lineage(tmp_path):
     page = _seed_room(_authority_db(tmp_path))
     rdb = _replica_db(tmp_path)
@@ -73,6 +102,22 @@ def test_ingest_page_is_idempotent(tmp_path):
     assert again["stored_seq"] == 3
 
 
+@pytest.mark.parametrize("field", ["payload", "actor", "kind", "authority_epoch"])
+def test_ingest_refuses_a_replay_that_changes_one_stored_field(tmp_path, field):
+    page = _seed_room(_authority_db(tmp_path))
+    rdb = _replica_db(tmp_path)
+    _ingest(rdb, page)
+    changed = {
+        "payload": {"text": "rewritten"},
+        "actor": {"kind": "user", "id": "someone-else"},
+        "kind": "message.member",
+        "authority_epoch": 2,
+    }[field]
+    page["events"][1] = {**page["events"][1], field: changed}
+    with pytest.raises(replicas.ReplicaError, match="conflicts with the stored"):
+        _ingest(rdb, page)
+
+
 def test_ingest_rejects_sequence_gap(tmp_path):
     adb = _authority_db(tmp_path)
     _seed_room(adb, n_events=5)
@@ -86,6 +131,28 @@ def test_ingest_rejects_sequence_gap(tmp_path):
             members=MEMBERS,
             page=later,
         )
+
+
+def _successor_after_takeover(tmp_path, monkeypatch):
+    """A hosts four messages and C copies all four. B takes over from a copy of
+    the first three (its authority.claimed is seq 4) and posts one message."""
+    adb, bdb, cdb = (tmp_path / name for name in ("a.db", "b.db", "c.db"))
+    _ingest(cdb, _seed_room(adb, n_events=4))
+    _take_over(bdb, _read(adb, limit=3), monkeypatch)
+    return bdb, cdb
+
+
+def test_ingest_refuses_a_replay_from_a_different_room_history(tmp_path, monkeypatch):
+    """B's seq 4 is its authority.claimed where C holds A's message: C keeps A's history."""
+    bdb, cdb = _successor_after_takeover(tmp_path, monkeypatch)
+
+    with pytest.raises(replicas.ReplicaError, match="conflicts with the stored"):
+        _ingest(cdb, _read(bdb))
+    state = replicas.replica_state(cdb, room_id="room-1")
+    assert (state["last_seq"], state["authority"]) == (
+        4,
+        {"gateway_id": AUTH_A, "epoch": 1},
+    )
 
 
 def test_ingest_rejects_epoch_regression(tmp_path):
