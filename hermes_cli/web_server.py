@@ -331,7 +331,7 @@ _QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
-    if _file_tickets.redeem(request):
+    if _file_tickets.redeem(request, credential=_SESSION_TOKEN):
         return True
     if path not in _QUERY_TOKEN_API_PATHS:
         return False

@@ -728,6 +728,7 @@ def _leased_ticket_authority(
 @router.post("/api/files/ticket")
 async def issue_file_ticket(payload: FileTicketRequest, request: Request):
     """Ticket a browser download/media/Save URL instead of putting the session token in it."""
+    from hermes_cli import web_server
     from hermes_cli.profile_incarnation import ensure_profile_incarnation
     from hermes_cli.web_routers.sessions import _history_profile_home
 
@@ -758,6 +759,7 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
     query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id}
     ticket = file_tickets.mint(
         payload.route, {key: value for key, value in query.items() if value is not None}, authority=authority,
+        credential=web_server._SESSION_TOKEN,
     )
     return JSONResponse({"ticket": ticket}, headers={"Cache-Control": "no-store"})
 
