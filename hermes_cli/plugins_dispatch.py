@@ -166,19 +166,28 @@ _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
-def _hook_call_identity(kwargs: dict[str, Any], hook_name: str = "") -> Optional[str]:
+def _hook_call_identity(kwargs: dict[str, Any], hook_name: str = "") -> Optional[str | tuple[str, ...]]:
     """Identity of the call this callback fires for, or ``None`` when the event has none.
 
     Concurrent invocations of the same tool in one session must not collapse into one
     gate key: they are different work, and treating the second as a duplicate drops the
     hook as if a callback had timed out (upstream #98382). The identity is already in the
-    payload; nothing new is plumbed. Deliberately not ``api_request_id`` — one API request
-    carries many tool calls, which would re-collapse the keys.
+    payload; nothing new is plumbed. A call or turn id is only unique within its session
+    and API request: a provider that omits ids gets ``deterministic_call_id`` (same tool,
+    arguments and index), so two sessions running the same call at once, such as two Bots
+    in one Group Chat, share it. The id is therefore namespaced by its session, turn and
+    request; the request alone is never the identity, since one request carries many calls.
+    A hook with its own identity field (``_HOOK_CALL_IDENTITY_FIELDS``) is scoped by it already.
     """
-    for field in _HOOK_CALL_IDENTITY_FIELDS.get(hook_name, ("tool_call_id", "turn_id")):
+    named = _HOOK_CALL_IDENTITY_FIELDS.get(hook_name)
+    for field in named or ("tool_call_id", "turn_id"):
         value = kwargs.get(field)
         if isinstance(value, str) and value:
-            return value
+            if named:
+                return value
+            scope = tuple(kwargs.get(name) if isinstance(kwargs.get(name), str) else ""
+                          for name in ("session_id", "turn_id", "api_request_id"))
+            return (*scope, field, value)
     return None
 
 
