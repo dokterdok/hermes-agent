@@ -138,6 +138,36 @@ def _check_replay(conn: sqlite3.Connection, room_id: str, replayed: list[dict[st
         raise ReplicaError("page conflicts with the stored replica history")
 
 
+def _check_lineage(
+    conn: sqlite3.Connection, room_id: str, row: sqlite3.Row | None, last_seq: int, new_events: list[dict[str, Any]],
+    authority: dict[str, Any], *, caught_up: bool) -> None:
+    """Accept an epoch or gateway change only through an ``authority.claimed`` boundary extending the copy.
+
+    The work-evidence rule (``hosted_room_work_lineage``): a claim exactly at each epoch boundary, naming the
+    span it leaves, and gateway actors matching their span. A page stamped ahead of its events is a partial
+    read whose claim is still to come, so the stamp must match the events once the page is caught up."""
+    epoch, gateway = 1, None
+    if last_seq:
+        epoch = conn.execute("SELECT authority_epoch FROM hosted_room_replica_events WHERE room_id=? AND seq=?",
+                             (room_id, last_seq)).fetchone()["authority_epoch"] or 1
+    if row is not None and int(row["authority_epoch"]) == epoch:
+        gateway = str(row["authority_gateway_id"])
+    for event in new_events:
+        event_epoch, actor, payload = event.get("authority_epoch") or 1, event["actor"], event["payload"]
+        if event["kind"] == "authority.claimed":
+            claim = payload if isinstance(payload, dict) else {}
+            if (event_epoch != epoch + 1 or actor != _SYSTEM_ACTOR or claim.get("authority_epoch") != event_epoch
+                    or gateway not in (None, claim.get("previous_gateway_id"))
+                    or not isinstance(claim.get("authority_gateway_id"), str)):
+                raise ReplicaError("authority.claimed does not extend the stored replica authority")
+            epoch, gateway = event_epoch, claim["authority_gateway_id"]
+        elif event_epoch != epoch or (actor.get("kind") == "gateway" and gateway not in (None, actor.get("id"))):
+            raise ReplicaError("replica authority changed without an authority.claimed event")
+    if authority["epoch"] < epoch or (authority["epoch"] > epoch and caught_up) or (
+            authority["epoch"] == epoch and gateway not in (None, authority["gateway_id"])):
+        raise ReplicaError("page authority does not match its authority.claimed lineage")
+
+
 def _store_replica(
     conn: sqlite3.Connection, *, is_new: bool, room_id: str, room_name: str, members_json: str,
     authority: dict[str, Any], new_last: int, latest_seq: int, added_bytes: int, now: float) -> None:
@@ -157,8 +187,8 @@ def _store_replica(
 def ingest_page(
     db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None
 ) -> dict[str, Any]:
-    """Persist one verbatim ``read_events()`` page idempotently; refuses seq gaps, epoch regressions and a replay
-    that differs from the stored copy."""
+    """Persist one verbatim ``read_events()`` page idempotently; refuses seq gaps, epoch regressions, a replay
+    that differs from the stored copy and an authority change without an ``authority.claimed`` boundary."""
     room_id = _room_id(room_id)
     room_name = _validate_room_name(room_name)
     _, members_json = _validate_members(members)
@@ -172,6 +202,11 @@ def ingest_page(
         new_events = [e for e in events if int(e["seq"]) > last_seq]
         if new_events and int(new_events[0]["seq"]) != last_seq + 1:
             raise ReplicaGapError("page skips sequences the replica has not stored")
+        new_last = int(new_events[-1]["seq"]) if new_events else last_seq
+        latest_seq = page.get("latest_seq")
+        if isinstance(latest_seq, bool) or not isinstance(latest_seq, int):
+            latest_seq = new_last
+        _check_lineage(conn, room_id, row, last_seq, new_events, authority, caught_up=new_last >= latest_seq)
         added_bytes = 0
         for event in new_events:
             size = _event_bytes(event)
@@ -184,10 +219,6 @@ def ingest_page(
                     event.get("authority_epoch"), _payload_json(event["payload"]),
                     float(event.get("created_at") or now)))
             added_bytes += size
-        new_last = int(new_events[-1]["seq"]) if new_events else last_seq
-        latest_seq = page.get("latest_seq")
-        if isinstance(latest_seq, bool) or not isinstance(latest_seq, int):
-            latest_seq = new_last
         _store_replica(
             conn, is_new=row is None, room_id=room_id, room_name=room_name, members_json=members_json,
             authority=authority, new_last=new_last, latest_seq=latest_seq, added_bytes=added_bytes, now=now)

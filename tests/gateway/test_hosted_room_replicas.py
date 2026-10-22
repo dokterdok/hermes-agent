@@ -1,8 +1,6 @@
 """Tests for gateway/hosted_room_replicas.py — replica ingest, promotion, and
 stale-authority demotion for hosted Group Chat rooms."""
 
-import json
-
 import pytest
 
 import gateway.hosted_room_replicas as replicas
@@ -134,16 +132,53 @@ def test_ingest_refuses_a_replay_from_a_different_room_history(tmp_path, monkeyp
     )
 
 
+def test_ingest_refuses_an_authority_change_without_a_claim(tmp_path, monkeypatch):
+    """B's page after C's cursor holds only B's epoch-2 message: taking it would
+    put B's work on top of A's seq 4 with no authority.claimed in between."""
+    bdb, cdb = _successor_after_takeover(tmp_path, monkeypatch)
+    after_c = rooms.read_events(bdb, room_id="room-1", since_seq=4, limit=100)
+    assert after_c["authority"] == {"gateway_id": AUTH_B, "epoch": 2}
+
+    with pytest.raises(replicas.ReplicaError, match="without an authority.claimed"):
+        replicas.ingest_page(
+            cdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=after_c
+        )
+    state = replicas.replica_state(cdb, room_id="room-1")
+    assert (state["last_seq"], state["authority"]["epoch"]) == (4, 1)
+
+
+def test_fresh_copy_pages_the_successor_through_its_claim(tmp_path, monkeypatch):
+    """Short pages stamped with B's authority before its claim arrives stay valid."""
+    bdb, _ = _successor_after_takeover(tmp_path, monkeypatch)
+    ddb = tmp_path / "d.db"
+    for since_seq in (0, 2, 4):
+        result = replicas.ingest_page(
+            ddb,
+            room_id="room-1",
+            room_name="Field Room",
+            members=MEMBERS,
+            page=rooms.read_events(bdb, room_id="room-1", since_seq=since_seq, limit=2),
+        )
+    assert (result["stored_seq"], result["caught_up"]) == (5, True)
+    assert result["authority"] == {"gateway_id": AUTH_B, "epoch": 2}
+
+
 def test_ingest_rejects_epoch_regression(tmp_path):
-    page = _seed_room(_authority_db(tmp_path))
+    adb = _authority_db(tmp_path)
+    stale = _seed_room(adb)
+    rooms.claim_authority(
+        adb,
+        room_id="room-1",
+        expected_gateway_id=AUTH_A,
+        expected_epoch=1,
+        new_gateway_id=AUTH_B,
+        event_id="claim-b",
+    )
+    newer = rooms.read_events(adb, room_id="room-1", since_seq=0, limit=100)
     rdb = _replica_db(tmp_path)
-    newer = json.loads(json.dumps(page))
-    newer["authority"]["epoch"] = 3
     replicas.ingest_page(
         rdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=newer
     )
-    stale = json.loads(json.dumps(page))
-    stale["authority"]["epoch"] = 2
     with pytest.raises(replicas.ReplicaEpochRegressionError):
         replicas.ingest_page(
             rdb,
