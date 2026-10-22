@@ -32,6 +32,7 @@ import {
   createCoreSandbox,
   currentSessionId,
   DESKTOP_ROOT,
+  type ProcInfo,
   recordWebSockets,
   REPO_ROOT,
   sandboxProcesses,
@@ -116,6 +117,18 @@ function toolAncestry(file: string): number[] {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(/\s+/).filter(Boolean).map(Number) : []
 }
 
+/**
+ * The sandbox's `hermes webapp` server process(es). A fork of the Webapp repeats its argv exactly
+ * until it execs (the gateway it starts included), so such a child is not counted; a second server
+ * it started is, since that carries argv of its own (a re-exec adds `-p` and `--open-profile`).
+ */
+function webappProcesses(sandbox: CoreSandbox): ProcInfo[] {
+  const webapps = sandboxProcesses(sandbox).filter(proc => / webapp( |$)/.test(proc.cmdline))
+  const byPid = new Map(webapps.map(proc => [proc.pid, proc]))
+
+  return webapps.filter(proc => byPid.get(proc.ppid)?.cmdline !== proc.cmdline)
+}
+
 test('the Webapp attaches its browser to the profile gateway, which runs every turn', async () => {
   test.skip(process.platform !== 'linux', 'walks /proc to prove which process ran the tool')
   expect(
@@ -145,6 +158,10 @@ test('the Webapp attaches its browser to the profile gateway, which runs every t
       .poll(() => backendProcesses(sandbox).length, { message: `one gateway, started by the Webapp\n${webapp.log()}` })
       .toBe(1)
     const [gateway] = backendProcesses(sandbox)
+    // And exactly one Webapp: the process this test started.
+    expect(webappProcesses(sandbox).map(proc => proc.pid), `one Webapp process\n${webapp.log()}`).toEqual([
+      webapp.child.pid
+    ])
 
     provider.script(U(1), [
       {
@@ -203,6 +220,7 @@ test('the Webapp attaches its browser to the profile gateway, which runs every t
     const [replacement] = backendProcesses(sandbox)
     expect(backendProcesses(sandbox)).toHaveLength(1)
     expect(replacement.pid).not.toBe(gateway.pid)
+    expect(webappProcesses(sandbox).map(proc => proc.pid), 'still one Webapp process').toEqual([webapp.child.pid])
 
     // The gateway is the profile's, not the Webapp's: stopping the Webapp leaves it serving.
     webapp.child.kill('SIGTERM')
