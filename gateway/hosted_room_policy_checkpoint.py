@@ -213,7 +213,18 @@ class HostedRoomPolicyCheckpoint:
         if kind == "turn.settled" and payload.get("message_event_id"):
             committed = _settled_message(conn, room_id, discussion_event_id, payload["message_event_id"])
             if committed is not None:
-                seen_through_seq = max(seen_through_seq, int(committed["seq"]))
+                # The planner's rule (hosted_room_discussion._crosses_unseen_message): a reply covers
+                # the thread up to itself only when its turn skipped no message before it, so the
+                # rest of a file batch, or a peer's message it skipped, stays for the next turn.
+                skipped = conn.execute(
+                    """SELECT 1 FROM hosted_room_events
+                        WHERE room_id=? AND json_extract(payload_json, '$.thread_id')=? AND seq>? AND seq<?
+                          AND (kind='message.user' OR (kind='message.member'
+                               AND json_extract(payload_json, '$.member_id') IS NOT ?))
+                        LIMIT 1""",
+                    (room_id, thread_id, seen_through_seq, int(committed["seq"]), member_id)).fetchone()
+                if skipped is None:
+                    seen_through_seq = max(seen_through_seq, int(committed["seq"]))
                 self._store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
         else:
             # Non-visible receipts still supply historical reconstruction watermarks.

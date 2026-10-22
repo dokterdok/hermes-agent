@@ -338,8 +338,13 @@ def resolve_mentions(
 
 
 def _unaddressed_member_mentions(
-    messages: Sequence[_ValidatedEvent], room: DiscussionRoom) -> tuple[DiscussionMember, ...]:
-    """Return peers explicitly cited by a Bot and not heard from afterward."""
+    messages: Sequence[_ValidatedEvent], room: DiscussionRoom, *,
+    watermarks: Mapping[tuple[str, str], int] | None = None, thread_id: str = "",
+) -> tuple[DiscussionMember, ...]:
+    """Return peers explicitly cited by a Bot and not heard from afterward.
+
+    A reply answers a citation only if its turn saw it: a turn whose input stopped before the
+    citation (a full batch of files ahead of it) leaves the peer's watermark below it."""
     cited_at: dict[str, int] = {}
     last_post_at: dict[str, int] = {}
     for event in messages:
@@ -352,7 +357,10 @@ def _unaddressed_member_mentions(
                 cited_at[member.member_id] = event.seq
     return tuple(
         member for member in room.members
-        if member.member_id in cited_at and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id])
+        if member.member_id in cited_at and (
+            last_post_at.get(member.member_id, 0) <= cited_at[member.member_id]
+            or (watermarks is not None
+                and watermarks.get((thread_id, member.member_id), 0) < cited_at[member.member_id])))
 
 
 def _require_gateway_actor(actor: Mapping[str, Any], room: DiscussionRoom, message: str) -> None:
@@ -494,6 +502,20 @@ def derive_member_watermarks(
         _validated_events(events, room=validate_room(room_value, local_profiles=local_profiles)))
 
 
+def _crosses_unseen_message(events: Sequence[_ValidatedEvent], *, thread_id: str, member_id: str,
+                           seen_through_seq: int, reply_seq: int) -> bool:
+    """Whether the thread holds a message this member did not see between its input and its reply.
+
+    A turn's input can stop short of the thread's newest message (a message whose files exceed the
+    turn's batch); a reply then covers the thread up to itself only when nothing it skipped lies
+    before it, so the skipped message stays in the member's next delta."""
+    return any(
+        seen_through_seq < event.seq < reply_seq and event.payload.get("thread_id") == thread_id
+        and (event.kind == "message.user"
+             or (event.kind == "message.member" and event.payload.get("member_id") != member_id))
+        for event in events)
+
+
 def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[str, str], int]:
     messages_by_id = {event.event_id: event for event in events if event.kind == "message.member"}
     terminal_by_task: dict[str, _ValidatedEvent] = {}
@@ -520,7 +542,8 @@ def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[s
                                    if candidate.event_id == event.payload["discussion_event_id"]), None)
             if discussion_seq is None:
                 raise DiscussionValidationError("turn.settled references no matching user discussion")
-            if watermark >= discussion_seq:
+            if not _crosses_unseen_message(events, thread_id=key[0], member_id=key[1], seen_through_seq=watermark,
+                                          reply_seq=message.seq):
                 watermark = max(watermark, message.seq)
         watermarks[key] = max(watermarks.get(key, 0), watermark)
     return watermarks
@@ -707,7 +730,10 @@ def plan_next_task(
         DiscussionDecision, discussion_event_id=discussion.event_id, source_event_seq=discussion.seq,
         thread_id=thread_id)
     thread_messages, discussion_messages, member_messages = _thread_messages(validated, discussion)
-    if len(member_messages) >= MAX_DISCUSSION_MESSAGES:
+    # The budget counts conversational turns: a member continuing one round's turn because its
+    # input exceeded one batch (the rest of a large file share) does not spend another.
+    if len({(int(event.payload["round_index"]), str(event.payload["member_id"]))
+            for event in member_messages}) >= MAX_DISCUSSION_MESSAGES:
         return decide("bounded", "max_messages")
     terminals = {
         (int(event.payload["round_index"]), str(event.payload["member_id"])) for event in validated
@@ -721,7 +747,8 @@ def plan_next_task(
         # complete bounded transcript delta without consuming turns meanwhile.
         responders = (
             resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
-            else _unaddressed_member_mentions(discussion_messages, room))
+            else _unaddressed_member_mentions(
+                discussion_messages, room, watermarks=watermarks, thread_id=thread_id))
         for member_index, member in enumerate(_rotate(responders, round_index)):
             watermark = watermarks.get((thread_id, member.member_id), 0)
             delta, attachments = _bounded_task_delta(thread_messages, watermark=watermark, member=member)
