@@ -6,7 +6,16 @@ import type { RosterRow } from './types'
 
 export type GroupExecutionMode = 'canonical' | 'legacy' | 'unavailable'
 
-export function groupExecutionMode(value: unknown): GroupExecutionMode {
+const stringList = (value: unknown): value is string[] | undefined =>
+  value === undefined || (Array.isArray(value) && value.every(item => typeof item === 'string'))
+
+/** Classify a `groups.capabilities` answer, or the `error` the read failed with. */
+export function groupExecutionMode(value: unknown, error?: unknown): GroupExecutionMode {
+  // A server without the group surface at all answers JSON-RPC's method-not-found: its rooms are classic.
+  if (error !== undefined) {
+    return (error as { code?: unknown } | null)?.code === -32601 ? 'legacy' : 'unavailable'
+  }
+
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return 'unavailable'
   }
@@ -14,11 +23,7 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
   const capability = value as Record<string, unknown>
   const { driver, persistent_process, features, methods } = capability
 
-  if (features !== undefined && (!Array.isArray(features) || features.some(feature => typeof feature !== 'string'))) {
-    return 'unavailable'
-  }
-
-  if (methods !== undefined && (!Array.isArray(methods) || methods.some(method => typeof method !== 'string'))) {
+  if (!stringList(features) || !stringList(methods)) {
     return 'unavailable'
   }
 
@@ -33,6 +38,39 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
   }
 
   return 'unavailable'
+}
+
+/** Two surfaces answer `groups.capabilities`: the gateway's own (gateway/session_group_controls.py)
+ *  and the standalone server's older one (`hermes serve`, `hermes dashboard`, reached by SSH, URL and
+ *  Cloud connections; tui_gateway/methods_groups.py), which has no groups.discard and no attachments.
+ *  A room offers a control only when its gateway lists the control's method: `undefined` while the
+ *  answer is pending, `null` when it lists no methods (every control, as before). */
+export type GroupMethods = ReadonlySet<string> | null | undefined
+
+export function groupAdvertisedMethods(value: unknown): ReadonlySet<string> | null {
+  const methods = value && typeof value === 'object' ? (value as Record<string, unknown>).methods : undefined
+
+  return Array.isArray(methods) && stringList(methods) ? new Set(methods) : null
+}
+
+export const offersGroupMethod = (methods: GroupMethods, method: string) =>
+  methods === null || Boolean(methods?.has(method))
+
+/** The group methods `route`'s gateway lists, read once per room view. A failed read lists none. */
+export function useGroupMethods(route: { connectionId: string; profile: string }): GroupMethods {
+  const [methods, setMethods] = useState<GroupMethods>(undefined)
+
+  useEffect(() => {
+    let cancelled = false
+    void canonicalGroupRequest<unknown>(route, 'groups.capabilities').then(
+      value => { if (!cancelled) {setMethods(groupAdvertisedMethods(value))} },
+      () => { if (!cancelled) {setMethods(null)} }
+    )
+
+    return () => { cancelled = true }
+  }, [route])
+
+  return methods
 }
 
 /** The profiles `groups.create` will seat for THIS caller, as `groups.capabilities`
@@ -88,20 +126,20 @@ export function useGroupCapability(active: boolean) {
     const route = { connectionId, profile }
     const sourceCurrent = groupCreationSource(route, activationEpoch)
 
-    const settle = (result: unknown, failed: boolean) => {
+    const settle = (result: unknown, error?: unknown) => {
       if (!cancelled && sourceCurrent()) {
         setCapability({
           activationEpoch,
-          mode: failed ? 'unavailable' : groupExecutionMode(result),
-          seatable: failed ? null : groupSeatableProfiles(result),
+          mode: groupExecutionMode(result, error),
+          seatable: groupSeatableProfiles(result),
           source
         })
       }
     }
 
     void canonicalGroupRequest<unknown>(route, 'groups.capabilities').then(
-      result => settle(result, false),
-      () => settle(null, true)
+      result => settle(result),
+      error => settle(undefined, error)
     )
 
     return () => { cancelled = true }

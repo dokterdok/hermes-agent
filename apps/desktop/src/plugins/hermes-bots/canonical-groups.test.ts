@@ -12,6 +12,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
   return { host: { ...host, requestProfile: captureGroupRequests(host.requestProfile).request } }
 })
 
+import { groupAdvertisedMethods, groupExecutionMode, offersGroupMethod } from './canonical-group-capabilities'
+import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
 
 beforeEach(() => {
@@ -97,4 +99,32 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
 
   expect(host.requestProfile).toHaveBeenCalledTimes(count)
   expect(host.request).not.toHaveBeenCalled()
+})
+
+// Both Python surfaces answer groups.capabilities; the standalone server (what SSH, URL and Cloud
+// reach) runs its own driver, so it hosts rooms too, but lists no groups.discard or attachments.
+it('classifies both gateway surfaces by their driver and offers only the methods each lists', () => {
+  const rows = [
+    [CANONICAL_GROUP_CAPABILITIES, undefined, 'canonical'],
+    [STANDALONE_GROUP_CAPABILITIES, undefined, 'canonical'],
+    [{ ...STANDALONE_GROUP_CAPABILITIES, driver: false }, undefined, 'unavailable'],
+    [{ ...CANONICAL_GROUP_CAPABILITIES, driver: false }, undefined, 'unavailable'],
+    [{ ...CANONICAL_GROUP_CAPABILITIES, methods: [...CANONICAL_GROUP_CAPABILITIES.methods, 7] }, undefined, 'unavailable'],
+    [{ driver: false, persistent_process: false }, undefined, 'legacy'],
+    [undefined, { code: -32601 }, 'legacy'],
+    [undefined, new Error('request timed out'), 'unavailable'],
+    [undefined, { code: 4001, data: { reason: 'permission_denied' } }, 'unavailable']
+  ] as const
+
+  expect(rows.map(([value, error]) => groupExecutionMode(value, error))).toEqual(rows.map(row => row[2]))
+
+  const standalone = groupAdvertisedMethods(STANDALONE_GROUP_CAPABILITIES)
+  const canonical = groupAdvertisedMethods(CANONICAL_GROUP_CAPABILITIES)
+  const optional = ['groups.discard', 'groups.attachment.upload', 'groups.attachment.download']
+  expect(optional.map(method => offersGroupMethod(standalone, method))).toEqual([false, false, false])
+  expect(optional.map(method => offersGroupMethod(canonical, method))).toEqual([true, true, true])
+  expect(['groups.retry', 'groups.approve', 'groups.rename', 'groups.disband'].every(method => offersGroupMethod(standalone, method))).toBe(true)
+  // No method list keeps every control; an unanswered read offers none yet.
+  expect(offersGroupMethod(groupAdvertisedMethods({ driver: true }), 'groups.discard')).toBe(true)
+  expect(offersGroupMethod(undefined, 'groups.discard')).toBe(false)
 })
