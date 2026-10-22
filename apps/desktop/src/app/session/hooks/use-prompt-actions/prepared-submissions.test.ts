@@ -47,3 +47,25 @@ test('native preparation waits for acknowledgement and never downgrades a write 
   await removePreparedSubmission('key', 'a')
   expect(await readPreparedSubmission('key')).toBeUndefined()
 })
+
+test('windows without Web Locks (plain-HTTP origin) never share or adopt another live window\'s entry', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  expect(navigator.locks).toBeUndefined()
+
+  // Each window is its own module graph; they share only localStorage and the presence channel.
+  const openWindow = async () => {
+    vi.resetModules()
+
+    return import('./prepared-submissions')
+  }
+
+  const [a, b] = [await openWindow(), await openWindow()]
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const intent = JSON.stringify(['local::default', 'stored', 'same text', [], null, false, null])
+
+  const [keyA, keyB] = await Promise.all([a.preparedSubmissionSlot(intent), b.preparedSubmissionSlot(intent)])
+  expect(keyA).not.toBe(keyB)
+
+  await a.writePreparedSubmission(keyA, { id: 'from-a', text: 'same text', attachments: [], params: {}, owner: { connectionId: 'local', profile: 'default' } })
+  expect(await b.adoptPreparedSubmission(intent, 'from-a')).toBeUndefined()
+})

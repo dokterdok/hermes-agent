@@ -1,5 +1,6 @@
 import { randomUuid } from '@hermes/shared'
 
+import { holdWebLock } from '@/lib/web-locks'
 import type { ComposerAttachment } from '@/store/composer'
 import type { SessionOwnerScope } from '@/store/session-request-router'
 
@@ -160,34 +161,18 @@ export async function readPreparedSubmission(key: string): Promise<PreparedSubmi
 // Uncertain sends this window journaled or adopted: journal key -> release of its Web Lock.
 // The journal is shared by every window of the origin; a held lock marks an entry whose
 // window is alive, and only that window may retry it. A closed window's lock is freed, so its
-// entry stays adoptable after a reload. Without Web Locks there is no other window to exclude.
+// entry stays adoptable after a reload. A plain-HTTP Webapp has no Web Locks but still has
+// other windows; `holdWebLock` falls back to a storage lease there.
 const owned = new Map<string, () => void>()
 
-function holdPreparedSubmission(key: string): Promise<boolean> {
-  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+async function holdPreparedSubmission(key: string): Promise<boolean> {
+  if (owned.has(key)) { return true }
 
-  if (owned.has(key)) { return Promise.resolve(true) }
+  const release = await holdWebLock(`${STORAGE_KEY}.${key}`)
 
-  if (!locks) {
-    owned.set(key, () => undefined)
+  if (release) { owned.set(key, release) }
 
-    return Promise.resolve(true)
-  }
-
-  return new Promise<boolean>(acquired => {
-    void locks.request(`${STORAGE_KEY}.${key}`, { ifAvailable: true }, lock => {
-      if (!lock) {
-        acquired(false)
-
-        return null
-      }
-
-      return new Promise<void>(release => {
-        owned.set(key, release)
-        acquired(true)
-      })
-    })
-  })
+  return Boolean(release)
 }
 
 const sameDestination = (intent: string, key: string) => {
