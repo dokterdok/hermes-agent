@@ -7,6 +7,8 @@ import { offersGroupMethod, useGroupMethods } from './canonical-group-capabiliti
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
+import { forgetCanonicalGroup, renameCanonicalGroup } from './canonical-group-registry'
+import { CanonicalGroupRoomActions } from './canonical-group-room-actions'
 import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, reopenCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
@@ -133,6 +135,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
     if (alive.current && version === revision.current) {
       seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
+
+      // A rename from any surface reaches this room's tab title the next time it opens.
+      if (snapshot.room?.name) {renameCanonicalGroup(binding, snapshot.room.name)}
       setState(snapshot)
       setEvents(current => fresh ? log : [...current, ...log.filter(event => event.seq > since)])
       setReadError('')
@@ -285,6 +290,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         <CanonicalGroupAttention driver={state?.driver_status} labels={labels} />
       </div>
       <Button disabled={stopping || !state?.driver_status} onClick={() => void stop()}>{labels.stop}</Button>
+      <CanonicalGroupRoomActions binding={binding} disabled={!state} methods={methods} name={state?.room.name ?? ''}
+        onEnded={() => { onBack?.(); forgetCanonicalGroup(binding) }}
+        onRenamed={name => { renameCanonicalGroup(binding, name); void refresh().catch(e => setReadError(String(e))) }} />
     </header>
     <CanonicalGroupNotices error={error} journalError={journalError} labels={labels} notice={notice}
       onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}

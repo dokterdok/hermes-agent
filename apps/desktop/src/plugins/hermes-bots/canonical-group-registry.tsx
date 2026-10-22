@@ -14,6 +14,24 @@ export function registerCanonicalGroup(route: CanonicalGroupRoute, room: Canonic
   return key
 }
 
+const sameRoom = (a: CanonicalGroupBinding, b: CanonicalGroupBinding) =>
+  a.connectionId === b.connectionId && a.profile === b.profile && a.roomId === b.roomId
+
+/** A room's current name reaches every key and alias bound to it, so its tab reopens under it. */
+export function renameCanonicalGroup(binding: CanonicalGroupBinding, name: string): void {
+  const bindings = $canonicalGroupBindings.get()
+
+  if (!Object.values(bindings).some(bound => sameRoom(bound, binding) && bound.roomName !== name)) {return}
+  $canonicalGroupBindings.set(Object.fromEntries(Object.entries(bindings)
+    .map(([key, bound]) => [key, sameRoom(bound, binding) ? { ...bound, roomName: name } : bound])))
+}
+
+/** Drop every key and alias of a room the gateway confirmed it disbanded. */
+export function forgetCanonicalGroup(binding: CanonicalGroupBinding): void {
+  $canonicalGroupBindings.set(Object.fromEntries(Object.entries($canonicalGroupBindings.get())
+    .filter(([, bound]) => !sameRoom(bound, binding))))
+}
+
 /** Where a group string entered. Room and group names are free text (hosted_rooms
  *  has no pattern), so a name can spell `canonical:<conn>:<profile>:<room>`
  *  exactly; the string alone cannot tell the two apart, the caller can.
