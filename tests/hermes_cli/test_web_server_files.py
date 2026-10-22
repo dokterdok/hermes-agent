@@ -373,7 +373,7 @@ def test_stream_windows_file_uri_reaches_policy_with_absolute_host_path(
     client, _home = local_files_client
     paths = []
 
-    async def capture_response(request, path, *, content_disposition_type, media_only):
+    async def capture_response(request, path, *, content_disposition_type, media_only, profile=None):
         paths.append(Path(path))
         assert content_disposition_type == "inline"
         assert media_only is True
@@ -440,6 +440,50 @@ def test_managed_reads_reject_docker_mount_outside_locked_root(
     for route in ("/api/files/read", "/api/files/download", "/api/files/stream"):
         response = client.get(route, params={"path": "/workspace/secret.txt"})
         assert response.status_code == 403, response.text
+
+
+@pytest.mark.parametrize("route", ["stream", "download"])
+@pytest.mark.parametrize("auth", ["header", "ticket"])
+def test_managed_media_routes_resolve_container_paths_in_the_requested_profile(
+    local_files_client, monkeypatch, tmp_path, route, auth,
+):
+    """Webapp playback (and Electron on a shared remote) asks for ``/root/clip.mp4`` with
+    ``profile=work``: that is the work profile's Docker sandbox file, never the launch profile's,
+    including when only the launch profile has one."""
+    from hermes_cli import profiles
+    from tools.environments.path_utils import sanitize_task_id_for_path
+
+    client, _home = local_files_client
+    root = tmp_path / "root"
+    for home, task, data in [(root, "default", b"DEFAULT"),
+                             (root / "profiles/work", sanitize_task_id_for_path("profile:work"), b"WORK")]:
+        (home / "sandboxes/docker" / task / "home").mkdir(parents=True)
+        (home / "config.yaml").write_text("terminal:\n  backend: docker\n  container_persistent: true\n")
+        (home / "sandboxes/docker" / task / "home/clip.mp4").write_bytes(data)
+    (root / "sandboxes/docker/default/home/launch-only.mp4").write_bytes(b"DEFAULT")
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    for var in ("TERMINAL_SANDBOX_DIR", "TERMINAL_DOCKER_VOLUMES"):
+        monkeypatch.delenv(var, raising=False)
+
+    def fetch(path):
+        query = {"path": path, "profile": "work"}
+        if auth == "ticket":
+            minted = client.post("/api/files/ticket", json={"route": route, **query})
+            if minted.status_code != 200:
+                return minted
+            query["ticket"] = minted.json()["ticket"]
+            header = client.headers.pop(web_server._SESSION_HEADER_NAME)
+            try:
+                return client.get(f"/api/files/{route}", params=query)
+            finally:
+                client.headers[web_server._SESSION_HEADER_NAME] = header
+        return client.get(f"/api/files/{route}", params=query)
+
+    played = fetch("/root/clip.mp4")
+    assert (played.status_code, played.content) == (200, b"WORK")
+    assert fetch("/root/launch-only.mp4").status_code == 404
 
 
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):

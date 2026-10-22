@@ -592,15 +592,16 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
 
 
 def _managed_readable_file(
-    request: Request, path: str, *, create_root: bool = True,
+    request: Request, path: str, *, create_root: bool = True, profile_home: Optional[Path] = None,
 ) -> tuple[Any, Path, str, int, str]:
     """Resolve + guard a managed file for reading: existence, regular file,
     sensitive-path denylist. Returns (policy, target, display_path, max_bytes,
-    mime_type). Callers own the live-SQLite 409 (held through the read for
-    /api/files/read, point-in-time for streamed responses)."""
+    mime_type). A container path names *profile_home*'s sandbox (None: the
+    request's own profile). Callers own the live-SQLite 409 (held through the
+    read for /api/files/read, point-in-time for streamed responses)."""
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
     policy, target, display_path = _resolve_managed_path(
-        path, request, create_root=create_root, for_agent_read=True,
+        path, request, create_root=create_root, for_agent_read=True, profile_home=profile_home,
     )
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -644,8 +645,10 @@ async def _managed_file_response(
     *,
     content_disposition_type: str,
     media_only: bool = False,
+    profile: Optional[str] = None,
 ) -> FileResponse:
-    """Range-aware response after applying managed-file policy."""
+    """Range-aware response after applying managed-file policy; a container path is
+    resolved in the requested *profile*'s sandbox."""
     authority = getattr(request.state, "file_ticket_authority", None)
     if authority is not None:
         from hermes_cli.web_server_file_response import OpenedFileResponse
@@ -658,7 +661,9 @@ async def _managed_file_response(
             content_disposition_type=content_disposition_type,
             headers={"X-Content-Type-Options": "nosniff"} if media_only else None,
         )
-    _policy, target, _display_path, max_bytes, mime_type = _managed_readable_file(request, path)
+    _policy, target, _display_path, max_bytes, mime_type = _managed_readable_file(
+        request, path, profile_home=_fs_profile_home(profile),
+    )
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
     _managed_file_size(target, max_bytes)
@@ -713,7 +718,9 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
         return Path(home), ensure_profile_incarnation(home)
 
     def capture():
-        _policy, target, _display, _max, _mime = _managed_readable_file(request, path, create_root=False)
+        _policy, target, _display, _max, _mime = _managed_readable_file(
+            request, path, create_root=False, profile_home=_fs_profile_home(payload.profile),
+        )
         generations = {owner: generation} if generation is not None else {}
         target_home = named_profile_home(target)
         if target_home is not None and target_home not in generations:
@@ -770,6 +777,7 @@ async def download_managed_file(
         path,
         content_disposition_type="inline" if is_media_subresource else "attachment",
         media_only=is_media_subresource,
+        profile=profile,
     )
 
 
@@ -783,7 +791,9 @@ async def stream_managed_file(request: Request, path: str, profile: Optional[str
     Same size cap, sensitive guard and MIME detection as download."""
     if getattr(request.state, "file_ticket_authority", None) is None and path.lower().startswith("file:"):
         path = str(await _fs_download_path(path, profile, None))
-    return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
+    return await _managed_file_response(
+        request, path, content_disposition_type="inline", media_only=True, profile=profile,
+    )
 
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
