@@ -160,6 +160,80 @@ describe('opening a room', () => {
 })
 
 describe('disband', () => {
+  it('cold reload keeps a disbanded room gone and every other room field intact', async () => {
+    const room = await loadRoom()
+    // The roster shows a classic room's pin, sidebar section and manual order;
+    // the rest is the room's own state. Disbanding ANOTHER room keeps all of it.
+    room.chat.updateGroupChat(
+      'Keep',
+      current => ({
+        ...current,
+        log: [{ at: 10, from: { kind: 'user', name: 'You' }, id: 'held', text: 'keep', thread: 't' }],
+        watermarks: { 't::builder': 1 },
+        sessions: { builder: 'session' },
+        sessionOwners: { builder: { name: 'builder', connectionId: 'owner' } },
+        holds: { builder: { at: 2, noted: true } },
+        heldMessages: { builder: ['held'] },
+        holdDetection: false,
+        stranded: { builder: { before: 2, thread: 't' } },
+        externalCursors: { builder: 4 },
+        members: [{ name: 'builder' }],
+        roomId: 'keep-id',
+        image: 'data:image/png;base64,keep',
+        sectionId: 'section',
+        rosterOrder: 3,
+        pinned: true,
+        syncRevision: 7
+      }),
+      { sync: false }
+    )
+    room.chat.updateGroupChat('Gone', current => ({ ...current, roomId: 'gone-id' }), { sync: false })
+    const keep = structuredClone(durable(room).Keep)
+    await room.view.disbandGroupChat('Gone', [])
+    const stored = JSON.parse(JSON.stringify(durable(room)))
+    expect(stored).toEqual({ Keep: keep })
+    // Replace all runtime state with the cold-start reader, not the live atom.
+    room.chat.$groupChats.set(room.chat.hydrateGroupChatRooms(stored))
+    expect(room.chat.$groupChats.get().Gone).toBeUndefined()
+    expect(room.chat.durableGroupChatRooms()).toEqual({ Keep: keep })
+    room.chat.updateGroupChat('Keep', current => current, { sync: false })
+    expect(durable(room)).toEqual({ Keep: keep })
+  })
+
+  it("removes only its own room from storage, keeping another window's newer pin, section and order", async () => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat(
+      'Keep',
+      current => ({
+        ...current,
+        log: [{ at: 10, from: { kind: 'user', name: 'You' }, id: 'keep', text: 'keep', thread: 't' }],
+        pinned: true,
+        rosterOrder: 2,
+        sectionId: 'ops'
+      }),
+      { sync: false }
+    )
+    room.chat.updateGroupChat('Gone', current => ({ ...current, roomId: 'gone-id' }), { sync: false })
+
+    // A second Desktop window shares this storage. It unpins Keep, files it
+    // nowhere and moves it first; pin, section and order are local-only, so
+    // no mirror tells this window, whose room map still shows the old values.
+    const other = structuredClone(durable(room))
+    other.Keep = { ...other.Keep, pinned: false, rosterOrder: 0, sectionId: null }
+    room.gateway.storage.set('group-chats', structuredClone(other))
+
+    // The window closes before the mirror flush (its timer never fires).
+    vi.stubGlobal('setTimeout', () => 0)
+    await room.view.disbandGroupChat('Gone', [])
+
+    expect(durable(room)).toEqual({ Keep: other.Keep })
+    expect(room.chat.hydrateGroupChatRooms(structuredClone(durable(room))).Keep).toMatchObject({
+      pinned: false,
+      rosterOrder: 0,
+      sectionId: null
+    })
+  })
+
   it('removes only this membership, room log, workspace and needs-you state', async () => {
     const room = await loadRoom()
     room.chat.$groupChats.set({
@@ -170,6 +244,8 @@ describe('disband', () => {
         watermarks: {}
       }
     } as unknown as Record<string, GroupChat>)
+    // Both rooms are stored, as every room write leaves them.
+    await room.chat.persistGroupChatRooms()
     room.data.$botMeta.set({
       builder: { group: 'Gone', groups: ['Gone', 'Keep'] },
       research: { group: 'Keep', groups: ['Keep'] }

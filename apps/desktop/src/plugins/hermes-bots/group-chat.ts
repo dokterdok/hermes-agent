@@ -889,6 +889,46 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   return rooms
 }
 
+/** The per-member maps a stored room carries; a malformed one hydrates empty. */
+const GROUP_CHAT_MEMBER_MAPS = [
+  'watermarks',
+  'sessions',
+  'sessionOwners',
+  'stranded',
+  'holds',
+  'externalCursors',
+  'heldMessages'
+] as const
+
+/** The cold-load inverse of durableGroupChatRooms: every stored field comes
+ *  back, shape-guarded, with runtime state reset (no drive is running after a
+ *  window load). Pre-thread entries get synthetic thread ids so every UI and
+ *  engine path can assume entry.thread exists. */
+export function hydrateGroupChatRooms(value: unknown): Record<string, GroupChat> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  const rooms = durableGroupChatRooms(value as Record<string, GroupChat>)
+
+  for (const room of Object.values(rooms)) {
+    room.log = assignLegacyThreads(room.log)
+
+    for (const key of GROUP_CHAT_MEMBER_MAPS) {
+      if (typeof room[key] !== 'object' || Array.isArray(room[key])) {
+        room[key] = {}
+      }
+    }
+
+    room.rosterOrder = Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined
+    room.pinned = Boolean(room.pinned)
+    room.epoch = 0
+    room.running = false
+  }
+
+  return rooms
+}
+
 export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupChats.get()) {
   const durable: Record<string, GroupChat> = {}
 
@@ -900,7 +940,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
     // Disband tombstones are runtime-only coordination state (they hold the
     // epoch bump for an in-flight drive). Persisting one would resurrect the
     // room as an empty record on the next load AND keep its name "taken" for
-    // same-name recreates. Mirrors updateGroupChat's inline durable map.
+    // same-name recreates. All local writers use this same projection.
     if (room.tombstone) {
       continue
     }
@@ -911,16 +951,25 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       heldMessages: room.heldMessages || {},
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
+      sessionOwners: room.sessionOwners || {},
+      // #93129: sticky per-member stop holds. Watermarks persist, so holds
+      // must too — otherwise a window restart silently releases a bot the
+      // user explicitly stopped.
+      holds: room.holds || {},
+      // Turns awaiting a late reply — keyed by member, valued with the
+      // pre-turn message baseline. Survives reloads so finished work is
+      // still harvested after a window restart.
       stranded: room.stranded || {},
+      // #93813: per-member external-write reconcile cursors. Persisted so
+      // external posts aren't re-mirrored after a window restart.
       externalCursors: room.externalCursors || {},
+      // Source-qualified member descriptors keep the room whole when the
+      // active connection changes and today's local members become remote.
       members: Array.isArray(room.members) ? room.members : [],
-      // Immutable room identity: without this, a room merged in via the
-      // remote-sync path (the only caller of this function) loses its
-      // roomId on the next cold hydrate and falls back to legacy
-      // name-keyed identity — same field updateGroupChat's inline map
-      // already carries.
+      // Immutable identity must survive both local writes and mirror merges.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-      image: room.image || null,
+      // Room picture (small data URL, same normalization as bot avatars).
+      image: typeof room.image === 'string' && room.image ? room.image : null,
       rosterOrder: room.rosterOrder,
       pinned: room.pinned,
       // Sidebar filing (user-sections) is room-local; keep it across sync.
@@ -942,10 +991,30 @@ export function persistGroupChatRooms(all: Record<string, GroupChat> = $groupCha
   }
 }
 
+/** Remove one room from the stored map and leave every other stored room as
+ *  it is. A disband must not republish the other rooms from this window's
+ *  map: another Desktop window shares this storage, and its pin, section and
+ *  order changes are local-only, so this window never hears of them. */
+export async function forgetStoredGroupChatRoom(group: string) {
+  try {
+    const storage = getPluginCtx()?.storage
+    const stored: unknown = await Promise.resolve(storage?.get?.('group-chats', null))
+
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored) || !Object.hasOwn(stored, group)) {
+      return
+    }
+
+    const rest = { ...(stored as Record<string, GroupChat>) }
+    delete rest[group]
+    await Promise.resolve(storage?.set?.('group-chats', rest))
+  } catch {
+    /* storage unavailable — the room survives in storage until the next write */
+  }
+}
+
 /** Register-removed sweep: annotate (not delete) every persisted group-chat
  *  member owned by the deleted connection, in the atom AND plugin storage.
- *  Writes ride updateGroupChat so the durable record keeps its full shape
- *  (sessionOwners, holds — durableGroupChatRooms would drop them).
+ *  Writes ride updateGroupChat and the shared durable projector.
  *  Returns whether anything changed. */
 export function sweepGroupChatMembersForRemovedConnection(connectionId: string) {
   const id = String(connectionId || '').trim()
@@ -1602,55 +1671,7 @@ export function updateGroupChat(
   all[group] = next
   $groupChats.set(all)
 
-  try {
-    const durable: Record<string, GroupChat> = {}
-
-    for (const [name, room] of Object.entries(all)) {
-      // Disband tombstones are runtime-only coordination state (they hold the
-      // epoch bump for an in-flight drive). Persisting one would resurrect
-      // the room as an empty record on the next load AND keep its name
-      // "taken" for same-name recreates.
-      if (room.tombstone) {
-        continue
-      }
-
-      durable[name] = {
-        log: room.log,
-        holdDetection: room.holdDetection !== false,
-        heldMessages: room.heldMessages || {},
-        watermarks: room.watermarks,
-        sessions: room.sessions || {},
-        sessionOwners: room.sessionOwners || {},
-        // Timed-out turns awaiting a late reply — keyed by member, valued
-        // with the pre-turn message baseline. Survives reloads so finished
-        // work is still harvested after a window restart.
-        stranded: room.stranded || {},
-        // #93129: sticky per-member stop holds. Watermarks persist, so holds
-        // must too — otherwise a window restart silently releases a bot the
-        // user explicitly stopped.
-        holds: room.holds || {},
-        // #93813: per-member external-write reconcile cursors. Persisted so
-        // external posts aren't re-mirrored after a window restart.
-        externalCursors: room.externalCursors || {},
-        // Source-qualified member descriptors keep the room whole when the
-        // active connection changes and today's local members become remote.
-        members: Array.isArray(room.members) ? room.members : [],
-        // Immutable room identity: the member-session title for new rooms.
-        roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-        // Room picture (small data URL, same normalization as bot avatars).
-        image: room.image || null,
-        rosterOrder: room.rosterOrder,
-        pinned: room.pinned,
-        // Sidebar filing (user-sections) is room-local; keep it durable.
-        sectionId: room.sectionId ?? null,
-        syncRevision: Math.max(0, Number(room.syncRevision || 0))
-      }
-    }
-
-    Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durable)).catch(() => undefined)
-  } catch {
-    /* storage unavailable — room survives for this window only */
-  }
+  void persistGroupChatRooms(all)
 
   if (sync) {
     scheduleGroupChatServerSync(all, {
