@@ -1,7 +1,12 @@
 import type { SerializeAddon } from '@xterm/addon-serialize'
 import type { IMarker, Terminal } from '@xterm/xterm'
 
-import { mergeReviveSnapshot, PERSISTENT_SESSION_SCROLLBACK, resolveLiveSnapshotWindow } from './revive-snapshot'
+import {
+  mergeReviveSnapshot,
+  PERSISTENT_SESSION_SCROLLBACK,
+  resolveLiveSnapshotWindow,
+  trimRepeatedPrompt
+} from './revive-snapshot'
 import { updateTerminalReviveBuffer } from './terminals'
 
 // Leading-edge throttle window for capturing history. The first output after an
@@ -66,6 +71,24 @@ export function createSnapshotPersister(
 ): { cancel: () => void; schedule: () => void } {
   let snapshotTimer = 0
   let lastSnapshotAt = 0
+  // The fresh shell's boot output, read before any input: its last rows are the shell's own
+  // prompt, the evidence that lets a trailing prompt be trimmed instead of guessed at.
+  let bootRows: string[] = []
+
+  const readBootRows = () => {
+    try {
+      const marker = getLiveStartMarker()
+      const normal = term.buffer.normal
+      const cursorLine = normal.baseY + normal.cursorY
+
+      if (term.buffer.active.type === 'normal' && marker && term.markers.includes(marker) && marker.line >= 0 &&
+        marker.line <= cursorLine) {
+        bootRows = serialize.serialize({ excludeAltBuffer: true, range: { end: cursorLine, start: marker.line } }).split(/\r?\n/)
+      }
+    } catch {
+      // Keep the last good read.
+    }
+  }
 
   const persistSnapshot = () => {
     if (isDisposed() || isPersistent()) {
@@ -80,6 +103,8 @@ export function createSnapshotPersister(
     // prior snapshot byte-for-byte; legacy text is ambiguous and must not be
     // auto-deleted merely because it resembles a prompt.
     if (!hasSessionActivity()) {
+      readBootRows()
+
       return
     }
 
@@ -113,7 +138,9 @@ export function createSnapshotPersister(
       // Without a window, a reset, clear-screen, or scrollback trim invalidated
       // the logical boundary: the current normal buffer is authoritative, but
       // its restored/live provenance is unknown, so persist it without
-      // text-based greeting or prompt cleanup rather than risk deleting real output.
+      // text-based greeting or prompt cleanup rather than risk deleting real
+      // output. Only a trailing prompt that repeats the shell's own boot prompt
+      // goes, or the next launch replays it above the fresh one.
       const nextSnapshot = liveWindow
         ? mergeReviveSnapshot(
             liveWindow.keepRestored
@@ -123,7 +150,7 @@ export function createSnapshotPersister(
             getShellName(),
             liveWindow.keepRestored
           )
-        : serialize.serialize({ excludeAltBuffer: true, scrollback: PERSISTENT_SESSION_SCROLLBACK })
+        : trimRepeatedPrompt(serialize.serialize({ excludeAltBuffer: true, scrollback: PERSISTENT_SESSION_SCROLLBACK }), bootRows)
 
       updateTerminalReviveBuffer(id, nextSnapshot)
     } catch {
