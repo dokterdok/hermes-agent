@@ -21,7 +21,8 @@ from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_chat import (
     _NO_EMBEDDED_CHAT, _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _hosts_no_embedded_chat,
-    _legacy_pump, _pty_fail, _ws_auth_ok, _ws_close_reason, _ws_gate, _ws_request_is_allowed,
+    _legacy_pump, _pty_fail, _spend_offered_tickets, _ws_auth_ok, _ws_close_reason, _ws_gate,
+    _ws_request_is_allowed,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -102,6 +103,7 @@ async def _close_unless_sidecar_allowed(ws: WebSocket, *, allow_internal: bool =
     """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
     4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        _spend_offered_tickets(ws)
         await ws.close(code=4403)
         return False
     if not _ws_auth_ok(ws, allow_internal=allow_internal):

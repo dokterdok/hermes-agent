@@ -930,6 +930,8 @@ class PluginApiWebSocketGate:
                 if not await refuse_secondary_plugin_socket(scope, receive, send, name):
                     await self.app(scope, receive, send)
                 return
+        from hermes_cli.web_server_chat import _spend_offered_tickets
+        _spend_offered_tickets(HTTPConnection(scope))  # refused before the route could spend it
         await send({"type": "websocket.close", "code": status.WS_1008_POLICY_VIOLATION})
 
 
@@ -979,6 +981,8 @@ async def _plugin_route_secret_scope(conn: HTTPConnection, profile: Optional[str
         # launch profile's copy: a secondary profile reaches it only for bundled plugins (PLG-3).
         if (not _is_current_profile(profile) and await _plugin_api_request_refused(name)) or in_process_router_refused(name):
             if conn.scope["type"] == "websocket":
+                from hermes_cli.web_server_chat import _spend_offered_tickets
+                _spend_offered_tickets(conn)  # refused before the route could spend it
                 raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
             raise HTTPException(status_code=404, detail="Plugin not found")
         yield

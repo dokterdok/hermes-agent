@@ -14,7 +14,8 @@ allowlists the public ones.
   GET  /api/auth/providers     list registered providers (login bootstrap)
   GET  /api/auth/me            Session as JSON (gated: verified session; loopback:
                                 token-validated synthetic loopback identity)
-  POST /api/auth/ws-ticket     single-use WS upgrade ticket (auth-required)
+  POST /api/auth/ws-ticket     single-use WS upgrade ticket (auth-required; ``?route=``-bound
+                                tickets also from the loopback session token's header)
 """
 from __future__ import annotations
 
@@ -556,10 +557,36 @@ async def api_auth_me(request: Request):
 @router.post("/api/auth/ws-ticket", name="auth_ws_ticket")
 async def api_auth_ws_ticket(request: Request):
     """Mint a 30s single-use ticket for a WS upgrade (browsers cannot set
-    ``Authorization`` on the upgrade); one ticket per WS."""
+    ``Authorization`` on the upgrade); one ticket per WS.
+
+    ``?route=`` binds the ticket to that socket path and to ``?profile=`` (absent: the launch
+    profile), so it opens nothing else, and to what minted it. Gated, the verified session mints
+    (a bound ticket dies with that session), and a mint without a route keeps the unbound ticket
+    the dashboard SPA and Electron OAuth use. On an ungated bind the session token mints from its
+    request header, route-bound only and dead once that token rotates: the private Webapp's
+    sockets never need the token in their URL."""
+    from hermes_cli.dashboard_auth.ws_tickets import (
+        TTL_SECONDS, mint_socket_ticket, mint_ticket, socket_route_allowed)
+    route = request.query_params.get("route")
+    profile = (request.query_params.get("profile") or "").strip()
+    if not getattr(request.app.state, "auth_required", False):
+        from gateway.session_identity import SESSION_TOKEN_OWNER
+        from hermes_cli.web_server import _SESSION_TOKEN, _has_valid_session_token
+        if not _has_valid_session_token(request):
+            raise _http(401, "Unauthorized")
+        if route is None or not socket_route_allowed(route):
+            raise _http(400, "A session-token ticket must name a browser socket route")
+        ticket = mint_socket_ticket(route=route, profile=profile, credential=_SESSION_TOKEN,
+                                    **SESSION_TOKEN_OWNER)
+        return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
     sess = _require_session(request)
-    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider, issuer=sess.issuer)
+    if route is None:
+        ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider, issuer=sess.issuer)
+    elif socket_route_allowed(route):
+        ticket = mint_socket_ticket(route=route, profile=profile, user_id=sess.user_id, provider=sess.provider,
+                                    issuer=sess.issuer, session_token=sess.access_token)
+    else:
+        raise _http(400, "Unknown socket route")
     _audit(request, AuditEvent.WS_TICKET_MINTED, provider=sess.provider, user_id=sess.user_id)
     return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
 
