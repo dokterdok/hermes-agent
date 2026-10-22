@@ -843,7 +843,8 @@ describe('browser-hosted Desktop bridge', () => {
     seedWebappSession('served-token')
     $connection.set({ profile: 'active-terminal' } as never)
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })))
+    const fetchMock = vi.fn(async (_url: URL, _init?: RequestInit) => new Response('{"ticket":"one-use"}'))
+    vi.stubGlobal('fetch', fetchMock)
 
     class FakeWebSocket {
       static readonly CONNECTING = 0
@@ -900,7 +901,14 @@ describe('browser-hosted Desktop bridge', () => {
     await expect(win.hermesDesktop!.terminal.attach(session.id)).resolves.toBe(true)
     await expect(win.hermesDesktop!.terminal.attach('missing-terminal')).resolves.toBe(false)
     expect(url.pathname).toBe('/hermes/api/host-terminal')
-    expect(url.searchParams.get('token')).toBe('served-token')
+    // The session token grants host shells: each dial carries a one-use ticket minted for this
+    // route and profile over the session header, never the token itself (#93508 item 5).
+    expect(socket.url).not.toContain('served-token')
+    expect(url.searchParams.get('ticket')).toBe('one-use')
+    const [mint, init] = fetchMock.mock.calls[0]
+    expect([mint.pathname, mint.searchParams.get('route'), mint.searchParams.get('profile')])
+      .toEqual(['/hermes/api/auth/ws-ticket', '/api/host-terminal', 'active-terminal'])
+    expect(new Headers(init?.headers).get('X-Hermes-Session-Token')).toBe('served-token')
     expect(url.searchParams.get('profile')).toBe('active-terminal')
     expect(url.searchParams.get('cwd')).toBe('/work')
     expect(url.searchParams.get('cols')).toBe('42')
@@ -935,7 +943,7 @@ describe('browser-hosted Desktop bridge', () => {
   it('buffers early host-shell output until Desktop registers its terminal data listener', async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"ticket":"one-use"}')))
 
     class PromptWebSocket {
       static readonly OPEN = 1
