@@ -31,6 +31,7 @@ MAX_DISCUSSION_DELTA_LINES = 24
 MAX_USER_TEXT_BYTES = 64 * 1024
 MAX_MEMBER_TEXT_BYTES = 64 * 1024
 _TRUNCATED_REPLY_NOTICE = "\n\n[Reply truncated. Ask the Bot to share the full result as a file.]"
+_OMITTED_NOTICE = "  [Earlier content omitted to fit this turn.]"
 
 Payload = Mapping[str, Any]
 DecisionStatus = Literal["idle", "task", "settled", "bounded"]
@@ -577,8 +578,12 @@ def _build_prompt(
         line = f"  {_format_message(event, room)}"
         if (line_bytes := len(line.encode("utf-8")) + 1) > available:
             if not selected and available > 32:
-                selected.append(_truncate_utf8_text(line, max_bytes=available))
-            selected.append("  [Earlier content omitted to fit this turn.]")
+                truncated = _truncate_utf8_text(line, max_bytes=available)
+                selected.append(truncated)
+                available -= len(truncated.encode("utf-8")) + 1
+            # The notice is optional: it takes only room the kept messages left over.
+            if len(_OMITTED_NOTICE.encode("utf-8")) + 1 <= available:
+                selected.append(_OMITTED_NOTICE)
             break
         selected.append(line)
         available -= line_bytes

@@ -631,6 +631,28 @@ def test_oversized_member_reply_is_truncated_and_next_turn_stays_serviceable(
     assert "Earlier content omitted" in followup.payload["prompt"]
 
 
+def test_omission_notice_only_uses_budget_the_kept_messages_leave(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    validated = discussion.validate_room(room, local_profiles=LOCAL_PROFILES)
+    fixed = len(discussion._build_prompt(
+        room=validated, member=validated.members[0], messages=(), watermark=0,
+        seen_through_seq=0).encode("utf-8"))
+    line = len(b"  User (user): ") + 1
+    newest = discussion.MAX_USER_TEXT_BYTES - 64
+    # Leave fewer bytes than the notice after the two newest messages.
+    middle = driver.MAX_PROMPT_BYTES - fixed - 1 - (line + newest) - line - 20
+    for index, text in enumerate(("o" * 100, "m" * middle, "@research " + "n" * (newest - 10))):
+        _append_user(db, event_id=f"user-{index}", text=text)
+
+    task = _next_task(room, db)
+    prompt = task.payload["prompt"]
+    assert len(prompt.encode("utf-8")) <= driver.MAX_PROMPT_BYTES
+    assert "m" * middle in prompt
+    assert "Earlier content omitted" not in prompt
+
+
 def test_a_bots_own_replies_never_appear_in_its_next_prompt(room_db: tuple[Path, dict]):
     """The watermark normally covers them; the prompt also drops any that sit past it."""
     db, room = room_db
