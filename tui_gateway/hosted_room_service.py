@@ -489,6 +489,9 @@ class HostedRoomService:
         return room
 
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
+        # A message without a thread starts its own, as Desktop's client already does.
+        if isinstance(payload, Mapping) and "thread_id" not in payload:
+            payload = {**payload, "thread_id": event_id}
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
         from gateway.session_hosted_attachments import append_user_event
