@@ -454,6 +454,17 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/desktop/src/app/chat/sidebar/fleet-",
         # reconnect-turn-state.spec.ts: the lost-turn card and Discard live in the queue panel.
         "apps/desktop/src/app/chat/composer/queue-",
+        # webapp-gateway-attach.spec.ts, the only real-browser test of the Webapp: its launcher
+        # and CLI (webapp.py, the gateway ensure, the relay; main_dashboard's cmd_webapp), the
+        # surface and launch routes, the browser bridge, the renderer build, and the gateway
+        # listener the browser's socket reaches.
+        "hermes_cli/webapp",
+        "hermes_cli/main_dashboard.py",
+        "hermes_cli/web_server_surface.py",
+        "hermes_cli/web_routers/webapp.py",
+        "apps/desktop/src/lib/browser-",
+        "scripts/build/webapp.mjs",
+        "gateway/run_api.py",
     ),
     "e2e_desktop_update": (
         *_DESKTOP_E2E_SHARED,
