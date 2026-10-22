@@ -202,6 +202,50 @@ def test_host_attach_refuses_a_different_ui_surface(host_dir, owner, monkeypatch
     assert not opened
 
 
+def _remedy_command(out: str) -> list[str]:
+    import shlex
+
+    return shlex.split(next(line for line in out.splitlines() if "--isolated" in line).split(": ", 1)[1])
+
+
+@pytest.mark.parametrize("argv,requested,actual,port,profile,remedy", [
+    (["hermes", "webapp"], "webapp", "dashboard", None, "default", "hermes -p default webapp --isolated --port {next}"),
+    (["hermes", "dashboard", "--no-open", "--skip-build"], "dashboard", "webapp", None, "default",
+     "hermes -p default dashboard --isolated --port {next} --skip-build --no-open"),
+    (["hermes", "webapp", "--host", "127.0.0.1"], "webapp", "dashboard", 9200, "coder",
+     "hermes -p coder webapp --isolated --host 127.0.0.1 --port 9200"),
+    # A typed port the owner cannot serve is refused first: same remedy, never "drop the flag".
+    (["hermes", "webapp", "--port", "9200"], "webapp", "dashboard", 9200, "default",
+     "hermes -p default webapp --isolated --port 9200"),
+])
+def test_webapp_and_dashboard_refusal_names_the_exact_remedy(host_dir, owner, monkeypatch, capsys,
+                                                             argv, requested, actual, port, profile, remedy):
+    """Both claim the host's one server role (and default to port 9119), so the second one exits
+    78: print the command that runs it beside the first, for the caller's profile even when it is
+    the default and another profile is sticky, keeping the typed launch flags."""
+    import argparse
+    from hermes_cli.subcommands.dashboard import build_dashboard_parser
+
+    monkeypatch.setattr("sys.argv", argv)
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: profile)
+    owner.surface["value"] = actual
+    _publish(hr.process_create_time(), port=owner.port)
+    with pytest.raises(SystemExit) as exc:
+        _attach_to_host_backend(_args(ui_surface=requested, port=port or owner.port))
+    assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
+    out = capsys.readouterr().out
+    command = _remedy_command(out)
+    assert command == remedy.format(next=owner.port + 1).split()
+    assert "drop the flag" not in out and f"`hermes {actual} --stop` from the profile that started it" in out
+    # The command parses as the surface's own launch, and the explicit profile selector comes first.
+    parser = argparse.ArgumentParser()
+    build_dashboard_parser(parser.add_subparsers(dest="command"), cmd_dashboard=None,
+                           cmd_dashboard_register=None, cmd_webapp=None)
+    parsed = parser.parse_args(command[3:])
+    assert command[1:3] == ["-p", profile] and parsed.command == requested and parsed.isolated
+    assert parsed.port != owner.port and parsed.skip_build == ("--skip-build" in argv)
+
+
 def test_webapp_host_attach_preserves_private_launch_access(host_dir, owner, monkeypatch, capsys):
     import webbrowser
 

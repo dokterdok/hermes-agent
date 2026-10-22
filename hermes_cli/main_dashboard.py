@@ -969,6 +969,43 @@ def _endpoint_conflict(args, record, typed: set) -> str:
     return ""
 
 
+# Typed launch flags a Webapp/dashboard remedy command keeps (the surface's own parser accepted them).
+_REMEDY_KEPT_FLAGS = ("--skip-build", "--force-build", "--no-open")
+
+
+def _caller_profile() -> str:
+    """The caller's profile (from HERMES_HOME, as the attach URL uses); ``custom`` names none."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name()
+    except (ImportError, OSError, RuntimeError, ValueError):  # unresolvable: the shell's HERMES_HOME decides
+        return "custom"
+
+
+def _refusal_hint(args, record, typed: set, surface: str, owner_surface: str, generic: str) -> None:
+    """How to go on after a refusal. The Webapp and the dashboard never share the host's one server
+    (both claim its role and default to port 9119): for that pair, the command that runs this surface
+    beside the owner, with the profile always explicit (a sticky profile must not re-route it) and
+    the typed flags kept. The owner's home is not recorded, so stopping it is described instead."""
+    if surface == "serve" or {surface, owner_surface} != {"webapp", "dashboard"}:
+        print(generic)
+        return
+    profile = _caller_profile()
+    port = getattr(args, "port", None)
+    if port is None or port == record.port:
+        port = record.port + 1 if record.port < 65535 else record.port - 1
+    scope = f" -p {profile}" if profile != "custom" else ""  # custom: the shell's HERMES_HOME
+    host = f" --host {args.host}" if "host" in typed else ""
+    flags = "".join(f" {flag}" for flag in _REMEDY_KEPT_FLAGS if flag in sys.argv[1:])
+    name = {"webapp": "the Webapp", "dashboard": "the dashboard"}
+    print("  The dashboard and the Webapp cannot share this host's Hermes server.")
+    print(f"  Run {name[surface]} beside it on its own port: "
+          f"hermes{scope} {surface} --isolated{host} --port {port}{flags}")
+    print(f"  Or stop {name[owner_surface]} first: through its service if one runs it, otherwise with "
+          f"`hermes {owner_surface} --stop` from the profile that started it.")
+
+
 def _attach_to_host_backend(args) -> None:
     """Multiplex-only: a second `hermes serve`/`dashboard` attaches to the host backend.
 
@@ -1008,12 +1045,16 @@ def _attach_to_host_backend(args) -> None:
 
     surface = args.ui_surface
     headless = surface == "serve"
+    # Pre-Webapp host identities only distinguish SPA from headless. Once an
+    # exact surface is advertised, an invalid or different value cannot attach.
+    owner_surface = identity.get("ui_surface", "dashboard")
     typed = _explicit_endpoint_flags()
     conflict = _endpoint_conflict(args, record, typed)
     if conflict:
         print(f"Refusing to start: this host is already served by {hr.describe(record)}.")
         print(f"  You asked for {conflict}.")
-        print("  Stop that backend, or drop the flag to use the running one.")
+        _refusal_hint(args, record, typed, surface, owner_surface,
+                      "  Stop that backend, or drop the flag to use the running one.")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     if not headless and not identity.get("servesSpa"):
@@ -1022,13 +1063,11 @@ def _attach_to_host_backend(args) -> None:
         print(f"  Stop it and run `hermes {surface}`, or use --isolated for a dedicated server.")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
-    # Pre-Webapp host identities only distinguish SPA from headless. Once an
-    # exact surface is advertised, an invalid or different value cannot attach.
-    owner_surface = identity.get("ui_surface", "dashboard")
     if not headless and owner_surface != surface:
         print(f"Refusing to start: {hr.describe(record)} serves {owner_surface}, "
               f"not Hermes {surface}.")
-        print("  Stop that backend, or use --isolated with a different --port.")
+        _refusal_hint(args, record, typed, surface, owner_surface,
+                      "  Stop that backend, or use --isolated with a different --port.")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     try:
