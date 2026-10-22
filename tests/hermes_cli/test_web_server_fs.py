@@ -254,6 +254,31 @@ def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):
     assert response.content == b"123456"
 
 
+def test_fs_reads_decide_host_ownership_before_dialing_an_unreachable_ssh_workspace(
+    client, monkeypatch, tmp_path,
+):
+    """Building the SSH adapter connects. A host-staged paste is answered without it, so an
+    offline SSH machine cannot fail the send, and the workspace's own paths report the outage
+    as 503 instead of crashing into a 500."""
+
+    def unreachable(profile=None):
+        raise ssh_workspace_fs.SshWorkspaceFsError("ECONN", "Could not connect to the SSH workspace")
+
+    pasted = client.post(
+        "/api/chat/image-upload",
+        json={"data_url": "data:image/png;base64,iVBORw0KGgo=", "filename": "paste.png"},
+    ).json()["path"]
+    elsewhere = tmp_path / "elsewhere.png"
+    elsewhere.write_bytes(base64.b64decode("iVBORw0KGgo="))
+    monkeypatch.setattr(file_routes, "_fs_backend", unreachable)
+    offline = TestClient(web_server.app, raise_server_exceptions=False)
+    offline.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+
+    for route in ("read-data-url", "download"):
+        assert offline.get(f"/api/fs/{route}", params={"path": pasted}).status_code == 200, route
+        assert offline.get(f"/api/fs/{route}", params={"path": str(elsewhere)}).status_code == 503, route
+
+
 def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_FS_DATA_URL_MAX_BYTES", 3)
     target = tmp_path / "image.png"
