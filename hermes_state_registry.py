@@ -99,10 +99,15 @@ _path_lifecycle_locks: dict[Path, threading.Lock] = {}
 
 
 def _open_session_db(path: Path, expected_profile_incarnation: Optional[str]) -> SessionDB:
-    """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
+    """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this).
+
+    The handle works on the file the registry keys (an alias retargeted later must not redirect
+    its WAL checks, captures or checkpoint); only its lifecycle checks follow the caller's spelling.
+    """
     from hermes_state import SessionDB
 
-    return SessionDB(db_path=path, expected_profile_incarnation=expected_profile_incarnation)
+    return SessionDB(db_path=_registry_key(path), expected_profile_incarnation=expected_profile_incarnation,
+                     profile_home=path.parent)
 
 
 def _assert_expected_profile_incarnation(
@@ -256,7 +261,7 @@ def _acquire_at_path(path: Path, authority: Path, expected_profile_incarnation: 
     """Cold acquisition with named-profile lifecycle authority already held.
 
     *path* keys the shared generation; *authority* is the caller's spelling, which the incarnation
-    checks and the SessionDB itself (it re-checks its own ``db_path.parent``) must see.
+    checks and the SessionDB's own lifecycle checks must see.
     """
     # A shared generation may predate this caller, so constructor-time checks
     # alone are insufficient: validate every incarnation-scoped acquisition
@@ -303,6 +308,7 @@ def _acquire_at_path(path: Path, authority: Path, expected_profile_incarnation: 
             with lifecycle_lock:
                 db = _open_session_db(authority, expected_profile_incarnation)
                 db._shared_registry_owned = True
+                db._shared_registry_key = path
                 identity = _stat_db_file_identity(path)
         except BaseException:
             with _lock:
@@ -347,8 +353,8 @@ def release(db: SessionDB) -> bool:
             path = _db_path_of(db)
             if path is None:
                 return False
-            # The handle carries the caller's spelling; generations are keyed canonically.
-            generation = _generations.get(_registry_key(path))
+            # By the key recorded at acquisition: an alias retargeted since must not redirect it.
+            generation = _generations.get(getattr(db, "_shared_registry_key", None) or _registry_key(path))
             if generation is None or generation.db is not db:
                 # Not shared (bare SessionDB()); the caller owns close().
                 return False

@@ -399,7 +399,8 @@ def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=
     the ids it removed or, for ``reason="archive"``, hid. *primary* is the session the caller asked
     for; without it the first id stands in (bulk sweeps). ``deleted_ids`` rides along when more
     than one row went. Dispatch runs under the store's own profile home, so a process touching
-    another profile's store (``sessions repair-profiles``) reaches THAT profile's plugins.
+    another profile's store (``sessions repair-profiles``) reaches THAT profile's plugins; that home
+    is the one the store was opened through (a profile linked to another disk keeps its name).
     Late-bound and fail-open: never breaks the delete.
     """
     ids = sorted({sid for sid in (deleted_ids or ()) if isinstance(sid, str) and sid})
@@ -411,7 +412,8 @@ def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=
             get_hermes_home, profile_name_for_home, reset_hermes_home_override, set_hermes_home_override,
         )
 
-        home = os.path.dirname(os.path.abspath(os.fspath(db.db_path)))
+        home = getattr(db, "profile_home", None) or os.path.dirname(os.path.abspath(os.fspath(db.db_path)))
+        home = os.path.abspath(os.fspath(home))
         profile = profile_name_for_home(home)
         payload: dict = {"session_id": primary if primary in ids else ids[0], "reason": reason, "profile": profile}
         if len(ids) > 1:

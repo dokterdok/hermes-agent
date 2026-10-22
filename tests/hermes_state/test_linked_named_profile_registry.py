@@ -68,3 +68,19 @@ def test_registry_keeps_the_fence_on_a_linked_profile_after_retirement(linked_ho
     # The deletion marker belongs to the lexical home, so the lease must check it there.
     with pytest.raises(FileNotFoundError):
         registry.acquire(linked_home / "state.db", expected_profile_incarnation=token)
+
+
+def test_a_linked_profile_keeps_its_name_in_session_delete_hooks(linked_home, monkeypatch):
+    """The shared handle works on the file on the other disk, but a delete still fires the hook for
+    profile ``work``, under that profile's home."""
+    from hermes_cli import lifecycle
+    from hermes_state_common import emit_session_deleted
+
+    seen = []
+    monkeypatch.setattr(lifecycle, "invoke_hook", lambda _name, **payload: seen.append(payload))
+    db = registry.acquire(linked_home / "state.db")
+    try:
+        emit_session_deleted(db, ["linked-row"], reason="delete")
+    finally:
+        registry.release(db)
+    assert [payload["profile"] for payload in seen] == ["work"]
