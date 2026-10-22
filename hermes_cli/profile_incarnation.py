@@ -125,7 +125,7 @@ def write_fresh_profile_incarnation(profile_home: Path | str) -> str:
     from utils import atomic_replace
 
     try:
-        _write_token_file(temp, token, mode)
+        _write_token_file(temp, token, mode, home)
         # Antivirus and indexers briefly hold a just-written file on Windows.
         atomic_replace(temp, path)
         try:
@@ -156,7 +156,7 @@ def ensure_profile_incarnation(profile_home: Path | str) -> str | None:
         path = _incarnation_path(home)
         temp = _temp_marker_path(home)
         try:
-            _write_token_file(temp, token, _profile_lifecycle_modes(home)[1])
+            _write_token_file(temp, token, _profile_lifecycle_modes(home)[1], home)
             try:
                 # Hard-link publication is atomic and never replaces another
                 # process's winner. The marker becomes visible only after its

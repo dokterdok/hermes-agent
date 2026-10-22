@@ -51,6 +51,48 @@ def _profile_lifecycle_modes(profiles_root: Path | None = None) -> tuple[int, in
     return directory | (mode & stat.S_ISGID), file
 
 
+def _running_as_root() -> bool:
+    return getattr(os, "geteuid", lambda: -1)() == 0
+
+
+def _hand_to_tree_owner(tree: Path, *names: str, fd: int | None = None) -> None:
+    """Give lifecycle entries a root process (``sudo hermes``) created in another uid's *tree* to that owner.
+
+    Left root:root 0700/0600, they lock the owner's own gateway and CLI out of every named profile
+    (log rollovers are handed back the same way, #120151). *names* walk down from *tree*, each opened
+    relative to its parent without following a link; *fd* is a file this process just created with
+    ``O_EXCL``. Only directories and single-link regular files are handed back, so a planted symlink or
+    hard link never gives away another file. Best-effort; a no-op unless root, and on Windows.
+    """
+    if not _running_as_root():
+        return
+    opened: list[int] = []
+    try:
+        opened.append(os.open(tree, os.O_RDONLY | os.O_DIRECTORY))
+        owner = os.fstat(opened[0])
+        if owner.st_uid == 0:
+            return
+        for index, name in enumerate(names):
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_DIRECTORY if index < len(names) - 1 else 0)
+            opened.append(os.open(name, flags, dir_fd=opened[-1]))
+            _chown_if_foreign(opened[-1], owner)
+        if fd is not None:
+            _chown_if_foreign(fd, owner)
+    except OSError:
+        pass  # an entry root could not hand back still works for root
+    finally:
+        for descriptor in opened:
+            os.close(descriptor)
+
+
+def _chown_if_foreign(fd: int, owner: os.stat_result) -> None:
+    current = os.fstat(fd)
+    if (current.st_uid, current.st_gid) == (owner.st_uid, owner.st_gid):
+        return  # a settled entry touches no metadata
+    if stat.S_ISDIR(current.st_mode) or (stat.S_ISREG(current.st_mode) and current.st_nlink == 1):
+        os.fchown(fd, owner.st_uid, owner.st_gid)
+
+
 def _profile_lock_path(profile_home: Path | str) -> Path | None:
     marker = profile_deletion_marker_path(Path(profile_home))
     if marker is None:
@@ -62,10 +104,14 @@ def _profile_lock_path(profile_home: Path | str) -> Path | None:
 @contextmanager
 def _cross_process_profile_mutation_lock(lock_path: Path, *, deadline: float) -> Iterator[None]:
     """Acquire one stable lock file without any process-wide mutex held."""
-    directory_mode, file_mode = _profile_lifecycle_modes(lock_path.parent.parent)
+    profiles = lock_path.parent.parent
+    directory_mode, file_mode = _profile_lifecycle_modes(profiles)
+    # Root may be the one creating profiles/ itself (`sudo hermes profile use default`).
+    tree = (profiles.parent, profiles.name) if _running_as_root() and not profiles.is_dir() else (profiles,)
     lock_path.parent.mkdir(mode=directory_mode, parents=True, exist_ok=True)
     handle = open(lock_path, "a+b")
     try:
+        _hand_to_tree_owner(*tree, lock_path.parent.name, lock_path.name)
         # Every lease (read paths included) lands here: stat first so a settled
         # lock touches no metadata.
         for path, mode in ((lock_path, file_mode), (lock_path.parent, directory_mode)):
@@ -176,10 +222,13 @@ def profile_deletion_marker(profile_dir: Path | str) -> Path:
     return marker
 
 
-def _write_token_file(path: Path, token: str, mode: int) -> None:
-    """Create *path* exclusively and flush *token* to disk before the caller publishes it."""
+def _write_token_file(path: Path, token: str, mode: int, tree: Path) -> None:
+    """Create *path* exclusively and flush *token* to disk before the caller publishes it.
+
+    Under root the file is handed to the owner of *tree* before it is published."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        _hand_to_tree_owner(tree, fd=fd)
         handle.write(token + "\n")
         handle.flush()
         os.fsync(handle.fileno())
@@ -205,7 +254,7 @@ def mark_profile_deleting(
             f".{marker.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
         )
         try:
-            _write_token_file(temp, profile_incarnation, file_mode)
+            _write_token_file(temp, profile_incarnation, file_mode, marker.parent.parent)
             from utils import atomic_replace
 
             atomic_replace(temp, marker)
@@ -215,6 +264,7 @@ def mark_profile_deleting(
         marker.chmod(file_mode)
     except OSError:
         pass
+    _hand_to_tree_owner(marker.parent.parent, marker.parent.name, marker.name)
     return marker
 
 
@@ -430,6 +480,7 @@ def create_profile_generation(
     incarnation: str | None = None
     try:
         staging_parent.mkdir(parents=True, exist_ok=False)
+        _hand_to_tree_owner(profiles_root, staging_root.name)  # the shared root persists
         initialize(staging_dir)
         if profile_dir.exists():
             raise FileExistsError(f"Profile '{canon}' appeared during initialization")
