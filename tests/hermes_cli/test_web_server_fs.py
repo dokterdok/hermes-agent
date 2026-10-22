@@ -447,6 +447,37 @@ def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile
     assert not_host_owned.status_code == 404
 
 
+def test_fs_reads_answer_a_browser_pick_from_the_host_for_an_ssh_profile(client, monkeypatch):
+    """The composer's "Attach images" picker stages into the profile's host ``uploads/web-*``
+    (``/api/chat/file-upload``), like a paste into the image cache: its thumbnail, send, Save and
+    file-chip preview read it back from this host. Other files there are still the SSH machine's."""
+
+    class FakeSshFs:
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+        def inspect_file(self, path):
+            raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+    image = base64.b64decode("iVBORw0KGgo=")
+    picked = client.post("/api/chat/file-upload", files={"file": ("photo.png", image, "image/png")})
+    noted = client.post("/api/chat/file-upload", files={"file": ("notes.txt", b"from the browser", "text/plain")})
+    assert picked.status_code == noted.status_code == 200, (picked.text, noted.text)
+    path = picked.json()["path"]
+    stray = Path(path).with_name("stray.png")  # beside the picks, but not one the picker staged
+    stray.write_bytes(image)
+
+    read_back = client.get("/api/fs/read-data-url", params={"path": path})
+    assert read_back.status_code == 200, read_back.text
+    assert base64.b64decode(read_back.json()["dataUrl"].split(",", 1)[1]) == image
+    assert client.get("/api/fs/download", params={"path": path}).content == image
+    assert client.get("/api/fs/download", params={"path": Path(path).as_uri()}).content == image
+    preview = client.get("/api/fs/read-text", params={"path": noted.json()["path"]})
+    assert (preview.status_code, preview.json().get("text")) == (200, "from the browser"), preview.text
+    assert client.get("/api/fs/read-data-url", params={"path": str(stray)}).status_code == 404
+
+
 @pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
 def test_fs_reads_translate_docker_workspace_path_to_host(
     client, docker_volumes, monkeypatch, endpoint,

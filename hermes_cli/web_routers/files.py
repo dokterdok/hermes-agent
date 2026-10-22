@@ -28,7 +28,9 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-from hermes_cli.staged_uploads import leased_profile_dir, removed_on_failure, resolve_upload_generation
+from hermes_cli.staged_uploads import (
+    is_staged_upload_path, leased_profile_dir, removed_on_failure, resolve_upload_generation,
+)
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
     SANDBOX_NOT_FOUND, _agent_fs_path, _fs_path, _hosted_fs_read_guard, _is_unmapped_container_path,
@@ -297,18 +299,22 @@ def _chat_image_dir(home: Path) -> Path:
 
 
 def _is_host_image(path: str, profile: Optional[str]) -> bool:
-    """Whether *path* is in the profile's image cache, which lives on this host even when the
-    workspace is an SSH machine: a browser paste is saved there, then read back to be sent."""
+    """Whether *path* is a file the Webapp staged for *profile* on this host: a browser paste in
+    the image cache (``/api/chat/image-upload``) or a picked file in ``uploads/web-*``
+    (``/api/chat/file-upload``). Both live here even when the workspace is an SSH machine, and
+    are read back from here to be previewed, saved or sent."""
     try:
-        target = Path(path).resolve(strict=True)
-    except (OSError, RuntimeError):
+        target = _fs_path(path).resolve(strict=True)  # a file: URI names the same host file
+    except (HTTPException, OSError, RuntimeError):
         return False  # not on this host: the workspace's to answer
     with _profile_scope(profile):
-        cache = _chat_image_dir(get_hermes_home())
+        home = get_hermes_home()
     try:
-        return target.parent == cache.resolve(strict=True)
+        if target.parent == _chat_image_dir(home).resolve(strict=True):
+            return True
     except (OSError, RuntimeError):
-        return False
+        pass
+    return is_staged_upload_path(home, target)
 
 
 def _remote_fs_backend(path: str, profile: Optional[str]):
@@ -937,7 +943,7 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
 
 @router.get("/api/fs/read-text")
 async def fs_read_text(path: str, request: Request = None, profile: Optional[str] = None):
-    backend = await asyncio.to_thread(_fs_backend, profile)
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
         try:
             data, size, target = await asyncio.to_thread(
