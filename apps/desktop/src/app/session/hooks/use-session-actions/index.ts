@@ -173,7 +173,7 @@ import {
   rememberResolvedResumeOwner,
   resolveResumeOwner
 } from './resume-owner'
-import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
+import { createGatewaySession, desktopSessionCreateParams, sessionCreateProfile } from './session-create-request'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -1062,8 +1062,8 @@ export function useSessionActions({
           ...(legacyOwnerProfile ? { ownerProfile: legacyOwnerProfile } : {})
         }
 
-        const cwd =
-          options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
+        const defaultCwd = () => resolveNewSessionCwd(sessionCreateProfile(capturedRoute, requestedProfile))
+        const cwd = options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : defaultCwd()
 
         // #52589 provenance for the tile path: an explicitly-passed cwd is a
         // deliberate workspace pick; a resolved default is inherited.
