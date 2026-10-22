@@ -201,6 +201,14 @@ def staged_upload_descriptor(
     }
 
 
+def is_staged_upload_path(home: Path, path: Path) -> bool:
+    """Whether the resolved *path* is a file :func:`publish_staged_upload` names under *home*."""
+    try:
+        return path.parent == (home / _UPLOADS_DIR).resolve(strict=True) and path.name.startswith(_STAGED_PREFIX)
+    except (OSError, RuntimeError):
+        return False
+
+
 def parse_staged_upload(descriptor: object) -> tuple[str, str, str | None]:
     """``(profile_home, path, profile_incarnation)`` of a descriptor this installation issued.
 
