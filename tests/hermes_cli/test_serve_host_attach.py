@@ -36,8 +36,21 @@ def owner(host_dir):
     """A live backend answering the identity handshake as THIS pid, on a real ephemeral port."""
     serves_spa = {"value": True}
     surface = {"value": "dashboard"}
+    launch = {"code": None, "auth": []}  # a private Webapp's fresh-code route, when it has one
 
     class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            if self.path != "/api/webapp/launch-code" or launch["code"] is None:
+                self.send_error(404)
+                return
+            launch["auth"].append(self.headers.get("Authorization"))
+            body = json.dumps({"code": launch["code"], "ttl_seconds": 120}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
             if self.path != hr.HOST_IDENTITY_PATH:
                 self.send_error(404)
@@ -58,7 +71,7 @@ def owner(host_dir):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield SimpleNamespace(port=server.server_port, serves_spa=serves_spa, surface=surface)
+        yield SimpleNamespace(port=server.server_port, serves_spa=serves_spa, surface=surface, launch=launch)
     finally:
         server.shutdown()
         server.server_close()
@@ -259,3 +272,35 @@ def test_webapp_host_attach_preserves_private_launch_access(host_dir, owner, mon
     assert exc.value.code == 0
     assert f"http://127.0.0.1:{owner.port}/?profile=coder" in capsys.readouterr().out
     assert not opened
+
+
+def test_webapp_run_again_shows_a_fresh_launch_code_on_this_terminal_only(host_dir, owner, monkeypatch, capsys):
+    """`hermes webapp` run again beside a private Webapp asks it for a fresh one-use code with the
+    owner-only token file and shows it on this terminal, never in stdout; with no terminal it asks
+    nothing, so the running code stays valid (#93508 A1)."""
+    import io
+    from contextlib import contextmanager
+
+    from hermes_cli import web_server_lifecycle as lifecycle
+
+    owner.surface["value"], owner.launch["code"] = "webapp", "ABCDE-FGHJK"
+    _publish(hr.process_create_time(), port=owner.port)
+    hr._write_private_text(hr.token_path(hr.ROLE_SERVE), "owner-token")
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "coder")
+
+    @contextmanager
+    def operator(stream):
+        yield stream
+
+    monkeypatch.setattr(lifecycle, "operator_terminal", lambda: operator(None))
+    with pytest.raises(SystemExit):
+        _attach_to_host_backend(_args(ui_surface="webapp"))
+    assert owner.launch["auth"] == [] and "run hermes webapp again from one" in capsys.readouterr().out
+    terminal = io.StringIO()
+    monkeypatch.setattr(lifecycle, "operator_terminal", lambda: operator(terminal))
+    with pytest.raises(SystemExit) as exc:
+        _attach_to_host_backend(_args(ui_surface="webapp"))
+    printed = capsys.readouterr().out
+    assert exc.value.code == 0 and owner.launch["auth"] == ["Bearer owner-token"]
+    assert f"http://127.0.0.1:{owner.port}/webapp/launch#query=%3Fprofile%3Dcoder" in printed
+    assert "ABCDE-FGHJK" in terminal.getvalue() and "ABCDE-FGHJK" not in printed

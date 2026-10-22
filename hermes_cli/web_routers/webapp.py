@@ -1,15 +1,14 @@
 """Webapp-only routes: the host terminal (loopback or authenticated binds), the
 gateway ticket each browser socket dial mints (``/api/webapp/gateway-ticket``, which
-ensures the profile's gateway), and the one-use handoffs (child window, auto-opened
-launch tab) for the private, loopback Webapp session."""
+ensures the profile's gateway), and the one-use handoffs (child window, launch page and
+its typed code) for the private, loopback Webapp session."""
 from __future__ import annotations
 
-import ipaddress
+import hmac
 import json
 import logging
-import os
+import re
 import secrets
-import sys
 import threading
 import time
 
@@ -22,8 +21,11 @@ from hermes_cli.web_server_surface import private_launch
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
 WINDOW_TICKET_TTL_SECONDS = 30
-#: A sandboxed (snap/Flatpak) browser's cold start can take several seconds to reach the page.
-LAUNCH_TICKET_TTL_SECONDS = 60
+#: How long the launch code ``hermes webapp`` prints stays redeemable, and how many wrong entries burn it.
+LAUNCH_CODE_TTL_SECONDS = 120
+LAUNCH_CODE_ATTEMPTS = 5
+#: 32 symbols without look-alikes (0/O, 1/I): ten of them are 50 bits.
+_LAUNCH_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _MAX_WINDOW_TICKETS = 128
 _ticket_lock = threading.Lock()
 
@@ -55,7 +57,7 @@ async def host_terminal_ws(ws: WebSocket) -> None:
     await host_terminal(ws)
 
 
-def _mint_handoff_ticket(state, ttl: float, *, launch: bool) -> str:
+def _mint_window_ticket(state) -> str:
     """One-use ticket that ``/webapp/window-session`` exchanges for this start's session token."""
     from hermes_cli.web_server import _SESSION_TOKEN
 
@@ -68,69 +70,46 @@ def _mint_handoff_ticket(state, ttl: float, *, launch: bool) -> str:
         if len(tickets) >= _MAX_WINDOW_TICKETS:
             raise HTTPException(429, "Too many pending Webapp windows; try again shortly")
         ticket = secrets.token_urlsafe(32)
-        tickets[ticket] = (now + ttl, _SESSION_TOKEN, launch)
+        tickets[ticket] = (now + WINDOW_TICKET_TTL_SECONDS, _SESSION_TOKEN)
     return ticket
 
 
-def mint_launch_ticket(state) -> str:
-    """Ticket for the browser the server opens itself: a launcher's argv carries this, not the token."""
-    return _mint_handoff_ticket(state, LAUNCH_TICKET_TTL_SECONDS, launch=True)
+def mint_launch_code(state) -> str:
+    """The one-use code ``hermes webapp`` prints beside its launch page, formatted ``XXXXX-XXXXX``.
+
+    The operator types it into that page, so it never enters a URL: a URL reaches a browser in
+    argv (world-readable on Linux) whether the server opens it or a terminal click does, and a
+    peer-owner check cannot see past a same-user port forwarder. Minting replaces any earlier code."""
+    from hermes_cli.web_server import _SESSION_TOKEN
+
+    code = "".join(secrets.choice(_LAUNCH_CODE_ALPHABET) for _ in range(10))
+    with _ticket_lock:
+        state.webapp_launch_code = {"code": code, "expires": time.monotonic() + LAUNCH_CODE_TTL_SECONDS,
+                                    "token": _SESSION_TOKEN, "misses": 0}
+    return f"{code[:5]}-{code[5:]}"
 
 
-def _loopback_peer_uid(client: tuple[str, int], server: tuple[str, int]) -> int | None:
-    """Owner UID of the client end of a local TCP connection, from Linux ``/proc/net/tcp*``.
+def _spend_launch_code(state, typed: str) -> bool:
+    """Whether *typed* is this start's live launch code, spending it. Each wrong entry counts, and
+    :data:`LAUNCH_CODE_ATTEMPTS` of them burn the code: guessing it is out of reach, burning it only
+    sends the operator back to ``hermes webapp`` for a fresh one."""
+    from hermes_cli.web_server import _SESSION_TOKEN
 
-    Both ends of a loopback connection are listed with their socket owner; the client's is
-    the row whose local address is *client* and remote address is *server*. None when absent
-    (another network namespace, a closed connection) or unreadable.
-    """
-    def _normal(host: str | bytes, port: int):
-        address = ipaddress.ip_address(host)
-        return getattr(address, "ipv4_mapped", None) or address, port
-
-    def _row_address(field: str):
-        host_hex, port_hex = field.split(":")
-        raw = bytes.fromhex(host_hex)
-        # The kernel prints each 32-bit word of the address in host byte order.
-        packed = b"".join(int.from_bytes(raw[i:i + 4], "big").to_bytes(4, sys.byteorder)
-                          for i in range(0, len(raw), 4))
-        return _normal(packed, int(port_hex, 16))
-
-    try:
-        wanted = (_normal(*client), _normal(*server))
-    except ValueError:
-        return None
-    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
-        try:
-            with open(table, encoding="ascii") as stream:
-                rows = stream.read().splitlines()[1:]
-        except OSError:
-            continue
-        for row in rows:
-            fields = row.split()
-            try:
-                if (_row_address(fields[1]), _row_address(fields[2])) == wanted:
-                    return int(fields[7])
-            except (IndexError, ValueError):
-                continue
-    return None
-
-
-def _peer_is_server_user(request: Request) -> bool:
-    """Whether this request's connection belongs to the OS user running the server.
-
-    Linux authenticates the connection owner. macOS has no authenticated
-    launch handoff here, so an argv-carried launch ticket cannot be redeemed.
-    Authenticated child-window tickets do not use this launcher channel.
-    """
-    if sys.platform == "darwin":
-        return False
-    if sys.platform != "linux":
+    typed = re.sub(r"[^A-Z0-9]", "", typed.upper())
+    with _ticket_lock:
+        pending = getattr(state, "webapp_launch_code", None)
+        if not pending:
+            return False
+        if pending["expires"] <= time.monotonic() or pending["token"] != _SESSION_TOKEN:
+            state.webapp_launch_code = None
+            return False
+        if not hmac.compare_digest(typed.encode(), pending["code"].encode()):
+            pending["misses"] += 1
+            if pending["misses"] >= LAUNCH_CODE_ATTEMPTS:
+                state.webapp_launch_code = None
+            return False
+        state.webapp_launch_code = None
         return True
-    client, server = request.client, request.scope.get("server")
-    if client is None or not server:
-        return False
-    return _loopback_peer_uid((client.host, client.port), (server[0], server[1])) == os.getuid()  # windows-footgun: ok — Linux-only branch
 
 
 @router.post("/api/webapp/window-ticket")
@@ -139,8 +118,20 @@ async def issue_window_ticket(request: Request):
 
     _require_private_webapp(request)
     _require_token(request)
-    ticket = _mint_handoff_ticket(request.app.state, WINDOW_TICKET_TTL_SECONDS, launch=False)
+    ticket = _mint_window_ticket(request.app.state)
     return JSONResponse({"ticket": ticket}, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/api/webapp/launch-code")
+async def issue_launch_code(request: Request):
+    """A fresh one-use launch code, for ``hermes webapp`` run again by the same OS user: it reads
+    this server's owner-only token file, asks here, and shows the code on its own terminal."""
+    from hermes_cli.web_server import _require_token
+
+    _require_private_webapp(request)
+    _require_token(request)
+    return JSONResponse({"code": mint_launch_code(request.app.state), "ttl_seconds": LAUNCH_CODE_TTL_SECONDS},
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.post("/api/webapp/gateway-ticket")
@@ -176,8 +167,8 @@ async def redeem_window_ticket(request: Request):
 
     _require_private_webapp(request)
     # This endpoint deliberately sits outside /api: the child window or launch
-    # tab has no session yet. Only a purpose-specific ticket can exchange for
-    # the existing one.
+    # tab has no session yet. Only a purpose-specific credential can exchange for
+    # the existing one: a child window's ticket, or the launch code the operator typed.
     # Private links use the actual bind origin, which may differ from a
     # configured loopback public_url. Host validation remains in middleware;
     # proxy-normalized ASGI scheme/Host (not raw forwarded headers) are trusted.
@@ -188,16 +179,14 @@ async def redeem_window_ticket(request: Request):
         raise HTTPException(403, "Webapp window handoff requires a same-origin request")
     # Keep the unauthenticated exchange body-free; never parse an arbitrary
     # JSON/multipart payload just to extract a fixed-size capability.
+    code = request.headers.get("X-Hermes-Launch-Code")
+    if code is not None:
+        if not _spend_launch_code(request.app.state, code):
+            raise HTTPException(403, "Launch code wrong, used or expired; run hermes webapp again for a new one")
+        return JSONResponse({"token": _SESSION_TOKEN}, headers={"Cache-Control": "no-store"})
     ticket = request.headers.get("X-Hermes-Window-Ticket", "")
     with _ticket_lock:
-        tickets = getattr(request.app.state, "webapp_window_tickets", {})
-        entry = tickets.get(ticket)
-        # A launch ticket crossed a browser launcher's argv: only a connection owned by this
-        # server's user may spend it, and a refused attempt must not burn it for the real browser.
-        if entry is not None and entry[2] and not _peer_is_server_user(request):
-            entry = None
-        elif entry is not None:
-            del tickets[ticket]
+        entry = getattr(request.app.state, "webapp_window_tickets", {}).pop(ticket, None)
     if entry is None or entry[0] <= time.monotonic() or entry[1] != _SESSION_TOKEN:
         raise HTTPException(403, "Webapp window link expired or was already used; open a new window")
     return JSONResponse({"token": _SESSION_TOKEN}, headers={"Cache-Control": "no-store"})
@@ -207,17 +196,19 @@ _LAUNCH_SCRIPT = r"""
 const basePath = __BASE_PATH__;
 const params = new URLSearchParams(location.hash.slice(1));
 history.replaceState(null, '', location.pathname);
-const ticket = params.get('ticket') || '';
-const fail = () => {
-  document.getElementById('status').textContent = 'This launch link was already used or has expired. '
-    + 'Open the private link printed by hermes webapp, or restart hermes webapp for a new one.';
-};
-if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
-  fail();
-} else {
-  fetch(`${basePath}/webapp/window-session`, {
-    method: 'POST', credentials: 'same-origin', headers: {'X-Hermes-Window-Ticket': ticket}
-  }).then(response => response.ok ? response.json() : Promise.reject()).then(({token}) => {
+const status = document.getElementById('status');
+const form = document.getElementById('launch');
+const input = document.getElementById('code');
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  const code = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  input.value = '';
+  try {
+    const response = await fetch(`${basePath}/webapp/window-session`, {
+      method: 'POST', credentials: 'same-origin', headers: {'X-Hermes-Launch-Code': code}
+    });
+    if (!response.ok) throw new Error();
+    const {token} = await response.json();
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error();
     const target = new URL(`${basePath}/`, location.origin);
     target.search = params.get('query') || '';
@@ -232,12 +223,16 @@ if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
       window.name = `${key}=${token}`;
     }
     location.replace(target.href);
-  }).catch(fail);
-}
+  } catch {
+    status.textContent = 'That code is wrong, used or expired. Type it again; after a few wrong tries, '
+      + 'or once it expires, run hermes webapp again for a new one.';
+    input.focus();
+  }
+});
 """
 
 
-def _handoff_page(request: Request, title: str, status: str, script: str) -> HTMLResponse:
+def _handoff_page(request: Request, title: str, status: str, script: str, body: str = "") -> HTMLResponse:
     """Credential-free, uncached page whose only script is *script* (``__BASE_PATH__`` bound)."""
     from hermes_cli.web_server_dashboard import _normalise_prefix
 
@@ -246,7 +241,7 @@ def _handoff_page(request: Request, title: str, status: str, script: str) -> HTM
     script = script.replace("__BASE_PATH__", json.dumps(prefix).replace("</", "<\\/"))
     return HTMLResponse(
         '<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
-        f'<title>{title}</title><p id="status">{status}</p>'
+        f'<title>{title}</title><p id="status">{status}</p>{body}'
         f'<script nonce="{nonce}">{script}</script>',
         headers={
             "Cache-Control": "no-store",
@@ -256,13 +251,21 @@ def _handoff_page(request: Request, title: str, status: str, script: str) -> HTM
     )
 
 
+_LAUNCH_FORM = (
+    '<form id="launch"><input id="code" aria-label="Launch code" placeholder="XXXXX-XXXXX" '
+    'autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="32" '
+    'required autofocus> <button>Open Hermes</button></form>'
+)
+
+
 @router.get("/webapp/launch")
 async def launch_page(request: Request):
-    """Where the server's own browser-open lands: spends the one-use launch ticket from the
-    fragment (never sent to the server or kept in history) and enters the Webapp with the session
-    in this tab's sessionStorage, never in a URL."""
+    """The page ``hermes webapp`` opens and prints, carrying no credential: the operator types the
+    one-use code from that terminal, and the page enters the Webapp with the session in this tab's
+    sessionStorage, never in a URL."""
     _require_private_webapp(request)
-    return _handoff_page(request, "Opening Hermes", "Opening Hermes Webapp…", _LAUNCH_SCRIPT)
+    return _handoff_page(request, "Open Hermes", "Enter the code hermes webapp printed in its terminal.",
+                         _LAUNCH_SCRIPT, _LAUNCH_FORM)
 
 
 # No credential appears in this public page or in its URL. The fragment

@@ -70,8 +70,9 @@ Or stop the dashboard first: through its service if one runs it, otherwise with
 `hermes dashboard --stop` from the profile that started it (it stops only that
 profile's servers).
 
-On macOS, open the private launch link printed in the terminal to enter a local
-Webapp session. Hermes does not automatically open that private session in a browser.
+On loopback, `hermes webapp` opens (and prints) a launch page whose URL carries
+no credential, and shows a one-use code on your terminal: type the code into that
+page to enter the local Webapp session.
 
 :::warning Treat Webapp access like access to Hermes on the host
 An authenticated Webapp user can execute arbitrary commands as the OS account
@@ -86,18 +87,19 @@ the normal attachment flow. Browser attachments are capped at **16 MiB**, the
 same limit used when the staged bytes enter that flow. The terminal rail opens
 the host's interactive shell through its own authenticated `/api/host-terminal`
 WebSocket, gated like Dashboard's Chat tab `/api/pty` endpoint. The host shell
-is available on loopback with the private launch link printed by `hermes webapp`,
-and on authenticated remote Webapp binds. The browser consumes the link's secret
-fragment into tab-local session storage; refresh keeps access. **New Window**,
+is available on loopback once the tab has entered with the one-use code printed
+by `hermes webapp`, and on authenticated remote Webapp binds. The launch page
+keeps the session in tab-local session storage; refresh keeps access. **New Window**,
 profile windows, and session pop-outs use a short-lived, single-use handoff
 from the authorized tab, without sharing an opener or putting the session token
-in the new URL. A manually opened fresh tab still needs the original link.
-Old links expire when the backend restarts. This is
+in the new URL. A manually opened fresh tab needs a new code: run
+`hermes webapp` again from a terminal. The code works once, expires after two
+minutes, and a few wrong entries burn it. The session it grants is
 the same session token used by privileged APIs (host files, RPC command
-execution and terminals), and is never supplied in public Webapp HTML. A bare
-URL in a fresh tab shows launch-link instructions. To select a named profile
-on an existing server, navigate in an authorized tab or put `?profile=<name>`
-before the private link's `#` fragment. Keep the link and captured CLI output private.
+execution and terminals), and is never supplied in public Webapp HTML or in any
+URL. A bare URL in a fresh tab shows launch instructions. To select a named
+profile on an existing server, navigate in an authorized tab. Keep the code and
+captured CLI output private.
 The named-profile CLI launcher prints these instructions rather than opening
 an unauthorized bare-URL tab when a Webapp is already running.
 The host shell is refused for any unauthenticated non-loopback bind. Native-only affordances—HUD/global shortcuts,
