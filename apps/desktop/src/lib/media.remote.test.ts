@@ -73,6 +73,21 @@ describe('mediaExternalUrl', () => {
     expect(new URL(mediaExternalUrl('file://nas/share/a.png')).searchParams.get('path')).toBe('\\\\nas\\share\\a.png')
   })
 
+  // #93508 item 5: the browser-hosted Desktop's session token grants host shells. Its gateway files
+  // save through the ticketed bridge, so no URL built here may carry that token.
+  it('never puts the browser-hosted Desktop session token into a URL', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    $connection.set({ mode: 'remote', baseUrl: 'http://127.0.0.1:9119', token: 'SECRET' } as never)
+
+    try {
+      for (const path of ['/home/me/report.pdf', 'file:///tmp/a.png', 'out/render.png']) {
+        expect(mediaExternalUrl(path)).not.toContain('SECRET')
+      }
+    } finally {
+      document.documentElement.removeAttribute('data-hermes-desktop-host')
+    }
+  })
+
   it('falls back to file:// when remote connection lacks a token', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')

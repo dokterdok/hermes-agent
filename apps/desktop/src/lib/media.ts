@@ -266,6 +266,9 @@ export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope):
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
+// The browser-hosted Desktop's token grants host shells and never enters a
+// URL: its gateway files save through the ticketed bridge
+// (downloadGatewayMediaFile) instead.
 export function mediaExternalUrl(path: string): string {
   if (/^https?:/i.test(path)) {
     return path
@@ -274,7 +277,7 @@ export function mediaExternalUrl(path: string): string {
   if (isRemoteGateway()) {
     const conn = $connection.get()
 
-    if (conn?.baseUrl && conn.token) {
+    if (conn?.baseUrl && conn.token && !isBrowserHostedDesktop()) {
       const file = encodeURIComponent(filePathFromMediaPath(path))
 
       return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`
