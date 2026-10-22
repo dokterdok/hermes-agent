@@ -696,7 +696,14 @@ class SessionDB(
             self._record_db_file_identity()
             # Read-only snapshot validation must finish before publishing the
             # handle; a raced replacement follows the same close-on-error path.
-            profile_lifecycle_stack.close()
+            try:
+                profile_lifecycle_stack.close()
+            except FileNotFoundError as exc:
+                from hermes_cli.profile_read_snapshot import ProfileMarkerBackfilled
+
+                if not isinstance(exc, ProfileMarkerBackfilled):
+                    raise
+                self._readmit_read_only(exc)
             initialization_complete = True
         except Exception as exc:
             # Surface WHY via /resume and friends; callers keep their ``_session_db = None`` path.
@@ -803,6 +810,20 @@ class SessionDB(
                 if attempt >= _READ_ONLY_IOERR_RETRY_ATTEMPTS or not transient:
                     raise
                 time.sleep(_READ_ONLY_IOERR_RETRY_BACKOFF_S)
+
+    def _readmit_read_only(self, backfill) -> None:
+        """Discard a read-only handle opened while a legacy home gained its first marker and admit
+        once more, bound to the directory and marker that check saw (``ProfileMarkerBackfilled``):
+        never keep the mid-flight handle. A replacement or any further change fails."""
+        from hermes_cli.profile_read_snapshot import profile_read_snapshot
+
+        conn, self._conn = self._conn, None
+        self._close_connection_quietly(conn)
+        with profile_read_snapshot(backfill.home, backfill.incarnation,
+                                   expected_identity=backfill.identity) as incarnation:
+            self.expected_profile_incarnation = incarnation
+            self._open_read_only()
+            self._record_db_file_identity()
 
     def _connect_read_only(self, timeout: float) -> sqlite3.Connection:
         """``mode=ro`` tracked connection with Row factory. check_same_thread=False: pooled connections
