@@ -386,8 +386,15 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_RETIRE_FROM_ROOMS.format(where="disbanded_at IS NOT NULL"))
     _migrate_remote_run_schema(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor ON hosted_room_events(room_id, seq)")
+    # Every room read looks up the current epoch's claim, and most rooms have none: without this
+    # partial index that lookup walks the whole room log.
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_hosted_room_events_authority_claim
+                    ON hosted_room_events(room_id, authority_epoch, seq DESC) WHERE kind='authority.claimed'""")
     if not _schema_is_current(conn):
         raise HostedRoomError("hosted room schema migration did not complete")
+
+
+_REQUIRED_INDEXES = ("idx_hosted_room_events_cursor", "idx_hosted_room_events_authority_claim")
 
 
 def _schema_is_current(conn: sqlite3.Connection) -> bool:
@@ -396,9 +403,9 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
     return all(
         required.issubset(columns)
         and (table != "hosted_room_remote_runs" or _remote_run_schema_current(conn, columns))
-        for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True)) and conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_cursor'"
-    ).fetchone() is not None
+        for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True)) and all(
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (index,)).fetchone() is not None
+        for index in _REQUIRED_INDEXES)
 
 
 def default_db_path() -> Path:
