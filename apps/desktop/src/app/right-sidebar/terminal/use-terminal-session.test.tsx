@@ -134,6 +134,9 @@ function Harness({ id }: { id: string }) {
 beforeEach(() => {
   window.dispatchEvent(new PageTransitionEvent('pageshow'))
   localStorage.clear()
+  // Each host-shell dial mints its one-use socket ticket over REST first.
+  vi.stubGlobal('fetch', vi.fn(async (url: URL) =>
+    new Response(url.pathname.endsWith('/api/auth/ws-ticket') ? '{"ticket":"one-use"}' : '{}')))
 })
 
 afterEach(() => {

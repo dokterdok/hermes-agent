@@ -40,7 +40,8 @@ it('uses one private session for REST, RPC and terminal across reload without lo
 
   vi.stubGlobal('WebSocket', Socket)
   const fetchMock = vi.fn().mockImplementation(async (url: URL) =>
-    new Response(url.pathname.endsWith('/api/webapp/gateway-ticket') ? '{"ticket":"rpc-ticket"}' : '{"ok":true}', { status: 200 })
+    new Response(url.pathname.endsWith('/api/webapp/gateway-ticket') ? '{"ticket":"rpc-ticket"}'
+      : url.pathname.endsWith('/api/auth/ws-ticket') ? '{"ticket":"shell-ticket"}' : '{"ok":true}', { status: 200 })
   )
   vi.stubGlobal('fetch', fetchMock)
   expect(installBrowserDesktopBridge()).toBe(true)
@@ -62,7 +63,8 @@ it('uses one private session for REST, RPC and terminal across reload without lo
   expect(new Headers(mint[1].headers).get('X-Hermes-Session-Token')).toBe(token)
   await desktop.terminal.start({ cwd: '/work' })
   expect(urls[0].pathname).toBe('/one/api/host-terminal')
-  expect(urls[0].searchParams.get('token')).toBe(token)
+  expect(urls[0].searchParams.has('token')).toBe(false)
+  expect(urls[0].searchParams.get('ticket')).toBe('shell-ticket')
   window.dispatchEvent(new Event('beforeunload'))
   Reflect.deleteProperty(window, 'hermesDesktop')
   window.history.replaceState(null, '', '/one/?profile=coder#/settings')

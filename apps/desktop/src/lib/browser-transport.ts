@@ -68,17 +68,15 @@ export function endpointUrl(path: string, basePath: string, profile?: null | str
   return url
 }
 
+/** A socket URL on the Webapp origin. Its only credential is a one-use ticket: the session token
+ *  never rides a URL. */
 export function websocketUrl(
   basePath: string,
   path: string,
-  credential: { ticket?: string; token?: string },
+  credential: { ticket?: string },
   profile?: null | string
 ): string {
-  const authParam = credential.ticket
-    ? (['ticket', credential.ticket] as const)
-    : credential.token
-      ? (['token', credential.token] as const)
-      : undefined
+  const authParam = credential.ticket ? (['ticket', credential.ticket] as const) : undefined
 
   return buildHermesWebSocketUrl({
     authParam,
@@ -349,25 +347,11 @@ export function gatewaySocketUrl(bootstrap: BrowserBootstrap, profile?: null | s
   return url.toString()
 }
 
+/** The host terminal's socket URL: a ticket per dial, bound to `path` and `profile`, in every mode. */
 export async function authenticatedWebsocketUrl(
   bootstrap: BrowserBootstrap,
   path: '/api/host-terminal',
   profile?: null | string
 ): Promise<string> {
-  if (!bootstrap.authRequired) {
-    if (!bootstrap.token) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
-
-    return websocketUrl(bootstrap.basePath, path, { token: bootstrap.token }, profile)
-  }
-
-  const result = await browserApi<{ ticket?: string }>(bootstrap, {
-    method: 'POST',
-    path: '/api/auth/ws-ticket'
-  })
-
-  const ticket = String(result.ticket || '').trim()
-
-  if (!ticket) {throw new Error('Hermes did not return a WebSocket ticket')}
-
-  return websocketUrl(bootstrap.basePath, path, { ticket }, profile)
+  return websocketUrl(bootstrap.basePath, path, { ticket: await socketTicket(bootstrap, path, profile) }, profile)
 }
