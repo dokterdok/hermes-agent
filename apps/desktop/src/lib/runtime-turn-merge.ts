@@ -105,6 +105,94 @@ function locateRuntimeInterval(
   return { baseTurn, committedCandidates: baseTurn, first, last }
 }
 
+interface StoredTextRuns {
+  /** The last run when nothing structural follows it: the stored final reply. */
+  finalRun: number
+  texts: string[]
+}
+
+/** The interval's stored assistant text in order, cut into runs at tool-call
+ *  and reasoning parts (and at row boundaries). */
+function storedTextRuns(committed: ChatMessage[]): StoredTextRuns {
+  const texts: string[] = []
+  let trailingStructure = false
+
+  for (const message of committed) {
+    let open = false
+
+    for (const part of message.parts) {
+      if (part.type === 'tool-call' || part.type === 'reasoning') {
+        open = false
+        trailingStructure = texts.length > 0
+      } else if (part.type === 'text' && open) {
+        texts[texts.length - 1] += part.text
+      } else if (part.type === 'text' && part.text.trim()) {
+        texts.push(part.text)
+        open = true
+        trailingStructure = false
+      }
+    }
+  }
+
+  return { finalRun: texts.length && !trailingStructure ? texts.length - 1 : -1, texts }
+}
+
+// Whitespace neither proves nor disproves storage: a live bubble that spans
+// tool rounds carries the paragraph breaks the gateway streams between them,
+// which the stored rows do not, and an older gateway streams none.
+const withoutWhitespace = (value: string) => value.replace(/\s+/g, '')
+
+/** The last run a match of `text` from run `start` reads, or -1. One live
+ *  bubble may span runs: an older gateway sends no message.interim. Both
+ *  sides come without whitespace. */
+function provingRunEnd(runs: string[], start: number, text: string): number {
+  let stored = ''
+
+  for (let end = start; end < runs.length; end += 1) {
+    stored += runs[end]
+
+    if (stored.length >= text.length) {
+      return stored.startsWith(text) ? end : -1
+    }
+  }
+
+  return -1
+}
+
+/**
+ * Proves journaled text bubbles durable, in journal order. The live stream
+ * splits a wake into bubbles at message.interim while the stored transcript
+ * folds commentary, tool rounds and answer into one row, so each bubble must
+ * start a stored text run at or after the runs that proved the bubbles before
+ * it: an unsaved partial cannot borrow earlier text.
+ */
+function storedRunProof(committed: ChatMessage[]): (text: string) => boolean {
+  const runs = storedTextRuns(committed)
+  const texts = runs.texts.map(withoutWhitespace)
+  let nextRun = 0
+  let lastProof = -1
+
+  return bubbleText => {
+    const text = withoutWhitespace(bubbleText)
+
+    for (let start = nextRun; start < texts.length; start += 1) {
+      const end = provingRunEnd(texts, start, text)
+
+      if (end >= 0) {
+        nextRun = end + 1
+        lastProof = end
+
+        return true
+      }
+    }
+
+    // Hydration folds a final that repeats the commentary before its tool call
+    // into that one stored final run (dedupeRepeatedTextInParts), and the live
+    // stream collapses the two the same way: that run proves both bubbles.
+    return lastProof >= 0 && lastProof === runs.finalRun && provingRunEnd(texts, lastProof, text) >= 0
+  }
+}
+
 /** How much of the journaled runtime tail the commit candidates already hold durably. */
 function runtimeCommitCoverage(
   committedCandidates: ChatMessage[],
@@ -150,6 +238,8 @@ function runtimeCommitCoverage(
       candidate.type === 'reasoning' && candidate.text.startsWith(part.text))
   }))
 
+  const textCommitted = storedRunProof(committed)
+
   const contentCommitted = tail.filter(assistantHasRecoverableContent).every(message => {
     const text = normalizedText(chatMessageText(message))
 
@@ -160,7 +250,7 @@ function runtimeCommitCoverage(
 
     // A persisted final answer may extend the last throttled partial. Empty
     // text needs explicit structural coverage; an unrelated body proves none.
-    return text ? committed.some(candidate => normalizedText(chatMessageText(candidate)).startsWith(text))
+    return text ? textCommitted(text)
       : message.parts.some(part => part.type === 'tool-call' || part.type === 'reasoning') && structureCommitted
   })
 

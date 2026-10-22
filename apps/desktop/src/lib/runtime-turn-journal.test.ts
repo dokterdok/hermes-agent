@@ -532,3 +532,66 @@ it.each(['plain', 'truncated', 'reordered', 'queued', 'attachment', 'row-id', 'r
     expect(readInFlightTurnJournal('stored')).not.toBeNull()
   }
 )
+
+// The live stream splits a wake into bubbles at message.interim (all but the last sealed, each
+// with its tool call); the stored transcript folds commentary, tool rounds and answer into one row.
+const wakeNotice = { id: 3, role: 'user', content: 'wake', display_kind: 'process_complete', user_originated: false, timestamp: 10.5 } as const
+
+const beforeWake: SessionMessage[] = [
+  { id: 1, role: 'user', content: 'go', timestamp: 1 },
+  { id: 2, role: 'assistant', content: 'ok', timestamp: 2 },
+  wakeNotice
+]
+
+function recoverSplitWake(bubbles: Array<[string, string?]>, stored: SessionMessage[]) {
+  const call = (id?: string) =>
+    id ? [{ type: 'tool-call' as const, toolName: 'terminal', toolCallId: id, args: {}, result: 'ok' }] : []
+
+  const live = appendLiveSessionProjection(toChatMessages(beforeWake), {
+    session_id: 'rt',
+    turn_started_at: 10,
+    inflight: { user: 'wake', display_kind: 'process_complete', user_originated: false, assistant: bubbles[0][0], streaming: true }
+  })
+
+  const sealed = live.map(m =>
+    m.id === 'assistant-stream-rt' ? { ...m, pending: false, interim: true, parts: [...m.parts, ...call(bubbles[0][1])] } : m
+  )
+
+  const later = bubbles.slice(1).map(([text, id], index, all): ChatMessage => ({
+    id: `assistant-stream-${index}`,
+    role: 'assistant',
+    interim: index < all.length - 1,
+    pending: index === all.length - 1,
+    parts: [{ type: 'text', text }, ...call(id)]
+  }))
+
+  record([...sealed, ...later])
+
+  return recoverInFlightTurnJournal('stored', toChatMessages([...beforeWake, ...stored]), { keepPending: false })
+}
+
+const toolRound = (id: number, content: string, callId: string): SessionMessage[] => [
+  { id, role: 'assistant', content, timestamp: id + 10, tool_calls: [{ id: callId, type: 'function', function: { name: 'terminal', arguments: '{}' } }] },
+  { id: id + 1, role: 'tool', content: 'ok', tool_call_id: callId, timestamp: id + 11 }
+]
+
+const finalReply = (content: string): SessionMessage => ({ id: 8, role: 'assistant', content, timestamp: 18 })
+
+it('retires an interim-split wake only when stored text runs cover its bubbles in order', () => {
+  const answered = [...toolRound(4, 'Checking.', 'c1'), finalReply('Final answer, complete.')]
+  expect(recoverSplitWake([['Checking.', 'c1'], ['Final answer']], answered).caughtUp).toBe(true)
+
+  // The gateway died before the final: its partial "OK" must not borrow the earlier stored run.
+  const died = [...toolRound(4, 'Running tests.', 'c1'), ...toolRound(6, 'OK, all 12 passed.', 'c2')]
+  const kept = recoverSplitWake([['Running tests.', 'c1'], ['OK, all 12 passed.', 'c2'], ['OK']], died)
+  expect(kept.messages.filter(m => m.recovered).map(m => chatMessageText(m))).toEqual(['OK'])
+
+  // A final repeating its commentary hydrates as one run (dedupeRepeatedTextInParts) that proves both bubbles.
+  const repeated = [...toolRound(4, 'Done.', 'c1'), finalReply('Done.')]
+  expect(recoverSplitWake([['Done.', 'c1'], ['Do']], repeated).caughtUp).toBe(true)
+
+  // One bubble spans tool rounds with the paragraph breaks the gateway streams; stored runs carry none.
+  const spanned = [...toolRound(4, 'Checking the log.', 'c1'), ...toolRound(6, 'Checking the log.', 'c2'), finalReply('The build passed.')]
+  const spanning = recoverSplitWake([['Checking the log.', 'c1'], ['\n\nChecking the log.\n\nThe build passed', 'c2']], spanned)
+  expect(spanning.caughtUp).toBe(true)
+})
