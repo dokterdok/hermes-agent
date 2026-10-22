@@ -45,6 +45,8 @@ interface TerminalState {
 }
 
 const META = '\u0000HERMES_TERMINAL_META:'
+// The shell itself exited while this tab watched (`exit`, Ctrl-D), not expired or closed by the server.
+const CLOSE_SHELL_EXITED = 4200
 const MAX_RETRIES = 5
 const RETRY_BACKOFF = { baseDelayMs: 500, capMs: 8000 }
 const START_TIMEOUT = 10_000
@@ -243,6 +245,16 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
     socket.onclose = event => {
       if (!current()) {return}
       settleOpen(state)
+
+      // Nothing is left to resume: report a plain exit so the tab closes, as in Electron.
+      if (event.code === CLOSE_SHELL_EXITED && handshakeComplete) {
+        emitData(state, decoder.decode())
+        forget(state)
+        finish(state, null)
+
+        return
+      }
+
       const signal = CLOSE_SIGNALS[event.code] ?? 'disconnected'
 
       if (signal === 'expired') {forget(state)}

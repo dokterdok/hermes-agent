@@ -34,6 +34,9 @@ WS_CLOSE_CAPACITY = 4429
 _MAX_SHELLS = 16
 # Inbound frames buffered while one batch is written (backpressure bound).
 _INPUT_BATCH_FRAMES = 64
+# The shell itself exited while a viewer watched (`exit`, Ctrl-D). Unlike 4410 (expired, or
+# closed by the server) the tab has nothing left to resume, so the browser closes it.
+WS_CLOSE_SHELL_EXITED = 4200
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
@@ -105,7 +108,8 @@ class HostTerminalRegistry(PtySessionRegistry):
         # hops that share it; a pool sized to capacity gives each shell its own reader.
         super().__init__(
             ttl=RETENTION_SECONDS, max_sessions=_MAX_SHELLS, buffer_cap=1024 * 1024, read_timeout=0.2,
-            drain_executor=ThreadPoolExecutor(_MAX_SHELLS, thread_name_prefix="host-pty-drain"))
+            drain_executor=ThreadPoolExecutor(_MAX_SHELLS, thread_name_prefix="host-pty-drain"),
+            exit_close_code=WS_CLOSE_SHELL_EXITED)
         self.owners: dict[str, HostOwner] = {}
 
     def _reap_one_idle_or_raise(self) -> None:
@@ -165,11 +169,11 @@ class HostTerminalRegistry(PtySessionRegistry):
             raise TerminalExpired()
         return session, owner
 
-    async def remove(self, token: str):
+    async def remove(self, token: str, *, code: int | None = None):
         session = self._sessions.pop(token, None)
         self.owners.pop(token, None)
         if session is not None:
-            await asyncio.shield(self._close_in_background(session))
+            await asyncio.shield(self._close_in_background(session, code))
 
     async def reap_idle(self, now=None):
         # Durable tombstones/incarnations also detect retirement by a different
@@ -180,7 +184,9 @@ class HostTerminalRegistry(PtySessionRegistry):
         for token, owner in owners:
             session = self._sessions.get(token)
             if session is not None and (token in retired or self._reapable(session, now)):
-                await self.remove(token)
+                # A shell whose process died (ConPTY can report it before EOF) exited.
+                exited = token not in retired and (not session.alive or not session.bridge.is_alive())
+                await self.remove(token, code=WS_CLOSE_SHELL_EXITED if exited else None)
         for token in list(self.owners):
             if token not in self._sessions:
                 self.owners.pop(token, None)
@@ -344,7 +350,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
                     # write: drop the rest of the batch and leave this socket for the new viewer
                     # to supersede, so this tab does not reconnect and take the shell back.
                     if not session.alive:
-                        await registry.remove(token)
+                        await registry.remove(token, code=WS_CLOSE_SHELL_EXITED)
                         return
                     break
             if len(frames) < len(batch):
