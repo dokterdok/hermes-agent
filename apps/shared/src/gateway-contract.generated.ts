@@ -6821,7 +6821,7 @@ export interface CanonicalRpcMethods {
   /** Admit one cron firing into the owning profile's durable FIFO. */
   'cron.submit': { params: CronRunParams; result: CronSubmitResult }
   'groups.approve': { params: CanonicalRoomApproveParams; result: GroupsApproveResult }
-  /** Read one committed attachment for a live room viewer. */
+  /** Read one committed attachment for a live room viewer. A version the room log publishes whose bytes are gone here is refused with attachment_unavailable. */
   'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: RoomAttachmentBytes }
   /** List a live room's published file versions, newest share first, with stable snapshot paging, search and a sharer filter. available=false keeps a version listed whose bytes are unavailable here; omitted means downloadable. */
   'groups.attachment.list': { params: GroupsAttachmentListParams; result: GroupsAttachmentListResult }
