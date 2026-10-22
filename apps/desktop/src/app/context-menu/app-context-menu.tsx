@@ -34,7 +34,7 @@ import {
   openDomContextMenu,
   openTerminalContextMenu
 } from './store'
-import { isWebUrl, resolveDomTarget } from './target'
+import { type ContextMenuDomTarget, isWebUrl, resolveDomTarget } from './target'
 
 /** Marks a surface that owns PLAIN right-clicks itself (the user-message
  *  reaction bubble). Owned targets inside it — links, images, editables,
@@ -68,6 +68,18 @@ function claimContextMenuGesture(event: MouseEvent) {
   }
 
   event.stopPropagation()
+}
+
+/** Browser spelling suggestions live only in the native menu, and the Webapp has
+ * no spellcheck feed to rebuild them in ours: a plain editable keeps that menu. */
+function leavesEditableToBrowser(target: ContextMenuDomTarget): boolean {
+  return Boolean(
+    isBrowserHostedDesktop() &&
+      !window.hermesDesktop?.onContextMenuSpellcheck &&
+      target.editable &&
+      !target.linkUrl &&
+      !target.onImage
+  )
 }
 
 function isLoopbackUrl(url: string): boolean {
@@ -565,7 +577,8 @@ export function AppContextMenu() {
   useEffect(() => {
     // Electron needs unprevented gestures for main-process spellcheck and
     // image coordinates. Webapp must cancel the browser's native menu when
-    // we own the gesture, or it opens alongside the app menu.
+    // we own the gesture, or it opens alongside the app menu; plain
+    // editables keep the native menu there for its spelling suggestions.
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
 
@@ -626,6 +639,13 @@ export function AppContextMenu() {
       )
 
       const owned = Boolean(target.linkUrl || target.onImage || target.editable || selected)
+
+      // Keep pane fallback menus closed, but leave a plain editable to the browser.
+      if (leavesEditableToBrowser(target)) {
+        event.stopPropagation()
+
+        return
+      }
 
       // A selection elsewhere in the same pane must not take its bare menu.
       if (!owned && trigger) {
