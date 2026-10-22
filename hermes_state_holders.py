@@ -444,6 +444,33 @@ def _windows_restart_manager_holders(db_path: Path) -> list[tuple[int, str]]:
     return [(pid, db_abspath) for pid in windows_restart_manager_pids(resources) if pid != own_pid]
 
 
+def _proc_uid(pid: int) -> Optional[int]:
+    """Owner of ``/proc/<pid>``: the process's effective uid, or root for a non-dumpable process."""
+    try:
+        return os.stat(f"/proc/{pid}").st_uid
+    except OSError:
+        return None
+
+
+def _shut_out_of_home(pid: int, argv: Sequence[str], db_path: Path) -> bool:
+    """Whether *pid* is another non-root user's process that cannot have opened anything in the home
+    of *db_path*: a home only this user may enter, which its argv does not name either."""
+    uid = _proc_uid(pid)
+    if uid is None or uid in (0, os.geteuid()):
+        return False
+    home = os.path.dirname(os.path.abspath(os.fspath(db_path)))
+    try:
+        home_stat = os.stat(home)
+    except OSError:
+        return False
+    if home_stat.st_uid != os.geteuid() or home_stat.st_mode & 0o077:
+        return False  # a group-shared (0770) install: another member's gateway may serve it
+    named = _norm_path(home)
+    env_home = _argv_env_home(argv)
+    tokens = [token for _index, token in _argv_path_tokens(argv)] + ([_norm_path(env_home)] if env_home else [])
+    return not any(token == named or token.startswith(named + os.sep) for token in tokens)
+
+
 def _possible_hermes_holder(pid: int, db_path: Path) -> Optional[list[str]]:
     """argv of *pid* when it may serve the home of *db_path* though its descriptors cannot be read.
 
@@ -451,9 +478,12 @@ def _possible_hermes_holder(pid: int, db_path: Path) -> Optional[list[str]]:
     keeps processes whose descriptors only root can read for their whole life, whoever owns them
     (``sshd: <user>``, ``(sd-pam)``, ``gpg-agent``, setuid helpers and Chromium's sandbox are
     non-dumpable), so counting every unreadable process would keep each census failing forever.
+    Nor does another account's Hermes count when it cannot even enter the home (another uid's
+    pip/uv gateway would otherwise block this user's profile delete and rename while it runs).
     """
     argv = _read_proc_argv(pid)
-    if argv is not None and _looks_like_hermes(argv) and not _argv_scoped_to_other_home(argv, db_path):
+    if (argv is not None and _looks_like_hermes(argv) and not _argv_scoped_to_other_home(argv, db_path)
+            and not _shut_out_of_home(pid, argv, db_path)):
         return argv
     return None
 
