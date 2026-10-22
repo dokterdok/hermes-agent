@@ -221,3 +221,23 @@ def test_holder_reaching_the_profile_through_a_bind_mount_is_found_by_identity(t
 
     with _holding(held, tmp_path / "bin" / "holder.py") as holder:
         assert holder.pid in profile_lifecycle.external_profile_file_holders(profile)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize(("owner", "mode", "names_home", "counted"), [
+    ("other", 0o700, False, False),  # another account's pip/uv gateway cannot even enter this home
+    ("other", 0o770, False, True),   # a group-shared install: another member's gateway may serve it
+    ("other", 0o700, True, True),    # its argv points at this home
+    ("root", 0o700, False, True),    # root, or a non-dumpable process, may hold anything
+])
+def test_unreadable_hermes_process_of_another_user(tmp_path, monkeypatch, owner, mode, names_home, counted):
+    """A Hermes process whose descriptors cannot be read counts as a holder unless it runs as another
+    (non-root) user that could not have opened anything in a home only this user may enter."""
+    home = tmp_path / "profiles" / "alpha"
+    home.mkdir(parents=True)
+    home.chmod(mode)
+    argv = ["/usr/bin/python3", "-m", "hermes_cli.main", "gateway", "run",
+            *(["--hermes-home", str(home)] if names_home else [])]
+    monkeypatch.setattr(hermes_state_holders, "_read_proc_argv", lambda _pid: list(argv))
+    monkeypatch.setattr(hermes_state_holders, "_proc_uid", lambda _pid: 0 if owner == "root" else os.geteuid() + 1)
+    assert (hermes_state_holders._possible_hermes_holder(4242, home / "state.db") is not None) is counted
