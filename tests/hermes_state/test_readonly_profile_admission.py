@@ -77,3 +77,54 @@ def test_readonly_open_rejects_generation_replaced_before_connect(home, tmp_path
     with SessionDB(home / "state.db", read_only=True) as fresh:
         assert fresh.get_session("successor")["id"] == "successor"
         assert fresh.get_session("original") is None
+
+
+def test_readonly_open_survives_a_first_marker_backfill(home, monkeypatch):
+    """Another process's first ``load_config`` backfills a legacy profile's marker while this one
+    opens it read-only (a sidebar refresh, ``session_search``): one re-admission, bound to it."""
+    from hermes_cli.config_home import _adopt_profile_incarnation
+    from hermes_cli.profile_incarnation import read_profile_incarnation
+    (home / ".profile-incarnation").unlink()  # a profile created before markers
+    real_open, opens = SessionDB._open_read_only, []
+
+    def open_while_backfilled(self):
+        if not opens:
+            _adopt_profile_incarnation(home)
+        opens.append(1)
+        return real_open(self)
+
+    monkeypatch.setattr(SessionDB, "_open_read_only", open_while_backfilled)
+    with SessionDB(home / "state.db", read_only=True) as db:
+        assert db.get_session("original")["id"] == "original"
+        assert db.expected_profile_incarnation == read_profile_incarnation(home)
+    assert len(opens) == 2 and read_profile_incarnation(home) is not None
+
+
+@pytest.mark.parametrize("successor_marker", ["fresh", "copied"])
+def test_readonly_retry_never_binds_a_replacement(home, monkeypatch, successor_marker):
+    """The retry is bound to the directory and marker the backfill check saw: a profile replaced in
+    between (its first handle, the holder, was just closed) fails closed instead of binding it."""
+    from hermes_cli.config_home import _adopt_profile_incarnation
+    (home / ".profile-incarnation").unlink()
+    retired = home.with_name("retired")
+    real_open, real_close, opens = SessionDB._open_read_only, SessionDB._close_connection_quietly, []
+
+    def open_while_backfilled(self):
+        if not opens:
+            _adopt_profile_incarnation(home)
+        opens.append(1)
+        return real_open(self)
+
+    def close_then_replace(conn):
+        real_close(conn)
+        if conn is not None and opens and not retired.exists():
+            home.rename(retired)
+            shutil.copytree(retired, home)  # the same files in another directory
+            if successor_marker == "fresh":
+                write_fresh_profile_incarnation(home)
+
+    monkeypatch.setattr(SessionDB, "_open_read_only", open_while_backfilled)
+    monkeypatch.setattr(SessionDB, "_close_connection_quietly", staticmethod(close_then_replace))
+    with pytest.raises(FileNotFoundError):
+        SessionDB(home / "state.db", read_only=True)
+    assert len(opens) == 1
