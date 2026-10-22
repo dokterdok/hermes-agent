@@ -425,3 +425,32 @@ def test_dashboard_and_webapp_builds_share_the_workspace_lock(tmp_path: Path, mo
     monkeypatch.setattr(main_web_build, "_do_build_web_ui", build_while_locked)
     assert main_web_build._build_web_ui(tmp_path / "web") is True
     assert webapp_lock_free == [False]
+
+
+def test_webapp_warns_but_still_serves_a_plain_http_bind_other_machines_reach(monkeypatch, capsys, tmp_path):
+    """Browsers withhold secure-context APIs (voice, notifications, the bot screen viewer) on
+    http://<LAN, VPN or Tailscale IP>. The launch says so; it never refuses the bind."""
+    from hermes_cli import web_server, web_server_lifecycle
+    from tests.hermes_cli.test_ipv6_url_authorities import _stub_uvicorn
+
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    monkeypatch.setattr("hermes_cli.dashboard_auth.prefix._load_dashboard_section", dict)
+    warn = web_server_lifecycle._plain_http_remote_warning
+    assert warn("127.0.0.1") == warn("::1") == warn("localhost") == ""
+    assert "plain HTTP" in warn("0.0.0.0") and "tailscale serve --https" in warn("100.64.0.7")
+
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://hermes.example.test")
+    assert warn("0.0.0.0") == ""  # a TLS-terminating proxy is in front
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL")
+
+    renderer = tmp_path / "dist-webapp"
+    renderer.mkdir()
+    (renderer / "index.html").write_text("<html><body>webapp</body></html>", encoding="utf-8")
+    for key, value in (("ui_surface", "dashboard"), ("web_dist", None), ("auth_required", False),
+                       ("bound_host", ""), ("initial_profile", "")):
+        monkeypatch.setattr(web_server.app.state, key, value, raising=False)
+    monkeypatch.setattr(web_server, "_configure_auth_gate", lambda *_a, **_k: None)
+    _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(host="0.0.0.0", port=9119, open_browser=False, ui_surface="webapp", web_dist=renderer)
+    assert "Warning: browsers on other machines reach this Webapp over plain HTTP" in capsys.readouterr().err

@@ -1910,7 +1910,7 @@ WebSocket tickets.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--port` | `9119` | Port to run the web server on (`0` asks the OS to assign one) |
-| `--host` | `127.0.0.1` | Bind address; non-loopback binds always require an auth provider |
+| `--host` | `127.0.0.1` | Bind address; non-loopback binds always require an auth provider, and warn when browsers reach them over plain HTTP |
 | `--no-open` | — | Don't open a browser automatically |
 | `--skip-build` | off | Reuse `apps/desktop/dist-webapp` without building |
 | `--force-build` | off | Rebuild even when the renderer's build receipt is current |
@@ -1926,6 +1926,12 @@ hermes webapp
 # Reach it through a trusted LAN/VPN; auth is mandatory
 hermes webapp --host 0.0.0.0 --no-open
 ```
+
+Over plain `http://` from another machine the browser withholds voice input,
+desktop notifications and the bot screen viewer, and the password and session
+cookie cross the network unencrypted unless a VPN encrypts the link; the command
+prints a warning for such a bind. Put HTTPS in front (a reverse proxy, or
+`tailscale serve --https`) or use an SSH tunnel to `127.0.0.1`.
 
 **With `hermes dashboard`:** the Webapp and the dashboard both claim this host's
 one Hermes server, and both default to port `9119`, so whichever starts second
