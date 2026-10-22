@@ -101,3 +101,41 @@ it('opens the requested profile on this host without carrying another session or
   ).rejects.toThrow('No connection with id')
   expect(open).not.toHaveBeenCalled()
 })
+
+it('follows a rename or delete the server accepted into the saved startup route and this tab, never a refused one', async () => {
+  // A refusal, a 2xx carrying ok:false, then an accepted rename and delete.
+  const replies: unknown[] = [409, { ok: false }, { ok: true }, { ok: true }]
+
+  const reply = vi.fn(async () => {
+    const next = replies.shift()
+
+    return typeof next === 'number' ? new Response('{}', { status: next }) : new Response(JSON.stringify(next))
+  })
+
+  vi.stubGlobal('fetch', reply)
+  // react-router's HashRouter entry state must survive the URL rewrite.
+  const entry = { idx: 2, key: 'entry', usr: null }
+  window.history.replaceState(entry, '', '/hermes?profile=active#/session-1')
+  expect(installBrowserDesktopBridge()).toBe(true)
+  const { api, profile } = window.hermesDesktop
+  await profile.setDefault({ connectionId: 'local', profile: 'active' })
+  const seen = vi.fn()
+  profile.onDefaultChanged(seen)
+  const rename = { body: { new_name: 'renamed' }, method: 'PATCH', path: '/api/profiles/active' }
+  const urlProfile = () => new URLSearchParams(window.location.search).get('profile')
+
+  await expect(api(rename)).rejects.toThrow('409')
+  await api(rename)
+  await expect(profile.getDefault()).resolves.toEqual({ connectionId: 'local', profile: 'active' })
+  expect([urlProfile(), seen.mock.calls.length]).toEqual(['active', 0])
+
+  await api(rename)
+  await expect(profile.getDefault()).resolves.toEqual({ connectionId: 'local', profile: 'renamed' })
+  expect([urlProfile(), window.history.state]).toEqual(['renamed', entry])
+
+  await api({ method: 'DELETE', path: '/api/profiles/renamed' })
+  await expect(profile.getDefault()).resolves.toBeNull()
+  expect(urlProfile()).toBe('default')
+  expect(seen.mock.calls).toEqual([[{ connectionId: 'local', profile: 'renamed' }], [null]])
+  vi.unstubAllGlobals()
+})

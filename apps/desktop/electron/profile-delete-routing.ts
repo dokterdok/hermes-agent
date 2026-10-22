@@ -39,7 +39,9 @@ export function profileNameFromPath(path: unknown): string | null {
 }
 
 /** Parse a `hermes:api` request into the profile name a DELETE targets. */
-export function profileNameFromDeleteRequest(request) {
+export function profileNameFromDeleteRequest(
+  request: { method?: unknown; path?: unknown } | null | undefined
+): string | null {
   if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
     return null
   }

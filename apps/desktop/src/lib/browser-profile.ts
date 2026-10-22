@@ -19,11 +19,16 @@ function setUrlProfile(url: URL, profile: string | null): void {
   }
 }
 
+interface BrowserProfileBridge extends Pick<Window['hermesDesktop'], 'openWindow' | 'profile'> {
+  /** The bridge's own preferences follow a rename or delete the server accepted. */
+  profileChanged: (oldName: string, newName: null | string) => void
+}
+
 export function createBrowserProfileBridge({
   basePath,
   currentProfile,
   openWindow
-}: BrowserProfileOptions): Pick<Window['hermesDesktop'], 'openWindow' | 'profile'> {
+}: BrowserProfileOptions): BrowserProfileBridge {
   // localStorage supplies origin isolation; the base path separates colocated servers.
   const storageKey = `hermes:webapp:default-profile:${basePath || '/'}`
   const listeners = new Set<(route: DesktopProfileRoute | null) => void>()
@@ -63,6 +68,37 @@ export function createBrowserProfileBridge({
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
 
     return { profile: selected }
+  }
+
+  // Native Desktop's profileChanged (electron/desktop-profile.ts), run once the
+  // server has renamed or deleted `oldName`: this tab's `?profile=` and the
+  // saved startup route follow the new name, or fall back to Default on delete,
+  // so the next reload or bare launch link never boots a profile that is gone.
+  // The browser has one source, so a saved route's connection (null or
+  // 'local') always matches. Other tabs hear about the route via `storage`.
+  const profileChanged = (oldName: string, newName: null | string) => {
+    const url = new URL(window.location.href)
+
+    if (url.searchParams.get('profile')?.trim() === oldName) {
+      setUrlProfile(url, newName || 'default')
+      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+    }
+
+    const route = readDefault()
+
+    if (route?.profile !== oldName) {
+      return
+    }
+
+    const next = newName ? { ...route, profile: newName } : null
+
+    if (next) {
+      window.localStorage.setItem(storageKey, JSON.stringify(next))
+    } else {
+      window.localStorage.removeItem(storageKey)
+    }
+
+    listeners.forEach(listener => listener(next))
   }
 
   return {
@@ -109,6 +145,7 @@ export function createBrowserProfileBridge({
 
         return result
       }
-    }
+    },
+    profileChanged
   }
 }
