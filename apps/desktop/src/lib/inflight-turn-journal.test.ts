@@ -63,6 +63,27 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+it('parses a journal kept for recovered rows once across idle commits, and afresh when it changes', () => {
+  const runtime = (extra: Partial<ChatMessage>) => assistant('assistant-stream-rt', 'partial answer', { runtimeTurnStartedAt: 10, ...extra })
+  persistInFlightTurnState(journalState({ messages: [runtime({ pending: true })], streamId: 'assistant-stream-rt' }))
+  vi.advanceTimersByTime(400)
+  expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+  const parse = vi.spyOn(JSON, 'parse')
+  const journalParses = () => parse.mock.calls.filter(([raw]) => String(raw).startsWith('{"messages"')).length
+  const idle = journalState({ busy: false, messages: [runtime({ recovered: true })], streamId: null })
+
+  persistInFlightTurnState(idle)
+  persistInFlightTurnState(idle)
+  expect(journalParses()).toBe(0)
+  expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+
+  // Another window rewrote the entry: it is read as written.
+  const key = sessionStorageKey('stored-1')
+  window.localStorage.setItem(key, window.localStorage.getItem(key)!.replace('partial answer', 'newer answer'))
+  expect(chatMessageText(readInFlightTurnJournal('stored-1')!.messages[0])).toBe('newer answer')
+  parse.mockRestore()
+})
+
 describe('persistInFlightTurnState', () => {
   it.each([true, false])('retains explicit user provenance %s through the recovery journal', userOriginated => {
     persistInFlightTurnState(journalState({
