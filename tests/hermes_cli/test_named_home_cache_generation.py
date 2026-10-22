@@ -291,3 +291,20 @@ def test_cached_config_cannot_bypass_named_profile_retirement(named_home, reader
 
     with pytest.raises(FileNotFoundError, match="missing or being deleted"):
         reader()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="needs a non-root owner")
+def test_root_config_load_never_backfills_another_users_named_home(named_home, monkeypatch):
+    """``sudo hermes -p worker ...`` loads the invoking user's profile: a marker or ``profiles/.locks``
+    created there would be root's and lock the owner out of every named state.db. A member of a
+    group-shared install is not the owner either, and still backfills."""
+    owner = os.geteuid()
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    config.ensure_hermes_home()
+    assert not (named_home / ".profile-incarnation").exists()
+    assert not (named_home.parent / ".locks").exists()
+
+    monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+    config.ensure_hermes_home()
+    assert (named_home / ".profile-incarnation").is_file()

@@ -81,10 +81,18 @@ def _adopt_profile_incarnation(home: Path) -> None:
     Only TRIES the lifecycle lease: config loads run under gateway locks that
     lease holders take next, so a busy lease leaves this pass unmemoized (the
     next load retries) instead of waiting. Tombstoned homes are never backfilled.
+    Nor does a root process (``sudo hermes -p <name>``) backfill a home another uid owns:
+    the lock and marker would be root's, and the owner could no longer open the profile.
     """
     from hermes_cli.profile_incarnation import ensure_profile_incarnation
     from hermes_cli.profile_lifecycle import profile_lifecycle_lease
 
+    if getattr(os, "geteuid", lambda: -1)() == 0:
+        try:
+            if home.stat().st_uid != 0:
+                return
+        except OSError:
+            return
     with suppress(OSError, RuntimeError), profile_lifecycle_lease(home, timeout=0):
         ensure_profile_incarnation(home)
 
