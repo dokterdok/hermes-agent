@@ -296,6 +296,48 @@ def test_update_recompiles_only_products_whose_inputs_changed(source_products):
     assert products() == ["web"]
 
 
+@pytest.mark.parametrize("built,current,prep_fails,rebuilds", [
+    (True, False, False, 1),  # a built renderer whose inputs changed: rebuilt
+    (True, False, True, 1),  # its dependencies are private: a failed checkout preparation does not skip it
+    (True, True, False, 0),  # current: reused
+    (False, False, False, 0),  # never built: the update does not start building it
+])
+def test_update_rebuilds_a_built_webapp_renderer_only_when_stale(tmp_path, monkeypatch, built, current,
+                                                                 prep_fails, rebuilds):
+    from hermes_cli import source_build as sb
+
+    for name in ("ui-tui/package.json", "apps/desktop/package.json"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    if built:
+        (tmp_path / "apps/desktop/dist-webapp").mkdir()
+        (tmp_path / "apps/desktop/dist-webapp/index.html").write_text("pre-update bundle", encoding="utf-8")
+    builds = []
+
+    def prepare(*args, **kwargs):
+        if prep_fails:
+            raise OSError("checkout node_modules is locked")
+
+    monkeypatch.setattr(sb, "prepare_source_dependencies", prepare)
+    monkeypatch.setattr(sb, "source_build_env", lambda *a, **k: {"HERMES_WEB_BUILD_LIGHT": "1"})
+    monkeypatch.setattr(sb, "source_product_current", lambda root, product, out: product != "webapp" or current)
+    monkeypatch.setattr(sb, "build_source_webapp", lambda root, **k: builds.append(k))
+    monkeypatch.setattr("hermes_cli.main_install_repair._install_configured_features_missing_deps", lambda root: None)
+    monkeypatch.setattr("hermes_cli.update_stage.publish_stage", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.memory_provider_migration.migrate_all_homes", lambda: None)
+    monkeypatch.setattr("hermes_cli.left_core_migration.migrate_all_homes", lambda: None)
+    if prep_fails:
+        with pytest.raises(sb.ProductBuildError) as failed:
+            sb.build_update_products(tmp_path, desktop=False)
+        assert [name for name, _ in failed.value.failures] == ["Node dependencies"]
+    else:
+        sb.build_update_products(tmp_path, desktop=False)
+    assert len(builds) == rebuilds
+    for build in builds:  # installs allowed, bounded like the update's dashboard build (#63338)
+        assert build["explicit"] and build["env"]["RAYON_NUM_THREADS"] == "1"
+        assert "--max-old-space-size=1024" in build["env"]["NODE_OPTIONS"]
+
+
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("step", ["tui", "web", "desktop"])
 def test_update_failure_raises_without_retries_or_replacing_live_app(source_products, step):

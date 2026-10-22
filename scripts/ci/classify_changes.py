@@ -375,6 +375,7 @@ _UPDATE_DEPENDENCIES = (
     # tui, web, desktop and their shared frontend-common).
     "scripts/build/",
     "apps/desktop/scripts/build-webapp.mjs",  # source_build's Webapp renderer build
+    "hermes_cli/webapp.py",  # the update rebuilds a built Webapp renderer under its build lock
 )
 # General-purpose modules an entry point imports but that half the product
 # imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The
