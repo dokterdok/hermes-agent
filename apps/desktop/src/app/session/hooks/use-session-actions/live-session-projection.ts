@@ -58,18 +58,28 @@ function currentTurnUserRun(
   messages: ChatMessage[],
   latestUserIndex: number,
   projection: LiveSessionProjection,
-  belongsToCurrentTurn: (message: ChatMessage) => boolean
+  belongsToCurrentTurn: (message: ChatMessage) => boolean,
+  hasTurnBoundary: boolean
 ): ChatMessage[] {
   // A same-text prompt can legitimately start a new turn. If the latest human
   // row is followed by a completed reply from BEFORE this live turn, it is
   // historical and must not suppress the newly accepted inflight copy. Missing
   // timestamps fail toward preserving the prompt: a duplicate can reconcile on
-  // the next hydrate, while a dropped accepted turn cannot be recovered.
+  // the next hydrate, while a dropped accepted turn cannot be recovered. With
+  // no turn boundary at all (older gateways) only a reply that ended its turn
+  // counts: a flushed tool round, whose last part is still a tool call, is the
+  // running turn's own progress.
   const hasPriorCompletedReplyAfterLatestUser =
     latestUserIndex >= 0 &&
     messages
       .slice(latestUserIndex + 1)
-      .some(message => message.role === 'assistant' && !isLiveTailRow(message) && !belongsToCurrentTurn(message))
+      .some(
+        message =>
+          message.role === 'assistant' &&
+          !isLiveTailRow(message) &&
+          !belongsToCurrentTurn(message) &&
+          (hasTurnBoundary || message.parts.at(-1)?.type !== 'tool-call')
+      )
 
   const latestUserBelongsToCurrentTurn =
     latestUserIndex >= 0 &&
@@ -236,7 +246,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // before run_conversation stamps its user row. Use that boundary only for
   // turn membership, never transcript ordering (SQLite row ids own ordering).
   const belongsToCurrentTurn = (message: ChatMessage) => committedDuringTurn(turnStartedAt, message.timestamp)
-  const latestUserRun = currentTurnUserRun(messages, latestUserIndex, projection, belongsToCurrentTurn)
+  const hasTurnBoundary = turnStartedAt !== null
+  const latestUserRun = currentTurnUserRun(messages, latestUserIndex, projection, belongsToCurrentTurn, hasTurnBoundary)
 
   const persistedInLatestRun = (text: string): boolean =>
     latestUserRun.some(
