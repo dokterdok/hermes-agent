@@ -84,6 +84,14 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return result
 
 
+    def _task_outputs(self, room, task):
+        from gateway.hosted_room_outputs import attempt_outputs
+        return attempt_outputs(self, room, task)
+
+    def _commit_task_outputs(self, room, publication):
+        from gateway.hosted_room_outputs import commit_outputs
+        commit_outputs(self, room, publication.events)
+
     def bindings(self):
         with self.authority.db._read_ctx() as conn:
             owned = {r[0][len(_OWNER):] for r in conn.execute(

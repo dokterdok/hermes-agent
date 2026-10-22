@@ -590,6 +590,8 @@ def _build_prompt(
         "- Reply with one conversational message only when you have something new worth adding.",
         '- If you have nothing new to add, reply with exactly "(pass)".',
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
+        *(["- To hand off a file, call share_group_file; never paste a local path into chat."]
+          if _peer_id(member) is None else []),
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     # File lines are reserved before messages are chosen, so a long thread never crowds them out.
     attachment_lines = _attachment_prompt_lines(attachments)
@@ -857,12 +859,16 @@ def _settled_effects(
     text = _truncate_utf8_text(
         _terminal_text(result, field="text", fallback=""), max_bytes=MAX_MEMBER_TEXT_BYTES,
         suffix=_TRUNCATED_REPLY_NOTICE)
+    # Files the Bot shared during the turn ride on its one member message, even after "(pass)".
+    attachments = _message_manifest(result.get("attachments", [])) if isinstance(result, Mapping) else []
+    if attachments and is_pass_text(text):
+        text = "Shared " + ", ".join(attachment["name"] for attachment in attachments) + "."
     if is_pass_text(text):
         return {"message_event_id": None, "passed": True}, []
     return {"message_event_id": message_event_id, "passed": False}, [EventPlan(
         event_id=message_event_id, kind="message.member", actor=_member_actor(task.member),
-        payload={**_turn_coordinates(task), "text": text}, authority_gateway_id=room.gateway_id,
-        authority_epoch=room.authority_epoch)]
+        payload={**_turn_coordinates(task), "text": text, **({"attachments": attachments} if attachments else {})},
+        authority_gateway_id=room.gateway_id, authority_epoch=room.authority_epoch)]
 
 
 def _failed_effects(result: Any, **_: Any) -> Effects:

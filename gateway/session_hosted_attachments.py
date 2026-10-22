@@ -26,6 +26,10 @@ def _authorize(service, actor, params, capability):
 
 def upload(service, actor, params):
     room_id = _authorize(service, actor, params, 'session:submit')
+    from gateway.hosted_room_outputs import OUTPUT_UPLOAD_PREFIX
+    if str(params.get('upload_id') or '').startswith(OUTPUT_UPLOAD_PREFIX):
+        # Reserved for files a Bot shares; a client upload must never pose as one.
+        raise RuntimeStoreError('invalid_params')
     encoded = params.get('data_base64')
     if not isinstance(encoded, str) or len(encoded) > ((MAX_ATTACHMENT_BYTES + 2) // 3) * 4:
         raise RuntimeStoreError('invalid_params')

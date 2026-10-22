@@ -397,16 +397,29 @@ class HostedRoomService:
                 # Finish an already visible immutable reply even if a later request arrived.
                 task_events = [event for event in task_events if event["kind"] != "message.user"
                                or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
+            outputs = self._task_outputs(room, task) if status == "settled" else []
+            result = task.get("result")
+            if outputs:
+                result = {**(result if isinstance(result, Mapping) else {}), "attachments": outputs}
             publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
+                room, task_events, plan, status=status, result=result,
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
+            if outputs:
+                self._commit_task_outputs(room, publication)
             for event in publication.events:
                 appended = hosted_rooms.append_event(
                     self.db_path, **event.append_kwargs(room_id), expected_latest_seq=cursor)
                 cursor = max(cursor, int(appended["seq"]))
             changed = True
         return changed
+
+    def _task_outputs(self, room: Mapping[str, Any], task: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Files a settled attempt shared; this server stores none (canonical owners override)."""
+        return []
+
+    def _commit_task_outputs(self, room: Mapping[str, Any], publication: discussion.PublicationPlan) -> None:
+        """Bind shared files to the member message about to be appended (canonical owners)."""
 
     def _append_room_status(
         self, room: Mapping[str, Any], decision: discussion.DiscussionDecision) -> None:

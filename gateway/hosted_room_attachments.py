@@ -669,6 +669,26 @@ class HostedRoomAttachmentStore:
             )
             return self._metadata(row, idempotent=True)
 
+    def staged_uploads(
+        self, *, room_id: Any, upload_prefix: str, event_id: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Unexpired uploads whose id starts with ``upload_prefix``, in upload order: those still
+        uncommitted, plus those already committed to ``event_id`` when one is given."""
+
+        room_id = _identifier(room_id, label="room_id")
+        event_id = _identifier(event_id, label="event_id") if event_id is not None else None
+        now = float(self.clock())
+        with self._transaction() as conn:
+            rows = conn.execute(
+                """SELECT * FROM hosted_room_attachments
+                    WHERE room_id=? AND substr(upload_id, 1, ?)=?
+                      AND (state='uploaded' OR (state='committed' AND event_id=?))
+                      AND (expires_at IS NULL OR expires_at > ?)
+                    ORDER BY created_at, upload_id""",
+                (room_id, len(upload_prefix), upload_prefix, event_id, now),
+            ).fetchall()
+        return [{**self._metadata(row), "upload_id": str(row["upload_id"])} for row in rows]
+
     def commit_message(
         self,
         *,
