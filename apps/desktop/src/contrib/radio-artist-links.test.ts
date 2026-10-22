@@ -81,4 +81,17 @@ describe('Radio artist credits', () => {
     expect(await resolveArtist('Dav Dralleon', signal(), ctx)).toBe(spotify)
     expect(fetch.mock.calls.at(-1)?.[0]).toContain(`/artist/${id}?inc=url-rels`)
   })
+
+  it('still resolves a MusicBrainz profile where the browser has no Web Locks (plain-HTTP origin)', async () => {
+    expect(navigator.locks).toBeUndefined()
+    const id = '08d6699f-ec17-434c-a922-3684531840d1'
+    const spotify = 'https://open.spotify.com/artist/5V8x0GqH9GCBPl1fYeOhuB'
+
+    vi.stubGlobal('fetch', vi.fn()
+      .mockRejectedValueOnce(new Error('Apple unavailable'))
+      .mockResolvedValueOnce(json({ artists: [{ name: 'Dav Dralleon', id, score: 100 }] }))
+      .mockResolvedValueOnce(json({ relations: [{ type: 'free streaming', url: { resource: spotify } }] })))
+
+    expect(await resolveArtist('Dav Dralleon', signal(), ctx)).toBe(spotify)
+  })
 })

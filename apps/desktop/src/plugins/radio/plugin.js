@@ -1,7 +1,7 @@
 import {
   atom, Button, createBudgetedLoop, GlyphSpinner, icons, Popover, PopoverContent, PopoverTrigger, randomUuid,
   RowButton, SearchField, STATUSBAR_AREAS, Tip, usePluginI18n,
-  useQuery, useValue
+  useQuery, useValue, withWebLock
 } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
@@ -454,7 +454,7 @@ function trackCredit(source) {
 
 async function artistRequest(path, signal, ctx) {
   // The lock and persisted timestamp pace lookups across desktop windows.
-  return navigator.locks.request('hermes:radio:artist-lookup', { signal }, async () => {
+  return withWebLock('hermes:radio:artist-lookup', async () => {
     const delay = Math.max(0, 1100 - (Date.now() - ctx.storage.get('local.artistRequestAt', 0)))
     if (delay) await new Promise(resolve => setTimeout(resolve, delay))
     signal.throwIfAborted()
@@ -465,7 +465,7 @@ async function artistRequest(path, signal, ctx) {
     })
     if (!response.ok) throw new Error(`Artist lookup: HTTP ${response.status}`)
     return response.json()
-  })
+  }, signal)
 }
 
 function artistProfile(relations) {

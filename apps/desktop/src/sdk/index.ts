@@ -1899,6 +1899,10 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+/** Cross-window mutual exclusion: Web Locks where the browser has them, else a storage lease.
+ *  A Webapp opened over plain HTTP from another machine has no Web Locks but can have other
+ *  windows, so never read a missing `navigator.locks` as "no other window". */
+export { withWebLock } from '@/lib/web-locks'
 export { gatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen
