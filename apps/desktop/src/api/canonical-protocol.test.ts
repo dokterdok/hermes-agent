@@ -242,3 +242,28 @@ test('a message-level branch carries its durable boundary row; a whole-chat bran
   expect(() => protocol.prepare('session.branch', { session_id: 's', count: 2 })).toThrow(/not saved yet/)
   expect(protocol.prepare('session.branch', { session_id: 's' })).toMatchObject({ payload: {} })
 })
+
+test('mints v4 create, submit and mutation ids where crypto.randomUUID is absent (plain-HTTP LAN origin)', () => {
+  const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  const targets = [globalThis.crypto, Object.getPrototypeOf(globalThis.crypto)]
+  const saved = targets.map(target => Object.getOwnPropertyDescriptor(target, 'randomUUID'))
+  targets.forEach(target => Object.defineProperty(target, 'randomUUID', { configurable: true, value: undefined }))
+
+  try {
+    const protocol = new CanonicalDesktopProtocol()
+    protocol.result('session.resume', { profile: 'default', session_id: 's' }, { session_id: 's', revision: 2, execution_generation: 3 })
+
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['session.create', { profile: 'default', source: 'desktop' }, 'request_id'],
+      ['prompt.submit', { profile: 'default', session_id: 's', text: 'hi' }, 'submission_id'],
+      ['session.title', { profile: 'default', session_id: 's', title: 't' }, 'request_id']
+    ]
+
+    for (const [method, params, key] of cases) {
+      expect(JSON.stringify(protocol.prepare(method, params)).match(new RegExp(`"${key}":"([^"]+)"`))?.[1]).toMatch(V4)
+    }
+  } finally {
+    targets.forEach((target, index) =>
+      saved[index] ? Object.defineProperty(target, 'randomUUID', saved[index]) : Reflect.deleteProperty(target, 'randomUUID'))
+  }
+})

@@ -734,3 +734,12 @@ export function reconcileLocalLiveProjection(
     previousMessages: removeRepresentedLocalLiveProjection(localMessages, projection)
   }
 }
+
+/** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
+export function livePromptStreamId(
+  ...projections: ({ streamId: string } | null)[]
+): { awaitingResponse: false; sawAssistantPayload: true; streamId: string } | Record<string, never> {
+  const live = projections.find(Boolean)
+
+  return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
+}

@@ -123,6 +123,8 @@ import { desktopSettings } from './settings'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
+/** The master-detail toolkit (`PanelList`, `PanelDetail`, …); see `./panel`. */
+export * from './panel'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
 
@@ -1635,33 +1637,6 @@ export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
  *  that prints a next run switches its label on this (`t.cron.next` →
  *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
 export { nextRunOverdueMs } from '@/app/cron/job-state'
-/** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
- *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
- *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
- *  `PanelEmpty` is the icon+action empty state (plain `EmptyState` is title +
- *  description only, and silently drops an `icon`). A row takes a custom `lead`
- *  (avatar/swatch), trailing `meta`, and `menuItems` for kebab + right-click
- *  parity, so a roster needs no hand-rolled row. The overlay-bound `Panel` root
- *  is deliberately NOT exported — these compose inside a pane just as well. */
-export {
-  PanelAction,
-  PanelAddButton,
-  PanelBlock,
-  PanelBody,
-  PanelDetail,
-  PanelEmpty,
-  PanelHeader,
-  PanelList,
-  PanelListRow,
-  type PanelMenuItem,
-  PanelMeta,
-  type PanelMetaRow,
-  PanelPill,
-  type PanelPillTone,
-  PanelRowMenu,
-  PanelSectionLabel
-} from '@/app/overlays/panel'
-
 export {
   type ProfileGroupHeaderContribution,
   type ProfileGroupRoute,
@@ -1989,6 +1964,9 @@ export { compactNumber } from '@hermes/shared'
  *  `approvals.timeout` (300s) so a plugin answering an approval never rejects
  *  its own RPC while the backend still applies the decision (#60654). */
 export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
+/** THE id minter: a v4 UUID in every browser context. `crypto.randomUUID` exists only on
+ *  secure origins, so a Webapp opened over plain HTTP from another machine has none. */
+export { randomUuid } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {

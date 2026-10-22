@@ -455,6 +455,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
  *  the `vi.mock` factory rather than hoisted alongside it. */
 export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
+  const { randomUuid } = await import('@hermes/shared')
   const { Textarea } = await import('@/components/ui/textarea')
 
   return {
@@ -475,6 +476,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     MessageTextContent: undefined,
     Streamdown: undefined,
     queryClient: { invalidateQueries: () => undefined },
+    randomUuid,
     useQuery: () => ({ data: [], isLoading: false }),
     useValue: <T>(store: { get: () => T }) => store.get()
   }

@@ -9,7 +9,7 @@
  * store, one writer.
  */
 
-import { atom, host } from '@hermes/plugin-sdk'
+import { atom, host, randomUuid } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
@@ -1702,14 +1702,6 @@ export function setGroupChatImage(group: string, image: null | string | undefine
   })
 }
 
-function groupChatEntryId(): string {
-  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID()
-  }
-
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-}
-
 /** The agent loop's "(empty)" terminal sentinel (empty_response_exhausted) is
  *  a FAILURE marker, never bot text. Mirror gateway/run.py's user-friendly
  *  substitution so the room log never shows the raw sentinel. */
@@ -1736,7 +1728,7 @@ export function appendGroupChatEntry(
   const lastEntry = priorLog[priorLog.length - 1]
 
   const entry: GroupMessage = {
-    id: groupChatEntryId(),
+    id: randomUuid(),
     // Strictly after the tail: the gateway mirror merge re-sorts the log by
     // `at` (id breaks ties), and watermarks are log INDICES. Two rows in one
     // millisecond (or a clock step back) would come back shuffled — a user

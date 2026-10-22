@@ -1,3 +1,4 @@
+import { randomUuid } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
@@ -853,10 +854,7 @@ const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url'
  *  handed out twice, so per-tab state keyed by it (`$browserPages`, the console
  *  buffer) cannot resurface under a later tab if a close ever fails to wipe it. */
 function mintBrowserTabId(): RightRailTabId {
-  const unique =
-    globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-
-  return `url:browser-${unique}`
+  return `url:browser-${randomUuid()}`
 }
 
 /** The Browser a URL should open in: the one you're looking at, else the one

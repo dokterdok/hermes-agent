@@ -1,3 +1,4 @@
+import { randomUuid } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
@@ -158,7 +159,7 @@ import { branchCreateKey } from './branch-create-key'
 import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
-import { appendLiveSessionProjection, reconcileLocalLiveProjection } from './live-session-projection'
+import { appendLiveSessionProjection, livePromptStreamId, reconcileLocalLiveProjection } from './live-session-projection'
 import { reconcilePersistedSessionTurn } from './persisted-session-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
@@ -333,15 +334,6 @@ function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: strin
   }
 
   return changed ? next : messages
-}
-
-/** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
-function livePromptStreamId(
-  ...projections: ({ streamId: string } | null)[]
-): { awaitingResponse: false; sawAssistantPayload: true; streamId: string } | Record<string, never> {
-  const live = projections.find(Boolean)
-
-  return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
 }
 
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
@@ -656,7 +648,7 @@ export function useSessionActions({
     async (preview: string | null = null, createOverrides?: SessionCreateOverrides): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
-      const createIntent = (createIntentRef.current ??= crypto.randomUUID())
+      const createIntent = (createIntentRef.current ??= randomUuid())
 
       creatingSessionRef.current = true
 
@@ -1105,7 +1097,7 @@ export function useSessionActions({
             options?.route === null || defaultTarget?.route === null,
             workspaceScope.workspaceMode !== 'bots'
           )),
-          request_id: crypto.randomUUID()
+          request_id: randomUuid()
         }
 
         // Same lease chain as createBackendSessionForSend: owner socket held

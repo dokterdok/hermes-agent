@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEffect, useState } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
@@ -1059,5 +1059,31 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onSteer).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+})
+
+describe('useComposerSubmit on an insecure origin (plain-HTTP LAN: no crypto.randomUUID)', () => {
+  const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  const targets = [globalThis.crypto, Object.getPrototypeOf(globalThis.crypto)]
+  const saved = targets.map(target => Object.getOwnPropertyDescriptor(target, 'randomUUID'))
+
+  beforeEach(() =>
+    targets.forEach(target => Object.defineProperty(target, 'randomUUID', { configurable: true, value: undefined })))
+
+  afterEach(() => {
+    cleanup()
+    targets.forEach((target, index) =>
+      saved[index] ? Object.defineProperty(target, 'randomUUID', saved[index]) : Reflect.deleteProperty(target, 'randomUUID'))
+  })
+
+  it('sends a fresh draft with a v4 submission_id', async () => {
+    const { hook, onSubmit } = renderSubmitHook({ text: 'hello from the LAN' })
+
+    act(() => hook.result.current.submitDraft())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]).toEqual([
+      'hello from the LAN',
+      expect.objectContaining({ submission_id: expect.stringMatching(V4) })
+    ])
   })
 })

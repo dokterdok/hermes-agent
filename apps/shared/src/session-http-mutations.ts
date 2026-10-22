@@ -31,7 +31,7 @@ export function createSessionMutationClient() {
           || (snapshot.exists && (!Number.isSafeInteger(snapshot.runtime_generation) || snapshot.runtime_generation! < 0))) {
           throw new Error('Session mutation snapshot unavailable; refresh before trying again')
         }
-        return { request_id: newMutationRequestId(), expected_revision: snapshot.runtime_revision,
+        return { request_id: randomUuid(), expected_revision: snapshot.runtime_revision,
           ...(snapshot.exists ? { expected_generation: snapshot.runtime_generation! } : {}) }
       })
       pending.set(key, prepared)
@@ -54,18 +54,15 @@ export function createSessionMutationClient() {
   }
 }
 
-function newMutationRequestId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+/** An RFC 4122 v4 UUID, the one id minter for renderer and plugin code. `crypto.randomUUID`
+ * exists only in secure contexts, so a Webapp opened over plain HTTP from another machine has
+ * none; `crypto.getRandomValues` exists in every context. Never Math.random or a counter: these
+ * ids are durable idempotency keys, and a colliding one would merge two sends. */
+export function randomUuid(): string {
+  if (typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
   }
-  const bytes = new Uint8Array(16)
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    crypto.getRandomValues(bytes)
-  } else {
-    for (let index = 0; index < bytes.length; index += 1) {
-      bytes[index] = Math.floor(Math.random() * 256)
-    }
-  }
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
   bytes[6] = (bytes[6] & 0x0f) | 0x40
   bytes[8] = (bytes[8] & 0x3f) | 0x80
   const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
