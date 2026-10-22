@@ -7,7 +7,7 @@ import { offersGroupMethod, useGroupMethods } from './canonical-group-capabiliti
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
-import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
+import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, reopenCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
@@ -21,6 +21,27 @@ interface RoomState {
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
   payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
+
+// These reasons prove only that this request had no effect, not that an earlier one had none.
+const TERMINAL_SEND_REFUSALS = new Set(['invalid_params', 'permission_denied', 'unknown_execution', 'stale_generation'])
+
+function sendOutcome(error: unknown): 'refused' | 'retryable' | 'unknown' {
+  const failure = error as { code?: unknown; data?: { reason?: unknown } } | null
+
+  if (failure?.code !== 4001) {return 'unknown'}
+
+  return TERMINAL_SEND_REFUSALS.has(String(failure.data?.reason)) ? 'refused' : 'retryable'
+}
+
+/** A Send is delivered only by a receipt for this exact intent. */
+function confirmSend(result: unknown, eventId: string, unconfirmed: string) {
+  const receipt = result as { accepted?: unknown; client_event_id?: unknown } | null
+
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) ||
+    (Object.hasOwn(receipt, 'accepted') && receipt.accepted !== true) || receipt.client_event_id !== eventId) {
+    throw new Error(unconfirmed)
+  }
+}
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
@@ -53,6 +74,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   // One cancellation intent survives uncertain replies; a confirmed Stop lets the next one start fresh.
   const stopIntent = useRef<string | null>(null)
   const [notice, setNotice] = useState('')
+  const [sendHint, setSendHint] = useState('')
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
   const heldDraft = useRef<{ text: string; attachments: Attachment[] } | null>(null)
@@ -142,8 +164,18 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     }
   }
 
+  // The room's intent is finished with: this window's own words come back, else `words`, else nothing.
+  const releaseComposer = (words?: { text: string; attachments: Attachment[] }) => {
+    const next = heldDraft.current ?? words
+    heldDraft.current = null
+    setPending(null)
+    setDraft(next?.text ?? '')
+    setAttachments(next?.attachments ?? [])
+  }
+
   const send = () => {
     if (!restored || busyRef.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    setSendHint('')
     void mutate(async () => {
       const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments })
 
@@ -154,19 +186,48 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         heldDraft.current = { text: draft, attachments }
       }
 
+      const words = { text: String(exact.params.payload.text ?? ''), attachments: (exact.params.payload.attachments as Attachment[] | undefined) ?? [] }
       setPending(exact)
-      setDraft(String(exact.params.payload.text ?? ''))
-      setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
-      await canonicalGroupRequest(exact.binding, 'groups.send', exact.params)
-      await retireCanonicalGroupSend(exact.binding, exact.params.event_id)
+      setDraft(words.text)
+      setAttachments(words.attachments)
+      const attempt = await attemptCanonicalGroupSend(exact.binding, exact.params.event_id)
 
-      if (alive.current) {
-        const held = heldDraft.current
-        heldDraft.current = null
-        setPending(null)
-        setDraft(held?.text ?? '')
-        setAttachments(held?.attachments ?? [])
+      if (!attempt) {
+        // Another window finished with this intent; resending could post it twice.
+        if (alive.current) {
+          releaseComposer(words)
+          setSendHint(labels.sendSettledElsewhere)
+        }
+
+        return
       }
+
+      try {
+        confirmSend(await canonicalGroupRequest(exact.binding, 'groups.send', exact.params), exact.params.event_id, labels.unconfirmedSend)
+      } catch (error) {
+        const outcome = attempt.first ? sendOutcome(error) : 'unknown'
+        const converged = heldDraft.current !== null
+
+        // A refused first request posted nothing: its words come back for editing (or, with this
+        // room closed, wait unattempted for the next open). Otherwise Retry resends this exact
+        // intent, which the gateway recognizes, so it is never posted twice.
+        const settle = alive.current ? retireCanonicalGroupSend : reopenCanonicalGroupSend
+        const retired = outcome === 'refused' && await settle(exact.binding, exact.params.event_id).then(() => true, () => false)
+
+        if (alive.current) {
+          if (retired) {releaseComposer(words)}
+
+          setSendHint(retired ? converged ? '' : labels.sendRefused
+            : outcome === 'unknown' ? labels.sendMaybe : labels.sendNotYet)
+        }
+
+        throw error
+      }
+
+      // A valid receipt is authoritative: local cleanup never turns a delivered message into a failure.
+      await retireCanonicalGroupSend(exact.binding, exact.params.event_id).catch(error => console.warn('[canonical-group-send]', error))
+
+      if (alive.current) {releaseComposer()}
     })
   }
 
@@ -231,6 +292,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <Button onClick={() => setDiscard(null)}>{labels.cancel}</Button>
     </div>}
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
+    {sendHint && <p aria-live="polite">{sendHint}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
       <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} downloads={offersGroupMethod(methods, 'groups.attachment.download')}
         onChange={setAttachments} onUploadingChange={setUploading} uploads={offersGroupMethod(methods, 'groups.attachment.upload')} />

@@ -9,6 +9,8 @@ export interface PreparedCanonicalGroupSend {
     event_id: string
     payload: Record<string, unknown>
   }
+  /** False until a request first carries this intent. Older entries lack it and count as uncertain. */
+  attempted?: boolean
 }
 
 function journalKey(binding: CanonicalGroupBinding): string {
@@ -69,7 +71,8 @@ async function compareAndSet(
 
 function validEntry(binding: CanonicalGroupBinding, key: string, entry: PreparedCanonicalGroupSend | undefined) {
   if (entry && (journalKey(entry.binding) !== key || entry.params.room_id !== binding.roomId ||
-    !entry.params.event_id || !entry.params.payload || typeof entry.params.payload !== 'object')) {
+    !entry.params.event_id || !entry.params.payload || typeof entry.params.payload !== 'object' ||
+    (entry.attempted !== undefined && typeof entry.attempted !== 'boolean'))) {
     throw new Error('Invalid canonical group Send entry')
   }
 
@@ -102,7 +105,8 @@ export async function prepareCanonicalGroupSend(
       room_id: binding.roomId,
       event_id: eventId,
       payload: { ...payload, thread_id: payload.thread_id ?? eventId }
-    }
+    },
+    attempted: false
   }))
 
   const key = journalKey(binding)
@@ -118,4 +122,37 @@ export async function retireCanonicalGroupSend(binding: CanonicalGroupBinding, e
   const entry = await readCanonicalGroupSend(binding)
 
   if (entry?.params.event_id === eventId) {await compareAndSet(journalKey(binding), JSON.stringify(entry), null)}
+}
+
+/** Record a dispatch before it happens. `first` is true only for the intent's first request: a
+ *  definitive refusal of that one proves nothing was posted, while a refusal of any later request
+ *  leaves the earlier one uncertain. Null when the slot no longer holds this intent: another window
+ *  finished with it (a valid receipt, or a refusal of its first request). */
+export async function attemptCanonicalGroupSend(
+  binding: CanonicalGroupBinding,
+  eventId: string
+): Promise<{ first: boolean } | null> {
+  const key = journalKey(binding)
+  const entry = await readCanonicalGroupSend(binding)
+
+  if (entry?.params.event_id !== eventId) {return null}
+
+  if (entry.attempted !== false) {return { first: false }}
+  const { applied, current } = await compareAndSet(key, JSON.stringify(entry), JSON.stringify({ ...entry, attempted: true }))
+
+  if (applied) {return { first: true }}
+
+  // Another window dispatched it first, or already finished with it.
+  return validEntry(binding, key, current === null ? undefined : JSON.parse(current))?.params.event_id === eventId
+    ? { first: false } : null
+}
+
+/** A definitive refusal of the first request proves the intent posted nothing. When no window is
+ *  left to edit its words, it waits unattempted, so the next Retry gets an honest outcome again. */
+export async function reopenCanonicalGroupSend(binding: CanonicalGroupBinding, eventId: string): Promise<void> {
+  const entry = await readCanonicalGroupSend(binding)
+
+  if (entry?.params.event_id === eventId && entry.attempted === true) {
+    await compareAndSet(journalKey(binding), JSON.stringify(entry), JSON.stringify({ ...entry, attempted: false }))
+  }
 }
