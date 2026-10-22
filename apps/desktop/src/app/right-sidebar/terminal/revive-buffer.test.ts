@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { parseOscCwd } from './cwd-tracking'
-import { cleanReviveSnapshot, mergeReviveSnapshot, resolveLiveSnapshotWindow } from './revive-snapshot'
+import { cleanReviveSnapshot, mergeReviveSnapshot, resolveLiveSnapshotWindow, trimRepeatedPrompt } from './revive-snapshot'
 
 // A default-PowerShell idle prompt: no blank-line separator before it.
 const PS_PROMPT = 'PS C:\\Users\\Aleksandr>'
@@ -124,6 +124,18 @@ describe('mergeReviveSnapshot', () => {
     const truncatedLive = [...FISH_GREETING, 'real output', FISH_PROMPT, FISH_MARKER].join('\r\n')
 
     expect(mergeReviveSnapshot('', truncatedLive, 'fish', false)).toBe(truncatedLive)
+  })
+})
+
+describe('trimRepeatedPrompt', () => {
+  it('drops only trailing rows that repeat the boot prompt, cutting the input byte for byte', () => {
+    const marker = '\u001b[35m❯\u001b[0m '
+
+    expect(trimRepeatedPrompt(`a\nb\r\n\r\n~/repo\r\n${marker}`, ['Welcome', '~/repo', '❯ '])).toBe('a\nb')
+    // A changed first row (another directory) stays; output and an unknown prompt are never touched.
+    expect(trimRepeatedPrompt(`out\r\n~/other\r\n${marker}`, ['~/repo', '❯ '])).toBe('out\r\n~/other')
+    expect(trimRepeatedPrompt('out\r\nlast', ['$ '])).toBe('out\r\nlast')
+    expect(trimRepeatedPrompt('out\r\n$ ', [])).toBe('out\r\n$ ')
   })
 })
 

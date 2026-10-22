@@ -236,3 +236,52 @@ export function resolveLiveSnapshotWindow(
 
   return { keepRestored: start === markerLine, start }
 }
+
+// A repeated boot prompt may account for at most this many trailing rows (the cleanup's own
+// spaced-prompt bound), so a coincidental match can never reach far into output.
+const MAX_PROMPT_ROWS = 3
+
+/** Trim the idle prompt from the end of a snapshot only where it is positively identified: the
+ *  trailing rows that repeat, row for row from the end, what the fresh shell printed at boot
+ *  before any input (its own prompt). Everything else is kept byte for byte: a running command's
+ *  last line, or a short result after a blank line, is output, not a prompt. */
+export function trimRepeatedPrompt(serialized: string, bootRows: readonly string[]): string {
+  const boot = bootRows.map(visibleText)
+
+  while (boot.length && !boot[boot.length - 1]) {
+    boot.pop()
+  }
+
+  const lines = serialized.split(/\r?\n/)
+  let end = lines.length
+
+  while (end > 0 && !visibleText(lines[end - 1])) {
+    end -= 1
+  }
+
+  let matched = 0
+  const limit = Math.min(MAX_PROMPT_ROWS, boot.length, end)
+
+  while (matched < limit && visibleText(lines[end - 1 - matched]) === boot[boot.length - 1 - matched]) {
+    matched += 1
+  }
+
+  if (!matched) {
+    return serialized
+  }
+
+  let keep = end - matched
+
+  while (keep > 0 && !visibleText(lines[keep - 1])) {
+    keep -= 1
+  }
+
+  // Cut at the line break that ends the last kept row: the kept bytes are exactly the input's.
+  let cut = -1
+
+  for (let row = 0; row < keep; row += 1) {
+    cut = serialized.indexOf('\n', cut + 1)
+  }
+
+  return keep ? serialized.slice(0, serialized[cut - 1] === '\r' ? cut - 1 : cut) : ''
+}
