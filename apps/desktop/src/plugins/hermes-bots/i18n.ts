@@ -293,7 +293,7 @@ const en: BotsMessages = {
       `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
     pictureGenerationFailed: 'Group picture generation failed',
     nameTaken: name => `A group named “${name}” already exists.`,
-    memberCount: count => `${count} bots`,
+    memberCount: count => `${count} ${count === 1 ? 'bot' : 'bots'}`,
     you: 'You',
     availableCount: (available, total) => `${available} of ${total} available`,
     settingsHint: group => `Group settings — rename ${group} or set a room picture`,

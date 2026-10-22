@@ -19,7 +19,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BotRow } from './bot-row'
+import { BotRow, GroupRow } from './bot-row'
 import { $groupChats } from './group-chat'
 import { translateBotsIn } from './i18n-test-helper'
 import type { RosterRow } from './types'
@@ -95,6 +95,29 @@ describe('group-turn presence', () => {
     expect(moods()).toEqual(['think', 'idle'])
     act(() => $groupChats.set({}))
     expect(moods()).toEqual(['idle', 'idle'])
+  })
+})
+
+describe('classic group row', () => {
+  // A Bot's "Create & join" makes a one-Bot group, so the row can say "1".
+  it.each([
+    [1, '1 bot'],
+    [2, '2 bots']
+  ])('counts %i member(s) as "%s"', (count, label) => {
+    const members = ['research', 'builder'].slice(0, count).map(name => ({ name }))
+    render(
+      <GroupRow
+        active={false}
+        group="Solo"
+        members={members}
+        needsYou={false}
+        onDisband={noop}
+        onNewSection={noop}
+        onOpen={noop}
+      />
+    )
+
+    expect(screen.getAllByRole('button')[0].getAttribute('aria-label')).toMatch(new RegExp(`^Solo, ${label}, `))
   })
 })
 
