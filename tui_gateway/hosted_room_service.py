@@ -513,12 +513,20 @@ class HostedRoomService:
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
                 for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)}
-            for task in tasks.values():
-                own_cancel_id = (
-                    task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
-                result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
-                if result["status"] == "stopping":
-                    pending += 1
+        # Cancel outside the lock: it reads member sessions on the owner loop, which publishes a
+        # reply that just finished under this lock. A task admitted meanwhile is behind the stop
+        # fence, which prepare_room re-checks after admission.
+        for task in tasks.values():
+            own_cancel_id = (
+                task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
+            # End needs only the interrupt delivered to a local Bot: nothing it revokes is
+            # needed to finish stopping that turn. A peer must confirm, as End revokes its route.
+            accept_delivered = require_acknowledged and not self._member_is_peer(room_id, str(
+                task["payload"].get("target_member_id") or task["payload"]["target_profile"]))
+            result = self.runtime.cancel(
+                task["identity"], cancel_id=own_cancel_id or cancel_id, accept_delivered=accept_delivered)
+            if result["status"] == "stopping":
+                pending += 1
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()

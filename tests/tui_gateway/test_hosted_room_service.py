@@ -328,7 +328,7 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
         assert room_id == "room-1"
         return [dict(task)] if task["status"] == status else []
 
-    def cancel(_identity, *, cancel_id):
+    def cancel(_identity, *, cancel_id, accept_delivered=False):
         calls.append(cancel_id)
         task["status"] = "stopping"
         task["cancel_id"] = cancel_id

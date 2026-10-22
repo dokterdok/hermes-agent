@@ -210,11 +210,14 @@ class HostedRoomRuntime:
                 "last_error": self._last_error, "cycles": self._cycles}
 
     # ------------------------------------------------------------------ public ops
-    def cancel(self, identity: state.TaskIdentity, *, cancel_id: str) -> dict[str, Any]:
+    def cancel(
+        self, identity: state.TaskIdentity, *, cancel_id: str, accept_delivered: bool = False
+    ) -> dict[str, Any]:
         """Persist a stop intent, then commit cancellation after acknowledgement.
 
-        The worker transitions tasks concurrently, so the status read is only a routing
-        hint: a fast-path fence failure re-reads and re-routes instead of surfacing it.
+        ``accept_delivered`` also counts a delivered interrupt as acknowledgement (End of a
+        local Bot's turn). The worker transitions tasks concurrently, so the status read is
+        only a routing hint: a fast-path fence failure re-reads and re-routes instead.
         """
         for _ in range(_CANCEL_ROUTE_RETRIES):
             before = state.get_task(self.db_path, identity)
@@ -237,8 +240,10 @@ class HostedRoomRuntime:
                         lease = self._ensure_lease(binding)
                         if self._peer_stop_acknowledged(binding, result) or (
                             not self._settle_stopping_completion(binding, result, lease)
-                            and self._interrupt_stopping_task(binding, result)):
-                            self._complete_cancel(result, cancel_id=cancel_id)
+                            and self._interrupt_stopping_task(
+                                binding, result, accept_delivered=accept_delivered)):
+                            # A deadline that owns this Stop keeps its time-limit failure.
+                            self._complete_acknowledged_stop(binding, result, lease)
                 except Exception as exc:
                     self._record_error(f"stop remains pending: {exc}")
             self.wakeup()
@@ -368,7 +373,9 @@ class HostedRoomRuntime:
             and str(info.get("task_id") or "") == task["identity"].task_id
             and int(info.get("execution_generation") or 0) == int(task["execution_generation"]))
 
-    def _interrupt_stopping_task(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
+    def _interrupt_stopping_task(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], *, accept_delivered: bool = False
+    ) -> bool:
         transport, profile, session_id = self._open_session(binding, task)
         if session_id is None:
             # A local turn cannot survive without its canonical session, so an authoritative
@@ -384,7 +391,7 @@ class HostedRoomRuntime:
         result = transport.interrupt(
             **_session_kw(profile, session_id), expected_task_id=task["identity"].task_id)
         return result is not None and (
-            result.get("interrupted") is True
+            accept_delivered or result.get("interrupted") is True
             or str(result.get("status") or "") in _STOP_ACK_STATUSES)
 
     def _settle_stopping_completion(
