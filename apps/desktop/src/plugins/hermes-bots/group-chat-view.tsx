@@ -650,8 +650,10 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
       .then(result => { if (!cancelled) {setCapability({ source, mode: groupExecutionMode(result) })} })
       .catch(e => {
         if (!cancelled) {
-          setCapability({ source, mode: 'unavailable' })
-          setError(String(e))
+          const failed = groupExecutionMode(undefined, e)
+          setCapability({ source, mode: failed })
+
+          if (failed === 'unavailable') {setError(String(e))}
         }
       })
 

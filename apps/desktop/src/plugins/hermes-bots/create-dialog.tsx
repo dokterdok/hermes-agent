@@ -1263,7 +1263,8 @@ async function revalidateGroupCreationMode(
     throw new Error(unavailableMessage)
   }
 
-  const freshMode = groupExecutionMode(await canonicalGroupRequest<unknown>(route, 'groups.capabilities'))
+  const freshMode = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+    .then(value => groupExecutionMode(value), error => groupExecutionMode(undefined, error))
 
   if (!sourceCurrent() || freshMode !== mode) {
     throw new Error(unavailableMessage)

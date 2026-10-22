@@ -188,6 +188,19 @@ it.each(refused)('classifies %j as unavailable on both surfaces: no legacy rende
   expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'groups.capabilities'])
 })
 
+it('keeps a server without the group surface classic', async () => {
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {throw Object.assign(new Error('unknown method: groups.capabilities'), { code: -32601 })}
+
+    if (method === 'profiles.configure') {return {}}
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
+  expect(screen.getByRole('textbox')).toBeTruthy()
+  cleanup()
+  expect((await submitDialog()).onCreated).toHaveBeenCalledOnce()
+})
+
 it('keeps positive classifications working: legacy renders and creates locally, canonical creates a gateway room', async () => {
   answer(legacy)
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
