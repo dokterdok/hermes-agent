@@ -28,6 +28,22 @@ export interface CanonicalGroupMessages {
   memberWorking: string
   memberQueued: string
   groupWorking: string
+  files: string
+  searchFiles: string
+  filesLoading: string
+  filesError: string
+  filesExpired: string
+  filesUnavailable: string
+  filesAccess: string
+  filesEmpty: string
+  filesPageEmpty: string
+  filesNoResults: string
+  filesClearSearch: string
+  olderFiles: string
+  newerFiles: string
+  showLatest: string
+  refreshFiles: string
+  filesYou: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -60,7 +76,23 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Upload failed',
     memberWorking: 'Working',
     memberQueued: 'Queued',
-    groupWorking: 'The group is working…'
+    groupWorking: 'The group is working…',
+    files: 'Files',
+    searchFiles: 'Search files',
+    filesLoading: 'Loading files',
+    filesError: 'Files could not be loaded.',
+    filesExpired: 'This list is out of date. Show the latest files to continue.',
+    filesUnavailable: 'Files are temporarily unavailable.',
+    filesAccess: 'Files are unavailable for this Group Chat.',
+    filesEmpty: 'No files shared yet.',
+    filesPageEmpty: 'No files on this page.',
+    filesNoResults: 'No matching files.',
+    filesClearSearch: 'Clear search',
+    olderFiles: 'Older files',
+    newerFiles: 'Newer files',
+    showLatest: 'Show latest',
+    refreshFiles: 'Refresh list',
+    filesYou: 'You'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -91,7 +123,23 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'アップロードに失敗しました',
     memberWorking: '作業中',
     memberQueued: '待機中',
-    groupWorking: 'グループが作業中です…'
+    groupWorking: 'グループが作業中です…',
+    files: 'ファイル',
+    searchFiles: 'ファイルを検索',
+    filesLoading: 'ファイルを読み込み中',
+    filesError: 'ファイルを読み込めませんでした。',
+    filesExpired: 'この一覧は最新ではありません。続けるには最新のファイルを表示してください。',
+    filesUnavailable: 'ファイルを一時的に利用できません。',
+    filesAccess: 'このグループチャットのファイルを利用できません。',
+    filesEmpty: '共有されたファイルはまだありません。',
+    filesPageEmpty: 'このページにファイルはありません。',
+    filesNoResults: '一致するファイルはありません。',
+    filesClearSearch: '検索をクリア',
+    olderFiles: '古いファイル',
+    newerFiles: '新しいファイル',
+    showLatest: '最新を表示',
+    refreshFiles: '一覧を更新',
+    filesYou: 'あなた'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -122,7 +170,23 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上传失败',
     memberWorking: '工作中',
     memberQueued: '排队中',
-    groupWorking: '群组正在处理…'
+    groupWorking: '群组正在处理…',
+    files: '文件',
+    searchFiles: '搜索文件',
+    filesLoading: '正在加载文件',
+    filesError: '无法加载文件。',
+    filesExpired: '此列表已过时。请显示最新文件以继续。',
+    filesUnavailable: '文件暂时不可用。',
+    filesAccess: '此群聊的文件不可用。',
+    filesEmpty: '尚未共享任何文件。',
+    filesPageEmpty: '此页没有文件。',
+    filesNoResults: '没有匹配的文件。',
+    filesClearSearch: '清除搜索',
+    olderFiles: '较早的文件',
+    newerFiles: '较新的文件',
+    showLatest: '显示最新内容',
+    refreshFiles: '刷新列表',
+    filesYou: '你'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -153,7 +217,23 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上傳失敗',
     memberWorking: '工作中',
     memberQueued: '排隊中',
-    groupWorking: '群組正在處理…'
+    groupWorking: '群組正在處理…',
+    files: '檔案',
+    searchFiles: '搜尋檔案',
+    filesLoading: '正在載入檔案',
+    filesError: '無法載入檔案。',
+    filesExpired: '此清單已過時。請顯示最新檔案以繼續。',
+    filesUnavailable: '檔案暫時無法使用。',
+    filesAccess: '此群組聊天的檔案無法使用。',
+    filesEmpty: '尚未共享任何檔案。',
+    filesPageEmpty: '此頁沒有檔案。',
+    filesNoResults: '找不到相符的檔案。',
+    filesClearSearch: '清除搜尋',
+    olderFiles: '較舊的檔案',
+    newerFiles: '較新的檔案',
+    showLatest: '顯示最新內容',
+    refreshFiles: '重新整理清單',
+    filesYou: '您'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -184,7 +264,23 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'فشل الرفع',
     memberWorking: 'يعمل',
     memberQueued: 'في الانتظار',
-    groupWorking: 'المجموعة تعمل…'
+    groupWorking: 'المجموعة تعمل…',
+    files: 'الملفات',
+    searchFiles: 'البحث في الملفات',
+    filesLoading: 'جارٍ تحميل الملفات',
+    filesError: 'تعذر تحميل الملفات.',
+    filesExpired: 'هذه القائمة لم تعد محدّثة. اعرض أحدث الملفات للمتابعة.',
+    filesUnavailable: 'الملفات غير متاحة مؤقتاً.',
+    filesAccess: 'الملفات غير متاحة لهذه المحادثة الجماعية.',
+    filesEmpty: 'لم تتم مشاركة أي ملفات بعد.',
+    filesPageEmpty: 'لا توجد ملفات في هذه الصفحة.',
+    filesNoResults: 'لا توجد ملفات مطابقة.',
+    filesClearSearch: 'مسح البحث',
+    olderFiles: 'ملفات أقدم',
+    newerFiles: 'ملفات أحدث',
+    showLatest: 'عرض الأحدث',
+    refreshFiles: 'تحديث القائمة',
+    filesYou: 'أنت'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -218,7 +314,23 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Не удалось загрузить файл',
     memberWorking: 'Работает',
     memberQueued: 'В очереди',
-    groupWorking: 'Группа работает…'
+    groupWorking: 'Группа работает…',
+    files: 'Файлы',
+    searchFiles: 'Поиск файлов',
+    filesLoading: 'Загрузка файлов',
+    filesError: 'Не удалось загрузить файлы.',
+    filesExpired: 'Этот список устарел. Чтобы продолжить, покажите последние файлы.',
+    filesUnavailable: 'Файлы временно недоступны.',
+    filesAccess: 'Файлы недоступны для этого группового чата.',
+    filesEmpty: 'Файлами ещё не делились.',
+    filesPageEmpty: 'На этой странице нет файлов.',
+    filesNoResults: 'Подходящие файлы не найдены.',
+    filesClearSearch: 'Очистить поиск',
+    olderFiles: 'Более старые файлы',
+    newerFiles: 'Более новые файлы',
+    showLatest: 'Показать последние',
+    refreshFiles: 'Обновить список',
+    filesYou: 'Вы'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -251,7 +363,23 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Échec du téléversement',
     memberWorking: 'En cours',
     memberQueued: 'En attente',
-    groupWorking: 'Le groupe travaille…'
+    groupWorking: 'Le groupe travaille…',
+    files: 'Fichiers',
+    searchFiles: 'Rechercher des fichiers',
+    filesLoading: 'Chargement des fichiers',
+    filesError: 'Impossible de charger les fichiers.',
+    filesExpired: 'Cette liste n’est plus à jour. Affichez les derniers fichiers pour continuer.',
+    filesUnavailable: 'Les fichiers sont temporairement indisponibles.',
+    filesAccess: 'Les fichiers ne sont pas disponibles pour ce groupe.',
+    filesEmpty: 'Aucun fichier partagé pour l’instant.',
+    filesPageEmpty: 'Aucun fichier sur cette page.',
+    filesNoResults: 'Aucun fichier correspondant.',
+    filesClearSearch: 'Effacer la recherche',
+    olderFiles: 'Fichiers plus anciens',
+    newerFiles: 'Fichiers plus récents',
+    showLatest: 'Afficher les plus récents',
+    refreshFiles: 'Actualiser la liste',
+    filesYou: 'Vous'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -285,7 +413,23 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Hochladen fehlgeschlagen',
     memberWorking: 'Arbeitet',
     memberQueued: 'In der Warteschlange',
-    groupWorking: 'Die Gruppe arbeitet…'
+    groupWorking: 'Die Gruppe arbeitet…',
+    files: 'Dateien',
+    searchFiles: 'Dateien durchsuchen',
+    filesLoading: 'Dateien werden geladen',
+    filesError: 'Dateien konnten nicht geladen werden.',
+    filesExpired: 'Diese Liste ist nicht mehr aktuell. Zeigen Sie die neuesten Dateien an, um fortzufahren.',
+    filesUnavailable: 'Dateien sind vorübergehend nicht verfügbar.',
+    filesAccess: 'Für diese Gruppe sind keine Dateien verfügbar.',
+    filesEmpty: 'Noch keine Dateien geteilt.',
+    filesPageEmpty: 'Keine Dateien auf dieser Seite.',
+    filesNoResults: 'Keine passenden Dateien.',
+    filesClearSearch: 'Suche löschen',
+    olderFiles: 'Ältere Dateien',
+    newerFiles: 'Neuere Dateien',
+    showLatest: 'Neueste anzeigen',
+    refreshFiles: 'Liste aktualisieren',
+    filesYou: 'Sie'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -318,6 +462,22 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Error al subir',
     memberWorking: 'Trabajando',
     memberQueued: 'En cola',
-    groupWorking: 'El grupo está trabajando…'
+    groupWorking: 'El grupo está trabajando…',
+    files: 'Archivos',
+    searchFiles: 'Buscar archivos',
+    filesLoading: 'Cargando archivos',
+    filesError: 'No se pudieron cargar los archivos.',
+    filesExpired: 'Esta lista ya no está actualizada. Muestra los archivos más recientes para continuar.',
+    filesUnavailable: 'Los archivos no están disponibles temporalmente.',
+    filesAccess: 'Los archivos no están disponibles para este grupo.',
+    filesEmpty: 'Aún no se han compartido archivos.',
+    filesPageEmpty: 'No hay archivos en esta página.',
+    filesNoResults: 'No hay archivos que coincidan.',
+    filesClearSearch: 'Borrar búsqueda',
+    olderFiles: 'Archivos más antiguos',
+    newerFiles: 'Archivos más recientes',
+    showLatest: 'Mostrar lo más reciente',
+    refreshFiles: 'Actualizar lista',
+    filesYou: 'Tú'
   }
 } satisfies Record<string, CanonicalGroupMessages>
