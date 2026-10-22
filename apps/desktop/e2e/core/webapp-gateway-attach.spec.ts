@@ -231,7 +231,17 @@ test('the Webapp attaches its browser to the profile gateway, which runs every t
         message: `the Webapp exits on SIGTERM\n${webapp.log()}`
       })
       .toBe(true)
-    expect(alive(replacement.pid), 'the gateway outlives the Webapp that started it').toBe(true)
+    // One probe as the Webapp exits would pass a delayed teardown (a unit or scope stop, a
+    // parent-death watchdog polling every few seconds): the gateway must survive a dwell.
+    const dwellEnd = Date.now() + 10_000
+
+    while (Date.now() < dwellEnd) {
+      expect(alive(replacement.pid), 'the gateway outlives the Webapp that started it').toBe(true)
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+
+    // Still serving, not a zombie (alive() accepts one; the census skips it).
+    expect(backendProcesses(sandbox).map(proc => proc.pid)).toEqual([replacement.pid])
   } finally {
     await browser?.close().catch(() => undefined)
     webapp?.child.kill('SIGKILL')
