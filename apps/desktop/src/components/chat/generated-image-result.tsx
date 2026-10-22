@@ -11,10 +11,12 @@ import { generatedImageDimensionsFromResult, generatedImageFromResult } from '@/
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
+  isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
   mediaName
 } from '@/lib/media'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
@@ -67,8 +69,9 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
 
           // A gateway file saves through the host bridge, like every other
           // remote media open: its URL form carries the connection token,
-          // which must never land in a browser's history.
-          if (isRemoteGateway() && isFileMediaPath(image)) {
+          // which must never land in a browser's history. The browser-hosted
+          // Desktop has no URL form at all, so a relative path saves there too.
+          if (isRemoteGateway() && (isFileMediaPath(image) || (isBrowserHostedDesktop() && !isInlineMediaSrc(image)))) {
             void downloadGatewayMediaFile(image).catch(error => notifyError(error, copy.imageDownloadFailed))
           } else {
             void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
