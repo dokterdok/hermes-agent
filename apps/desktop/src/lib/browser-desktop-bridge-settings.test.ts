@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $connection } from '@/store/session'
+import { $newChatProfile } from '@/store/profile'
+import { resolveNewSessionCwd } from '@/store/projects'
+import { $connection, syncConfiguredDefaultProjectDir } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
@@ -27,6 +29,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  $newChatProfile.set(null)
   Reflect.deleteProperty(win, 'hermesDesktop')
   delete win.__HERMES_BASE_PATH__
   clearWebappSession()
@@ -95,5 +98,22 @@ describe('browser default project folder', () => {
 
     await expect(reload().setDefaultProjectDir('/srv/repos/app')).rejects.toThrow()
     expect((await reload().getDefaultProjectDir()).dir).toBeNull()
+  })
+
+  it('starts a new chat in the folder of the profile it is created in, even mid-switch', async () => {
+    const settings = reload()
+    onProfile('arrived')
+    await settings.setDefaultProjectDir('/srv/arrived-repo')
+    onProfile('ops')
+    await settings.setDefaultProjectDir('/srv/ops-repo')
+    onProfile('arrived')
+    await syncConfiguredDefaultProjectDir()
+
+    // selectProfile('ops') pins the next chat, then seeds the fresh draft before the switch publishes.
+    $newChatProfile.set('ops')
+    expect(resolveNewSessionCwd()).toBe('/srv/ops-repo')
+    expect(resolveNewSessionCwd('arrived')).toBe('/srv/arrived-repo')
+    // A profile without a folder starts detached, never in another profile's.
+    expect(resolveNewSessionCwd('research')).toBe('')
   })
 })

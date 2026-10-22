@@ -347,7 +347,15 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
 export type NewChatWorkspaceTarget = null | string | undefined
 
-export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
+// The configured folder a new chat in `profile` starts in. The browser keeps
+// one per profile and reads it at the moment of use, so a chat created
+// mid-switch gets its own profile's folder; Electron's single app-wide value is
+// the synced cache.
+export const getConfiguredDefaultProjectDir = (profile?: null | string): string => {
+  const forProfile = window.hermesDesktop?.settings?.defaultProjectDirFor
+
+  return forProfile ? forProfile(profile)?.trim() || '' : configuredDefaultProjectDir
+}
 
 export async function syncConfiguredDefaultProjectDir(shouldPublish: () => boolean = () => true): Promise<string> {
   const settings = window.hermesDesktop?.settings?.getDefaultProjectDir
@@ -1848,7 +1856,7 @@ export const $currentCwdExplicit = atom(false)
 
 export const setCurrentCwdExplicit = (next: Updater<boolean>) => updateAtom($currentCwdExplicit, next)
 
-export const workspaceCwdForNewSession = (): string => {
+export const workspaceCwdForNewSession = (profile?: null | string): string => {
   // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
   // rail (which keys off $currentCwd) shows no branch and the first message runs
   // in the gateway's default rather than silently in the last repo you touched.
@@ -1862,7 +1870,7 @@ export const workspaceCwdForNewSession = (): string => {
   // the wrong workspace was the #57911 symptom. Resume/restore still reads
   // the remembered cwd via ensureDefaultWorkspaceCwd (where it remains
   // remote-keyed and intentionally sticky).
-  return getConfiguredDefaultProjectDir()
+  return getConfiguredDefaultProjectDir(profile)
 }
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
