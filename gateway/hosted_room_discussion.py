@@ -576,9 +576,35 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
     return prefix + suffix if prefix else suffix.strip()
 
 
+# Line separators JSON leaves raw outside ASCII: escaped, so a quoted name stays on one line.
+_LINE_SEPARATORS = {0x85: "\\u0085", 0x2028: "\\u2028", 0x2029: "\\u2029"}
+
+
+def _attachment_prompt_lines(attachments: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One line per file the turn carries, in task order; names stay JSON-quoted, so inert, and
+    readable in any script."""
+    if not attachments:
+        return []
+    from gateway.session_ingress_media import _ATTACHMENT_MIMES
+    entries, media = [], False
+    for item in attachments:
+        name = compact_json(item["name"], ensure_ascii=False).translate(_LINE_SEPARATORS)
+        metadata = f"{name} ({item['mime']}, {item['size']} bytes)"
+        if item["mime"] in _ATTACHMENT_MIMES:
+            media = True
+            entries.append(f"- Queued image {metadata} for this turn.")
+        else:
+            entries.append(f"- Staged file {metadata}")
+    lines = ["", "Attachments available to you for this turn:", *entries]
+    if media:
+        lines.append("Queued images are attached to this turn; inspect them rather than treating "
+                     "the filename as content.")
+    return lines
+
+
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
-    seen_through_seq: int) -> str:
+    seen_through_seq: int, attachments: Sequence[Mapping[str, Any]] = ()) -> str:
     # A Bot's own replies are never "new messages" for it, even past its watermark.
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq
              and not (event.kind == "message.member" and event.payload.get("member_id") == member.member_id)
@@ -594,7 +620,9 @@ def _build_prompt(
         '- If you have nothing new to add, reply with exactly "(pass)".',
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
-    fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
+    # File lines are reserved before messages are chosen, so a long thread never crowds them out.
+    attachment_lines = _attachment_prompt_lines(attachments)
+    fixed_bytes = len("\n".join([*opening, *attachment_lines, *rules]).encode("utf-8"))
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
     selected: list[str] = []
     for event in reversed(delta):
@@ -613,7 +641,8 @@ def _build_prompt(
         selected.append(line)
         available -= line_bytes
     selected.reverse()
-    if len((prompt := "\n".join([*opening, *selected, *rules])).encode("utf-8")) > driver.MAX_PROMPT_BYTES:
+    prompt = "\n".join([*opening, *selected, *attachment_lines, *rules])
+    if len(prompt.encode("utf-8")) > driver.MAX_PROMPT_BYTES:
         raise DiscussionValidationError("Discussion prompt exceeds the driver limit")
     return prompt
 
@@ -764,7 +793,7 @@ def plan_next_task(
             seen_through_seq = delta[-1].seq
             prompt = _build_prompt(
                 room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq)
+                seen_through_seq=seen_through_seq, attachments=attachments)
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt, attachments=attachments,
