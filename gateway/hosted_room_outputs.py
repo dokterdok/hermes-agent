@@ -1,11 +1,13 @@
 """A Bot's shared files in a gateway Group Chat: staged during its turn, published with its reply.
 
-``share_group_file`` stages each file as a private, uncommitted upload in the attachment store of
-the profile that runs the turn, under an upload id derived from the exact attempt
-(task id + execution generation). The room owner publishes the files of a *settled* attempt with
-its one member message, exactly like a user message's files: committed, then retained by the
-event append. Nothing else ever commits them, so a stopped, failed, superseded or retried
-attempt's files stay private and the store's uncommitted-upload expiry reclaims them.
+``share_group_file`` stages each file as a private, uncommitted upload in the room owner's
+attachment store, under an upload id derived from the exact attempt (task id + execution
+generation). A member on the owner's profile writes it directly; a member on another profile of
+this host pushes it over the private owner transport, where every chunk is attested against the
+running attempt. The room owner publishes the files of a *settled* attempt with its one member
+message, exactly like a user message's files: committed, then retained by the event append.
+Nothing else ever commits them, so a stopped, failed, superseded or retried attempt's files stay
+private and the store's uncommitted-upload expiry reclaims them.
 """
 
 from __future__ import annotations
@@ -41,12 +43,17 @@ class GroupFileError(ValueError):
 
 @dataclass(frozen=True)
 class HostedTurn:
-    """The exact hosted attempt executing on this profile, and the store its files stage in."""
+    """The exact hosted attempt executing on this profile, and the store its files stage in.
+
+    ``transport`` is the owner-transport binding of a member on another profile of this host:
+    its files go to the room owner's store over the private owner socket instead."""
 
     room_id: str
     task_id: str
     execution_generation: int
     db_path: Path
+    task: Mapping[str, Any] | None = None
+    transport: Mapping[str, Any] | None = None
 
 
 _TURN: ContextVar[HostedTurn | None] = ContextVar("hosted_room_turn", default=None)
@@ -56,8 +63,8 @@ def current_turn() -> HostedTurn | None:
     return _TURN.get()
 
 
-def hosted_attempt(request_id: Any) -> tuple[str, str, int] | None:
-    """``(room_id, task_id, execution_generation)`` of a hosted admission's request id, else None."""
+def hosted_attempt(request_id: Any) -> tuple[dict[str, Any], int] | None:
+    """``(task identity fields, execution_generation)`` of a hosted admission's request id, else None."""
     if not isinstance(request_id, str) or not request_id.startswith("hosted:"):
         return None
     try:
@@ -68,22 +75,20 @@ def hosted_attempt(request_id: Any) -> tuple[str, str, int] | None:
     if (not isinstance(room_id, str) or not room_id or not isinstance(task_id, str) or not task_id
             or type(generation) is not int or generation < 1):
         return None
-    return room_id, task_id, generation
+    return task, generation
 
 
 def hosted_turn_for(authority, ref, row) -> HostedTurn | None:
-    """The hosted attempt an admission executes on this profile, if its files can be published.
-
-    A member on another profile of this host is served through the owner transport; its files
-    would stage in a store the room owner does not read, so it is not bound."""
+    """The hosted attempt an admission executes on this profile, with its owner transport if any."""
     attempt = hosted_attempt(row["request_id"])
     if attempt is None:
         return None
+    task, generation = attempt
     from gateway.session_hosted_transport import _BINDING
     with authority.db._read_ctx() as conn:
-        if conn.execute("SELECT 1 FROM state_meta WHERE key=?", (_BINDING + ref.session_id,)).fetchone():
-            return None
-    return HostedTurn(*attempt, Path(authority.db.db_path))
+        stored = conn.execute("SELECT value FROM state_meta WHERE key=?", (_BINDING + ref.session_id,)).fetchone()
+    return HostedTurn(task["room_id"], task["task_id"], generation, Path(authority.db.db_path), task=task,
+                      transport=json.loads(stored[0]) if stored is not None else None)
 
 
 @contextmanager
@@ -129,20 +134,28 @@ def classify(name: str, data: bytes) -> tuple[str, str]:
     return kind, mime
 
 
+def _limit_refusal(staged: Sequence[Mapping[str, Any]], upload_id: str, size: int) -> str | None:
+    if any(item["upload_id"] == upload_id for item in staged):
+        return None  # the same file again
+    if len(staged) >= MAX_ATTACHMENTS_PER_MESSAGE:
+        return f"A turn can share at most {MAX_ATTACHMENTS_PER_MESSAGE} files."
+    if sum(item["size"] for item in staged) + size > MAX_MESSAGE_ATTACHMENT_BYTES:
+        return f"A turn can share at most {MAX_MESSAGE_ATTACHMENT_BYTES // 1_000_000} MB of files."
+    return None
+
+
 def stage(turn: HostedTurn, *, name: str, data: bytes) -> dict[str, Any]:
     """Stage one file for this attempt; the same name and bytes again is the same file."""
     kind, mime = classify(name, data)
+    if turn.transport is not None:
+        return _push(turn, name=name, data=data)
     store = HostedRoomAttachmentStore(turn.db_path)
-    prefix = output_prefix(turn.task_id, turn.execution_generation)
     upload_id = _upload_id(turn, name)
     with _STAGE_LOCK:
-        staged = store.staged_uploads(room_id=turn.room_id, upload_prefix=prefix)
-        if not any(item["upload_id"] == upload_id for item in staged):
-            if len(staged) >= MAX_ATTACHMENTS_PER_MESSAGE:
-                raise GroupFileError(f"A turn can share at most {MAX_ATTACHMENTS_PER_MESSAGE} files.")
-            if sum(item["size"] for item in staged) + len(data) > MAX_MESSAGE_ATTACHMENT_BYTES:
-                raise GroupFileError(
-                    f"A turn can share at most {MAX_MESSAGE_ATTACHMENT_BYTES // 1_000_000} MB of files.")
+        staged = store.staged_uploads(
+            room_id=turn.room_id, upload_prefix=output_prefix(turn.task_id, turn.execution_generation))
+        if (refusal := _limit_refusal(staged, upload_id, len(data))) is not None:
+            raise GroupFileError(refusal)
         try:
             return store.put(room_id=turn.room_id, upload_id=upload_id, kind=kind, name=name, mime=mime,
                              data=data)
@@ -183,3 +196,105 @@ def commit_outputs(service, room: Mapping[str, Any], events: Sequence[Any]) -> N
         room_id=room["room_id"], event_id=message.event_id, manifest=message.payload["attachments"],
         recipient_member_ids=[m["member_id"] for m in room["members"] if m["member_id"] != author],
         viewer_access=True, hold_until_event=True)
+
+
+# Raw bytes per owner-transport request: base64 plus the attested envelope stays under the
+# private socket's 64 KiB request line (gateway.session_hosted_transport.owner_request).
+_PUSH_CHUNK_BYTES = 40 * 1024
+_SHA256_HEX = frozenset("0123456789abcdef")
+_INCOMING_LOCK = threading.Lock()
+
+
+def _push(turn: HostedTurn, *, name: str, data: bytes) -> dict[str, Any]:
+    """Send one file to the room owner in attested chunks; the last chunk stages it there.
+
+    Every chunk is attested at the owner against the exact running attempt, member and profile
+    (``CanonicalHostedRoomService.attest``), so a stopped or replaced attempt cannot add a file."""
+    import base64
+    from gateway.session_hosted_transport import _attest
+    from hermes_state_runtime import RuntimeStoreError
+    digest = hashlib.sha256(data).hexdigest()
+    params = {"task": dict(turn.task or {}), "execution_generation": turn.execution_generation,
+              "name": name, "size": len(data), "sha256": digest}
+    result: Mapping[str, Any] = {}
+    try:
+        for offset in range(0, len(data), _PUSH_CHUNK_BYTES):
+            result = _attest(turn.transport, "output", {
+                **params, "offset": offset,
+                "data_base64": base64.b64encode(data[offset:offset + _PUSH_CHUNK_BYTES]).decode("ascii")})
+            if result.get("refused"):
+                raise GroupFileError(str(result["refused"]))
+    except RuntimeStoreError as exc:
+        raise GroupFileError("The Group Chat could not receive that file. Try again.") from exc
+    stored = result.get("stored")
+    if not isinstance(stored, Mapping) or stored.get("sha256") != digest:
+        raise GroupFileError("The Group Chat could not receive that file. Try again.")
+    return dict(stored)
+
+
+def receive_output_chunk(service, task: Mapping[str, Any], params: Mapping[str, Any]) -> dict[str, Any]:
+    """Room owner: append one attested chunk of a member's shared file; the last chunk stages it.
+
+    The caller (``CanonicalHostedRoomService.attest``) matched the exact running attempt, member
+    and profile. Chunks arrive in order into a private ``incoming`` file; a file the turn may not
+    share is answered ``refused`` with the reason the Bot is shown."""
+    import base64
+    import binascii
+    import os
+    from hermes_state_runtime import RuntimeStoreError
+    name, size, digest, offset = (params.get(key) for key in ("name", "size", "sha256", "offset"))
+    try:
+        chunk = base64.b64decode(params.get("data_base64") or "", validate=True)
+    except (binascii.Error, ValueError, TypeError) as exc:
+        raise RuntimeStoreError("invalid_params") from exc
+    from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
+    if (not isinstance(name, str) or type(size) is not int or not 0 < size <= MAX_ATTACHMENT_BYTES
+            or not isinstance(digest, str) or len(digest) != 64 or not set(digest) <= _SHA256_HEX
+            or type(offset) is not int or offset < 0 or not chunk or len(chunk) > _PUSH_CHUNK_BYTES
+            or offset + len(chunk) > size):
+        raise RuntimeStoreError("invalid_params")
+    identity = task["identity"]
+    turn = HostedTurn(identity.room_id, identity.task_id, int(task["execution_generation"]), Path(service.db_path))
+    upload_id = _upload_id(turn, name)
+    if offset == 0:
+        staged = HostedRoomAttachmentStore(service.db_path).staged_uploads(
+            room_id=turn.room_id, upload_prefix=output_prefix(turn.task_id, turn.execution_generation))
+        if (refusal := _limit_refusal(staged, upload_id, size)) is not None:
+            return {"refused": refusal}
+    part = _incoming(service.db_path, fresh=offset == 0) / f"{upload_id.replace(':', '-')}-{digest[:16]}.part"
+    with _INCOMING_LOCK:
+        if offset == 0:
+            part.unlink(missing_ok=True)
+        if (part.stat().st_size if part.exists() else 0) != offset:
+            raise RuntimeStoreError("invalid_params")
+        descriptor = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(chunk)
+        if offset + len(chunk) < size:
+            return {"received": offset + len(chunk)}
+        data = part.read_bytes()
+        part.unlink(missing_ok=True)
+    if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+        raise RuntimeStoreError("invalid_params")
+    try:
+        return {"stored": stage(turn, name=name, data=data)}
+    except GroupFileError as exc:
+        return {"refused": str(exc)}
+
+
+def _incoming(db_path: Path | str, *, fresh: bool) -> Path:
+    """The owner's private directory for files arriving in chunks; a new file first drops
+    partial files older than the uncommitted-upload expiry (abandoned transfers)."""
+    import time
+    from gateway.hosted_room_attachments import UNCOMMITTED_TTL_SECONDS, default_attachment_root
+    from hermes_dir_acl import make_user_dir
+    incoming = default_attachment_root(db_path) / "incoming"
+    make_user_dir(incoming, parents=True, exist_ok=True, mode=0o700)
+    if fresh:
+        for stale in incoming.glob("*.part"):
+            try:
+                if stale.stat().st_mtime < time.time() - UNCOMMITTED_TTL_SECONDS:
+                    stale.unlink(missing_ok=True)
+            except OSError:
+                continue
+    return incoming
