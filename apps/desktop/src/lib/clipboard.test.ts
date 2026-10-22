@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createBrowserClipboardBridge } from './browser-clipboard'
 import { installClipboardShim, writeClipboardText } from './clipboard'
+import { copySvgAsPng } from './svg-image'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 
@@ -76,5 +77,47 @@ describe('writeClipboardText', () => {
     desktopWindow.hermesDesktop = { writeClipboard: bridgeWrite } as unknown as Window['hermesDesktop']
 
     await expect(writeClipboardText('payload')).rejects.toThrow('Clipboard write is unavailable')
+  })
+
+  it('copies through a selection where an insecure origin has no Clipboard API, inside a focus trap too', async () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    desktopWindow.hermesDesktop = createBrowserClipboardBridge({ saveBuffer: async () => '' }) as Window['hermesDesktop']
+    installClipboardShim()
+    // A modal dialog that pulls focus back inside itself, as Radix's FocusScope does.
+    const dialog = document.body.appendChild(document.createElement('div'))
+    const trigger = dialog.appendChild(document.createElement('button'))
+
+    const trap = (event: FocusEvent) => {
+      if (!dialog.contains(event.target as Node)) {
+        trigger.focus()
+      }
+    }
+
+    document.addEventListener('focusin', trap)
+    trigger.focus()
+    const copied: string[] = []
+
+    const execCommand = vi.fn((command: string) => {
+      const area = document.activeElement as HTMLTextAreaElement
+      copied.push(`${command}:${area.value.slice(area.selectionStart, area.selectionEnd)}`)
+
+      return true
+    })
+
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
+
+    try {
+      await writeClipboardText('copy me')
+      await copySvgAsPng('<svg/>')
+      // Copy path / Copy link call the bridge directly.
+      expect(await desktopWindow.hermesDesktop!.writeClipboard('/repo/file.ts')).toBe(true)
+      expect(copied).toEqual(['copy:copy me', 'copy:<svg/>', 'copy:/repo/file.ts'])
+      expect(document.querySelector('textarea')).toBeNull()
+      expect(document.activeElement).toBe(trigger)
+    } finally {
+      Reflect.deleteProperty(document, 'execCommand')
+      document.removeEventListener('focusin', trap)
+      dialog.remove()
+    }
   })
 })

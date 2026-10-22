@@ -2,6 +2,7 @@ import type { FreeTierClaimNudgeResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { cancelOAuthSession, listOAuthProviders, pollOAuthSession, startOAuthLogin } from '@/hermes'
+import { writeClipboardText } from '@/lib/clipboard'
 import { gatewayActivationEpoch } from '@/store/gateway'
 import type { FreeTierStatus } from '@/types/hermes'
 
@@ -422,7 +423,7 @@ async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mi
 
 async function copyAndFlash(text: string, field: 'codeCopied' | 'urlCopied') {
   try {
-    await navigator.clipboard.writeText(text)
+    await writeClipboardText(text)
   } catch {
     return
   }
