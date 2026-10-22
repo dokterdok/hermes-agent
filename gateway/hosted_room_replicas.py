@@ -125,6 +125,19 @@ def _replica_row_state(conn: sqlite3.Connection, room_id: str) -> tuple[sqlite3.
     return row, int(row["authority_epoch"]), int(row["last_seq"]), int(row["event_bytes"])
 
 
+def _check_replay(conn: sqlite3.Connection, room_id: str, replayed: list[dict[str, Any]]) -> None:
+    """Refuse already-stored sequences whose events differ: the page belongs to a different room history."""
+    if not replayed:
+        return
+    stored = conn.execute("""SELECT event_id, kind, actor_json, authority_epoch, payload_json
+             FROM hosted_room_replica_events WHERE room_id=? AND seq BETWEEN ? AND ? ORDER BY seq""",
+        (room_id, int(replayed[0]["seq"]), int(replayed[-1]["seq"]))).fetchall()
+    if [tuple(row) for row in stored] != [
+            (e["event_id"], e["kind"], _actor_json(e["actor"]), e.get("authority_epoch"), _payload_json(e["payload"]))
+            for e in replayed]:
+        raise ReplicaError("page conflicts with the stored replica history")
+
+
 def _store_replica(
     conn: sqlite3.Connection, *, is_new: bool, room_id: str, room_name: str, members_json: str,
     authority: dict[str, Any], new_last: int, latest_seq: int, added_bytes: int, now: float) -> None:
@@ -144,7 +157,8 @@ def _store_replica(
 def ingest_page(
     db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None
 ) -> dict[str, Any]:
-    """Persist one verbatim ``read_events()`` page idempotently; refuses seq gaps and epoch regressions."""
+    """Persist one verbatim ``read_events()`` page idempotently; refuses seq gaps, epoch regressions and a replay
+    that differs from the stored copy."""
     room_id = _room_id(room_id)
     room_name = _validate_room_name(room_name)
     _, members_json = _validate_members(members)
@@ -154,6 +168,7 @@ def ingest_page(
         row, stored_epoch, last_seq, stored_bytes = _replica_row_state(conn, room_id)
         if authority["epoch"] < stored_epoch:
             raise ReplicaEpochRegressionError("page authority epoch is older than the stored replica epoch")
+        _check_replay(conn, room_id, [e for e in events if int(e["seq"]) <= last_seq])
         new_events = [e for e in events if int(e["seq"]) > last_seq]
         if new_events and int(new_events[0]["seq"]) != last_seq + 1:
             raise ReplicaGapError("page skips sequences the replica has not stored")
