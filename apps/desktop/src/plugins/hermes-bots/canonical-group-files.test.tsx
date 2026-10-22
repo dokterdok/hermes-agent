@@ -1,3 +1,5 @@
+import { webcrypto } from 'node:crypto'
+
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
@@ -17,6 +19,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     useI18n: () => ({ locale: reader.locale, t: reader.locale === 'fr' ? fr : en }),
     usePluginI18n: () => reader.locale === 'fr' ? translateBotsIn('fr') : translateBots }
 })
+import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
 import { CanonicalGroupFiles, latestFileSeq } from './canonical-group-files'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { translateBots, translateBotsIn } from './i18n-test-helper'
@@ -46,13 +49,23 @@ const page = (items: Item[], cursor: null | string = null, snapshot = 20, epoch 
 let gateway: Record<string, (params: Record<string, unknown>) => unknown>
 beforeEach(() => {
   gateway = { 'groups.capabilities': () => ({ driver: true, methods: METHODS }) }
-  request.mockImplementation(async (_route, method: string, params: Record<string, unknown>) => {
-    if (!gateway[method]) {throw new Error(`Unexpected method ${method}`)}
+  // Like the gateway client, a call's `timeoutMs` ends a request that has no answer by then.
+  request.mockImplementation((_route, method: string, params: Record<string, unknown>, timeoutMs?: number) => {
+    const answer = Promise.resolve().then(() => {
+      if (!gateway[method]) {throw new Error(`Unexpected method ${method}`)}
 
-    return gateway[method](params)
+      return gateway[method](params)
+    })
+
+    if (timeoutMs === undefined) {return answer}
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    return Promise.race([answer, new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`request timed out after ${timeoutMs / 1000}s: ${method}`)), timeoutMs)
+    })]).finally(() => clearTimeout(timer))
   })
 })
-afterEach(() => { cleanup(); request.mockReset(); vi.useRealTimers() })
+afterEach(() => { cleanup(); request.mockReset(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 const calls = (method: string) => request.mock.calls.filter(call => call[1] === method).map(call => call[2])
 const rows = () => screen.queryAllByRole('listitem')
@@ -278,6 +291,7 @@ it.each([
 })
 
 it.each([
+  ['availability', [{ ...file(19), available: 'false' }]],
   ['order', [file(19), file(20)]],
   ['date', [{ ...file(19), shared_at: 1e30 }]],
   ['sharer', [{ ...file(19), producer: { kind: 'robot', id: 'x', label: 'X' } }]],
@@ -361,4 +375,174 @@ it('offers Files in the gateway room header and tells it the newest shared file'
   await dialog.findByText('file-20.txt')
   expect(dialog.getByText('Review room')).toBeTruthy()
   expect(dialog.getByRole('button', { name: 'Show latest' })).toBeTruthy()
+})
+
+async function downloadReply(item: ReturnType<typeof file>, data: string | Uint8Array = 'A') {
+  const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data
+  const digest = Buffer.from(await webcrypto.subtle.digest('SHA-256', bytes)).toString('hex')
+
+  return { ...item, state: 'committed', sha256: digest, data_base64: Buffer.from(bytes).toString('base64') }
+}
+
+function observeSaves() {
+  vi.stubGlobal('crypto', webcrypto)
+
+  return observeDownloads()
+}
+
+it('saves the exact listed version, every byte value unchanged, through the existing download', async () => {
+  const observed = observeSaves()
+  const bytes = Uint8Array.from({ length: 512 }, (_, index) => index % 256)
+  const selected = { ...file(19, 'same.bin'), mime: 'application/octet-stream', size: bytes.length }
+  gateway['groups.attachment.download'] = async () => downloadReply(selected, bytes)
+  const dialog = await openFiles(0, [file(20, 'same.bin'), selected])
+  await waitFor(() => expect(rows()).toHaveLength(2))
+  fireEvent.click(within(rows()[1]).getByRole('button', { name: 'Download: same.bin' }))
+  await waitFor(() => expect(observed.downloads).toHaveLength(1))
+  await expectDownloaded(observed, bytes, 'same.bin', 'application/octet-stream')
+  expect(calls('groups.attachment.download')).toEqual([
+    { room_id: 'room-1', event_id: selected.event_id, attachment_id: selected.attachment_id, profile: 'reviewer' }])
+  expect(dialog.queryByRole('alert')).toBeNull()
+})
+
+it('offers no Retry when the gateway refuses a download for access', async () => {
+  observeSaves()
+
+  gateway['groups.attachment.download'] = () => { throw { code: 4001, data: { reason: 'permission_denied' } } }
+  const dialog = await openFiles(0, [file(20)])
+  fireEvent.click(await dialog.findByRole('button', { name: 'Download: file-20.txt' }))
+  expect((await dialog.findByRole('alert')).textContent).toBe('Files are unavailable for this Group Chat.')
+  expect(dialog.queryByRole('button', { name: 'Retry' })).toBeNull()
+})
+
+it('waits the gateway\'s 30 s for a small download: a reply after the list\'s 10 s is saved, none times out', async () => {
+  const observed = observeSaves()
+  fakeTimeouts()
+  let replies = false
+  gateway['groups.attachment.download'] = () => new Promise(resolve => {
+    if (replies) {setTimeout(() => resolve(downloadReply(file(20))), 12_000)}
+  })
+  const dialog = await openFiles(0, [file(20)])
+  fireEvent.click(await dialog.findByRole('button', { name: 'Download: file-20.txt' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+  expect(dialog.queryByRole('alert')).toBeNull()
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_001) })
+  expect((await dialog.findByRole('alert')).textContent).toContain('The download timed out.')
+  replies = true
+  fireEvent.click(within(dialog.getByRole('alert')).getByRole('button', { name: 'Retry' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(12_000) })
+  await waitFor(() => expect(observed.downloads).toHaveLength(1))
+  expect(dialog.queryByRole('alert')).toBeNull()
+})
+
+it('gives a download a deadline that grows with its size and keeps the list at ten seconds', async () => {
+  observeSaves()
+  gateway['groups.attachment.download'] = () => new Promise(() => undefined)
+  const dialog = await openFiles(0, [{ ...file(20, 'large.bin'), size: 15_000_000 }])
+  fireEvent.click(await dialog.findByRole('button', { name: 'Download: large.bin' }))
+  await waitFor(() => expect(calls('groups.attachment.download')).toHaveLength(1))
+  const budget = (method: string) => request.mock.calls.find(call => call[1] === method)?.[3]
+  // 30 s plus the 20,000,000-character body at 125 bytes per millisecond (1 Mbit/s).
+  expect(budget('groups.attachment.download')).toBe(190_000)
+  expect(budget('groups.attachment.list')).toBe(10_000)
+})
+
+it('downloads the focused row with Enter', async () => {
+  const observed = observeSaves()
+  gateway['groups.attachment.download'] = async () => downloadReply(file(20))
+  await openFiles(0, [file(20)])
+  await waitFor(() => expect(rows()).toHaveLength(1))
+  rows()[0].focus()
+  fireEvent.keyDown(rows()[0], { key: 'Enter' })
+  await waitFor(() => expect(observed.downloads).toHaveLength(1))
+})
+
+it.each([
+  ['digest', { sha256: '0'.repeat(64) }],
+  ['size', { data_base64: 'QUJD' }],
+  ['version', { attachment_id: 'att_' + 'f'.repeat(32) }],
+  ['message', { event_id: 'user:18' }],
+  ['name', { name: 'other.txt' }],
+  ['type', { mime: 'text/html' }],
+  ['encoding', { data_base64: '!!!!' }]
+])('saves nothing when the downloaded %s does not match the listed version', async (_case, change) => {
+  const observed = observeSaves()
+  const selected = file(19)
+  gateway['groups.attachment.download'] = async () => ({ ...await downloadReply(selected), ...change })
+  const dialog = await openFiles(0, [selected])
+  fireEvent.click(await dialog.findByRole('button', { name: 'Download: file-19.txt' }))
+  expect((await dialog.findByRole('alert')).textContent).toContain('Nothing was downloaded.')
+  expect(observed.create).not.toHaveBeenCalled()
+})
+
+it.each(['closed', 'hidden'])('never saves a download that lands after Files was %s', async change => {
+  const observed = observeSaves()
+  const selected = file(19)
+  let release!: (value: unknown) => void
+  gateway['groups.attachment.list'] = () => page([selected])
+  gateway['groups.attachment.download'] = () => new Promise(resolve => { release = resolve })
+  const view = render(filesView())
+  fireEvent.click(await screen.findByRole('button', { name: 'Files' }))
+  fireEvent.click(await within(await screen.findByRole('dialog')).findByRole('button', { name: 'Download: file-19.txt' }))
+  await waitFor(() => expect(calls('groups.attachment.download')).toHaveLength(1))
+
+  if (change === 'closed') {fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })}
+  else {view.rerender(filesView(false))}
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  await act(async () => release(await downloadReply(selected)))
+  expect(observed.create).not.toHaveBeenCalled()
+})
+
+it('keeps unavailable versions listed and never requests their bytes by pointer or keyboard', async () => {
+  const observed = observeSaves()
+  gateway['groups.attachment.list'] = params => params.cursor
+    ? page([{ ...file(19, 'report.txt'), available: false }]) : page([{ ...file(20, 'report.txt'), available: false }], 'after-20')
+  const dialog = await openFiles(20)
+  const version = await dialog.findByRole('listitem')
+  expect(version.textContent).toContain('This version can no longer be downloaded.')
+  const download = within(version).getByRole('button', { name: 'Download: report.txt' }) as HTMLButtonElement
+  expect(download.disabled).toBe(true)
+  fireEvent.click(download)
+  version.focus()
+  fireEvent.keyDown(version, { key: 'Enter' })
+  fireEvent.click(dialog.getByRole('button', { name: 'Older files' }))
+  await waitFor(() => expect(calls('groups.attachment.list')).toHaveLength(2))
+  expect(within(rows()[0]).getByRole('button', { name: 'Download: report.txt' }).hasAttribute('disabled')).toBe(true)
+  expect(calls('groups.attachment.download')).toEqual([])
+  expect(observed.create).not.toHaveBeenCalled()
+  expect(dialog.queryByRole('button', { name: 'Retry' })).toBeNull()
+})
+
+it('marks a version the gateway says is gone unavailable instead of offering Retry', async () => {
+  const observed = observeSaves()
+
+  gateway['groups.attachment.download'] = () => { throw { code: 4001, data: { reason: 'attachment_unavailable' } } }
+  const dialog = await openFiles(20, [file(20, 'report.txt')])
+  fireEvent.click(await dialog.findByRole('button', { name: 'Download: report.txt' }))
+  await dialog.findByText('This version can no longer be downloaded.')
+  expect((dialog.getByRole('button', { name: 'Download: report.txt' }) as HTMLButtonElement).disabled).toBe(true)
+  expect(dialog.queryByRole('button', { name: 'Retry' })).toBeNull()
+  fireEvent.keyDown(rows()[0], { key: 'Enter' })
+  expect(calls('groups.attachment.download')).toHaveLength(1)
+  expect(observed.create).not.toHaveBeenCalled()
+})
+
+it('retries a failed download of the same version', async () => {
+  const observed = observeSaves()
+  let attempts = 0
+
+  gateway['groups.attachment.download'] = async () => {
+    if (++attempts === 1) {throw { code: 4001, data: { reason: 'invalid_params' } }}
+
+    return downloadReply(file(20))
+  }
+
+  const dialog = await openFiles(0, [file(20)])
+  fireEvent.click(await dialog.findByRole('button', { name: 'Download: file-20.txt' }))
+  expect((await dialog.findByRole('alert')).textContent).toContain('This file could not be downloaded.')
+  fireEvent.click(within(dialog.getByRole('alert')).getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(observed.downloads).toHaveLength(1))
+  expect(calls('groups.attachment.download')).toHaveLength(2)
+  expect(new Set(calls('groups.attachment.download').map(params => JSON.stringify(params))).size).toBe(1)
 })
