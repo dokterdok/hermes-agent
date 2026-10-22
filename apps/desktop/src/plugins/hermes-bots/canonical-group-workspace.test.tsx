@@ -444,3 +444,21 @@ it('keeps a first Send refused after its room closed for the next open, where Re
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Typed before closing')
   expect(await readCanonicalGroupSend(binding)).toBeUndefined()
 })
+
+it('offers a read-only retry when the Send journal cannot be read, then restores its pending intent', async () => {
+  const binding = { connectionId: 'local', profile: 'team', roomId: 'unreadable' }
+  const entry = await prepareCanonicalGroupSend(binding, { text: 'Saved before the failure', attachments: [] })
+  const saved = localStorage.getItem('hermes.desktop.canonicalGroupSends.v1')!
+  const compareAndSet = vi.fn()
+  const read = vi.fn().mockRejectedValueOnce(new Error('EACCES: journal unreadable')).mockResolvedValue(saved)
+  window.hermesDesktop = { preparedSubmissions: { read, compareAndSet } } as unknown as typeof window.hermesDesktop
+  sendingRoom(params => receipt(params))
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await screen.findByText(/Saved messages couldn’t be loaded/)
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: 'Try loading again' }))
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(entry.params.payload.text))
+  expect(screen.queryByText(/Saved messages couldn’t be loaded/)).toBeNull()
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+  expect(compareAndSet).not.toHaveBeenCalled()
+})
