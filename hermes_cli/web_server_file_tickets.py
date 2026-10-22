@@ -1,14 +1,15 @@
-"""Path-bound tickets for browser file URLs (``/api/files/download|stream``).
+"""Path-bound tickets for browser file URLs (``/api/files/download|stream``, Save's ``/api/fs/download``).
 
 A download link or an ``<audio>``/``<video>`` source cannot send the session
 header, and the session token grants host shells and file access, so it must
 never appear in a URL the browser records (download history, "Copy video
 address"). An authenticated ``POST /api/files/ticket`` mints a ticket that lets
 the loopback token gate admit GET/HEAD of exactly one route + query and nothing
-else. A download is one request, so its ticket is single-use; a media element
-issues many Range requests for one source, so a stream ticket is reusable until
-it expires. Each ticket captures the resolved file and owning profile generations;
-the resource opener validates those generations under their lifecycle leases.
+else. A download or Save is one request, so its ticket is single-use; a media
+element issues many Range requests for one source, so a stream ticket is reusable
+until it expires. Each ticket captures the resolved file (on this host or the
+profile's SSH workspace) and owning profile generations; the resource opener
+validates those generations under their lifecycle leases.
 In-memory only: tickets die with the process, like the token.
 """
 from __future__ import annotations
@@ -30,9 +31,22 @@ DOWNLOAD_TTL_SECONDS = 60
 STREAM_TTL_SECONDS = 60 * 60
 _MAX_TICKETS = 1024
 
-ROUTES: Mapping[str, str] = {"download": "/api/files/download", "stream": "/api/files/stream"}
+ROUTES: Mapping[str, str] = {
+    "download": "/api/files/download", "stream": "/api/files/stream",
+    # The Webapp's Save is native Desktop's Save request.
+    "save": "/api/fs/download",
+}
 
 _Scope = tuple[str, tuple[tuple[str, str], ...]]
+
+
+@dataclass(frozen=True)
+class RemoteFile:
+    """A file a ticket captured in a profile's SSH workspace."""
+
+    profile: str  # "" = the request's own profile
+    path: str  # on that machine, kept as text: a host Path would rewrite it on a Windows host
+    machine: tuple[str, ...]  # SSH host, user and port of the reader that inspected it
 
 
 @dataclass(frozen=True)
@@ -41,6 +55,8 @@ class FileAuthority:
 
     target: Path
     generations: tuple[tuple[Path, str], ...]
+    #: Set for a file in a profile's SSH workspace (``target`` then only names it); None: on this host.
+    remote: RemoteFile | None = None
 
     @contextmanager
     def lease(self):
@@ -74,7 +90,7 @@ def _scope(route_path: str, query: Iterable[tuple[str, str]]) -> _Scope:
 def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority) -> str:
     """Ticket for GET/HEAD of ``ROUTES[route]`` with exactly ``query`` (plus ``ticket``)."""
     route_path = ROUTES[route]
-    single_use = route == "download"
+    single_use = route != "stream"
     now = time.monotonic()
     ticket = secrets.token_urlsafe(32)
     entry = _Ticket(
@@ -93,7 +109,7 @@ def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority) -> s
 
 
 def redeem(request: Request) -> bool:
-    """True when ``?ticket=`` authorizes this exact request; consumes a download ticket."""
+    """True when ``?ticket=`` authorizes this exact request; consumes a single-use ticket."""
     ticket = request.query_params.get("ticket", "")
     if not ticket or request.method not in ("GET", "HEAD"):
         return False

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -706,12 +706,30 @@ def _open_ticket_file(request: Request, authority: file_tickets.FileAuthority, *
         raise HTTPException(status_code=403, detail="File is not readable") from exc
 
 
+def _leased_ticket_authority(
+    target: Path, generations: dict, *, remote: Optional[file_tickets.RemoteFile] = None,
+) -> file_tickets.FileAuthority:
+    """A ticket's authority over *target*: the owner *generations* plus, for a file on this host,
+    the generation of the named profile home it sits in, all checked live under their leases."""
+    from hermes_cli.profile_incarnation import ensure_profile_incarnation
+    from hermes_constants import named_profile_home
+
+    target_home = None if remote is not None else named_profile_home(target)
+    if target_home is not None and target_home not in generations:
+        target_generation = ensure_profile_incarnation(target_home)
+        if target_generation is None:
+            raise FileNotFoundError("Named profile incarnation is unavailable")
+        generations = {**generations, target_home: target_generation}
+    authority = file_tickets.FileAuthority(target, tuple(generations.items()), remote=remote)
+    with authority.lease():
+        return authority
+
+
 @router.post("/api/files/ticket")
 async def issue_file_ticket(payload: FileTicketRequest, request: Request):
-    """Ticket a browser download/media URL instead of putting the session token in it."""
+    """Ticket a browser download/media/Save URL instead of putting the session token in it."""
     from hermes_cli.profile_incarnation import ensure_profile_incarnation
     from hermes_cli.web_routers.sessions import _history_profile_home
-    from hermes_constants import named_profile_home
 
     def owner_generation():
         home = _history_profile_home(payload.profile)
@@ -722,24 +740,19 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
             request, path, create_root=False, profile_home=_fs_profile_home(payload.profile),
         )
         generations = {owner: generation} if generation is not None else {}
-        target_home = named_profile_home(target)
-        if target_home is not None and target_home not in generations:
-            target_generation = ensure_profile_incarnation(target_home)
-            if target_generation is None:
-                raise FileNotFoundError("Named profile incarnation is unavailable")
-            generations[target_home] = target_generation
-        authority = file_tickets.FileAuthority(target, tuple(generations.items()))
-        with authority.lease():
-            return authority
+        return _leased_ticket_authority(target, generations)
 
     try:
         # Capture the session/profile owner BEFORE looking up its cwd. The file
         # may be outside that home, but the ticket must still die with its owner.
         owner, generation = await asyncio.to_thread(owner_generation)
-        path = payload.path
-        if payload.session_id is not None or path.lower().startswith("file:"):
-            path = str(await _fs_download_path(path, payload.profile, payload.session_id))
-        authority = await asyncio.to_thread(capture)
+        if payload.route == "save":
+            authority = await _save_ticket_authority(request, payload, owner, generation)
+        else:
+            path = payload.path
+            if payload.session_id is not None or path.lower().startswith("file:"):
+                path = str(await _fs_download_path(path, payload.profile, payload.session_id))
+            authority = await asyncio.to_thread(capture)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="File ticket profile is unavailable") from exc
     query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id}
@@ -1074,6 +1087,20 @@ async def _fs_download_path(path: str, profile: Optional[str], session_id: Optio
     return _agent_fs_path(path, profile_home=profile_home)
 
 
+async def _require_session(profile: Optional[str], session_id: Optional[str]) -> None:
+    """A read naming *session_id* needs that session in *profile*, on an SSH workspace as on this
+    host. The SSH reader still resolves a relative path in its own remote cwd: the session row
+    records the host execution cwd (``hermes_state_local._row_cwd``), while an SSH terminal
+    resolves its own (``gateway.session_policy.terminal_uses_host_cwd``)."""
+    if session_id is None:
+        return
+    from hermes_cli.web_routers.sessions import get_session_detail
+
+    if not session_id.strip():
+        raise HTTPException(status_code=404, detail="Session not found")
+    await get_session_detail(session_id, profile)
+
+
 def _fs_profile_home(profile: Optional[str]) -> Optional[Path]:
     """HERMES_HOME of a requested profile (404/400 on an unknown one), None for the request's
     own profile (omitted, ``""`` or ``current``, as ``_is_current_profile`` reads them)."""
@@ -1093,6 +1120,7 @@ async def fs_read_data_url(
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
+        await _require_session(profile, session_id)
         try:
             data, _size, target = await asyncio.to_thread(
                 backend.read_bytes, path, max_bytes=_FS_DATA_URL_MAX_BYTES
@@ -1112,25 +1140,136 @@ async def fs_read_data_url(
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 
+async def _inspect_remote_file(backend, path: str) -> tuple[str, int]:
+    """The SSH workspace's resolved path and size for *path*; a sensitive target is refused."""
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    try:
+        target, size = await asyncio.to_thread(backend.inspect_file, path)
+    except SshWorkspaceFsError as exc:
+        _raise_fs_backend_error(exc)
+    if _is_sensitive_path(Path(target)):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    return target, size
+
+
+def _remote_save_response(request: Optional[Request], backend, target: str, size: int) -> Response:
+    """An SSH workspace file as an attachment. HEAD answers from ``inspect_file`` alone:
+    Starlette's StreamingResponse iterates its body even for HEAD."""
+    media_type = _fs_mime_type(Path(target))
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(Path(target).name)}"}
+    if request is not None and request.method == "HEAD":
+        return Response(media_type=media_type, headers={**headers, "Content-Length": str(size)})
+    return StreamingResponse(backend.stream_file(target), media_type=media_type, headers=headers)
+
+
+async def _save_ticket_authority(
+    request: Request, payload: FileTicketRequest, owner: Path, generation: Optional[str],
+) -> file_tickets.FileAuthority:
+    """Resolve a Save exactly as ``fs_download`` does (the SSH workspace or this host, the
+    profile's sandbox, the session cwd, the host guards) and capture it under its leases."""
+    owned = {owner: generation} if generation is not None else {}
+    backend = await asyncio.to_thread(_remote_fs_backend, payload.path, payload.profile)
+    if backend is not None:
+        await _require_session(payload.profile, payload.session_id)
+        target, _size = await _inspect_remote_file(backend, payload.path)
+        remote = file_tickets.RemoteFile(payload.profile or "", target, _reader_machine(backend))
+        return await asyncio.to_thread(_leased_ticket_authority, Path(target), owned, remote=remote)
+    target = await _fs_download_path(payload.path, payload.profile, payload.session_id)
+    _hosted_fs_read_guard(target, request)
+    target, _st = _fs_regular_file(target, _fs_profile_home(payload.profile))
+    return await asyncio.to_thread(_leased_ticket_authority, target, owned)
+
+
+def _open_save_ticket_file(request: Request, authority: file_tickets.FileAuthority):
+    """``fs_download``'s guards on the captured file, pinned before its lease is released."""
+    try:
+        with authority.lease():
+            target, _st = _fs_regular_file(authority.target)
+            _hosted_fs_read_guard(target, request)
+            if target != authority.target:
+                raise HTTPException(status_code=403, detail="File ticket target changed")
+            _refuse_live_database(target)
+            handle = target.open("rb")
+            try:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise HTTPException(status_code=400, detail="Only regular files can be read")
+                return handle
+            except BaseException:
+                handle.close()
+                raise
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File ticket profile or resource is unavailable") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="File is not readable") from exc
+
+
+def _ticket_generations_live(authority: file_tickets.FileAuthority) -> bool:
+    try:
+        with authority.lease():
+            return True
+    except FileNotFoundError:  # a captured generation was retired
+        return False
+
+
+def _reader_machine(backend) -> tuple[str, ...]:
+    """The SSH machine a workspace reader reaches (``SshWorkspaceFs.machine``); a test double
+    that names none binds to no particular machine."""
+    return tuple(getattr(backend, "machine", ()))
+
+
+def _leased_remote_backend(authority: file_tickets.FileAuthority):
+    """The SSH workspace reader of a remote Save ticket: on the machine whose reader inspected
+    the file, in the generations the ticket captured. Building the reader may connect, so it is
+    never built under their lease; checking them after it holds because a generation never
+    comes back. The machine is the built reader's own, so no config read can slip between."""
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    try:
+        backend = _fs_backend(authority.remote.profile or None)
+    except SshWorkspaceFsError as exc:
+        _raise_fs_backend_error(exc)
+    if (backend is None or _reader_machine(backend) != authority.remote.machine
+            or not _ticket_generations_live(authority)):
+        # no longer an SSH workspace, another machine now, or a retired generation
+        raise HTTPException(status_code=404, detail="File ticket profile or resource is unavailable")
+    return backend
+
+
+async def _ticketed_save_response(request: Request, authority: file_tickets.FileAuthority):
+    """The file a ``save`` ticket captured, while the generations it captured are live."""
+    if authority.remote is None:
+        from hermes_cli.web_server_file_response import OpenedFileResponse
+
+        return OpenedFileResponse(
+            path=str(authority.target),
+            opener=lambda: _open_save_ticket_file(request, authority),
+            media_type=_fs_mime_type(authority.target),
+            filename=authority.target.name,
+            content_disposition_type="attachment",
+        )
+    backend = await asyncio.to_thread(_leased_remote_backend, authority)
+    target, size = await _inspect_remote_file(backend, authority.remote.path)
+    if target != authority.remote.path:
+        raise HTTPException(status_code=403, detail="File ticket target changed")
+    return _remote_save_response(request, backend, target, size)
+
+
 @router.get("/api/fs/download")
+@router.head("/api/fs/download")
 async def fs_download(
     path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
+    """Native Desktop's Save, and the Webapp's: its download carries a ``save`` ticket, and its
+    HEAD pre-check never streams an SSH workspace file."""
+    authority = getattr(getattr(request, "state", None), "file_ticket_authority", None)
+    if authority is not None:
+        return await _ticketed_save_response(request, authority)
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
-        try:
-            target, _size = await asyncio.to_thread(backend.inspect_file, path)
-        except Exception as exc:
-            _raise_fs_backend_error(exc)
-        target_path = Path(target)
-        if _is_sensitive_path(target_path):
-            raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
-        filename = urllib.parse.quote(target_path.name)
-        return StreamingResponse(
-            backend.stream_file(target),
-            media_type=_fs_mime_type(target_path),
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
-        )
+        await _require_session(profile, session_id)
+        target, size = await _inspect_remote_file(backend, path)
+        return _remote_save_response(request, backend, target, size)
     target = await _fs_download_path(path, profile, session_id)
     _hosted_fs_read_guard(target, request)
     target, _st = _fs_regular_file(target, _fs_profile_home(profile))

@@ -150,3 +150,22 @@ def test_ssh_workspace_factory_disables_agent_file_sync(monkeypatch):
             "sync_files": False,
         }
     ]
+
+
+def test_ssh_workspace_fs_reads_a_file_uri_as_its_remote_path():
+    """A ``file:`` URI names the same remote path as the plain path (POSIX, never host-anchored),
+    as the host readers treat it; another machine's URI is still refused."""
+    env = FakeEnv([{"returncode": 0, "output": "__HERMES_FS_SIZE__:5\naGVsbG8=\n"}])
+    backend = SshWorkspaceFs(env)
+
+    assert backend.read_bytes("file:///srv/repos/a%20b.md", max_bytes=100)[1:] == (5, "/srv/repos/a b.md")
+    for refused in ("file://elsewhere/srv/repos/x", "file:///srv/repos/x%00y"):
+        with pytest.raises(SshWorkspaceFsError) as raised:
+            backend.read_bytes(refused, max_bytes=100)
+        assert raised.value.code == "EINVAL", refused
+
+
+def test_ssh_workspace_fs_names_the_machine_it_reads():
+    env = FakeEnv([])
+    env.host, env.user, env.port = "ssh.example", "dev", 2222
+    assert SshWorkspaceFs(env).machine == ("ssh.example", "dev", "2222")
