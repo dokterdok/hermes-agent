@@ -148,7 +148,8 @@ export function createSnapshotPersister(
               : '',
             serialize.serialize({ excludeAltBuffer: true, range: { end: cursorLine, start: liveWindow.start } }),
             getShellName(),
-            liveWindow.keepRestored
+            liveWindow.keepRestored,
+            bootRows
           )
         : trimRepeatedPrompt(serialize.serialize({ excludeAltBuffer: true, scrollback: PERSISTENT_SESSION_SCROLLBACK }), bootRows)
 
