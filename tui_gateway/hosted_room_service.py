@@ -64,6 +64,9 @@ def _authority(room: Mapping[str, Any]) -> tuple[str, int]:
 class HostedRoomService:
     """Own the hosted Discussion policy and its transport-free worker."""
 
+    # Whether member turns can share files (share_group_file); only the canonical owner binds them.
+    shares_files = False
+
     def __init__(
         self, server: ModuleType, *, db_path: Path | str | None = None,
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
@@ -397,16 +400,29 @@ class HostedRoomService:
                 # Finish an already visible immutable reply even if a later request arrived.
                 task_events = [event for event in task_events if event["kind"] != "message.user"
                                or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
+            outputs = self._bind_task_outputs(room, task) if status == "settled" else {}
+            result = task.get("result")
+            if outputs:
+                result = {**(result if isinstance(result, Mapping) else {}), **outputs}
             publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
+                room, task_events, plan, status=status, result=result,
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
             for event in publication.events:
                 appended = hosted_rooms.append_event(
                     self.db_path, **event.append_kwargs(room_id), expected_latest_seq=cursor)
                 cursor = max(cursor, int(appended["seq"]))
+            self._release_task_outputs(room, task)
             changed = True
         return changed
+
+    def _bind_task_outputs(self, room: Mapping[str, Any], task: Mapping[str, Any]) -> dict[str, Any]:
+        """Bind the files a settled attempt shared to its reply, as publication result fields;
+        this server stores none (canonical owners override)."""
+        return {}
+
+    def _release_task_outputs(self, room: Mapping[str, Any], task: Mapping[str, Any]) -> None:
+        """Release a terminal task's shared files its published outcome does not carry (canonical owners)."""
 
     def _append_room_status(
         self, room: Mapping[str, Any], decision: discussion.DiscussionDecision) -> None:
@@ -442,7 +458,7 @@ class HostedRoomService:
                 return
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.room_profiles(room),
-                initial_watermarks=snapshot.watermarks, freeze_input_context=True)
+                initial_watermarks=snapshot.watermarks, freeze_input_context=True, share_files=self.shares_files)
             if decision.status == "task" and decision.task is not None:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
                 legacy_payload = dict(decision.task.payload)

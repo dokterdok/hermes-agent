@@ -604,7 +604,7 @@ def _attachment_prompt_lines(attachments: Sequence[Mapping[str, Any]]) -> list[s
 
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
-    seen_through_seq: int, attachments: Sequence[Mapping[str, Any]] = ()) -> str:
+    seen_through_seq: int, attachments: Sequence[Mapping[str, Any]] = (), share_files: bool = False) -> str:
     # A Bot's own replies are never "new messages" for it, even past its watermark.
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq
              and not (event.kind == "message.member" and event.payload.get("member_id") == member.member_id)
@@ -619,6 +619,8 @@ def _build_prompt(
         "- Reply with one conversational message only when you have something new worth adding.",
         '- If you have nothing new to add, reply with exactly "(pass)".',
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
+        *(["- To hand off a file, call share_group_file; never paste a local path into chat."]
+          if share_files and _peer_id(member) is None else []),
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     # File lines are reserved before messages are chosen, so a long thread never crowds them out.
     attachment_lines = _attachment_prompt_lines(attachments)
@@ -755,7 +757,7 @@ def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
 def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None,
-    freeze_input_context: bool = False) -> DiscussionDecision:
+    freeze_input_context: bool = False, share_files: bool = False) -> DiscussionDecision:
     """Replay the complete room log and return at most one next member task."""
     room = validate_room(room_value, local_profiles=local_profiles)
     validated = _validated_events(events, room=room)
@@ -793,7 +795,7 @@ def plan_next_task(
             seen_through_seq = delta[-1].seq
             prompt = _build_prompt(
                 room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq, attachments=attachments)
+                seen_through_seq=seen_through_seq, attachments=attachments, share_files=share_files)
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt, attachments=attachments,
@@ -887,17 +889,33 @@ def _terminal_text(result: Any, *, field: str, fallback: str) -> str:
 Effects = tuple[dict[str, Any], list[EventPlan]]
 
 
+def _file_names(names: Iterable[str]) -> str:
+    """File names for a sentence the gateway writes: an ``@`` in a name never reads as a mention
+    (a word joiner follows it), so the sentence summons nobody."""
+    return ", ".join(str(name).replace("@", "@\u2060") for name in names)
+
+
 def _settled_effects(
     result: Any, *, task: DiscussionTaskPlan, room: DiscussionRoom, message_event_id: str, **_: Any) -> Effects:
+    # Files the Bot shared during the turn ride on its one member message, even after "(pass)";
+    # a staged file whose bytes could not be read is named instead, so a share is never silence.
+    attachments = _message_manifest(result.get("attachments", [])) if isinstance(result, Mapping) else []
+    unshared = [str(name) for name in result.get("unshared", [])] if isinstance(result, Mapping) else []
+    note = f"Could not share {_file_names(unshared)}." if unshared else ""
     text = _truncate_utf8_text(
-        _terminal_text(result, field="text", fallback=""), max_bytes=MAX_MEMBER_TEXT_BYTES,
+        _terminal_text(result, field="text", fallback=""),
+        max_bytes=MAX_MEMBER_TEXT_BYTES - (len(note.encode("utf-8")) + 2 if note else 0),
         suffix=_TRUNCATED_REPLY_NOTICE)
+    if is_pass_text(text):
+        text = f"Shared {_file_names(item['name'] for item in attachments)}." if attachments else ""
+    if note:
+        text = f"{text}\n\n{note}" if text else note
     if is_pass_text(text):
         return {"message_event_id": None, "passed": True}, []
     return {"message_event_id": message_event_id, "passed": False}, [EventPlan(
         event_id=message_event_id, kind="message.member", actor=_member_actor(task.member),
-        payload={**_turn_coordinates(task), "text": text}, authority_gateway_id=room.gateway_id,
-        authority_epoch=room.authority_epoch)]
+        payload={**_turn_coordinates(task), "text": text, **({"attachments": attachments} if attachments else {})},
+        authority_gateway_id=room.gateway_id, authority_epoch=room.authority_epoch)]
 
 
 def _failed_effects(result: Any, **_: Any) -> Effects:
