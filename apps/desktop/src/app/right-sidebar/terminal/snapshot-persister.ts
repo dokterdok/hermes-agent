@@ -9,6 +9,28 @@ import { updateTerminalReviveBuffer } from './terminals'
 // renderer tears down), then at most once per window while output streams.
 const SNAPSHOT_THROTTLE_MS = 750
 
+// The last `rows` lines of the restored prefix, byte for byte: the saved buffer holds at most
+// PERSISTENT_SESSION_SCROLLBACK rows of restored plus live output, so restored history ages out
+// as each session adds rows. Cut after the line break `rows` from the end; never split and rejoin
+// (that rewrites bare \n) and never clean restored text.
+function lastRestoredRows(restored: string, rows: number): string {
+  if (rows <= 0) {
+    return ''
+  }
+
+  let cut = restored.length
+
+  for (let row = 0; row < rows; row += 1) {
+    cut = restored.lastIndexOf('\n', cut - 1)
+
+    if (cut < 0) {
+      return restored
+    }
+  }
+
+  return restored.slice(cut + 1)
+}
+
 interface SnapshotPersisterOptions {
   /** Boundary between replayed history and this session's PTY output. */
   getLiveStartMarker: () => IMarker | undefined
@@ -94,7 +116,9 @@ export function createSnapshotPersister(
       // text-based greeting or prompt cleanup rather than risk deleting real output.
       const nextSnapshot = liveWindow
         ? mergeReviveSnapshot(
-            liveWindow.keepRestored ? reviveBuffer : '',
+            liveWindow.keepRestored
+              ? lastRestoredRows(reviveBuffer, PERSISTENT_SESSION_SCROLLBACK - (cursorLine - liveWindow.start + 1))
+              : '',
             serialize.serialize({ excludeAltBuffer: true, range: { end: cursorLine, start: liveWindow.start } }),
             getShellName(),
             liveWindow.keepRestored
