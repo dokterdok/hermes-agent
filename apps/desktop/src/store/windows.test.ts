@@ -39,6 +39,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  delete document.documentElement.dataset.hermesDesktopHost
+
   if (initialHermesDesktop) {
     desktopWindow.hermesDesktop = initialHermesDesktop
   } else {
@@ -103,6 +105,22 @@ describe('openSessionInNewWindow', () => {
     expect(open).toHaveBeenCalledWith('orphan-not-listed-yet', { profile: 'work', connectionId: null, watch: true })
     expect(notifyError).not.toHaveBeenCalled()
     // The owner resolver's lazy import is the heavy session-actions module.
+  }, 60_000)
+
+  // The browser opens with noopener, so the window must open in the click, before any await.
+  it('opens a browser pop-out inside the click when its owner is already known', async () => {
+    // Loaded with the session actions module (always, in the app); it provides the known route.
+    await import('@/app/session/hooks/use-session-actions/known-session-owner')
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    $sessions.set([{ id: 's1', profile: 'research', connection_id: 'remote-a' } as never])
+
+    const pending = openSessionInNewWindow('child-not-listed-yet', { watch: true, parentSessionId: 's1' })
+
+    expect(open).toHaveBeenCalledWith('child-not-listed-yet', { connectionId: 'remote-a', profile: 'research', watch: true })
+    await pending
+    expect(notifyError).not.toHaveBeenCalled()
   }, 60_000)
 
   it('notifies on an ok:false result', async () => {

@@ -1,4 +1,3 @@
-import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
 import { sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
@@ -18,9 +17,6 @@ import {
   $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
-  getSessionOwnerHint,
-  knownSessionOwner,
-  ownerLookupSessionRows,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
   setCronSessions,
@@ -50,7 +46,6 @@ import {
   tombstoneLifecycleChanged
 } from '@/store/session-removal'
 import type { SessionProfileRoute } from '@/store/session-request-router'
-import { runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -61,6 +56,7 @@ import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/t
 
 import type { ClientSessionState } from '../../../types'
 
+import { resolveKnownSessionOwner } from './known-session-owner'
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
@@ -1895,13 +1891,7 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
     return undefined
   }
 
-  const owner = resolveSessionRpcOwner({
-    routingSessionId: storedSessionId,
-    tileOwnerRoute: sessionTileOwnerRoute,
-    sessionOwnerHint: getSessionOwnerHint,
-    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id),
-    eventOwner: runtimeSessionOwner
-  })
+  const owner = resolveKnownSessionOwner(storedSessionId)
 
   if (owner) {
     return owner

@@ -1,4 +1,7 @@
+import { isBrowserHostedDesktop } from '@/lib/platform'
+
 import { notifyError } from './notifications'
+import { knownSessionWindowRoute } from './session-window-route'
 
 // Window flag set by the Electron main process when it opens a standalone
 // session window (see electron/main.ts buildSessionWindowUrl). It rides in the
@@ -247,6 +250,20 @@ export async function openSessionInNewWindow(
   opts?: { watch?: boolean; parentSessionId?: null | string }
 ): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
+    return
+  }
+
+  // The browser host opens with `noopener`, so the window cannot be navigated
+  // after an await, and Safari drops the user gesture across one: with the
+  // owner already known, open before any await. Electron opens over IPC.
+  const knownRoute = isBrowserHostedDesktop() ? knownSessionWindowRoute(opts?.parentSessionId || sessionId) : undefined
+
+  if (knownRoute) {
+    await runWindowOpen(
+      () => window.hermesDesktop.openSessionWindow(sessionId, { watch: opts?.watch, ...knownRoute }),
+      'Could not open chat in a new window'
+    )
+
     return
   }
 
