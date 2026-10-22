@@ -14,7 +14,7 @@ from typing import Literal
 from .base import JsonValue, Params, Result
 from .common import McpServerStatus, OpenModel, ProjectRef
 from .events import SkinPayload
-from .groups_bot_relay import RoomParams, RoomTaskReceipt
+from .groups_bot_relay import RoomAuthority, RoomParams, RoomTaskReceipt
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
 from .registry import canonical_method
 
@@ -549,6 +549,51 @@ class RoomAttachmentBytes(RoomAttachment):
 
 canonical_method("groups.attachment.download", params=GroupsAttachmentDownloadParams,
                  result=RoomAttachmentBytes, doc="Read one committed attachment for a live room viewer.")
+
+
+class GroupsAttachmentListParams(RoomParams):
+    cursor: str | None = None
+    limit: int | None = None
+    query: str | None = None
+    producer_member_id: str | None = None
+    # The reader's word for the default "You" sharer label; a query also matches it on those shares.
+    you_label: str | None = None
+
+
+class RoomFileProducer(Result):
+    kind: str
+    id: str
+    label: str
+
+
+class RoomFileItem(Result):
+    # Omitted while the bytes are downloadable here; false never authorizes Download.
+    available: bool = True
+    attachment_id: str
+    kind: str
+    name: str
+    size: int
+    mime: str
+    event_id: str
+    seq: int
+    manifest_index: int
+    producer: RoomFileProducer
+    shared_at: float
+
+
+class GroupsAttachmentListResult(Result):
+    room_id: str
+    authority: RoomAuthority
+    snapshot_seq: int
+    items: list[RoomFileItem]
+    next_cursor: str | None
+    has_more: bool
+
+
+canonical_method("groups.attachment.list", params=GroupsAttachmentListParams, result=GroupsAttachmentListResult,
+                 doc="List a live room's published file versions, newest share first, with stable snapshot "
+                     "paging, search and a sharer filter. available=false keeps a version listed whose bytes "
+                     "are unavailable here; omitted means downloadable.")
 
 
 class GroupsDiscardParams(RoomParams):
