@@ -28,6 +28,10 @@ export interface CanonicalGroupMessages {
   memberWorking: string
   memberQueued: string
   groupWorking: string
+  statusStopped: string
+  statusBlocked: string
+  statusApprovals: string
+  statusAttention: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -60,7 +64,11 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Upload failed',
     memberWorking: 'Working',
     memberQueued: 'Queued',
-    groupWorking: 'The group is working…'
+    groupWorking: 'The group is working…',
+    statusStopped: 'Group driver stopped',
+    statusBlocked: 'Blocked',
+    statusApprovals: '{count} waiting for approval',
+    statusAttention: 'Needs attention: {count}'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -91,7 +99,11 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'アップロードに失敗しました',
     memberWorking: '作業中',
     memberQueued: '待機中',
-    groupWorking: 'グループが作業中です…'
+    groupWorking: 'グループが作業中です…',
+    statusStopped: 'グループの実行機能が停止しています',
+    statusBlocked: 'ブロック中',
+    statusApprovals: '承認待ち {count} 件',
+    statusAttention: '要対応 {count} 件'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -122,7 +134,11 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上传失败',
     memberWorking: '工作中',
     memberQueued: '排队中',
-    groupWorking: '群组正在处理…'
+    groupWorking: '群组正在处理…',
+    statusStopped: '群组运行程序已停止',
+    statusBlocked: '已阻塞',
+    statusApprovals: '{count} 项等待批准',
+    statusAttention: '{count} 项需要处理'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -153,7 +169,11 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上傳失敗',
     memberWorking: '工作中',
     memberQueued: '排隊中',
-    groupWorking: '群組正在處理…'
+    groupWorking: '群組正在處理…',
+    statusStopped: '群組執行程式已停止',
+    statusBlocked: '已封鎖',
+    statusApprovals: '{count} 項等待核准',
+    statusAttention: '{count} 項需要處理'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -184,7 +204,11 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'فشل الرفع',
     memberWorking: 'يعمل',
     memberQueued: 'في الانتظار',
-    groupWorking: 'المجموعة تعمل…'
+    groupWorking: 'المجموعة تعمل…',
+    statusStopped: 'مشغّل المجموعة متوقف',
+    statusBlocked: 'محظور',
+    statusApprovals: '{count} بانتظار الموافقة',
+    statusAttention: '{count} تحتاج إلى انتباه'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -218,7 +242,11 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Не удалось загрузить файл',
     memberWorking: 'Работает',
     memberQueued: 'В очереди',
-    groupWorking: 'Группа работает…'
+    groupWorking: 'Группа работает…',
+    statusStopped: 'Исполнитель группы остановлен',
+    statusBlocked: 'Заблокировано',
+    statusApprovals: 'Ждут подтверждения: {count}',
+    statusAttention: 'Требуется внимание: {count}'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -251,7 +279,11 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Échec du téléversement',
     memberWorking: 'En cours',
     memberQueued: 'En attente',
-    groupWorking: 'Le groupe travaille…'
+    groupWorking: 'Le groupe travaille…',
+    statusStopped: 'Pilote du groupe arrêté',
+    statusBlocked: 'Bloqué',
+    statusApprovals: '{count} en attente d’approbation',
+    statusAttention: '{count} à traiter'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -285,7 +317,11 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Hochladen fehlgeschlagen',
     memberWorking: 'Arbeitet',
     memberQueued: 'In der Warteschlange',
-    groupWorking: 'Die Gruppe arbeitet…'
+    groupWorking: 'Die Gruppe arbeitet…',
+    statusStopped: 'Gruppentreiber gestoppt',
+    statusBlocked: 'Blockiert',
+    statusApprovals: '{count} warten auf Freigabe',
+    statusAttention: 'Aufmerksamkeit erforderlich: {count}'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -318,6 +354,10 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Error al subir',
     memberWorking: 'Trabajando',
     memberQueued: 'En cola',
-    groupWorking: 'El grupo está trabajando…'
+    groupWorking: 'El grupo está trabajando…',
+    statusStopped: 'Controlador del grupo detenido',
+    statusBlocked: 'Bloqueado',
+    statusApprovals: '{count} esperando aprobación',
+    statusAttention: 'Atención necesaria: {count}'
   }
 } satisfies Record<string, CanonicalGroupMessages>
