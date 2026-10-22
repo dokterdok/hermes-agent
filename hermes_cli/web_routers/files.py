@@ -318,9 +318,18 @@ def _is_host_image(path: str, profile: Optional[str]) -> bool:
 
 
 def _remote_fs_backend(path: str, profile: Optional[str]):
-    """The SSH workspace reader for *path*, or None when this host owns it."""
-    backend = _fs_backend(profile)
-    return None if backend is None or _is_host_image(path, profile) else backend
+    """The SSH workspace reader for *path*, or None when this host owns it.
+
+    Ownership is decided first: building the SSH adapter connects, and a host-owned path must
+    not depend on the SSH machine being up. An unreachable workspace is the backend's 503."""
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    if _is_host_image(path, profile):
+        return None
+    try:
+        return _fs_backend(profile)
+    except SshWorkspaceFsError as exc:
+        _raise_fs_backend_error(exc)
 
 
 def _raise_fs_backend_error(exc: Exception) -> None:
