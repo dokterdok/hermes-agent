@@ -224,6 +224,38 @@ describe('AppContextMenu', () => {
     expect(event.defaultPrevented).toBe(false)
   })
 
+  // The Webapp has no spellcheck feed, so spelling suggestions exist only in the browser's own menu.
+  it('leaves the native menu, with its spelling suggestions, on a plain browser editable', () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    mountMenu()
+    const host = attach('<div data-zone-body="t" data-slot="context-menu-trigger"><textarea>teh quick</textarea></div>')
+    const fallback = vi.fn()
+    host.addEventListener('contextmenu', fallback)
+    const field = host.querySelector('textarea')!
+    const event = createEvent.contextMenu(field, { bubbles: true, cancelable: true })
+
+    fireEvent(field, event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(fallback).not.toHaveBeenCalled()
+    expect($contextMenu.get()).toBeNull()
+  })
+
+  it('keeps the app menu for a link inside a browser editable', async () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    mountMenu()
+    const host = attach('<div contenteditable="true"><a href="https://example.com">link</a></div>')
+    const link = host.querySelector('a')!
+    const event = createEvent.contextMenu(link, { bubbles: true, cancelable: true })
+
+    fireEvent(link, event)
+
+    expect(await screen.findByText('Open in external browser')).toBeTruthy()
+    expect(event.defaultPrevented).toBe(true)
+  })
+
   it('keeps native media gestures unprevented in Electron', async () => {
     installBridge()
     window.document.documentElement.dataset.hermesDesktopHost = 'electron'
