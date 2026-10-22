@@ -102,6 +102,9 @@ def _request_home(profile: str | None) -> Path:
 
 
 class HostTerminalRegistry(PtySessionRegistry):
+    # Shells run full-screen programs; a trimmed replay re-emits their terminal modes.
+    track_terminal_modes = True
+
     def __init__(self):
         # Every live shell keeps a read in flight. On the loop's default executor, retained
         # shells would queue the keystroke fences, ownership checks, uploads and SessionDB

@@ -16,6 +16,8 @@ from typing import Callable, Dict, Optional, Tuple
 
 from fastapi import WebSocketDisconnect
 
+from hermes_cli.pty_terminal_modes import TerminalModes
+
 logger = logging.getLogger(__name__)
 
 WS_CLOSE_PROCESS_EXITED = 4410
@@ -117,6 +119,8 @@ class PtySession:
         self._output_lock = asyncio.Lock()
         self._input_task: Optional[asyncio.Task] = None
         self._close_task: Optional[asyncio.Task] = None
+        # Set by registries whose programs need their terminal modes back after a trimmed replay.
+        self.modes: Optional[TerminalModes] = None
 
     async def start(self) -> None:
         self._drain_task = asyncio.create_task(self._drain())
@@ -139,6 +143,8 @@ class PtySession:
                 await asyncio.sleep(0)
                 continue
             self.buffer.append(chunk)
+            if self.modes is not None:
+                self.modes.feed(chunk)
             ws = self._ws
             output_lock = self._output_lock
             try:
@@ -232,6 +238,9 @@ class PtySession:
         try:
             async with output_lock:
                 snap = self.buffer.snapshot()
+                if self.modes is not None and self.buffer.truncated:
+                    # The trimmed tail lost the sequences that set the program's modes.
+                    snap = self.modes.checkpoint() + snap
                 if old_ws is not ws:
                     await _close_ws(old_ws, WS_CLOSE_SUPERSEDED)
                 if self._ws is not ws:
@@ -358,6 +367,9 @@ async def run_reaper(registry: PtySessionRegistry, *, interval: float = 60.0) ->
 
 
 class PtySessionRegistry:
+    # Whether a trimmed reattach replay restores the terminal modes its program set.
+    track_terminal_modes = False
+
     def __init__(
         self, *, ttl: float, max_sessions: int, buffer_cap: int, read_timeout: float,
         drain_executor: Optional[Executor] = None, exit_close_code: int = WS_CLOSE_PROCESS_EXITED,
@@ -449,6 +461,8 @@ class PtySessionRegistry:
         )
         await session.start()
         self._sessions[key] = session
+        if self.track_terminal_modes:
+            session.modes = TerminalModes()  # before the drain task's first read
         return session, True
 
     async def close_other_sessions(self, prefix: str, *, keep_key: str) -> None:
