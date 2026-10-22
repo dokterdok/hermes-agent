@@ -1,6 +1,8 @@
 """Tests for gateway/hosted_room_replicas.py — replica ingest, promotion, and
 stale-authority demotion for hosted Group Chat rooms."""
 
+import sqlite3
+
 import pytest
 
 import gateway.hosted_room_replicas as replicas
@@ -330,6 +332,131 @@ def test_ingest_rejects_epoch_regression(tmp_path):
             members=MEMBERS,
             page=stale,
         )
+
+
+def _disbanded_room_page(tmp_path):
+    adb = _authority_db(tmp_path)
+    _seed_room(adb, n_events=1)
+    rooms.disband_room(
+        adb, room_id="room-1", expected_gateway_id=AUTH_A, expected_epoch=1
+    )
+    return rooms.read_events(
+        adb, room_id="room-1", since_seq=0, limit=100, include_disbanded=True
+    )
+
+
+def test_ingest_refuses_events_after_room_disbanded(tmp_path):
+    page = _disbanded_room_page(tmp_path)
+    late = {**page["events"][0], "seq": 3, "event_id": "late"}
+    rdb = _replica_db(tmp_path)
+
+    def ingest(events, latest_seq=3):
+        return replicas.ingest_page(
+            rdb,
+            room_id="room-1",
+            room_name="Field Room",
+            members=MEMBERS,
+            page={**page, "events": events, "cursor": latest_seq, "latest_seq": latest_seq},
+        )
+
+    with pytest.raises(replicas.ReplicaError, match="disbanded"):
+        ingest([*page["events"], late])
+    ingest(page["events"], latest_seq=2)
+    with pytest.raises(replicas.ReplicaError, match="disbanded"):
+        ingest([late])
+    assert replicas.replica_state(rdb, room_id="room-1")["last_seq"] == 2
+
+
+def test_disbanded_room_history_still_copies_idempotently(tmp_path):
+    page = _disbanded_room_page(tmp_path)
+    assert page["events"][-1]["kind"] == "room.disbanded"
+    rdb = _replica_db(tmp_path)
+    first = replicas.ingest_page(
+        rdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
+    )
+    again = replicas.ingest_page(
+        rdb, room_id="room-1", room_name="Renamed", members=MEMBERS, page=page
+    )
+    assert (first["ingested"], first["caught_up"], again["ingested"]) == (2, True, 0)
+    assert replicas.replica_state(rdb, room_id="room-1")["name"] == "Field Room"
+
+
+def _successor_of_disbanded(tmp_path, monkeypatch):
+    """B took over from a copy of the room's first message, before its host disbanded it."""
+    adb, bdb = _authority_db(tmp_path), tmp_path / "b.db"
+    replicas.ingest_page(
+        bdb,
+        room_id="room-1",
+        room_name="Field Room",
+        members=MEMBERS,
+        page=rooms.read_events(
+            adb, room_id="room-1", since_seq=0, limit=1, include_disbanded=True
+        ),
+    )
+    monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
+    replicas.promote_replica(bdb, room_id="room-1")
+    rooms.append_event(
+        bdb,
+        room_id="room-1",
+        event_id="b-work",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "on B"},
+        authority_gateway_id=AUTH_B,
+        authority_epoch=2,
+    )
+    return rooms.read_events(bdb, room_id="room-1", since_seq=0, limit=1)
+
+
+@pytest.mark.parametrize("case", ["successor's short page", "disband page with a longer log"])
+def test_ingest_keeps_a_disbanded_copy_final(tmp_path, monkeypatch, case):
+    """A copy that ends at room.disbanded is exactly caught up: no page may move its
+    authority or coverage past the disband, whether or not it adds events."""
+    page = _disbanded_room_page(tmp_path)
+    rdb = _replica_db(tmp_path)
+    if case == "successor's short page":
+        replicas.ingest_page(
+            rdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
+        )
+        page = _successor_of_disbanded(tmp_path, monkeypatch)
+    else:
+        page["latest_seq"] = 5
+    with pytest.raises(replicas.ReplicaError, match="disbanded"):
+        replicas.ingest_page(
+            rdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
+        )
+    if case == "successor's short page":
+        state = replicas.replica_state(rdb, room_id="room-1")
+        assert (state["authority"]["epoch"], state["latest_seq"]) == (1, 2)
+
+
+def test_ingest_keeps_a_copy_final_that_already_holds_events_past_its_disband(tmp_path):
+    """A copy stored before this check may hold events after room.disbanded; it takes no more."""
+    adb = _authority_db(tmp_path)
+    _seed_room(adb, n_events=4)
+    rdb = _replica_db(tmp_path)
+    replicas.ingest_page(
+        rdb,
+        room_id="room-1",
+        room_name="Field Room",
+        members=MEMBERS,
+        page=rooms.read_events(adb, room_id="room-1", since_seq=0, limit=3),
+    )
+    conn = sqlite3.connect(rdb)
+    conn.execute(
+        "UPDATE hosted_room_replica_events SET kind='room.disbanded' WHERE room_id='room-1' AND seq=2"
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(replicas.ReplicaError, match="disbanded"):
+        replicas.ingest_page(
+            rdb,
+            room_id="room-1",
+            room_name="Field Room",
+            members=MEMBERS,
+            page=rooms.read_events(adb, room_id="room-1", since_seq=3, limit=100),
+        )
+    assert replicas.replica_state(rdb, room_id="room-1")["last_seq"] == 3
 
 
 def test_ingest_requires_authority_stamp(tmp_path):
