@@ -14,6 +14,8 @@ _OWNER = 'gateway.hosted.owner.v1:'
 
 
 class CanonicalHostedRoomService(HostedControls, HostedRoomService):
+    shares_files = True
+
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
@@ -83,6 +85,14 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                               attachment_digests=source_attachment_digests(self, member, room_id, manifest))
         return result
 
+
+    def _bind_task_outputs(self, room, task):
+        from gateway.hosted_room_outputs import bind_outputs
+        return bind_outputs(self, room, task)
+
+    def _release_task_outputs(self, room, task):
+        from gateway.hosted_room_outputs import release_outputs
+        release_outputs(self, room, task)
 
     def bindings(self):
         with self.authority.db._read_ctx() as conn:

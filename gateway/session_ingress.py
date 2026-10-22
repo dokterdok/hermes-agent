@@ -280,7 +280,11 @@ async def execute_admission(authority, ref, row):
     event._turn_marker_handoff = True
     handed = False
     try:
-        with await _execution_scope(authority, home):
+        from gateway.hosted_room_outputs import hosted_attempt, hosted_turn_for, hosted_turn_scope
+        # Only a Group Chat member turn binds file sharing; its one store read runs off the loop.
+        turn = (await asyncio.to_thread(hosted_turn_for, authority, ref, row)
+                if hosted_attempt(row['request_id']) is not None else None)
+        with await _execution_scope(authority, home), hosted_turn_scope(turn):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])
