@@ -138,3 +138,18 @@ async def test_an_upload_that_grew_past_the_browser_limit_is_not_copied(owner):
     os.truncate(receipt['path'], WEBAPP_ATTACHMENT_MAX_BYTES + 1)
     assert isinstance(await owner.attach(receipt), str)  # refused
     assert not owner.attachments.exists()
+
+
+@pytest.mark.asyncio
+async def test_staged_picks_attach_while_another_profile_is_still_starting(owner):
+    """A multiplexer reserves a profile's slot (``None``) while it builds that profile's authority
+    (``run_runtime._build_profile_authority``). An attach in that window reads only the profiles
+    this process serves: its own home and ready siblings, never the reserved slot, nor a sibling
+    that is retiring."""
+    registry = owner.authority.runner.session_authorities
+    registry.add(owner.home / 'profiles' / 'pending', None, name='pending')
+    for home in (owner.home, owner.worker):
+        attached = await owner.attach(owner.upload(home))
+        assert isinstance(attached, dict) and attached['attached'] is True, (home, attached)
+    registry.for_home(owner.worker).retiring = True
+    assert isinstance(await owner.attach(owner.upload(owner.worker)), str)  # refused: no longer served

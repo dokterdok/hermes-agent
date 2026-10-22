@@ -189,9 +189,12 @@ def _reachable_upload_home(connection, raw_home) -> bool:
     if not isinstance(raw_home, str) or not raw_home:
         return False
     homes = {connection.authority.profile_id}
-    if connection.host_scoped:
-        registry = getattr(getattr(connection.authority, 'runner', None), 'session_authorities', None)
-        homes |= {sibling.profile_id for sibling in (registry or ())}
+    runner = getattr(connection.authority, 'runner', None)
+    if connection.host_scoped and runner is not None:
+        # Served siblings only: a profile still starting holds a reserved None slot, and a
+        # retiring one refuses admissions.
+        from gateway.session_authorities import serving_authorities
+        homes |= {sibling.profile_id for sibling in serving_authorities(runner)}
     try:
         target = Path(raw_home).resolve()
         return any(Path(home).resolve() == target for home in homes)
