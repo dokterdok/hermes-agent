@@ -301,7 +301,7 @@ def _managed_files_policy(request: Optional[Request], *, create_root: bool = Tru
 
 def _resolve_managed_path(
     raw_path: str | None, request: Request, *, for_write: bool = False, create_root: bool = True,
-    for_agent_read: bool = False,
+    for_agent_read: bool = False, profile_home: Path | None = None,
 ) -> tuple[ManagedFilesPolicy, Path, str]:
     policy = _managed_files_policy(request, create_root=create_root)
     text = _path_text(raw_path)
@@ -312,7 +312,8 @@ def _resolve_managed_path(
         # Agent-emitted container paths (/workspace/...) resolve to their host
         # bind mount before the root checks, so the locked-root refusal below
         # still governs the translated target (#85238). A readable host path wins.
-        translated = _agent_container_path(text)
+        # The sandbox is the requested profile's (*profile_home*), never the launch one's.
+        translated = _agent_container_path(text, profile_home=profile_home)
         if translated is not None:
             text = str(translated)
 
