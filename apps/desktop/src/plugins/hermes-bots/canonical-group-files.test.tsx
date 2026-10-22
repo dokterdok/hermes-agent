@@ -20,6 +20,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     usePluginI18n: () => reader.locale === 'fr' ? translateBotsIn('fr') : translateBots }
 })
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
+import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { CanonicalGroupFiles, latestFileSeq } from './canonical-group-files'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { translateBots, translateBotsIn } from './i18n-test-helper'
@@ -545,4 +546,15 @@ it('retries a failed download of the same version', async () => {
   await waitFor(() => expect(observed.downloads).toHaveLength(1))
   expect(calls('groups.attachment.download')).toHaveLength(2)
   expect(new Set(calls('groups.attachment.download').map(params => JSON.stringify(params))).size).toBe(1)
+})
+
+it.each([
+  ['a version whose bytes are gone', 'attachment_unavailable', 'This version can no longer be downloaded.'],
+  ['any other refusal', 'permission_denied', 'This file could not be downloaded. (permission_denied)']
+])('says a history download of %s failed to download, not to upload', async (_case, reason, text) => {
+  gateway['groups.attachment.download'] = () => { throw Object.assign(new Error(reason), { code: 4001, data: { reason } }) }
+  const attachment = { attachment_id: file(20).attachment_id, event_id: 'user:20', kind: 'file', name: 'report.txt', mime: 'text/plain', size: 1 }
+  render(<CanonicalGroupAttachments attachments={[attachment]} binding={binding} disabled={false} readOnly />)
+  fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+  expect((await screen.findByRole('alert')).textContent).toBe(text)
 })

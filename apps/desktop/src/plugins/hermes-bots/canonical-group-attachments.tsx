@@ -2,6 +2,7 @@ import { Button } from '@hermes/plugin-sdk'
 import { useLayoutEffect, useRef, useState } from 'react'
 
 import { downloadCanonicalAttachment } from './canonical-attachment-download'
+import { filesFailure } from './canonical-files-client'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { type CanonicalGroupBinding, canonicalGroupRequest } from './canonical-groups'
 
@@ -60,9 +61,13 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
       // Upload receipts include storage metadata; Send accepts only the manifest.
       const { attachment_id, kind, name, mime, size } = result
       onChange?.([...attachments, { attachment_id, kind, name, mime, size }])
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    } catch (e) { setError(`${labels.uploadFailed}: ${e instanceof Error ? e.message : String(e)}`) }
     finally { setBusy(false); onUploadingChange?.(false) }
   }
+
+  // A version the room still publishes but whose bytes are gone says so; any other failure keeps its detail.
+  const downloadProblem = (e: unknown) => filesFailure(e) === 'missing' ? labels.fileVersionUnavailable
+    : `${labels.fileDownloadFailed} (${e instanceof Error ? e.message : String(e)})`
 
   async function download(attachment: Attachment) {
     const signal = lifetime.current?.signal
@@ -78,7 +83,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
       if (signal.aborted) {return}
       const bytes = Uint8Array.from(atob(result.data_base64), char => char.charCodeAt(0))
       downloadCanonicalAttachment(bytes, result.name, result.mime, signal)
-    } catch (e) { if (!signal.aborted) {setError(e instanceof Error ? e.message : String(e))} }
+    } catch (e) { if (!signal.aborted) {setError(downloadProblem(e))} }
     finally { if (!signal.aborted) {setBusy(false)} }
   }
 
@@ -91,6 +96,6 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
       <span>{a.name}</span><Button disabled={disabled || busy} onClick={() => void download(a)} type="button">{labels.download}</Button>
       {!readOnly && <Button disabled={disabled || busy} onClick={() => onChange?.(attachments.filter(item => item !== a))} type="button">{labels.removeAttachment}</Button>}
     </span>)}
-    {error && <span role="alert">{labels.uploadFailed}: {error}</span>}
+    {error && <span role="alert">{error}</span>}
   </div>
 }
