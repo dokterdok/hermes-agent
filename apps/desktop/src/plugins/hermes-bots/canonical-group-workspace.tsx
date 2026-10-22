@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { type CanonicalDriverActivity, CanonicalGroupRoster, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
+import { CanonicalGroupFiles, latestFileSeq } from './canonical-group-files'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
@@ -166,6 +167,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         <CanonicalGroupRoster label={labels.members} labels={labels} members={state?.room.members} phases={phases} />
       </div>
       <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
+      <CanonicalGroupFiles binding={binding} latest={latestFileSeq(events)} roomName={state?.room.name} visible={visible} />
     </header>
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}
