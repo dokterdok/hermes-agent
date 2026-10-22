@@ -29,7 +29,8 @@ export const enBoot = {
       gatewaySignInRequired: 'Your remote Hermes signed you out',
       gatewaySignInRequiredDetail: 'Sign in again to reconnect. Your chats and settings are safe.',
       signInAgain: 'Sign in again',
-      ipcBridgeUnavailable: "Hermes Desktop couldn't talk to its own background layer. Restart the app."
+      ipcBridgeUnavailable: "Hermes Desktop couldn't talk to its own background layer. Restart the app.",
+      startupProfileMissing: profile => `Profile "${profile}" no longer exists, so Hermes opened the default profile.`
     },
     // Plain causes for a local backend boot failure (`classifyBootFailure`);
     // the raw output stays behind "Show recent logs".

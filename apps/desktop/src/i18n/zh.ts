@@ -141,10 +141,10 @@ export const zhOverrides = {
       backendStopped: '后端已停止',
       desktopBootFailed: '桌面启动失败',
       gatewayConnectionLost: '与网关的连接已断开',
-      gatewayConnectionLostDetail:
-        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
+      gatewayConnectionLostDetail: '仍在尝试重新连接。你可以继续阅读和起草。若持续如此，请立即重连或检查连接设置。',
       gatewaySignInRequired: '需要登录网关',
-      ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
+      ipcBridgeUnavailable: '桌面 IPC 桥不可用。',
+      startupProfileMissing: profile => `配置档案“${profile}”已不存在，Hermes 已打开默认配置档案。`
     },
     failure: {
       title: 'Hermes 无法启动',

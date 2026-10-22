@@ -20,7 +20,9 @@ export const ruBoot = {
       desktopBootFailed: 'Не удалось запустить приложение',
       gatewayConnectionLost: 'Соединение с шлюзом потеряно',
       gatewaySignInRequired: 'Требуется вход в шлюз',
-      ipcBridgeUnavailable: 'IPC-мост приложения недоступен.'
+      ipcBridgeUnavailable: 'IPC-мост приложения недоступен.',
+      startupProfileMissing: profile =>
+        `Профиль «${profile}» больше не существует, поэтому Hermes открыл профиль по умолчанию.`
     },
     failure: {
       title: 'Hermes не удалось запустить',

@@ -22,7 +22,9 @@ export const arBoot = {
       gatewayConnectionLostDetail:
         'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: 'تسجيل الدخول للبوابة مطلوب',
-      ipcBridgeUnavailable: 'جسر IPC لسطح المكتب غير متاح.'
+      ipcBridgeUnavailable: 'جسر IPC لسطح المكتب غير متاح.',
+      startupProfileMissing: profile =>
+        `لم يعد الملف الشخصي «${profile}» موجودًا، لذلك فتح Hermes الملف الشخصي الافتراضي.`
     },
     failure: {
       title: 'تعذر تشغيل Hermes',

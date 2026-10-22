@@ -113,6 +113,7 @@ export function createBrowserProfileBridge({
       return openWindow(url)
     },
     profile: {
+      forgetProfile: name => profileChanged(name, null),
       get: async () => ({ profile: currentProfile() }),
       getDefault: async () => readDefault(),
       setDefault: async value => {

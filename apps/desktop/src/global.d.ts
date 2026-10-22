@@ -268,6 +268,9 @@ declare global {
         agentSignIn: (dashboardUrl: string) => Promise<DesktopCloudAgentSignInResult>
       }
       profile: {
+        /** Browser host only: `name` no longer exists, so this tab's `?profile=` and the saved
+         *  startup route that name it fall back to Default, as after a delete made here. */
+        forgetProfile?: (name: string) => void
         getDefault: () => Promise<DesktopProfileRoute | null>
         setDefault: (route: DesktopProfileRoute) => Promise<DesktopProfileRoute>
         onDefaultChanged: (callback: (route: DesktopProfileRoute | null) => void) => () => void

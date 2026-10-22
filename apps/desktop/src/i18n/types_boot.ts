@@ -25,6 +25,7 @@ export interface BootTranslations {
     gatewaySignInRequiredDetail: string
     signInAgain: string
     ipcBridgeUnavailable: string
+    startupProfileMissing: (profile: string) => string
   }
   causes: {
     exitedEarly: string
