@@ -277,6 +277,21 @@ it('replays server history once, suppresses parser replies, and detaches on remo
   expect(Socket.instances[2].url.searchParams.has('attach')).toBe(false)
 })
 
+// `exit` closes the tab, as in Electron; an expired or server-closed shell (4410) keeps it (above).
+it('closes a persistent tab whose shell exits while attached', async () => {
+  seedWebappSession('test-token')
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const id = createTerminal('/work')
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  act(() => Socket.instances[0].close(4200))
+  expect($terminals.get().some(tab => tab.id === id)).toBe(false)
+  expect(Object.keys(localStorage).filter(key => key.startsWith('hermes.webapp.terminal'))).toEqual([])
+  expect(Socket.instances).toHaveLength(1)
+})
+
 it('close others and close all terminate mounted and unmounted persisted shells', async () => {
   seedWebappSession('test-token')
   Socket.persistent = true

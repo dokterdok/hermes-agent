@@ -91,9 +91,12 @@ class PtySession:
     def __init__(
         self, key: str, bridge, *, buffer_cap: int, read_timeout: float,
         active_session_file: Optional[Path] = None, drain_executor: Optional[Executor] = None,
+        exit_close_code: int = WS_CLOSE_PROCESS_EXITED,
     ) -> None:
         self.key = key
         self.bridge = bridge
+        # Sent to the attached viewer when the process itself exits (EOF).
+        self._exit_close_code = exit_close_code
         self.active_session_file = active_session_file
         self.active_session_cleanup: Optional[Callable[[], None]] = None
         self.buffer = RingBuffer(buffer_cap)
@@ -130,7 +133,7 @@ class PtySession:
                 ws = self._ws
                 async with self._output_lock:
                     if self._ws is ws:
-                        await _close_ws(ws, WS_CLOSE_PROCESS_EXITED)
+                        await _close_ws(ws, self._exit_close_code)
                 return
             if not chunk:                            # idle tick
                 await asyncio.sleep(0)
@@ -285,9 +288,10 @@ class PtySession:
             return False
         return leader == pid or leader in _process_ancestors(pid)
 
-    async def close(self) -> None:
+    async def close(self, code: Optional[int] = None) -> None:
         # Disconnect cancellation must not strand a child after its registry
         # entry was removed. Cleanup has independent, idempotent ownership.
+        # ``code`` (default 4410) reaches the attached viewer; the first close decides it.
         if self._close_task is None:
             self.alive = False
             self._attach_generation += 1
@@ -295,11 +299,11 @@ class PtySession:
                 self._input_task.cancel()
             ws = self._ws
             self.detach(ws)
-            self._close_task = asyncio.create_task(self._close(ws))
+            self._close_task = asyncio.create_task(self._close(ws, WS_CLOSE_PROCESS_EXITED if code is None else code))
         await asyncio.shield(self._close_task)
 
-    async def _close(self, ws) -> None:
-        await _close_ws(ws, WS_CLOSE_PROCESS_EXITED)
+    async def _close(self, ws, code: int) -> None:
+        await _close_ws(ws, code)
         if self._drain_task is not None:
             self._drain_task.cancel()
             try:
@@ -356,9 +360,10 @@ async def run_reaper(registry: PtySessionRegistry, *, interval: float = 60.0) ->
 class PtySessionRegistry:
     def __init__(
         self, *, ttl: float, max_sessions: int, buffer_cap: int, read_timeout: float,
-        drain_executor: Optional[Executor] = None,
+        drain_executor: Optional[Executor] = None, exit_close_code: int = WS_CLOSE_PROCESS_EXITED,
     ) -> None:
         self._ttl = ttl
+        self._exit_close_code = exit_close_code
         self._max = max_sessions
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
@@ -440,6 +445,7 @@ class PtySessionRegistry:
             read_timeout=self._read_timeout,
             active_session_file=active_session_file,
             drain_executor=self._drain_executor,
+            exit_close_code=self._exit_close_code,
         )
         await session.start()
         self._sessions[key] = session
@@ -540,8 +546,8 @@ class PtySessionRegistry:
         self._sessions.pop(oldest.key, None)
         self._close_in_background(oldest)
 
-    def _close_in_background(self, session: PtySession) -> asyncio.Task:
-        task = asyncio.create_task(session.close())
+    def _close_in_background(self, session: PtySession, code: Optional[int] = None) -> asyncio.Task:
+        task = asyncio.create_task(session.close() if code is None else session.close(code))
         self._background_closes.add(task)
         task.add_done_callback(self._background_closes.discard)
         return task

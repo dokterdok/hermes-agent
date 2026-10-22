@@ -378,7 +378,7 @@ def test_real_profile_a_b_a_and_process_exit_never_respawns(host_app, tmp_path):
             with pytest.raises(WebSocketDisconnect) as error:
                 while True:
                     ws.receive_bytes()
-            assert error.value.code == 4410
+            assert error.value.code == 4200  # the shell exited: the browser closes the tab
         rejection(client, url("&profile=alpha&attach=" + token), 4410)
         assert set(host_app.state.host_terminals._sessions) <= set(tokens.values())
 
@@ -818,3 +818,46 @@ def test_capture_and_spawn_hold_profile_incarnation_lease(host_app, fake_bridges
         assert not errors
         assert retired.is_set() and len(fake_bridges) == 1
         assert fake_bridges[0].closed.wait(3)
+
+
+def test_shell_exit_closes_its_viewer_as_exited_not_expired(host_app, fake_bridges):
+    # 4200 lets the browser close the tab, as Electron does; 4410 (expired) would keep a dead tab.
+    with TestClient(host_app) as client:
+        with client.websocket_connect(url()) as ws:
+            metadata(ws)
+            assert ws.receive_bytes() == b""  # explicit empty replay boundary
+            fake_bridges[0].closed.set()  # the shell process exited: the PTY reads EOF
+            with pytest.raises(WebSocketDisconnect) as error:
+                ws.receive_bytes()
+            assert error.value.code == 4200
+
+
+class DiesBeforeEofBridge(IdleBridge):
+    """A shell whose process died while reads still tick (ConPTY can report death before EOF)."""
+
+    def __init__(self):
+        import threading
+        super().__init__()
+        self.dead = threading.Event()
+
+    async def write(self, data, *, timeout=10.0, fence=None):
+        return False if self.dead.is_set() else await super().write(data, timeout=timeout, fence=fence)
+
+    def is_alive(self):
+        return not (self.dead.is_set() or self.closed.is_set())
+
+
+@pytest.mark.parametrize("detected_by", ["reaper", "input"])
+def test_shell_death_before_eof_closes_its_viewer_as_exited(host_app, monkeypatch, detected_by):
+    bridge = DiesBeforeEofBridge()
+    monkeypatch.setattr(web_server_chat.PtyBridge, "spawn", lambda *args, **kwargs: bridge)
+    with TestClient(host_app) as client:
+        with client.websocket_connect(url()) as ws:
+            metadata(ws)
+            assert ws.receive_bytes() == b""
+            bridge.dead.set()
+            if detected_by == "input":
+                ws.send_bytes(b"echo still there\n")
+            with pytest.raises(WebSocketDisconnect) as error:
+                ws.receive_bytes()
+            assert error.value.code == 4200
