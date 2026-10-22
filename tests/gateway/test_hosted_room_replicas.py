@@ -1,8 +1,6 @@
 """Tests for gateway/hosted_room_replicas.py — replica ingest, promotion, and
 stale-authority demotion for hosted Group Chat rooms."""
 
-import json
-
 import pytest
 
 import gateway.hosted_room_replicas as replicas
@@ -154,16 +152,176 @@ def test_ingest_refuses_a_replay_from_a_different_room_history(tmp_path, monkeyp
     )
 
 
-def test_ingest_rejects_epoch_regression(tmp_path):
-    page = _seed_room(_authority_db(tmp_path))
+def test_ingest_refuses_an_authority_change_without_a_claim(tmp_path, monkeypatch):
+    """B's page after C's cursor holds only B's epoch-2 message: taking it would
+    put B's work on top of A's seq 4 with no authority.claimed in between."""
+    bdb, cdb = _successor_after_takeover(tmp_path, monkeypatch)
+    after_c = rooms.read_events(bdb, room_id="room-1", since_seq=4, limit=100)
+    assert after_c["authority"] == {"gateway_id": AUTH_B, "epoch": 2}
+
+    with pytest.raises(replicas.ReplicaError, match="without an authority.claimed"):
+        replicas.ingest_page(
+            cdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=after_c
+        )
+    state = replicas.replica_state(cdb, room_id="room-1")
+    assert (state["last_seq"], state["authority"]["epoch"]) == (4, 1)
+
+
+def test_fresh_copy_pages_the_successor_through_its_claim(tmp_path, monkeypatch):
+    """Short pages stamped with B's authority before its claim arrives stay valid."""
+    bdb, _ = _successor_after_takeover(tmp_path, monkeypatch)
+    ddb = tmp_path / "d.db"
+    for since_seq in (0, 2, 4):
+        result = replicas.ingest_page(
+            ddb,
+            room_id="room-1",
+            room_name="Field Room",
+            members=MEMBERS,
+            page=rooms.read_events(bdb, room_id="room-1", since_seq=since_seq, limit=2),
+        )
+    assert (result["stored_seq"], result["caught_up"]) == (5, True)
+    assert result["authority"] == {"gateway_id": AUTH_B, "epoch": 2}
+
+
+def test_promote_waits_for_the_claim_the_copy_has_seen(tmp_path, monkeypatch):
+    """C read B's log up to, not including, B's claim: promoting it then would mint
+    an epoch no copy can follow. Once the claim is stored, C promotes and is copied."""
+    bdb, _ = _successor_after_takeover(tmp_path, monkeypatch)
+    cdb, ddb = tmp_path / "c2.db", tmp_path / "d.db"
+    replicas.ingest_page(
+        cdb,
+        room_id="room-1",
+        room_name="Field Room",
+        members=MEMBERS,
+        page=rooms.read_events(bdb, room_id="room-1", since_seq=0, limit=3),
+    )
+    monkeypatch.setattr(
+        replicas, "local_authority_gateway_id", lambda: "install:" + "c" * 32
+    )
+
+    with pytest.raises(replicas.ReplicaError, match="claimed for epoch 2"):
+        replicas.promote_replica(cdb, room_id="room-1")
+    assert replicas.replica_state(cdb, room_id="room-1")["last_seq"] == 3
+    replicas.ingest_page(
+        cdb,
+        room_id="room-1",
+        room_name="Field Room",
+        members=MEMBERS,
+        page=rooms.read_events(bdb, room_id="room-1", since_seq=3, limit=100),
+    )
+    assert replicas.promote_replica(cdb, room_id="room-1")["authority_epoch"] == 3
+    result = replicas.ingest_page(
+        ddb,
+        room_id="room-1",
+        room_name="Field Room",
+        members=MEMBERS,
+        page=rooms.read_events(cdb, room_id="room-1", since_seq=0, limit=100),
+    )
+    assert (result["stored_seq"], result["caught_up"]) == (6, True)
+
+
+AUTH_X = "install:" + "x" * 32
+
+
+def _skip_an_epoch(page):
+    claim = page["events"][0]
+    claim["authority_epoch"] = claim["payload"]["authority_epoch"] = 3
+    page.update(authority={"gateway_id": AUTH_B, "epoch": 3}, latest_seq=5)
+
+
+def _another_gateway_acts(page):  # still before B's claim, so the page is not caught up
+    event = {**page["events"][0], "kind": "room.activity", "authority_epoch": 1, "payload": {}}
+    page.update(events=[{**event, "actor": {"kind": "gateway", "id": AUTH_X}}], latest_seq=5)
+
+
+# One claim-rule violation each, applied to B's page from since_seq=3 (its claim alone).
+_CLAIM_RULE_BREAKS = {
+    "claim names another predecessor": lambda page: page["events"][0]["payload"].update(
+        previous_gateway_id=AUTH_X
+    ),
+    "claim skips an epoch": _skip_an_epoch,
+    "another gateway acts in the span": _another_gateway_acts,
+    "caught-up stamp ahead of its events": lambda page: page.update(events=[], latest_seq=3),
+}
+
+
+@pytest.mark.parametrize("short_page_first", [False, True])
+@pytest.mark.parametrize("case", list(_CLAIM_RULE_BREAKS))
+def test_ingest_holds_the_claim_rule_for_a_copy(tmp_path, monkeypatch, case, short_page_first):
+    """C copied A's three events. A short page of B's log (stamped B, epoch 2, adding
+    nothing) must not make C forget whose span it holds."""
+    adb, bdb, cdb = (tmp_path / name for name in ("a.db", "b.db", "c.db"))
+    page = _seed_room(adb, n_events=3)
+    for db in (bdb, cdb):
+        replicas.ingest_page(
+            db, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
+        )
+    monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
+    replicas.promote_replica(bdb, room_id="room-1")
+    if short_page_first:
+        replicas.ingest_page(
+            cdb,
+            room_id="room-1",
+            room_name="Field Room",
+            members=MEMBERS,
+            page=rooms.read_events(bdb, room_id="room-1", since_seq=0, limit=1),
+        )
+    broken = rooms.read_events(bdb, room_id="room-1", since_seq=3, limit=100)
+    _CLAIM_RULE_BREAKS[case](broken)
+
+    with pytest.raises(replicas.ReplicaError):
+        replicas.ingest_page(
+            cdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=broken
+        )
+    assert replicas.replica_state(cdb, room_id="room-1")["last_seq"] == 3
+
+
+@pytest.mark.parametrize("case", ["gateway actor off the stamp", "epoch 0 event"])
+def test_fresh_copy_holds_the_claim_rule(tmp_path, case):
+    adb = _authority_db(tmp_path)
+    rooms.create_room(
+        adb, room_id="room-1", name="Field Room", members=MEMBERS, authority_gateway_id=AUTH_A
+    )
+    rooms.append_event(
+        adb,
+        room_id="room-1",
+        event_id="turn",
+        kind="turn.started",
+        actor={"kind": "gateway", "id": AUTH_A},
+        payload={},
+        authority_gateway_id=AUTH_A,
+        authority_epoch=1,
+    )
+    page = rooms.read_events(adb, room_id="room-1", since_seq=0, limit=100)
+    if case == "gateway actor off the stamp":
+        page["authority"] = {"gateway_id": AUTH_B, "epoch": 1}
+    else:
+        page["events"][0]["authority_epoch"] = 0
     rdb = _replica_db(tmp_path)
-    newer = json.loads(json.dumps(page))
-    newer["authority"]["epoch"] = 3
+    with pytest.raises(replicas.ReplicaError, match="without an authority.claimed"):
+        replicas.ingest_page(
+            rdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
+        )
+    with pytest.raises(replicas.ReplicaError, match="not found"):
+        replicas.replica_state(rdb, room_id="room-1")
+
+
+def test_ingest_rejects_epoch_regression(tmp_path):
+    adb = _authority_db(tmp_path)
+    stale = _seed_room(adb)
+    rooms.claim_authority(
+        adb,
+        room_id="room-1",
+        expected_gateway_id=AUTH_A,
+        expected_epoch=1,
+        new_gateway_id=AUTH_B,
+        event_id="claim-b",
+    )
+    newer = rooms.read_events(adb, room_id="room-1", since_seq=0, limit=100)
+    rdb = _replica_db(tmp_path)
     replicas.ingest_page(
         rdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=newer
     )
-    stale = json.loads(json.dumps(page))
-    stale["authority"]["epoch"] = 2
     with pytest.raises(replicas.ReplicaEpochRegressionError):
         replicas.ingest_page(
             rdb,
