@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -461,4 +461,38 @@ it('offers a read-only retry when the Send journal cannot be read, then restores
   expect(screen.queryByText(/Saved messages couldn’t be loaded/)).toBeNull()
   expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   expect(compareAndSet).not.toHaveBeenCalled()
+})
+
+it('names the Bot behind each pending action and shows what an approval would allow before offering it', async () => {
+  const members = [{ member_id: 'ops', profile: 'ops', handle: 'ops', display_name: 'Ops Bot' },
+    { member_id: 'qa', profile: 'qa', handle: 'qa', display_name: 'QA Bot' }]
+
+  const actions = [
+    { kind: 'approval', member_id: 'ops', task_id: 'clean', execution_generation: 3, request_id: 'r-clean',
+      approval: { request_id: 'r-clean', command: 'rm -rf build', description: 'Clear the build folder', choices: ['once', 'deny'] } },
+    { kind: 'approval', member_id: 'qa', task_id: 'vague', execution_generation: 1, request_id: 'r-vague',
+      approval: { description: 'Use a tool', choices: ['once', 'deny'] } },
+    { kind: 'retry', member_id: 'qa', task_id: 'late', execution_generation: 2 }
+  ]
+
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room', members }, driver_status: { pending_actions: actions } }
+    : method === 'groups.log' ? { events: [] } : { approved: true })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'approvals' }} />)
+
+  const clean = (await screen.findByText('rm -rf build')).closest('[data-task-id]') as HTMLElement
+  expect(within(clean).getByText('Ops Bot needs your approval')).toBeTruthy()
+  expect(within(clean).getByText('Clear the build folder')).toBeTruthy()
+  const vague = screen.getByText('QA Bot needs your approval').closest('[data-task-id]') as HTMLElement
+  expect(within(vague).getByText('Action details are unavailable. Check again before allowing this.')).toBeTruthy()
+  expect(within(vague).queryByRole('button', { name: 'Allow once' })).toBeNull()
+  expect(within(vague).getByRole('button', { name: 'Deny' })).toBeTruthy()
+  expect(screen.getByText('QA Bot couldn’t start this reply.')).toBeTruthy()
+  expect(screen.queryByText('ops')).toBeNull()
+
+  fireEvent.click(within(clean).getByRole('button', { name: 'Allow once' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.approve')).toBe(true))
+  expect(request.mock.calls.find(call => call[1] === 'groups.approve')![2]).toEqual({
+    room_id: 'approvals', member_id: 'ops', task_id: 'clean', execution_generation: 3, request_id: 'r-clean', choice: 'once', profile: 'team'
+  })
 })
