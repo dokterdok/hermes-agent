@@ -29,7 +29,9 @@ export const deBoot = {
       gatewaySignInRequiredDetail:
         'Melden Sie sich erneut an, um die Verbindung wiederherzustellen. Ihre Chats und Einstellungen sind sicher.',
       signInAgain: 'Erneut anmelden',
-      ipcBridgeUnavailable: 'Der Desktop-IPC-Bridge ist nicht verfügbar.'
+      ipcBridgeUnavailable: 'Der Desktop-IPC-Bridge ist nicht verfügbar.',
+      startupProfileMissing: profile =>
+        `Das Profil „${profile}“ existiert nicht mehr, daher hat Hermes das Standardprofil geöffnet.`
     },
     causes: {
       exitedEarly: 'Der Hintergrunddienst von Hermes hat direkt nach dem Start aufgehört.',

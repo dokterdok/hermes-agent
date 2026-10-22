@@ -105,6 +105,7 @@ import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warni
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+import { forgetMissingStartupProfile } from './missing-startup-profile'
 import { useConnectionsRegistry } from './use-connections-registry'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
 
@@ -1461,6 +1462,7 @@ export function useGatewayBoot({
       // gateway.connectionState. A socket can close after a successful dial;
       // later initialization errors must not be reclassified as boot dials.
       let stage: 'resolving' | 'minting' | 'dialing' | 'connected' = 'resolving'
+      let startupProfile: string | undefined
 
       try {
         // A profile-pinned helper window (the HUD) dials its target profile's
@@ -1480,6 +1482,7 @@ export function useGatewayBoot({
           return
         }
 
+        startupProfile = conn.profile
         stage = 'minting'
 
         setDesktopBootStep({
@@ -1613,6 +1616,13 @@ export function useGatewayBoot({
         // launch is the common path, so it must warn too, not only softSwitch.
         void warnIfTerminalBackendUnavailable()
       } catch (err) {
+        // A startup profile renamed or deleted outside this tab boots Default instead.
+        if (!cancelled && (await forgetMissingStartupProfile(startupProfile)) && !cancelled) {
+          void boot()
+
+          return
+        }
+
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
 

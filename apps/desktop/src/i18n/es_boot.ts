@@ -29,7 +29,9 @@ export const esBoot = {
       gatewaySignInRequired: 'Tu Hermes remoto cerró tu sesión',
       gatewaySignInRequiredDetail: 'Vuelve a iniciar sesión para reconectar. Tus chats y ajustes están a salvo.',
       signInAgain: 'Volver a iniciar sesión',
-      ipcBridgeUnavailable: 'Hermes Desktop no pudo comunicarse con su propia capa en segundo plano. Reinicia la app.'
+      ipcBridgeUnavailable: 'Hermes Desktop no pudo comunicarse con su propia capa en segundo plano. Reinicia la app.',
+      startupProfileMissing: profile =>
+        `El perfil «${profile}» ya no existe, así que Hermes abrió el perfil predeterminado.`
     },
     causes: {
       exitedEarly: 'El servicio en segundo plano de Hermes se detuvo justo después de iniciarse.',

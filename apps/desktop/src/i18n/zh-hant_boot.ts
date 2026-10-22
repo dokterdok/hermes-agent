@@ -22,7 +22,8 @@ export const zhHantBoot = {
       gatewayConnectionLostDetail:
         'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: '需要閘道登入',
-      ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。'
+      ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。',
+      startupProfileMissing: profile => `設定檔「${profile}」已不存在，Hermes 已開啟預設設定檔。`
     },
     failure: {
       title: 'Hermes 無法啟動',
