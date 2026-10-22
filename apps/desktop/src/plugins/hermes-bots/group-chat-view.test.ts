@@ -281,6 +281,55 @@ describe('disband', () => {
     expect(room.data.$botMeta.get().builder.group).toBe('Keep')
   })
 
+  it('finishes the server cleanup past a member whose connection owner is gone', async () => {
+    const room = await loadRoom()
+    // An orphaned descriptor: source-scoped, but its connection was deleted.
+    const orphan: RosterRow = { name: 'reviewer', sourceScoped: true }
+
+    const owned: RosterRow = {
+      connectionId: 'remote-1',
+      connectionKind: 'remote',
+      name: 'builder',
+      remoteSource: true,
+      route: { connectionId: 'remote-1', mode: 'remote', profile: 'builder', targetProfile: 'builder' },
+      sourceScoped: true
+    }
+
+    const orphanKey = room.data.botMetaKey(orphan)
+    const ownedKey = room.data.botMetaKey(owned)
+    room.data.$botMeta.set({
+      [orphanKey]: { group: 'Workshop', groups: ['Workshop'] },
+      [ownedKey]: { group: 'Workshop', groups: ['Workshop'] }
+    })
+    room.chat.$groupChats.set({
+      Workshop: { log: [], members: [orphan, owned], running: false, sessions: {}, watermarks: {} }
+    } as unknown as Record<string, GroupChat>)
+
+    // Profile reads routed to a member's own connection: the first half of its server write.
+    const reads: unknown[] = []
+    const requestProfile = host.requestProfile as (
+      route: unknown,
+      method: string,
+      ...rest: unknown[]
+    ) => Promise<unknown>
+
+    host.requestProfile = (route: unknown, method: string, ...rest: unknown[]) => {
+      if (method === 'profiles.list') {
+        reads.push(route)
+      }
+
+      return requestProfile(route, method, ...rest)
+    }
+
+    await expect(room.view.disbandGroupChat('Workshop', [orphan, owned])).resolves.toBeUndefined()
+
+    // Both records are cleared locally; only the member with a live owner is
+    // written to a server, and the orphan cannot stop that write.
+    expect(room.data.$botMeta.get()[orphanKey].groups).toEqual([])
+    expect(room.data.$botMeta.get()[ownedKey].groups).toEqual([])
+    expect(reads).toEqual([expect.objectContaining({ connectionId: 'remote-1', targetProfile: 'builder' })])
+  })
+
   it('skips source-qualified remote members instead of mutating same-named local metadata', async () => {
     const room = await loadRoom()
     room.data.$botMeta.set({ builder: { group: 'Keep', groups: ['Keep'] } })
