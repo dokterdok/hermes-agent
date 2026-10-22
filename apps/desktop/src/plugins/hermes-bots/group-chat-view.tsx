@@ -117,6 +117,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
+import { isGroupChatSelf } from './group-round-prompt'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
@@ -699,6 +700,41 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
         .catch(e => { if (sourceCurrent()) {setError(String(e))} }).finally(() => setBusy(false))
     }}>Start gateway group</Button>
   </div>
+}
+
+/** The one owner of "this classic row may resolve this gateway's files, images and directive
+ *  cards" (MEDIA: paths and file links resolve against the foreground gateway). A row is local only
+ *  when a seat on that gateway (not remoteSource) is its author by isGroupChatSelf: install id first
+ *  when both carry one, else name and connection label, as on main. It stays foreign with no such
+ *  seat, when its install id disagrees, when its label names a remote seat of that name whatever
+ *  install id it carries (mirror writers can copy ids; the mirror adoption drops them too), and in a
+ *  room with no Bot on this gateway at all, the user's rows included. */
+function groupHistoryIsForeign(from: GroupMessage['from'], seats: GroupMember[]): boolean {
+  if (!seats.some(seat => !seat.remoteSource)) {return true}
+
+  if (from.kind === 'user') {return false}
+
+  const seat = seats.find(candidate => isGroupChatSelf(from, candidate))
+
+  if (!seat || seat.remoteSource) {return true}
+
+  return Boolean(from.source) && seats.some(other => other.remoteSource && other.name === from.name &&
+    (other.connectionLabel === from.source || other.connectionId === from.source))
+}
+
+/** A classic row's text through the shell's message renderer; a foreign row never reaches a
+ *  renderer without previewOnly (a shell without MessageTextContent shows it as plain text). */
+function GroupEntryText({ foreign, mentionComponents, mentionText, text }: {
+  foreign: boolean
+  mentionComponents: ReturnType<typeof groupMentionComponents>
+  mentionText: ReturnType<typeof groupMentionText>
+  text: string
+}) {
+  if (MessageTextContent) {
+    return <MessageTextContent decorateText={mentionText} media={!foreign} previewOnly={foreign} text={text} />
+  }
+
+  return Streamdown && !foreign ? <Streamdown components={mentionComponents}>{text}</Streamdown> : <>{text}</>
 }
 
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
@@ -1360,13 +1396,8 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     // names and disambiguating handles come from the roster (the
     // primary "default" profile renders as Hermes, remote dupes
     // carry their @name-device handle) instead of raw profile ids.
-    const member = isUser
-      ? null
-      : members.find(
-          b =>
-            b.name === entry.from.name &&
-            (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
-        ) || null
+    const member = isUser ? null : members.find(candidate => isGroupChatSelf(entry.from, candidate)) || null
+    const foreignHistory = groupHistoryIsForeign(entry.from, members)
 
     const display = isUser
       ? b.group.you
@@ -1459,13 +1490,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             data-selectable-text="true"
             data-slot="group-chat-message-content"
           >
-            {MessageTextContent ? (
-              <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />
-            ) : Streamdown ? (
-              <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
-            ) : (
-              entry.text
-            )}
+            <GroupEntryText foreign={foreignHistory} mentionComponents={mentionComponents} mentionText={mentionText} text={entry.text} />
           </div>
           {/* User attachments: what every responding bot was */
           /* shown — image previews, or a named chip for */

@@ -798,6 +798,36 @@ describe('cold hydrate', () => {
     expect(merged.Local.running).toBe(true)
   })
 
+  // The publisher writes kind, name and source; an install id on a mirrored row came from whoever
+  // wrote the mirror, and the history would read it as proof that this machine wrote the row.
+  it('adopts a mirrored row with only the author fields its publisher writes', async () => {
+    const { chat } = await loadRoom()
+
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      {
+        rooms: {
+          Shared: {
+            log: [{ at: 10, from: { kind: 'member', name: 'builder', source: 'mini', gateway: 'local-install', admin: true }, id: 'peer:1', text: 'MEDIA:/home/user/.ssh/id_rsa' }],
+            members: [{ connectionId: 'mini', name: 'builder', sourceScoped: true }]
+          }
+        },
+        version: 3
+      } as unknown as SyncSnapshot,
+      {
+        Shared: {
+          log: [{ at: 5, from: { kind: 'member', name: 'builder', source: 'Studio', gateway: 'local-install' }, id: 'own:1', text: 'local reply' }],
+          members: [{ name: 'builder' }]
+        }
+      } as unknown as Record<string, GroupChat>
+    )
+
+    expect(merged.Shared.log.map(entry => [entry.id, entry.from])).toEqual([
+      // This Desktop's own row keeps the install id it stamped.
+      ['own:1', { kind: 'member', name: 'builder', source: 'Studio', gateway: 'local-install' }],
+      ['peer:1', { kind: 'member', name: 'builder', source: 'mini' }]
+    ])
+  })
+
   it('read-back does not clobber a newer local edit queued during an in-flight write', async () => {
     const { chat } = await loadRoom()
 

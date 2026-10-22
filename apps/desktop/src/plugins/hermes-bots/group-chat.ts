@@ -669,6 +669,16 @@ function groupChatSyncEnvelope(
   return envelope
 }
 
+/** A mirrored entry as this Desktop adopts it. Its author keeps only what
+ *  groupChatSyncSnapshot publishes: any other field (a `gateway` install id)
+ *  came from whoever wrote the mirror, and the history would take it as this
+ *  machine's proof. */
+function adoptedGroupChatEntry(entry: GroupMessage): GroupMessage {
+  const { kind, name, source } = entry?.from || ({} as GroupMessage['from'])
+
+  return { ...entry, from: { kind, name, ...(source ? { source } : {}) } }
+}
+
 /** Merge the gateway's bounded display projection into Desktop's richer room
  *  state without discarding local session/watermark/runtime fields. Missing
  *  remote rooms/messages are not deletions; only explicit tombstones remove a
@@ -774,7 +784,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       // the compact twin over it would strip attachments and retrigger
       // watermark deltas for members that already saw it (phantom rounds).
       if (!entries.has(entryKey)) {
-        entries.set(entryKey, entry)
+        entries.set(entryKey, adoptedGroupChatEntry(entry))
       }
     }
 
