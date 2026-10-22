@@ -206,7 +206,8 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
     ``token_mismatch``, ``ticket_invalid``, ``internal_invalid``);
     ``credential`` names what was presented so the accept path can log *how*.
 
-    Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared).
+    Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared), or a one-use
+    ``?ticket=`` the session token minted for this socket's route and profile.
     Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL) or ``?internal=``
     (process-lifetime, multi-use, only for server-spawned WS clients so the PTY
     child can reconnect; never injected into the SPA), or ``?token=`` holding a
@@ -226,6 +227,7 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
     from hermes_cli.dashboard_auth.native_http import HEADER, authenticate_native_ws
     from hermes_cli.web_server import _SESSION_TOKEN, app
     if HEADER in ws.headers:
+        _spend_offered_tickets(ws)  # judged by the grant alone: a ticket riding along is spent
         grant = authenticate_native_ws(ws)
         if grant is None:
             return "native_invalid", "native"
@@ -256,6 +258,7 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
 
         internal = ws.query_params.get("internal", "")
         if internal:
+            _spend_offered_tickets(ws)  # judged by the internal credential alone
             if not allow_internal:
                 _reject("internal: endpoint not allowed")
                 return "internal_not_allowed", "internal"
@@ -330,14 +333,51 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
     return "token_mismatch", "token"
 
 
+def _ws_route_path(ws: WebSocket) -> str:
+    """The path this socket's route matched (root path stripped): what a route-bound ticket names."""
+    scope = getattr(ws, "scope", None)
+    if isinstance(scope, dict) and "path" in scope:
+        from starlette._utils import get_route_path
+        return get_route_path(scope)
+    return ws.url.path
+
+
+def _ws_query_values(ws: WebSocket, key: str) -> list[str]:
+    params = ws.query_params
+    getlist = getattr(params, "getlist", None)
+    if callable(getlist):
+        return list(getlist(key))
+    value = params.get(key)  # a synthetic socket in tests
+    return [] if value is None else [value]
+
+
+def _spend_offered_tickets(conn) -> None:
+    """Spend every one-use ticket an upgrade offers (``?ticket=`` and ``hermes-gateway-ticket.``
+    subprotocols) when it is refused before, or without, a ticket being judged: a refused upgrade
+    never leaves its ticket redeemable. ``conn`` is the socket or its ``HTTPConnection``."""
+    from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
+    protocols = str(conn.headers.get("sec-websocket-protocol", "") or "").split(",")
+    offered = [value.strip()[len(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX):] for value in protocols
+               if value.strip().startswith(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX)]
+    for ticket in filter(None, offered + _ws_query_values(conn, "ticket")):
+        with contextlib.suppress(TicketInvalid):
+            consume_ticket(ticket)
+
+
 def _consume_ws_ticket(ws: WebSocket, reject) -> Optional[tuple[Optional[str], str]]:
     """A one-use ticket offered as the ``hermes-gateway-ticket.`` subprotocol or ``?ticket=``:
     ``(reason, credential)`` once judged, or None when the upgrade presents none. An accepted ticket
     stamps the server-minted identity (and, for a Webapp gateway ticket, the gateway home its route
-    ensured) onto the socket; the client never supplies either through RPC params."""
-    from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
+    ensured) onto the socket; the client never supplies either through RPC params.
+
+    A route-bound ticket is spent here even when this socket is not the one it was minted for: its
+    route, its ``?profile=`` and what minted it (the loopback session token, or a gated session
+    that must still verify) must all match."""
+    from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket, socket_ticket_refusal
+    from hermes_cli.web_server import _SESSION_TOKEN, app
     protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
     if protocol_reason == "invalid":
+        _spend_offered_tickets(ws)
         return "ticket_invalid", "ticket-subprotocol"
     ticket = protocol_ticket or ws.query_params.get("ticket", "")
     if not ticket:
@@ -352,10 +392,33 @@ def _consume_ws_ticket(ws: WebSocket, reject) -> Optional[tuple[Optional[str], s
         # to a screen viewer); it must not double as a login here.
         reject("display ticket presented as a gateway login")
         return "ticket_invalid", "ticket"
-    # Only identity fields are carried; bookkeeping such as ``minted_at`` is not part of it.
-    ws._hermes_auth_identity = {"user_id": info.get("user_id"), "provider": info.get("provider")}
-    if info.get("issuer"):
-        ws._hermes_auth_identity["issuer"] = info["issuer"]
+    # The session token is no credential once the gate is on, so a ticket it minted is dead there.
+    refusal = socket_ticket_refusal(
+        info, route=_ws_route_path(ws), profiles=_ws_query_values(ws, "profile"),
+        live_credential=None if getattr(app.state, "auth_required", False) else _SESSION_TOKEN)
+    if refusal is not None:
+        reject(refusal)
+        return "ticket_invalid", "ticket"
+    if "session_token" in info:
+        # A gated route-bound ticket dies with the session that minted it: verify that session
+        # again through the provider seam ``?token=`` uses, so revoking it kills the ticket.
+        from hermes_cli.dashboard_auth.base import ProviderError
+        from hermes_cli.dashboard_auth.middleware import _verify_access_token
+        try:
+            minted_by = _verify_access_token(_ws_request_view(ws), access_token=info["session_token"], audit=False)
+        except ProviderError as exc:
+            reject(f"minting session verify unavailable: {exc}")
+            return "token_unavailable", "ticket"
+        if minted_by is None:
+            reject("ticket outlived the session that minted it")
+            return "ticket_invalid", "ticket"
+    if info.get("credential") is None:
+        # Only identity fields are carried; bookkeeping such as ``minted_at`` is not part of it.
+        # A ticket the session token minted carries none: it stands in for that token for one dial,
+        # so the socket is that token's principal exactly as with ``?token=``.
+        ws._hermes_auth_identity = {"user_id": info.get("user_id"), "provider": info.get("provider")}
+        if info.get("issuer"):
+            ws._hermes_auth_identity["issuer"] = info["issuer"]
     if info.get("gateway_home"):
         ws._hermes_gateway_home = info["gateway_home"]
     if not protocol_ticket:
@@ -414,10 +477,12 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
     peer = ws.client.host if ws.client else "?"
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         _log.info("%s refused: embedded chat disabled peer=%s", kind, peer)
+        _spend_offered_tickets(ws)
         await ws.close(code=4404, reason="embedded chat disabled")
         return None
     if kind == "pty" and _hosts_no_embedded_chat(ws):
         _log.info("pty refused: %s peer=%s", _NO_EMBEDDED_CHAT, peer)
+        _spend_offered_tickets(ws)
         await ws.close(code=4404, reason=_NO_EMBEDDED_CHAT)
         return None
 

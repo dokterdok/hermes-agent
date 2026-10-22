@@ -62,7 +62,7 @@ def connection(authority, session, monkeypatch):
     # Exercise the production ticket endpoint and upgrade stamp, not a made-up Principal.
     monkeypatch.setattr(web.app.state, 'auth_required', True, raising=False)
     request = Request({'type': 'http', 'app': web.app, 'state': {'session': session},
-                       'headers': [], 'method': 'POST', 'path': '/api/auth/ws-ticket'})
+                       'headers': [], 'method': 'POST', 'path': '/api/auth/ws-ticket', 'query_string': b''})
     return request, api_auth_ws_ticket, _ws_auth_reason, AuthorityConnection, WebSocket
 
 

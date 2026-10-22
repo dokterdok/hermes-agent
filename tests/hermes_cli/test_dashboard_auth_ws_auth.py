@@ -228,6 +228,20 @@ def _fake_ws(
     )
 
 
+def _mint_bound(client, headers=None, **query):
+    """A route-bound ticket from ``POST /api/auth/ws-ticket`` (the loopback session header by default)."""
+    response = client.post("/api/auth/ws-ticket", params=query,
+                           headers={"X-Hermes-Session-Token": web_server._SESSION_TOKEN} if headers is None else headers)
+    assert response.status_code == 200, response.text
+    return response.json()["ticket"]
+
+
+def _opens(path, ticket, **query):
+    """Whether ``ticket`` admits a socket at ``path`` (stamping no identity of its own)."""
+    ws = _fake_ws(query={"ticket": ticket, **query}, path=path)
+    return _web_server_chat._ws_auth_ok(ws) and not hasattr(ws, "_hermes_auth_identity")
+
+
 class TestWsAuthOkLoopback:
     """Gate OFF — legacy token path."""
 
@@ -255,9 +269,68 @@ class TestWsAuthOkLoopback:
         screen = mint_ticket(user_id="display:v", provider="bot-desktop", extra={"hermes_home": "/srv/hermes"})
         assert _web_server_chat._ws_auth_ok(_fake_ws(query={"ticket": screen}, path="/api/ws")) is False
 
+    def test_session_token_mints_one_use_tickets_bound_to_route_profile_and_token(self, loopback_app, monkeypatch):
+        """The private Webapp's sockets need no session token in their URL: its header mints a ticket
+        that opens one socket path, for one profile, while that token lives (#93508 item 5)."""
+        header = {"X-Hermes-Session-Token": web_server._SESSION_TOKEN}
+        mint, opens = (lambda **query: _mint_bound(loopback_app, **query)), _opens
+
+        assert loopback_app.post("/api/auth/ws-ticket", params={"route": "/api/ws"}).status_code == 401
+        for unbound in ({}, {"route": "/api/pty"}, {"route": "/api/plugins/kanban/../../pty"}):
+            assert loopback_app.post("/api/auth/ws-ticket", params=unbound, headers=header).status_code == 400
+        shell = mint(route="/api/host-terminal")
+        assert not opens("/api/pty", shell) and not opens("/api/host-terminal", shell)  # spent by the refusal
+        shell = mint(route="/api/host-terminal")
+        assert opens("/api/host-terminal", shell) and not opens("/api/host-terminal", shell)
+        events = "/api/plugins/kanban/events"
+        assert not opens(events, mint(route=events, profile="bee"), profile="default")
+        assert not opens(events, mint(route=events, profile="bee"))
+        assert opens(events, mint(route=events, profile="bee"), profile="bee")
+        assert opens(events, mint(route=events))
+        underscored = "/api/plugins/_events/events"  # any plugin name the loader mounts
+        assert opens(underscored, mint(route=underscored))
+        rotated, gated = mint(route=events), mint(route=events)
+        monkeypatch.setattr(web_server, "_SESSION_TOKEN", "rotated-by-a-restart")
+        assert not opens(events, rotated)
+        monkeypatch.setattr(web_server, "_SESSION_TOKEN", header["X-Hermes-Session-Token"])
+        monkeypatch.setattr(web_server.app.state, "auth_required", True)
+        assert not opens(events, gated)  # the token is no credential once the gate is on
+
+    def test_a_refused_upgrade_spends_the_ticket_it_offered(self, loopback_app, monkeypatch):
+        """Refused before its ticket is judged (the Webapp hosts no ``/api/pty``; a plugin that may
+        not run) or offered in a malformed subprotocol set, a ticket is spent all the same."""
+        from starlette.websockets import WebSocketDisconnect
+
+        monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+        for path, route in (("/api/pty", "/api/host-terminal"),
+                            ("/api/plugins/not-installed/events", "/api/plugins/not-installed/events")):
+            ticket = _mint_bound(loopback_app, route=route)
+            with pytest.raises(WebSocketDisconnect):
+                with loopback_app.websocket_connect(f"{path}?ticket={ticket}") as ws:
+                    ws.receive_text()
+            assert not _opens(route, ticket), path
+        ticket = _mint_bound(loopback_app, route="/api/ws")
+        malformed = _fake_ws(query={}, path="/api/ws", protocols=(f"hermes-gateway-ticket.{ticket}",))
+        assert not _web_server_chat._ws_auth_ok(malformed) and not _opens("/api/ws", ticket)
+
 
 class TestWsAuthOkGated:
     """Gate ON — ticket path only."""
+
+    def test_route_bound_ticket_dies_with_the_session_that_minted_it(self, gated_app, monkeypatch):
+        """A gated route-bound ticket is bound to its route, its profile and its minting session:
+        once that session no longer verifies, its outstanding ticket opens nothing."""
+        from hermes_cli.dashboard_auth import middleware
+
+        _logged_in(gated_app)
+        origin = {"Origin": "https://fly-app.fly.dev"}
+        live, revoked, other = (_mint_bound(gated_app, origin, route="/api/host-terminal", profile="bee")
+                                for _ in range(3))
+        assert not _web_server_chat._ws_auth_ok(_fake_ws(query={"ticket": other}, path="/api/host-terminal"))
+        assert _web_server_chat._ws_auth_ok(_fake_ws(query={"ticket": live, "profile": "bee"}, path="/api/host-terminal"))
+        monkeypatch.setattr(middleware, "_verify_access_token", lambda *a, **k: None)  # revoked at its provider
+        assert not _web_server_chat._ws_auth_ok(
+            _fake_ws(query={"ticket": revoked, "profile": "bee"}, path="/api/host-terminal"))
 
 
     def test_consumed_ticket_rejected(self, gated_app):
