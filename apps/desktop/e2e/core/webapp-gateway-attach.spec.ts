@@ -72,29 +72,50 @@ function alive(pid: number): boolean {
   }
 }
 
-/** `hermes webapp` on loopback, as an operator starts it; resolves with its private launch link. */
-async function startWebapp(sandbox: CoreSandbox): Promise<{ child: ChildProcess; link: string; log: () => string }> {
+/** `hermes webapp` on loopback, as an operator starts it; resolves with its launch page and one-use code. */
+async function startWebapp(
+  sandbox: CoreSandbox
+): Promise<{ child: ChildProcess; code: string; link: string; log: () => string }> {
   const port = await freePort()
+  const locks = path.join(sandbox.root, 'locks')
   let output = ''
 
   const child = spawn(
     PYTHON,
     ['-m', 'hermes_cli.main', 'webapp', '--host', '127.0.0.1', '--port', String(port), '--no-open', '--skip-build'],
-    { cwd: REPO_ROOT, env: coreAppEnv(sandbox), stdio: ['ignore', 'pipe', 'pipe'] }
+    // Its own session, like a service: no terminal, so its output must hold no launch code.
+    {
+      cwd: REPO_ROOT,
+      detached: true,
+      env: coreAppEnv(sandbox, { HERMES_GATEWAY_LOCK_DIR: locks }),
+      stdio: ['ignore', 'pipe', 'pipe']
+    }
   )
 
   child.stdout!.on('data', chunk => (output += String(chunk)))
   child.stderr!.on('data', chunk => (output += String(chunk)))
-  const log = () => output.replace(/#hermes-session=\S+/g, '#hermes-session=<redacted>').slice(-4000)
+  const log = () => output.slice(-4000)
+  const link = () => /Webapp launch page: (\S+)/.exec(output)?.[1]
 
   await expect
-    .poll(() => /launch link \(private[^)]*\): (\S+)/.exec(output)?.[1] ?? (child.exitCode === null ? '' : 'exited'), {
+    .poll(() => link() ?? (child.exitCode === null ? '' : 'exited'), {
       timeout: 120_000,
-      message: `the Webapp printed its private launch link\n${log()}`
+      message: `the Webapp printed its launch page\n${log()}`
     })
     .toMatch(/^http/)
+  expect(output).not.toContain('one-use code there')
 
-  return { child, link: /launch link \(private[^)]*\): (\S+)/.exec(output)![1], log }
+  // As `hermes webapp` run again from a terminal does: the owner-only token file buys a fresh code.
+  const token = fs.readFileSync(path.join(locks, 'host-serve.token'), 'utf8').trim()
+
+  const issued = await fetch(`http://127.0.0.1:${port}/api/webapp/launch-code`, {
+    headers: { Authorization: `Bearer ${token}` },
+    method: 'POST'
+  })
+
+  const { code } = (await issued.json()) as { code: string }
+
+  return { child, code, link: link()!, log }
 }
 
 function admissionPrincipals(sandbox: CoreSandbox, sessionId: string): string[] {
@@ -136,6 +157,9 @@ test('the Webapp attaches its browser to the profile gateway, which runs every t
     const page: Page = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage()
     const ws = recordWebSockets(page)
     await page.goto(webapp.link)
+    // The operator types the code from the terminal: no URL ever carries a launch credential.
+    await page.locator('#code').fill(webapp.code)
+    await page.getByRole('button', { name: 'Open Hermes' }).click()
     await expect(composer(page)).toBeVisible({ timeout: 180_000 })
     await installDuplicateSampler(page)
 

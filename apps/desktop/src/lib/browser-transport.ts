@@ -7,7 +7,7 @@ import { type BrowserHostGlobals, hasBrowserHostBootstrap } from '@/lib/platform
 export interface BrowserBootstrap {
   authRequired: boolean
   basePath: string
-  /** Webapp on an unauthenticated bind: the operator's launch link is the only credential source. */
+  /** Webapp on an unauthenticated bind: the operator's typed launch code is the only credential source. */
   privateSession: boolean
   token: string
 }

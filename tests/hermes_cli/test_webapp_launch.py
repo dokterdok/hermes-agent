@@ -1,12 +1,18 @@
-"""Operator handoff must not turn the launch credential into process-list data."""
+"""Operator handoff must not turn the launch credential into process-list or history data.
+
+No URL a private launch opens or prints carries a credential (#93508 A1): a browser launcher and a
+terminal click both hand the URL over in argv, which other local users can read. The session reaches
+the browser only through the one-use code the operator types into the credential-free launch page.
+"""
+import io
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
-import time
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
@@ -14,33 +20,59 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from tests.waiting import wait_until
 
-def test_private_launch_uses_existing_token_and_never_hands_it_to_the_browser_launcher(monkeypatch, tmp_path, capsys, caplog):
+
+def _private_webapp(monkeypatch):
+    from fastapi.testclient import TestClient
+    from hermes_cli import web_server as server
+
+    for name, value in (("ui_surface", "webapp"), ("auth_required", False), ("bound_host", "127.0.0.1"),
+                        ("webapp_window_tickets", {}), ("webapp_launch_code", None)):
+        monkeypatch.setattr(server.app.state, name, value, raising=False)
+    return server, TestClient(server.app, base_url="http://127.0.0.1")
+
+
+def test_private_launch_opens_and_prints_no_credential_and_rotates_its_token(monkeypatch, tmp_path, capsys, caplog):
     import webbrowser
     from hermes_cli import web_server as server, web_server_lifecycle as lifecycle
 
     monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
     monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
-    monkeypatch.setattr(server.app.state, "webapp_window_tickets", {}, raising=False)
+    monkeypatch.setattr(server.app.state, "webapp_launch_code", None, raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISPLAY", ":test")
     # Execute the scheduled opener deterministically, without launching a browser.
     monkeypatch.setattr(lifecycle.threading, "Thread", lambda target, **kw: SimpleNamespace(start=target))
     monkeypatch.setattr(lifecycle.time, "sleep", lambda seconds: None)
-    opened = []
+    opened, terminal = [], io.StringIO()
     monkeypatch.setattr(webbrowser, "open", opened.append)
+
+    @contextmanager
+    def operator(stream):
+        yield stream
+
+    # The code is shown on the operator's terminal only, never in stdout a redirect, a pipe or a
+    # service log keeps; with no terminal there is no code to see at all.
+    monkeypatch.setattr(lifecycle, "operator_terminal", lambda: operator(None))
     lifecycle._maybe_open_browser("::1", 9123, False, "coder")
-    launch = capsys.readouterr().out.split(": ", 1)[1].strip()
-    parsed = urlsplit(launch)
-    assert parsed.hostname == "::1"
-    assert parse_qs(parsed.query) == {"profile": ["coder"]}
-    assert parse_qs(parsed.fragment) == {"hermes-session": [server._SESSION_TOKEN]}
-    assert not opened
+    assert "one-use code is shown only on a terminal" in capsys.readouterr().out
+    assert server.app.state.webapp_launch_code is None
+    monkeypatch.setattr(lifecycle, "operator_terminal", lambda: operator(terminal))
+    lifecycle._maybe_open_browser("::1", 9123, False, "coder")
+    printed = capsys.readouterr().out
+    assert not opened and re.search(r"one-use code there: [A-Z2-9]{5}-[A-Z2-9]{5} ", terminal.getvalue())
+    assert "one-use code there" not in printed
     lifecycle._maybe_open_browser("::1", 9123, True, "coder")
     capsys.readouterr()
-    assert len(opened) == 1 and server._SESSION_TOKEN not in opened[0]
-    assert str(tmp_path) not in opened[0]
-    assert server._SESSION_TOKEN not in caplog.text
+    # Every platform opens the page itself, macOS included: nothing in the URL needs protecting.
+    (launch,) = opened
+    assert re.findall(r"https?://\S+", printed) == [launch]
+    parsed = urlsplit(launch)
+    assert (parsed.hostname, parsed.path) == ("::1", "/webapp/launch")
+    assert parse_qs(parsed.fragment) == {"query": ["?profile=coder"]}
+    assert server._SESSION_TOKEN not in printed + launch + caplog.text
+    assert str(tmp_path) not in launch
 
     # Real startup credential branch, stopping at the socket construction seam.
     # Both inherited values and prior starts must be replaced for local Webapp.
@@ -65,6 +97,43 @@ def test_private_launch_uses_existing_token_and_never_hands_it_to_the_browser_la
     assert urlsplit(opened[-1]).fragment == ""
 
 
+def test_launch_code_redeems_once_and_guessing_burns_it(monkeypatch):
+    """The typed code is the only launch credential: one use, attempt-limited, bound to this start,
+    and separate from the child windows' handoff tickets."""
+    from hermes_cli.web_routers import webapp
+
+    server, client = _private_webapp(monkeypatch)
+    monkeypatch.setattr(server, "_SESSION_TOKEN", "a" * 43)
+
+    def redeem(code):
+        return client.post("/webapp/window-session", headers={"Origin": "http://127.0.0.1", "X-Hermes-Launch-Code": code})
+
+    assert client.post("/api/webapp/launch-code").status_code == 401
+    issued = client.post("/api/webapp/launch-code", headers={server._SESSION_HEADER_NAME: "a" * 43})
+    assert issued.headers["cache-control"] == "no-store"  # a same-user launcher's fresh code
+    assert redeem(issued.json()["code"]).status_code == 200
+    code = webapp.mint_launch_code(server.app.state)
+    granted = redeem(code.lower().replace("-", " "))  # typed loosely
+    assert granted.status_code == 200 and granted.json() == {"token": "a" * 43}
+    assert granted.headers["cache-control"] == "no-store"
+    assert redeem(code).status_code == 403  # one use
+    window = client.post("/api/webapp/window-ticket", headers={server._SESSION_HEADER_NAME: "a" * 43}).json()["ticket"]
+    code = webapp.mint_launch_code(server.app.state)
+    for _ in range(webapp.LAUNCH_CODE_ATTEMPTS):
+        denied = redeem("AAAAA-AAAAA")
+        assert denied.status_code == 403 and "a" * 43 not in denied.text
+    assert redeem(code).status_code == 403  # burnt by the guesses
+    child = client.post("/webapp/window-session", headers={"Origin": "http://127.0.0.1", "X-Hermes-Window-Ticket": window})
+    assert child.json() == {"token": "a" * 43}  # a child window's ticket is not the code's to spend
+    code = webapp.mint_launch_code(server.app.state)
+    monkeypatch.setattr(server, "_SESSION_TOKEN", "b" * 43)  # another start
+    assert redeem(code).status_code == 403
+    code = webapp.mint_launch_code(server.app.state)
+    now = webapp.time.monotonic()
+    monkeypatch.setattr(webapp.time, "monotonic", lambda: now + webapp.LAUNCH_CODE_TTL_SECONDS + 1)
+    assert redeem(code).status_code == 403
+
+
 _SERVER = """
 import os, sys
 sys.path.insert(0, os.getcwd())
@@ -73,11 +142,12 @@ start_server(host="127.0.0.1", port=0, open_browser=True, ui_surface="webapp")
 """
 
 
-@pytest.mark.platforms("linux")
-def test_auto_open_hands_the_browser_a_one_use_launch_url_any_sandboxed_browser_can_follow(tmp_path):
-    """Real server, real browser dispatch: the URL a launcher receives (the argv other local
-    users may read) carries neither the session token nor a Hermes-home file a snap/Flatpak
-    browser cannot open. Following it once enters the private session; a replay gets nothing."""
+@pytest.mark.platforms("posix")
+def test_auto_open_hands_the_browser_launcher_no_credential_and_the_printed_code_works_once(tmp_path):
+    """Real server, real browser dispatch: the URL a launcher receives (the argv other local users
+    may read) carries neither a credential nor a Hermes-home file a snap/Flatpak browser cannot open.
+    Started in its own session (no terminal, like a service), it puts no code in its output; a
+    same-user launcher gets one with the owner-only token file, and it enters the session once."""
     home, os_home = tmp_path / "hermes-home", tmp_path / "os-home"
     home.mkdir()
     os_home.mkdir()
@@ -89,33 +159,39 @@ def test_auto_open_hands_the_browser_a_one_use_launch_url_any_sandboxed_browser_
            if key not in {"HERMES_DESKTOP", "HERMES_DESKTOP_CHILD_PID", "HERMES_PARENT_PID", "HERMES_SPAWN",
                           "HERMES_DASHBOARD_SESSION_TOKEN", "HERMES_DASHBOARD_PUBLIC_URL"}}
     env.update(HERMES_HOME=str(home), HOME=str(os_home), HERMES_RUNTIME_DIR=str(tmp_path / "runtime"),
-               HERMES_DESKTOP_READY_FILE=str(ready), BROWSER=str(browser), DISPLAY=":launch-test")
+               HERMES_GATEWAY_LOCK_DIR=str(tmp_path / "locks"), HERMES_DESKTOP_READY_FILE=str(ready),
+               BROWSER=str(browser), DISPLAY=":launch-test")
     log_path = tmp_path / "server.log"
     with log_path.open("w", encoding="utf-8") as log:
         server = subprocess.Popen([sys.executable, "-u", "-c", _SERVER], cwd=Path(__file__).resolve().parents[2],
-                                  env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+                                  env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                  start_new_session=True)
     try:
-        deadline = time.monotonic() + 60
-        while not (recorded.exists() and recorded.stat().st_size) and server.poll() is None \
-                and time.monotonic() < deadline:
-            time.sleep(0.1)
+        wait_until(lambda: (recorded.exists() and recorded.stat().st_size) or server.poll() is not None,
+                   timeout=60, what="the browser launcher")
         output = log_path.read_text(encoding="utf-8-sig", errors="replace")
         assert recorded.exists() and recorded.stat().st_size and ready.exists(), output
         port = json.loads(ready.read_text(encoding="utf-8-sig"))["port"]
-        token = parse_qs(urlsplit(output.split("grants host access): ", 1)[1].split()[0]).fragment)["hermes-session"][0]
+        assert "one-use code there" not in output and "shown only on a terminal" in output, output
+        owner_token = (tmp_path / "locks" / "host-serve.token").read_text(encoding="utf-8").strip()
+        fresh = Request(f"http://127.0.0.1:{port}/api/webapp/launch-code", data=b"", method="POST",
+                        headers={"Authorization": f"Bearer {owner_token}"})
+        with urlopen(fresh, timeout=10) as issued:
+            code = json.loads(issued.read())["code"]
 
         launched = recorded.read_text(encoding="utf-8-sig").split()[-1]
-        assert token not in launched and str(tmp_path) not in launched
         target = urlsplit(launched)
-        assert (target.scheme, target.hostname, target.port) == ("http", "127.0.0.1", port)
+        assert (target.scheme, target.hostname, target.port, target.path) == ("http", "127.0.0.1", port, "/webapp/launch")
+        assert not parse_qs(target.fragment) and str(tmp_path) not in launched
 
         origin = f"http://127.0.0.1:{port}"
         with urlopen(f"{origin}{target.path}", timeout=10) as page:
-            assert page.status == 200 and token not in page.read().decode()
+            assert page.status == 200 and code not in page.read().decode()
         exchange = Request(f"{origin}/webapp/window-session", data=b"", method="POST", headers={
-            "Origin": origin, "X-Hermes-Window-Ticket": parse_qs(target.fragment)["ticket"][0]})
+            "Origin": origin, "X-Hermes-Launch-Code": code})
         with urlopen(exchange, timeout=10) as granted:
-            assert json.loads(granted.read())["token"] == token
+            token = json.loads(granted.read())["token"]
+        assert token not in launched and token not in output
         with pytest.raises(HTTPError) as replay:
             urlopen(exchange, timeout=10)
         assert replay.value.code == 403 and token not in replay.value.read().decode()
@@ -128,97 +204,39 @@ def test_auto_open_hands_the_browser_a_one_use_launch_url_any_sandboxed_browser_
             server.wait(timeout=5)
 
 
-@pytest.mark.platforms("linux")
-def test_launch_ticket_is_spent_only_over_the_server_users_own_connection(monkeypatch):
-    """Linux publishes every process's argv, so another local user can read a launch ticket
-    out of the browser launcher before the browser spends it. That user's connection is
-    refused, and the refusal does not burn the ticket for the operator's browser."""
-    from fastapi.testclient import TestClient
-    from hermes_cli import web_server as server
-    from hermes_cli.web_routers import webapp
-
-    monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
-    monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
-    monkeypatch.setattr(server.app.state, "bound_host", "127.0.0.1", raising=False)
-    monkeypatch.setattr(server.app.state, "webapp_window_tickets", {}, raising=False)
-    monkeypatch.setattr(server, "_SESSION_TOKEN", "a" * 43)
-    client = TestClient(server.app, base_url="http://127.0.0.1")
-    headers = {"Origin": "http://127.0.0.1", "X-Hermes-Window-Ticket": webapp.mint_launch_ticket(server.app.state)}
-
-    own_uid = os.getuid()  # windows-footgun: ok — platforms("linux") test
-    monkeypatch.setattr(webapp, "_loopback_peer_uid", lambda client, server: own_uid + 1)
-    stolen = client.post("/webapp/window-session", headers=headers)
-    assert stolen.status_code == 403 and "a" * 43 not in stolen.text
-    monkeypatch.setattr(webapp, "_loopback_peer_uid", lambda client, server: own_uid)
-    granted = client.post("/webapp/window-session", headers=headers)
-    assert granted.status_code == 200 and granted.json()["token"] == "a" * 43
-
-
-@pytest.mark.platforms("macos")
-def test_macos_launch_handoff_fails_closed_without_consuming_child_window_authority(monkeypatch):
-    """An argv launch ticket is unusable until macOS has an authenticated OS handoff.
-
-    This native platform contract makes no claim about cross-account argv visibility.
-    Authenticated child-window tickets never pass through a launcher and still work.
-    """
-    from fastapi.testclient import TestClient
-    from hermes_cli import web_server as server
-    from hermes_cli.web_routers import webapp
-
-    monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
-    monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
-    monkeypatch.setattr(server.app.state, "bound_host", "127.0.0.1", raising=False)
-    monkeypatch.setattr(server.app.state, "webapp_window_tickets", {}, raising=False)
-    monkeypatch.setattr(server, "_SESSION_TOKEN", "a" * 43)
-    client = TestClient(server.app, base_url="http://127.0.0.1")
-    try:
-        launch = webapp.mint_launch_ticket(server.app.state)
-        headers = {"Origin": "http://127.0.0.1", "X-Hermes-Window-Ticket": launch}
-        for _ in range(2):
-            denied = client.post("/webapp/window-session", headers=headers)
-            assert denied.status_code == 403 and server._SESSION_TOKEN not in denied.text
-            assert launch in server.app.state.webapp_window_tickets
-
-        issued = client.post("/api/webapp/window-ticket", headers={
-            server._SESSION_HEADER_NAME: server._SESSION_TOKEN,
-        })
-        assert issued.status_code == 200
-        headers["X-Hermes-Window-Ticket"] = issued.json()["ticket"]
-        assert client.post("/webapp/window-session", headers=headers).json() == {"token": server._SESSION_TOKEN}
-        assert client.post("/webapp/window-session", headers=headers).status_code == 403
-    finally:
-        client.close()
-
-
-# A served handoff page's script, run as a browser tab runs it, with the browser globals it touches
-# stubbed: what it kept in sessionStorage, the headers it sent, and where it navigated.
+# The served launch page's script, run as a browser tab runs it, with the browser globals it touches
+# stubbed: the operator types ``env.typed`` and submits; out records what the page kept in
+# sessionStorage, the credential headers it sent, where it navigated and what it told the operator.
 _PAGE_HARNESS = r"""
 const env = JSON.parse(process.env.PAGE_ENV);
-const out = {stored: {}, sent: [], replaced: null};
+const out = {stored: {}, sent: [], replaced: null, status: ''};
+const elements = {
+  status: {set textContent(text) { out.status = text; }},
+  code: {value: env.typed, focus() {}},
+  launch: {addEventListener(type, handler) { out.submit = handler; }},
+};
 const stub = (name, value) => Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
 stub('location', {hash: env.hash, pathname: '/webapp/launch', origin: 'http://127.0.0.1:9123',
                   replace: url => { out.replaced = url; }});
 stub('history', {replaceState() {}});
 stub('window', {name: ''});
-stub('document', {getElementById: () => ({})});
+stub('document', {getElementById: id => elements[id]});
 stub('sessionStorage', {setItem(key, value) { if (!env.storage) throw new Error('blocked'); out.stored[key] = value; }});
-stub('fetch', async (url, init) => { out.sent.push(init.headers); return {ok: true, json: async () => env.reply}; });
-process.once('beforeExit', () => { out.windowName = window.name; console.log(JSON.stringify(out)); });
+stub('fetch', async (url, init) => { out.sent.push(init.headers); return {ok: env.ok, json: async () => env.reply}; });
+process.once('beforeExit', () => { delete out.submit; out.windowName = window.name; console.log(JSON.stringify(out)); });
+setImmediate(() => out.submit({preventDefault() {}}));
 """
 
 
-def _run_launch_page(monkeypatch, *, hash, reply, storage=True):
-    from fastapi.testclient import TestClient
-    from hermes_cli import web_server as server
-
+def _run_launch_page(monkeypatch, *, typed, hash="", ok=True, storage=True):
     node = shutil.which("node")
     if node is None:
         pytest.skip("running the served launch page needs node")
-    for name, value in (("ui_surface", "webapp"), ("auth_required", False), ("bound_host", "127.0.0.1")):
-        monkeypatch.setattr(server.app.state, name, value, raising=False)
-    page = TestClient(server.app, base_url="http://127.0.0.1").get("/webapp/launch").text
+    _, client = _private_webapp(monkeypatch)
+    page = client.get("/webapp/launch").text
     script = re.search(r'<script nonce="[^"]+">(.*)</script>', page, re.DOTALL).group(1)
-    env = {**os.environ, "PAGE_ENV": json.dumps({"hash": hash, "reply": reply, "storage": storage})}
+    env = {**os.environ, "PAGE_ENV": json.dumps(
+        {"hash": hash, "typed": typed, "ok": ok, "reply": {"token": "a" * 43}, "storage": storage})}
     run = subprocess.run([node, "-e", _PAGE_HARNESS + script], env=env, capture_output=True, text=True,
                          timeout=60, check=False)
     assert run.returncode == 0, run.stderr
@@ -226,12 +244,16 @@ def _run_launch_page(monkeypatch, *, hash, reply, storage=True):
 
 
 def test_launch_page_enters_the_webapp_with_no_session_in_any_url(monkeypatch):
-    """The auto-opened page hands the session over in this tab's sessionStorage, as the child-window
-    handoff does: a ``#hermes-session=`` target stays in browser history (#93508, Lane B P3 #4)."""
+    """The page sends the typed code in a header and hands the session over in this tab's
+    sessionStorage, as the child-window handoff does: a ``#hermes-session=`` target stays in browser
+    history (#93508, Lane B P3 #4)."""
     token, key = "a" * 43, 'hermes.webapp.session.v1:["http://127.0.0.1:9123",""]'
-    entered = _run_launch_page(monkeypatch, hash=f"#ticket={'t' * 43}&query=%3Fprofile%3Dcoder", reply={"token": token})
+    entered = _run_launch_page(monkeypatch, typed=" abcde-fghij ", hash="#query=%3Fprofile%3Dcoder")
+    assert entered["sent"] == [{"X-Hermes-Launch-Code": "ABCDEFGHIJ"}]
     assert entered["replaced"] == "http://127.0.0.1:9123/?profile=coder"
     assert (entered["stored"], entered["windowName"]) == ({key: token}, "")
     # A browser that blocks storage still gets in: the token crosses in this tab's memory, not a URL.
-    blocked = _run_launch_page(monkeypatch, hash=f"#ticket={'t' * 43}", reply={"token": token}, storage=False)
+    blocked = _run_launch_page(monkeypatch, typed="ABCDE-FGHIJ", storage=False)
     assert (blocked["replaced"], blocked["windowName"]) == ("http://127.0.0.1:9123/", f"{key}={token}")
+    refused = _run_launch_page(monkeypatch, typed="ABCDE-FGHIJ", ok=False)
+    assert refused["replaced"] is None and not refused["stored"] and "run hermes webapp again" in refused["status"]

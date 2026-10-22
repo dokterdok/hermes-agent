@@ -10,8 +10,9 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Iterator, Optional, TextIO
 from utils import atomic_json_write
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
@@ -217,6 +218,37 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 
+@contextmanager
+def operator_terminal() -> Iterator[Optional[TextIO]]:
+    """Where a launch secret may be shown: stdout when it is a terminal, else the controlling
+    terminal (POSIX ``/dev/tty``, the Windows console ``CONOUT$``). None when there is none, so a
+    redirect, a pipe or a service's log never receives the secret, and None for a background job
+    that a terminal write would stop (``stty tostop``)."""
+    if getattr(sys.stdout, "isatty", lambda: False)():
+        yield sys.stdout
+        return
+    try:
+        terminal = open("CONOUT$" if sys.platform == "win32" else "/dev/tty", "w", encoding="utf-8")
+    except OSError:
+        yield None
+        return
+    with terminal:
+        yield None if _terminal_write_would_stop(terminal) else terminal
+
+
+def _terminal_write_would_stop(terminal: TextIO) -> bool:
+    """A background process group writing to a terminal with ``TOSTOP`` set is stopped (SIGTTOU)."""
+    if sys.platform == "win32":
+        return False
+    import termios
+
+    try:
+        fd = terminal.fileno()
+        return os.tcgetpgrp(fd) != os.getpgrp() and bool(termios.tcgetattr(fd)[3] & termios.TOSTOP)
+    except (OSError, termios.error):
+        return False
+
+
 def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial_profile: str) -> None:
     """Open the dashboard URL in the user's browser if appropriate.
 
@@ -233,22 +265,26 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
     origin = f"http://{format_url_host(display_host)}:{actual_port}"
     query = f"?profile={quote(initial_profile, safe='')}" if initial_profile else ""
     _open_url = f"{origin}/{query}" if query else origin
-    private = private_launch(app.state)
-    if private:
-        from hermes_cli.web_server import _SESSION_TOKEN
+    if private_launch(app.state):
+        # No URL this opens or prints carries a credential: a browser launcher and a terminal
+        # click (xdg-open, GIO, KIO) both hand the URL over in argv, which other local users can
+        # read. The one-use code reaches the page only by being typed, so it is shown on the
+        # operator's terminal only, including --no-open/headless launches: never in a redirect, a
+        # pipe or a log. Without a terminal, `hermes webapp` run again from one fetches a code.
+        from hermes_cli.web_routers.webapp import LAUNCH_CODE_TTL_SECONDS, mint_launch_code
 
-        _open_url += f"#hermes-session={quote(_SESSION_TOKEN, safe='')}"
-        # Operator-only handoff, including --no-open/headless launches. Never log
-        # or serve this URL, or put the credential in a query string.
-        print(f"  Webapp launch link (private; grants host access): {_open_url}", flush=True)
+        _open_url = f"{origin}/webapp/launch" + (f"#{urlencode({'query': query})}" if query else "")
+        print(f"  Webapp launch page: {_open_url}", flush=True)
+        with operator_terminal() as terminal:
+            if terminal is None:
+                print("  Its one-use code is shown only on a terminal: run hermes webapp again from one.",
+                      flush=True)
+            else:
+                print(f"  Enter this one-use code there: {mint_launch_code(app.state)} (expires in "
+                      f"{LAUNCH_CODE_TTL_SECONDS // 60} minutes; run hermes webapp again for a new one)",
+                      file=terminal, flush=True)
 
     if not open_browser:
-        return
-
-    if private and sys.platform == "darwin":
-        # macOS launch arguments are not a same-user credential channel. Until
-        # an authenticated OS handoff exists, keep the operator-only link above.
-        print("  On macOS, open the private launch link above in your browser.", flush=True)
         return
 
     import webbrowser
@@ -264,16 +300,7 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
     def _open():
         try:
             time.sleep(1.0)
-            target = _open_url
-            if private:
-                # Browser launchers put their URL in argv (world-readable on Linux), so it
-                # carries a one-use launch ticket, never the token. A URL rather than a local
-                # redirect file, which snap/Flatpak browsers cannot read under hidden dirs.
-                from hermes_cli.web_routers.webapp import mint_launch_ticket
-
-                fragment = urlencode({"ticket": mint_launch_ticket(app.state), "query": query})
-                target = f"{origin}/webapp/launch#{fragment}"
-            webbrowser.open(target)
+            webbrowser.open(_open_url)
         except Exception:
             pass
 

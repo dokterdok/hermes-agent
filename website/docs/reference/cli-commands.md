@@ -1887,24 +1887,25 @@ admin UI. Chats run on the profile's gateway, which the Webapp starts if none is
 running and relays the browser to; the Webapp itself runs no turns. See
 [Desktop App → Use the Desktop workspace from a browser](../user-guide/desktop.md#use-the-desktop-workspace-from-a-browser).
 
-For a loopback launch, use the **private launch link** printed by the command
-(including with `--no-open`). Its fragment carries the existing session token
-for privileged APIs, including host files, command execution and the terminal.
-The Webapp never includes this credential in public HTML. Do not share the
-link or publish captured CLI output. The browser removes the fragment and
-keeps the token in tab-local `sessionStorage`, so reload/reconnect works.
+For a loopback launch, the command opens (and prints, including with
+`--no-open`) a launch page whose URL carries no credential, and shows a
+**one-use code** on your terminal only (never in redirected or piped output or a
+service log). Type the code into that page: it exchanges the code
+for the existing session token for privileged APIs, including host files,
+command execution and the terminal, and keeps the token in tab-local
+`sessionStorage`, so reload/reconnect works. The Webapp never puts this
+credential in public HTML or in any URL, so neither a browser launcher's command
+line (which other local users may read) nor browser history holds it. The code
+works once and expires after two minutes; five wrong entries burn it. Do not
+share the code or publish captured CLI output.
 
-A fresh tab needs the original launch link; a bare URL shows instructions
-instead of granting access. To manage a named profile on an existing server,
-open its `?profile=<name>` URL in an already authorized tab, or add that query
-**before** the original launch link's `#` fragment. If you lost the link, restart
-that Webapp to print a new one. Restarting invalidates old links. Authenticated
-remote Webapps continue to use OAuth cookies and single-use WebSocket tickets.
-Automatic local browser launch never hands the secret URL to the OS browser
-launcher (whose command line other local users may read). It opens a one-use
-launch URL instead, valid for 60 seconds, which the browser exchanges for the
-session; on Linux only a connection owned by your own OS user can redeem it. A
-second use shows instructions instead of granting access.
+A fresh tab needs a new code; a bare URL shows instructions instead of granting
+access. Run `hermes webapp` again from a terminal for a new code: it asks the
+running Webapp for one, authenticated by that Webapp's owner-only token file, so
+this also serves a Webapp started without a terminal. To manage a named profile
+on an existing server, open its `?profile=<name>` URL in an already authorized
+tab. Authenticated remote Webapps continue to use OAuth cookies and single-use
+WebSocket tickets.
 
 | Option | Default | Description |
 |--------|---------|-------------|

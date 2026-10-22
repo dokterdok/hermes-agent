@@ -1044,16 +1044,46 @@ def _attach_to_host_backend(args) -> None:
     kind = "backend" if headless else surface
     print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")
     print(f"  Managing profile '{wanted}': {url}")
-    if kind == "webapp":
-        print("  Local Webapp: open this URL in an already authorized tab, or use the")
-        print("  private launch link from the running server, adding the profile query")
-        print("  above BEFORE its # fragment. A fresh bare-URL tab cannot sign in.")
-        print("  Lost the link? Restart that Webapp to print a new one. Remote OAuth is unchanged.")
+    if kind == "webapp" and not _show_webapp_launch_code(record, wanted):
+        print("  Local Webapp: open this URL in an already authorized tab, or open a new window")
+        print("  from one. A fresh tab signs in with a one-use code, shown only on a terminal:")
+        print("  run hermes webapp again from one. Remote OAuth is unchanged.")
     if kind == "dashboard" and not args.no_open:
         with contextlib.suppress(Exception):
             import webbrowser
             webbrowser.open(url)
     sys.exit(0)
+
+
+def _show_webapp_launch_code(record, profile: str) -> bool:
+    """Ask the running private Webapp for a fresh one-use launch code and show it, with its launch
+    page, on this operator's terminal. The owner's token file (owner-only) authenticates this
+    same-user launcher, and nothing is asked without a terminal to show the code on, so the running
+    code stays valid. False when no code was shown: no terminal, a gated Webapp, an older owner."""
+    import json
+    import urllib.request
+    from urllib.parse import quote, urlencode
+
+    from gateway import host_rendezvous as hr
+    from hermes_cli.url_utils import format_url_host
+    from hermes_cli.web_server_lifecycle import operator_terminal
+
+    origin = f"http://{format_url_host(hr.dial_host(record))}:{record.port}"
+    with operator_terminal() as terminal:
+        if terminal is None:
+            return False
+        request = urllib.request.Request(f"{origin}/api/webapp/launch-code", data=b"", method="POST",
+                                         headers={"Authorization": f"Bearer {hr.read_token(record.role)}"})
+        try:
+            with urllib.request.urlopen(request, timeout=hr.PROBE_TIMEOUT_S) as response:
+                issued = json.loads(response.read(4096))
+            code, minutes = str(issued["code"]), int(issued["ttl_seconds"]) // 60
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        print(f"  Webapp launch page: {origin}/webapp/launch#{urlencode({'query': '?profile=' + quote(profile, safe='')})}",
+              flush=True)
+        print(f"  Enter this one-use code there: {code} (expires in {minutes} minutes)", file=terminal, flush=True)
+    return True
 
 
 def _route_named_profile_dashboard(args, _ssh_owner_nonce: str, _token_file: str) -> None:
