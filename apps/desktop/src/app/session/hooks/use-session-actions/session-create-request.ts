@@ -79,6 +79,18 @@ export async function createGatewaySession(
   return create(params)
 }
 
+// The profile a new chat is created in: its exact owner route, the requested
+// profile, the pinned new-chat profile, then the active one. A fresh tile reads
+// its default project folder for this same profile.
+export function sessionCreateProfile(capturedRoute: AgentProfileRoute | null, requestedProfile?: string): string {
+  return (
+    capturedRoute?.profile ||
+    requestedProfile ||
+    $newChatProfile.get() ||
+    normalizeProfileKey($activeGatewayProfile.get())
+  )
+}
+
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
 // ensuring the gateway is on that profile first. Shared by the primary send path
 // and the "open in split" tile path; `cwd` is the one thing that differs (the
@@ -116,11 +128,7 @@ export async function desktopSessionCreateParams(
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
-  const profile =
-    capturedRoute?.profile ||
-    requestedProfile ||
-    $newChatProfile.get() ||
-    normalizeProfileKey($activeGatewayProfile.get())
+  const profile = sessionCreateProfile(capturedRoute, requestedProfile)
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)

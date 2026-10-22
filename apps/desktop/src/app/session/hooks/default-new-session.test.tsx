@@ -216,6 +216,21 @@ describe('generic new session default routing', () => {
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
   })
 
+  it('starts a tile in the default folder of the profile it is created in, not the window profile', async () => {
+    const folders: Record<string, string> = { chosen: '/srv/chosen-repo', other: '/srv/other-repo' }
+    const defaultProjectDirFor = (profile?: null | string) => folders[profile ?? ''] ?? null
+    window.hermesDesktop = { ...window.hermesDesktop, settings: { defaultProjectDirFor } } as never
+    const { result } = mountActions()
+    await act(() => result.current.openNewSessionTile('right', { profile: 'chosen' }))
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'previous',
+      'chosen',
+      'session.create',
+      expect.objectContaining({ cwd: '/srv/chosen-repo', profile: 'chosen' }),
+      ...FOREGROUND_CREATE_DIAL
+    )
+  })
+
   it('does not mistake the configured default folder for explicit project routing', async () => {
     applyConfiguredDefaultProjectDir('/configured-default')
     const { result } = mountActions()
