@@ -170,7 +170,12 @@ function stripLiveFishGreeting(lines: string[]): string[] {
 //     separator, so the final line itself is the prompt and is dropped.
 // The fresh shell reprints the current prompt on boot either way, so only the
 // redundant idle prompt is removed — command output is preserved.
-export function cleanReviveSnapshot(serialized: string, shell = '', startsAtLiveBoundary = true): string {
+export function cleanReviveSnapshot(
+  serialized: string,
+  shell = '',
+  startsAtLiveBoundary = true,
+  bootRows: readonly string[] = []
+): string {
   const fish = isFishShell(shell)
 
   const lines =
@@ -187,8 +192,10 @@ export function cleanReviveSnapshot(serialized: string, shell = '', startsAtLive
   if (fish) {
     // The live boundary proves which greeting belongs to this new Fish process,
     // but plain terminal rows cannot prove whether a prompt-looking tail is a
-    // prompt or command output. Preserve the tail rather than guessing away data.
-    return lines.join('\r\n')
+    // prompt or command output. Preserve the tail rather than guessing away
+    // data, except rows that repeat Fish's own boot prompt (else every relaunch
+    // replays the idle prompt above the fresh one).
+    return trimRepeatedPrompt(lines.join('\r\n'), bootRows)
   }
 
   const lastBlank = lines.findLastIndex(line => !visibleText(line))
@@ -204,8 +211,14 @@ export function cleanReviveSnapshot(serialized: string, shell = '', startsAtLive
 // Keep restored history byte-for-byte and append only the cleaned output emitted
 // by the new PTY. This provenance boundary is what makes greeting/prompt cleanup
 // safe: legacy scrollback is never reclassified by its visible text.
-export function mergeReviveSnapshot(restored: string, live: string, shell = '', startsAtLiveBoundary = true): string {
-  const cleanedLive = cleanReviveSnapshot(live, shell, startsAtLiveBoundary)
+export function mergeReviveSnapshot(
+  restored: string,
+  live: string,
+  shell = '',
+  startsAtLiveBoundary = true,
+  bootRows: readonly string[] = []
+): string {
+  const cleanedLive = cleanReviveSnapshot(live, shell, startsAtLiveBoundary, bootRows)
 
   if (!restored) {
     return cleanedLive

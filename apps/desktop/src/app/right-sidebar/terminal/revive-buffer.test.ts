@@ -70,6 +70,17 @@ describe('cleanReviveSnapshot', () => {
     )
   })
 
+  it('trims a Fish idle prompt only where it repeats the boot prompt, never unfinished output', () => {
+    const boot = [...FISH_GREETING, FISH_PROMPT, FISH_MARKER]
+    const idle = [...FISH_GREETING, FISH_PROMPT, `${FISH_MARKER} echo hi`, 'hi', FISH_PROMPT, FISH_MARKER].join('\r\n')
+    const running = [...FISH_GREETING, FISH_PROMPT, `${FISH_MARKER} printf repeated`, 'same', 'same'].join('\r\n')
+
+    expect(cleanReviveSnapshot(idle, 'fish', true, boot)).toBe([FISH_PROMPT, `${FISH_MARKER} echo hi`, 'hi'].join('\r\n'))
+    expect(cleanReviveSnapshot(running, 'fish', true, boot)).toBe(
+      [FISH_PROMPT, `${FISH_MARKER} printf repeated`, 'same', 'same'].join('\r\n')
+    )
+  })
+
   it('preserves greeting-shaped Fish command output after the live boot greeting', () => {
     const snapshot = [
       ...FISH_GREETING,
