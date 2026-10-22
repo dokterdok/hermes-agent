@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
-import { consumeWebappSession, watchWebappLaunchLink } from './browser-launch-session'
+import { consumeWebappSession, watchWebappLaunchLink, webappSessionKey } from './browser-launch-session'
 
 const win = window as Window & {
   __HERMES_UI_SURFACE__?: string
@@ -17,6 +17,7 @@ afterEach(() => {
   delete win.__HERMES_AUTH_REQUIRED__
   sessionStorage.clear()
   localStorage.clear()
+  window.name = ''
   window.history.replaceState(null, '', '/')
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -94,6 +95,20 @@ it('fails closed with actionable launch instructions in a fresh tab and ignores 
   expect(installBrowserDesktopBridge()).toBe(true)
   expect((await window.hermesDesktop!.getConnection()).authMode).toBe('oauth')
   expect((await window.hermesDesktop!.getConnection()).token).toBe('')
+})
+
+// #93508 Lane B P3 #4: a launch page in a tab that blocks storage hands the grant over in window.name,
+// never in a URL; the SPA takes it once, for its own origin and base path, and leaves nothing behind.
+it('takes a storage-blocked launch handoff from window.name once', () => {
+  const token = 'd'.repeat(43)
+  window.name = `${webappSessionKey('/other')}=${token}`
+  expect(consumeWebappSession('/one')).toBe('')
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+  window.name = `${webappSessionKey('/one')}=${token}`
+  expect(consumeWebappSession('/one')).toBe(token)
+  expect(window.name).toBe('')
+  expect(consumeWebappSession('/one')).toBe('')
+  expect(window.location.href).not.toContain(token)
 })
 
 it('reloads for a pasted launch fragment but not HashRouter navigation', () => {

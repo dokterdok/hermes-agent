@@ -219,10 +219,18 @@ if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
     method: 'POST', credentials: 'same-origin', headers: {'X-Hermes-Window-Ticket': ticket}
   }).then(response => response.ok ? response.json() : Promise.reject()).then(({token}) => {
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error();
-    // The SPA consumes and strips this fragment exactly as it does for the printed link.
     const target = new URL(`${basePath}/`, location.origin);
     target.search = params.get('query') || '';
-    target.hash = `hermes-session=${token}`;
+    const key = `hermes.webapp.session.v1:${JSON.stringify([location.origin, basePath])}`;
+    try {
+      // The tab's grant, kept as the child-window handoff keeps it: a URL carrying the token would
+      // stay in browser (and synced) history for the server's lifetime.
+      sessionStorage.setItem(key, token);
+    } catch {
+      // Storage is blocked: the token crosses this same-tab navigation in memory, never in a URL;
+      // the SPA takes it from window.name once and clears it.
+      window.name = `${key}=${token}`;
+    }
     location.replace(target.href);
   }).catch(fail);
 }
@@ -251,7 +259,8 @@ def _handoff_page(request: Request, title: str, status: str, script: str) -> HTM
 @router.get("/webapp/launch")
 async def launch_page(request: Request):
     """Where the server's own browser-open lands: spends the one-use launch ticket from the
-    fragment (never sent to the server or kept in history) and enters the Webapp."""
+    fragment (never sent to the server or kept in history) and enters the Webapp with the session
+    in this tab's sessionStorage, never in a URL."""
     _require_private_webapp(request)
     return _handoff_page(request, "Opening Hermes", "Opening Hermes Webapp…", _LAUNCH_SCRIPT)
 
