@@ -108,6 +108,37 @@ describe('log window', () => {
   })
 })
 
+describe('classic reload continuity', () => {
+  it('uses one durable shape whose hydration preserves every stored field', async () => {
+    const { chat, gateway } = await loadRoom()
+
+    const stored: GroupChat = {
+      log: [{ at: 10, from: { kind: 'user', name: 'You' }, id: 'input', text: 'context', thread: 't' }],
+      watermarks: { 't::builder': 1 },
+      sessions: { builder: 'session' },
+      sessionOwners: { builder: { name: 'builder', connectionId: 'owner' } },
+      holds: { builder: { at: 2, noted: true } },
+      heldMessages: { builder: ['input'] },
+      holdDetection: false,
+      stranded: { builder: { before: 2, thread: 't' } },
+      externalCursors: { builder: 4 },
+      members: [{ name: 'builder' }],
+      roomId: 'room',
+      image: 'data:image/png;base64,room',
+      sectionId: 'section',
+      rosterOrder: 3,
+      pinned: true,
+      syncRevision: 7
+    }
+
+    chat.updateGroupChat('Core', () => ({ ...stored, epoch: 9, running: true }), { sync: false })
+    expect(chat.durableGroupChatRooms()).toEqual(gateway.storage.get('group-chats'))
+    const hydrated = chat.hydrateGroupChatRooms({ Core: stored })
+    expect(chat.durableGroupChatRooms(hydrated)).toEqual({ Core: stored })
+    expect(hydrated.Core).toMatchObject({ epoch: 0, running: false })
+  })
+})
+
 describe('room naming', () => {
   it('same-name dedup reserves suffix length at the 64-char cap', async () => {
     const { chat } = await loadRoom()
