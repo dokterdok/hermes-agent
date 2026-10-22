@@ -189,6 +189,52 @@ def test_ingest_rejects_epoch_regression(tmp_path):
         )
 
 
+def _disbanded_room_page(tmp_path):
+    adb = _authority_db(tmp_path)
+    _seed_room(adb, n_events=1)
+    rooms.disband_room(
+        adb, room_id="room-1", expected_gateway_id=AUTH_A, expected_epoch=1
+    )
+    return rooms.read_events(
+        adb, room_id="room-1", since_seq=0, limit=100, include_disbanded=True
+    )
+
+
+def test_ingest_refuses_events_after_room_disbanded(tmp_path):
+    page = _disbanded_room_page(tmp_path)
+    late = {**page["events"][0], "seq": 3, "event_id": "late"}
+    rdb = _replica_db(tmp_path)
+
+    def ingest(events, latest_seq=3):
+        return replicas.ingest_page(
+            rdb,
+            room_id="room-1",
+            room_name="Field Room",
+            members=MEMBERS,
+            page={**page, "events": events, "cursor": latest_seq, "latest_seq": latest_seq},
+        )
+
+    with pytest.raises(replicas.ReplicaError, match="disbanded"):
+        ingest([*page["events"], late])
+    ingest(page["events"], latest_seq=2)
+    with pytest.raises(replicas.ReplicaError, match="disbanded"):
+        ingest([late])
+    assert replicas.replica_state(rdb, room_id="room-1")["last_seq"] == 2
+
+
+def test_disbanded_room_history_still_copies_idempotently(tmp_path):
+    page = _disbanded_room_page(tmp_path)
+    assert page["events"][-1]["kind"] == "room.disbanded"
+    rdb = _replica_db(tmp_path)
+    first = replicas.ingest_page(
+        rdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
+    )
+    again = replicas.ingest_page(
+        rdb, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page
+    )
+    assert (first["ingested"], first["caught_up"], again["ingested"]) == (2, True, 0)
+
+
 def test_ingest_requires_authority_stamp(tmp_path):
     page = _seed_room(_authority_db(tmp_path))
     page.pop("authority")
