@@ -2,6 +2,8 @@
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -213,3 +215,50 @@ def test_macos_launch_handoff_fails_closed_without_consuming_child_window_author
         assert client.post("/webapp/window-session", headers=headers).status_code == 403
     finally:
         client.close()
+
+
+# A served handoff page's script, run as a browser tab runs it, with the browser globals it touches
+# stubbed: what it kept in sessionStorage, the headers it sent, and where it navigated.
+_PAGE_HARNESS = r"""
+const env = JSON.parse(process.env.PAGE_ENV);
+const out = {stored: {}, sent: [], replaced: null};
+const stub = (name, value) => Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
+stub('location', {hash: env.hash, pathname: '/webapp/launch', origin: 'http://127.0.0.1:9123',
+                  replace: url => { out.replaced = url; }});
+stub('history', {replaceState() {}});
+stub('window', {name: ''});
+stub('document', {getElementById: () => ({})});
+stub('sessionStorage', {setItem(key, value) { if (!env.storage) throw new Error('blocked'); out.stored[key] = value; }});
+stub('fetch', async (url, init) => { out.sent.push(init.headers); return {ok: true, json: async () => env.reply}; });
+process.once('beforeExit', () => { out.windowName = window.name; console.log(JSON.stringify(out)); });
+"""
+
+
+def _run_launch_page(monkeypatch, *, hash, reply, storage=True):
+    from fastapi.testclient import TestClient
+    from hermes_cli import web_server as server
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("running the served launch page needs node")
+    for name, value in (("ui_surface", "webapp"), ("auth_required", False), ("bound_host", "127.0.0.1")):
+        monkeypatch.setattr(server.app.state, name, value, raising=False)
+    page = TestClient(server.app, base_url="http://127.0.0.1").get("/webapp/launch").text
+    script = re.search(r'<script nonce="[^"]+">(.*)</script>', page, re.DOTALL).group(1)
+    env = {**os.environ, "PAGE_ENV": json.dumps({"hash": hash, "reply": reply, "storage": storage})}
+    run = subprocess.run([node, "-e", _PAGE_HARNESS + script], env=env, capture_output=True, text=True,
+                         timeout=60, check=False)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
+
+def test_launch_page_enters_the_webapp_with_no_session_in_any_url(monkeypatch):
+    """The auto-opened page hands the session over in this tab's sessionStorage, as the child-window
+    handoff does: a ``#hermes-session=`` target stays in browser history (#93508, Lane B P3 #4)."""
+    token, key = "a" * 43, 'hermes.webapp.session.v1:["http://127.0.0.1:9123",""]'
+    entered = _run_launch_page(monkeypatch, hash=f"#ticket={'t' * 43}&query=%3Fprofile%3Dcoder", reply={"token": token})
+    assert entered["replaced"] == "http://127.0.0.1:9123/?profile=coder"
+    assert (entered["stored"], entered["windowName"]) == ({key: token}, "")
+    # A browser that blocks storage still gets in: the token crosses in this tab's memory, not a URL.
+    blocked = _run_launch_page(monkeypatch, hash=f"#ticket={'t' * 43}", reply={"token": token}, storage=False)
+    assert (blocked["replaced"], blocked["windowName"]) == ("http://127.0.0.1:9123/", f"{key}={token}")

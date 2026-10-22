@@ -35,5 +35,18 @@ export function consumeWebappSession(basePath: string): string {
     return token
   }
 
+  // A launch page in a tab that blocks storage hands the grant over in this tab's memory, never in a
+  // URL: take it once, for this origin and base path only.
+  if (window.name.startsWith(`${key}=`)) {
+    const supplied = window.name.slice(key.length + 1)
+    window.name = ''
+
+    if (/^[A-Za-z0-9_-]{43}$/.test(supplied)) {
+      try { sessionStorage.setItem(key, supplied) } catch { /* Still blocked: this page keeps it. */ }
+
+      return supplied
+    }
+  }
+
   try { return sessionStorage.getItem(key) || '' } catch { return '' }
 }
