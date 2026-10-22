@@ -57,11 +57,13 @@ def prepare_webapp_renderer(
     force: bool = False,
     skip_build: bool = False,
     explicit: bool = False,
+    env: dict | None = None,
 ) -> Path:
     """Return a verified browser renderer, serializing concurrent builds.
 
     ``explicit`` (a requested build) may install dependencies even when lazy
-    installs are disabled, like ``hermes desktop --build-only``.
+    installs are disabled, like ``hermes desktop --build-only``. ``env`` is a
+    build environment the caller prepared (the update bounds its builds).
     """
     from hermes_cli.source_build import build_source_webapp, source_build_env, source_product_current
 
@@ -81,7 +83,8 @@ def prepare_webapp_renderer(
             print(f"✓ Hermes Webapp renderer is up to date: {dist}")
             return dist
         try:
-            build_source_webapp(project_root, env=source_build_env(explicit=explicit), explicit=explicit)
+            build_env = env if env is not None else source_build_env(explicit=explicit)
+            build_source_webapp(project_root, env=build_env, explicit=explicit)
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
             raise WebappBuildError(f"Browser-hosted Desktop build failed: {exc}") from exc
         print(f"✓ Hermes Webapp renderer built: {dist}")

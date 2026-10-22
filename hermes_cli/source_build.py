@@ -218,6 +218,18 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
             # One whole line the Desktop hand-off scripts match: the follow-up text is truncated
             # and names whichever products failed first, so it cannot say if THIS app was rebuilt.
             print(f"  Desktop app build owed: {desktop_reason} failed")
+    # A Webapp renderer someone built is a product of this install too: a `--skip-build` launch
+    # (every named-profile Webapp) and a gateway-served Webapp never rebuild it, so after an update
+    # they would serve the old renderer against new code. Its dependencies live in a private
+    # workspace, so a failed checkout preparation above does not skip it. Installs that never
+    # built one are untouched.
+    webapp = project_root / "apps/desktop/dist-webapp"
+    if (webapp / "index.html").is_file() and (project_root / "apps/desktop/package.json").is_file():
+        if source_product_current(project_root, "webapp", webapp):
+            print("  ✓ Webapp renderer is up to date")
+        else:
+            publish_stage("Building the Webapp renderer")
+            attempt("Webapp renderer build", lambda: _build_webapp_product(project_root))
     # A configured memory provider that no longer ships in core is installed from the
     # catalog for every profile home sharing this venv (config, data and tool names
     # unchanged). The update must finish even if the migration blows up.
@@ -237,6 +249,18 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         print(f"  ⚠ Plugin migration skipped: {exc}")
     if failures:
         raise ProductBuildError(failures)
+
+
+def _build_webapp_product(project_root: Path) -> None:
+    # Under the Webapp's own build lock, which re-checks the receipt first: a concurrent
+    # `hermes webapp` build may already have published this source. A requested build may
+    # install the renderer's private dependencies, as the update's own Node step does, and it
+    # is bounded like the update's dashboard build (#63338), HERMES_WEB_BUILD_* included.
+    from hermes_cli.web_build_limits import apply_web_build_limits
+    from hermes_cli.webapp import prepare_webapp_renderer
+
+    env = apply_web_build_limits(source_build_env(explicit=True, verify=False))
+    prepare_webapp_renderer(project_root, explicit=True, env=env)
 
 
 def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None:
