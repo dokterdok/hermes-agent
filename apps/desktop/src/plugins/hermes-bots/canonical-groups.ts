@@ -100,51 +100,106 @@ export async function discoverCanonicalGroups(
   return { driver: capabilities.driver === true, rooms }
 }
 
-export async function createCanonicalGroup(
-  route: CanonicalGroupRoute,
-  name: string,
-  members: GroupMember[]
-): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
-  requireRoute(route)
+/** Why a roster cannot form a gateway group; the UI owns the words for each. */
+export type CanonicalRosterProblem = 'groupSize' | 'otherConnection' | 'duplicateMember'
 
-  if (!name.trim() || members.length < 2 || members.length > 6) {
-    throw new Error('A canonical group needs a name and two to six members')
+/** Whether `member` lives on `route`'s connection: a gateway group seats only those. */
+export function onCanonicalConnection(route: CanonicalGroupRoute, member: GroupMember): boolean {
+  const connectionId = member.route?.connectionId ?? member.connectionId
+
+  return !((connectionId !== undefined && connectionId !== route.connectionId) ||
+    (member.connectionId !== undefined && member.connectionId !== route.connectionId) ||
+    (connectionId === undefined && member.remoteSource))
+}
+
+/** The members `groups.create` would receive, or why these Bots cannot form a gateway group. */
+export function canonicalGroupRoster(
+  route: CanonicalGroupRoute,
+  members: GroupMember[]
+): { roster: CanonicalRoomMember[] } | { problem: CanonicalRosterProblem } {
+  if (members.length < 2 || members.length > 6) {
+    return { problem: 'groupSize' }
   }
 
   const profiles = new Set<string>()
   const handles = new Set(['all', 'everyone'])
+  const roster: CanonicalRoomMember[] = []
 
-  const roster = members.map(member => {
-    const connectionId = member.route?.connectionId ?? member.connectionId
-
-    if ((connectionId !== undefined && connectionId !== route.connectionId) ||
-      (member.connectionId !== undefined && member.connectionId !== route.connectionId) ||
-      (connectionId === undefined && member.remoteSource)) {
-      throw new Error('Group members must belong to the same authority connection')
+  for (const member of members) {
+    if (!onCanonicalConnection(route, member)) {
+      return { problem: 'otherConnection' }
     }
 
     const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
     const handle = member.handle ?? profile
 
     if (!profile.trim() || !handle.trim() || profiles.has(profile.toLowerCase()) || handles.has(handle.toLowerCase())) {
-      throw new Error('Group members need unique profiles and non-reserved handles')
+      return { problem: 'duplicateMember' }
     }
 
     profiles.add(profile.toLowerCase())
     handles.add(handle.toLowerCase())
-
-    return {
+    roster.push({
       member_id: profile, profile, handle,
       target: { kind: 'local', profile },
       ...(member.display_name ? { display_name: member.display_name } : {})
-    }
-  })
+    })
+  }
+
+  return { roster }
+}
+
+export async function createCanonicalGroup(
+  route: CanonicalGroupRoute,
+  name: string,
+  members: GroupMember[]
+): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
+  requireRoute(route)
+  const checked = canonicalGroupRoster(route, members)
+
+  if (!name.trim()) {
+    throw new Error('A canonical group needs a name')
+  }
+
+  if ('problem' in checked) {
+    throw Object.assign(new Error('A canonical group needs two to six unique members on its authority connection'),
+      { canonicalGroupProblem: checked.problem })
+  }
 
   const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', {
-    room_id: crypto.randomUUID(), name, members: roster
+    room_id: crypto.randomUUID(), name, members: checked.roster
   })
 
   return { binding: { ...route, roomId: room.room_id }, room }
+}
+
+interface CreateErrorLabels {
+  createRefused: string
+  createGroupSize: string
+  createOtherConnection: string
+  createDuplicateMember: string
+}
+
+/** A failed create in the reader's words: a roster problem found here, or the gateway's refusal
+ *  followed by the detail it gives (it names a member it will not seat). */
+export function canonicalGroupCreateError(error: unknown, labels: CreateErrorLabels): string {
+  const problem = (error as { canonicalGroupProblem?: unknown } | null)?.canonicalGroupProblem
+
+  const problems: Record<CanonicalRosterProblem, string> = {
+    groupSize: labels.createGroupSize, otherConnection: labels.createOtherConnection, duplicateMember: labels.createDuplicateMember
+  }
+
+  if (typeof problem === 'string' && Object.hasOwn(problems, problem)) {
+    return problems[problem as CanonicalRosterProblem]
+  }
+
+  const refusal = error as { code?: unknown; data?: { detail?: unknown } } | null
+
+  if (refusal?.code === 4001) {
+    return typeof refusal.data?.detail === 'string' && refusal.data.detail ? `${labels.createRefused} ${refusal.data.detail}` : labels.createRefused
+  }
+
+  return error instanceof Error ? error.message : String(error)
 }
 
 export async function actCanonicalGroup(
