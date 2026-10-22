@@ -10,7 +10,7 @@ Rename, disband and membership editing are not offered here. Room discovery is d
 
 ## Files
 
-A message can carry files: the composer uploads each one with `groups.attachment.upload` before Send, and each message in the history offers **Download** (`groups.attachment.download`, by the message's `event_id` and the file's `attachment_id`).
+A message can carry files: the composer uploads each one with `groups.attachment.upload` before Send, and each message in the history offers **Download** (`groups.attachment.download`, by the message's `event_id` and the file's `attachment_id`). A Bot's shared files arrive the same way, on its `message.member` reply, so they download and list like yours (`producer.kind: 'member'`, with the Bot's name).
 
 The room header offers **Files** when the gateway's `groups.capabilities` `methods` lists `groups.attachment.list`. Desktop reads it once per visible room view, and again every two seconds after a failed read while the room is visible; an answer without a method list never offers Files. The standalone server (`hermes serve`, `hermes dashboard`) serves no attachments, so Files does not appear there.
 
