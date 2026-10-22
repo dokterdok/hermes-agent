@@ -277,6 +277,70 @@ describe('disband', () => {
     expect(room.data.$botMeta.get().builder.group).toBe('Keep')
   })
 
+  // A deleted connection leaves the descriptor without a connection id: the
+  // key is absent, or empty after the #93492 annotation.
+  it.each([
+    { name: 'reviewer', sourceScoped: true },
+    { connectionId: '', name: 'reviewer', sourceScoped: true }
+  ])('finishes the server cleanup past a member whose connection owner is gone (%j)', async orphan => {
+    const room = await loadRoom()
+
+    const owned: RosterRow = {
+      connectionId: 'remote-1',
+      connectionKind: 'remote',
+      name: 'builder',
+      remoteSource: true,
+      route: { connectionId: 'remote-1', mode: 'remote', profile: 'builder', targetProfile: 'builder' },
+      sourceScoped: true
+    }
+
+    const orphanKey = room.data.botMetaKey(orphan)
+    const ownedKey = room.data.botMetaKey(owned)
+    room.data.$botMeta.set({
+      [orphanKey]: { group: 'Workshop', groups: ['Workshop'] },
+      [ownedKey]: { group: 'Workshop', groups: ['Workshop'] }
+    })
+    room.chat.$groupChats.set({
+      Workshop: { log: [], members: [orphan, owned], running: false, sessions: {}, watermarks: {} }
+    } as unknown as Record<string, GroupChat>)
+
+    // builder's own gateway: it holds builder's server metadata, and records
+    // every write routed to it. Everything else is the scripted gateway.
+    let server = { meta: { group: 'Workshop', groups: ['Workshop'] } as Record<string, unknown>, revision: 1 }
+    type Route = { connectionId?: string; targetProfile?: string }
+    type RequestProfile = (route: Route, method: string, ...rest: unknown[]) => Promise<unknown>
+    const routes: Route[] = []
+    const scripted = host.requestProfile as RequestProfile
+
+    host.requestProfile = (async (route, method, ...rest) => {
+      if (route?.connectionId !== 'remote-1') {
+        return scripted(route, method, ...rest)
+      }
+
+      routes.push(route)
+
+      if (method === 'profiles.configure') {
+        const written = (rest[0] as { ui_meta: Record<string, Record<string, unknown>> }).ui_meta['hermes-bots']
+        server = { meta: structuredClone(written), revision: server.revision + 1 }
+
+        return { applied: { ui_meta: true, ui_meta_revisions: { 'hermes-bots': server.revision } } }
+      }
+
+      const uiMeta = { 'hermes-bots': structuredClone(server.meta) }
+
+      return { profiles: [{ name: 'builder', ui_meta: uiMeta, ui_meta_revisions: { 'hermes-bots': server.revision } }] }
+    }) satisfies RequestProfile
+
+    await expect(room.view.disbandGroupChat('Workshop', [orphan, owned])).resolves.toBeUndefined()
+
+    // Both records are cleared locally. The orphan is never routed anywhere;
+    // the member with a live owner still has the room removed on its own gateway.
+    expect(room.data.$botMeta.get()[orphanKey].groups).toEqual([])
+    expect(room.data.$botMeta.get()[ownedKey].groups).toEqual([])
+    expect(server).toEqual({ meta: { group: null, groups: [] }, revision: 2 })
+    expect(routes.every(route => route.targetProfile === 'builder')).toBe(true)
+  })
+
   it('skips source-qualified remote members instead of mutating same-named local metadata', async () => {
     const room = await loadRoom()
     room.data.$botMeta.set({ builder: { group: 'Keep', groups: ['Keep'] } })
