@@ -182,8 +182,8 @@ def test_fresh_marker_waits_out_a_briefly_held_temp_file(tmp_path: Path, monkeyp
     write_token_file = profile_incarnation._write_token_file
     released = threading.Event()
 
-    def write_then_hold(path, token, mode):
-        write_token_file(path, token, mode)
+    def write_then_hold(path, *args):
+        write_token_file(path, *args)
         scanner = open(path, "rb")  # CPython opens without FILE_SHARE_DELETE, like a scanner
 
         def release():
