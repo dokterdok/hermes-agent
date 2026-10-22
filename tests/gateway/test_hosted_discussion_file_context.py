@@ -10,6 +10,7 @@ from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway.hosted_room_attachments import MAX_TASK_ATTACHMENTS, HostedRoomAttachmentStore
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
+from gateway.hosted_rooms_common import compact_json
 from gateway.session_hosted_attachments import append_user_event
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state import SessionDB
@@ -83,6 +84,8 @@ def test_checkpoint_plans_the_remaining_file_batch(service, cleanup):
     assert first.payload["attachments"] == batches[0] + batches[1]
     assert len(first.payload["attachments"]) == MAX_TASK_ATTACHMENTS
     assert first.seen_through_seq < first.payload["source_event_seq"]
+    assert batches[0][0]["name"] in first.payload["prompt"]
+    assert batches[2][0]["name"] not in first.payload["prompt"]
     events = hosted_rooms.read_events(service.db_path, room_id="room")["events"]
     publication = discussion.plan_publication(service._room("room"), events, first,
         status="settled", result={"text": "First batch reviewed"}, local_profiles=service.local_profiles())
@@ -112,6 +115,8 @@ def test_checkpoint_plans_the_remaining_file_batch(service, cleanup):
     assert len(tasks) == 1
     second = tasks[0]
     assert second["payload"].get("attachments") == batches[2]
+    assert batches[2][0]["name"] in second["payload"]["prompt"]
+    assert batches[0][0]["name"] not in second["payload"]["prompt"]
     # The Bot's own earlier reply sits past its watermark, but is never "new" to it.
     assert "First batch reviewed" not in second["payload"]["prompt"]
     assert second["payload"]["input_context"]["watermark"] == first.seen_through_seq
@@ -123,6 +128,92 @@ def test_checkpoint_plans_the_remaining_file_batch(service, cleanup):
     assert reconstruct(cold, second).payload == second["payload"]
     assert driver.get_task(service.db_path, second["identity"])["payload"] == second["payload"]
     assert not cold.runtime.status()["running"]
+
+
+def test_prompt_reserves_bounded_file_and_media_lines(service):
+    entries = [
+        upload(service, "file", name='résumé "notes".txt'),
+        upload(service, "image", kind="image", name="景色.png", mime="image/png", data=b"\x89PNG\r\n\x1a\n"),
+        upload(service, "pdf", kind="pdf", name="研究.pdf", mime="application/pdf", data=b"%PDF-1.4\n"),
+    ]
+    send(service, "media", entries)
+    # Fill to the driver's byte limit: file lines are reserved before whole transcript
+    # lines are selected, never appended past the limit.
+    send(service, "older", text="旧" * 21740)
+    send(service, "latest", text="@writer " + "新" * 21740)
+    service.prepare_room(service.bindings()[0])
+    task, = driver.list_tasks(service.db_path, room_id="room", status="queued")
+    prompt = task["payload"]["prompt"]
+    # Images ride as media; every other file, a PDF included, is staged as a document.
+    for item, label in zip(entries, ("Staged file", "Queued image", "Staged file")):
+        assert f"{label} {compact_json(item['name'], ensure_ascii=False)} ({item['mime']}, {item['size']} bytes)" in prompt
+    # Names are quoted, so inert, and stay readable in any script.
+    assert 'Staged file "résumé \\"notes\\".txt"' in prompt and 'Queued image "景色.png"' in prompt
+    assert "inspect them rather than treating the filename as content" in prompt
+    assert len(prompt.encode("utf-8")) <= driver.MAX_PROMPT_BYTES
+    assert "新" * 21740 in prompt
+    assert "旧" * 32 not in prompt
+    assert "[Earlier content omitted to fit this turn.]" in prompt
+    assert task["payload"]["attachments"] == [{**item, "event_id": "user-media"} for item in entries]
+    assert reconstruct(service, task).payload == task["payload"]
+
+
+def test_a_file_name_stays_on_its_prompt_line():
+    line, = discussion._attachment_prompt_lines(
+        [{"name": "a\u2028b\u0085c.txt", "mime": "text/plain", "size": 1}])[2:]
+    assert line == '- Staged file "a\\u2028b\\u0085c.txt" (text/plain, 1 bytes)'
+
+
+def test_file_lines_and_omission_notice_never_overflow_the_prompt(service):
+    item = upload(service, "boundary", name="file.txt", data=b"notes")
+    send(service, "file", [item], text="@writer Review")
+    send(service, "older", text="o" * 64895)
+    newest = "@writer " + "n" * 65522
+    send(service, "latest", text=newest)
+
+    service.prepare_room(service.bindings()[0])
+    task, = driver.list_tasks(service.db_path, room_id="room", status="queued")
+    prompt = task["payload"]["prompt"]
+    assert len(prompt.encode("utf-8")) <= driver.MAX_PROMPT_BYTES
+    assert newest in prompt
+    assert 'Staged file "file.txt" (text/plain, 5 bytes)' in prompt
+    assert "  User (user): @writer Review" not in prompt
+    assert "Queued image" not in prompt
+    assert task["payload"]["attachments"] == [{**item, "event_id": "user-file"}]
+    assert reconstruct(service, task).payload == task["payload"]
+
+
+def test_text_only_prompts_and_earlier_file_admissions_stay_unchanged(service):
+    send(service, "text", text="@writer Review")
+    text_task = plan(service)
+    assert text_task is not None
+    text_prompt = text_task.payload["prompt"]
+    assert "@writer Review" in text_prompt
+    assert "Attachments available to you for this turn" not in text_prompt
+    assert "Staged file" not in text_prompt
+    assert not text_task.payload.get("attachments")
+    # A file task admitted before file lines existed used exactly that prompt.
+    # It must reconstruct and stay frozen as admitted, not be rebuilt with file lines.
+    item = upload(service, "frozen")
+    send(service, "frozen", [item], text="@writer Review")
+    room = discussion.validate_room(service._room("room"), local_profiles=service.local_profiles())
+    events = discussion._validated_events(hosted_rooms.read_events(service.db_path, room_id="room")["events"],
+                                          room=room)
+    old = discussion._make_task_plan(room=room, discussion_event=events[-1], member=room.members[0],
+        member_index=0, round_index=0, seen_through_seq=events[-1].seq, prompt=text_prompt,
+        input_context={"watermark": events[0].seq, "event_seqs": [events[-1].seq]},
+        attachments=[{**item, "event_id": events[-1].event_id}])
+    driver.admit_task(service.db_path, old.identity, payload=old.payload, clock=lambda: 10)
+    saved = driver.get_task(service.db_path, old.identity)
+    before_digest = driver._task_payload(saved["payload"])[2]
+    later = upload(service, "later", name="later.txt", data=b"later share")
+    send(service, "later", [later], text="@writer Review the later share")
+    service.policy_checkpoint = HostedRoomPolicyCheckpoint(service.db_path)
+    service.prepare_room(service.bindings()[0])
+    assert reconstruct(service, saved).payload == old.payload
+    after = driver.get_task(service.db_path, old.identity)
+    assert after["payload"] == saved["payload"]
+    assert driver._task_payload(after["payload"])[2] == before_digest
 
 
 def _checkpoint_room(tmp_path):
