@@ -434,6 +434,18 @@ def test_promote_replica_continues_room_at_next_epoch(tmp_path, monkeypatch):
         replicas.replica_state(rdb, room_id="room-1")
 
 
+def test_promote_refuses_a_disbanded_copy(tmp_path, monkeypatch):
+    rdb = _replica_db(tmp_path)
+    _ingest(rdb, _disbanded_room_page(tmp_path))
+    monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
+
+    with pytest.raises(rooms.RoomConflictError, match="disbanded"):
+        replicas.promote_replica(rdb, room_id="room-1")
+    with pytest.raises(rooms.RoomNotFoundError):
+        rooms.room_state(rdb, room_id="room-1", include_disbanded=True)
+    assert replicas.replica_state(rdb, room_id="room-1")["last_seq"] == 2
+
+
 def test_promote_refuses_when_room_exists_locally(tmp_path, monkeypatch):
     db = _authority_db(tmp_path)
     page = _seed_room(db)
