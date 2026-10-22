@@ -229,3 +229,25 @@ it.each([
   expect(Boolean(screen.queryByRole('button', { name: 'Attach files' }))).toBe(offered)
   expect((screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement).disabled).toBe(!offered)
 })
+
+it('reads only new log events, and the whole log again when the room authority changes', async () => {
+  const message = (seq: number, text: string) => ({ seq, kind: 'message.member', actor: { kind: 'member', id: 'ops' }, payload: { text } })
+  let epoch = 1
+  let log = [message(1, 'First reply')]
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room', authority_epoch: epoch, latest_seq: log.at(-1)!.seq }, driver_status: {} }
+    : method === 'groups.log' ? { events: log.filter(event => event.seq > params.since_seq), has_more: false } : {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'long' }} />)
+  await screen.findByText('First reply')
+  log = [...log, message(2, 'Second reply')]
+  await screen.findByText('Second reply', undefined, { timeout: 5_000 })
+  const since = () => request.mock.calls.filter(call => call[1] === 'groups.log').map(call => call[2].since_seq)
+  expect(since()).toEqual([0, 1])
+  expect(screen.getAllByText(/reply$/).map(node => node.textContent)).toEqual(['First reply', 'Second reply'])
+
+  epoch = 2
+  log = [message(1, 'Reply after a takeover')]
+  await screen.findByText('Reply after a takeover', undefined, { timeout: 5_000 })
+  expect(since().at(-1)).toBe(0)
+  expect(screen.queryByText('First reply')).toBeNull()
+}, 15_000)
