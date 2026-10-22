@@ -32,7 +32,8 @@ def _hosted(hosted_owner, tmp_path, monkeypatch):
     _claim_after_read(authority, sid)
     reply = rpc.interrupt(**coords, session_id=sid, expected_task_id='task')
     [row] = list_session_admissions(authority.db, session_id=sid)
-    return reply == {'interrupted': True, 'status': 'interrupted'} and row['status'] == 'started' and agent.interrupted
+    # The claim is told to stop, and the reply does not claim it already ended.
+    return reply == {'interrupted': False, 'status': 'running'} and row['status'] == 'started' and agent.interrupted
 
 
 def _cron(hosted_owner, tmp_path, monkeypatch):
