@@ -24,7 +24,6 @@ from hermes_cli.profile_incarnation import (
 from hermes_cli.profile_lifecycle import (
     begin_profile_retirement,
     create_profile_generation,
-    import_profile_generation,
     move_profile_generation,
     profile_lifecycle_lease,
     profile_selection_lease,
@@ -2209,36 +2208,29 @@ def _import_profile_into_home(
     canon: str,
     profile_dir: Path,
 ) -> Path:
-    import tempfile
-
     if profile_dir.exists():
         raise _profile_exists_error(canon)
-    _get_profiles_root().mkdir(parents=True, exist_ok=True)
 
-    def build_and_move() -> str:
-        with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
-            staging_root = Path(tmpdir)
-            safe_extract_targz(archive, staging_root)
-            extracted = staging_root / archive_root
-            if not extracted.is_dir():
-                raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
-            final_source = extracted
-            if archive_root != canon:
-                final_source = staging_root / canon
-                extracted.rename(final_source)
-            # Remove foreign runtime state before publishing, including file-shaped roots.
-            # A failed removal must abort import rather than install a stale PM selection.
-            for child in final_source.iterdir():
-                if child.name in PM_RUNTIME_ROOT_DIRS:
-                    if child.is_dir():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-            incarnation = write_fresh_profile_incarnation(final_source)
-            shutil.move(str(final_source), str(profile_dir))
-            return incarnation
+    def build(staging_dir: Path) -> None:
+        # Extracted beside the destination, never in a temp dir on another filesystem: publication
+        # is one rename, so a failed import leaves no half-copied profile behind (or a tombstone).
+        safe_extract_targz(archive, staging_dir.parent)
+        extracted = staging_dir.parent / archive_root
+        if not extracted.is_dir():
+            raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
+        if archive_root != canon:
+            extracted.rename(staging_dir)
+        # Remove foreign runtime state before publishing, including file-shaped roots.
+        # A failed removal must abort import rather than install a stale PM selection.
+        for child in staging_dir.iterdir():
+            if child.name in PM_RUNTIME_ROOT_DIRS:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+        write_fresh_profile_incarnation(staging_dir)
 
-    return import_profile_generation(canon, profile_dir, build_and_move)
+    return create_profile_generation(canon, profile_dir, profile_dir.parent, build)
 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:

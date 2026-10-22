@@ -7,8 +7,10 @@ generation was replaced) used to resurrect the directory or publish a partial on
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -393,34 +395,84 @@ def test_concurrent_profile_use_cannot_restore_retired_name(
     assert profiles.get_active_profile() == "research"
 
 
-def test_failed_fresh_import_hides_partial_destination(
+@pytest.mark.parametrize("failure", [OSError("simulated disk full"), KeyboardInterrupt()], ids=["error", "ctrl-c"])
+def test_failed_fresh_import_leaves_no_partial_destination(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
 ) -> None:
+    """An import is built under ``profiles/.profile-creating`` and published by one rename, so a
+    failure part-way (Ctrl-C included) leaves neither a half-built ``worker`` nor its tombstone."""
     profile_dir = home / "profiles" / "worker"
 
-    def fake_extract(_archive: Path, staging_root: Path) -> None:
-        extracted = staging_root / "worker"
-        extracted.mkdir()
-        (extracted / "config.yaml").write_text("model: test\n", encoding="utf-8")
+    def failing_extract(_archive: Path, staging_root: Path) -> None:
+        (staging_root / "worker").mkdir()
+        (staging_root / "worker" / "config.yaml").write_text("partial", encoding="utf-8")
+        raise failure
 
-    def partial_move(_source: str, destination: str) -> None:
-        partial = Path(destination)
-        partial.mkdir()
-        (partial / "config.yaml").write_text("partial", encoding="utf-8")
-        raise OSError("simulated cross-filesystem copy failure")
+    monkeypatch.setattr(profiles, "safe_extract_targz", failing_extract)
 
-    monkeypatch.setattr(profiles, "safe_extract_targz", fake_extract)
-    monkeypatch.setattr(shutil, "move", partial_move)
+    with pytest.raises(type(failure)):
+        profiles._import_profile_into_home(home / "unused.tar.gz", "worker", "worker", profile_dir)
 
-    with pytest.raises(OSError, match="copy failure"):
-        profiles._import_profile_into_home(
-            home / "unused.tar.gz",
-            "worker",
-            "worker",
-            profile_dir,
-        )
+    assert not profile_dir.exists()
+    assert named_profile_is_deleted(profile_dir) is False
+    staging = home / "profiles" / ".profile-creating"
+    assert not staging.exists() or not list(staging.iterdir())
 
-    assert profile_dir.is_dir()
-    assert named_profile_is_deleted(profile_dir) is True
-    assert profiles.profile_exists("worker") is False
+
+def test_cross_device_import_never_hides_a_partial_profile(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the temp dir on another filesystem (tmpfs ``/tmp``, a Docker volume home), publishing was a
+    copy: a disk-full error half-way left a hidden partial ``worker`` that blocked the name."""
+    monkeypatch.setattr(profiles, "_notify_multiplexer", lambda _name: None)
+    monkeypatch.setattr(profiles, "_maybe_register_gateway_service", lambda _name: None)
+    source = profiles.create_profile("guide", no_alias=True, no_skills=True)
+    (source / "notes.txt").write_text("x" * 4096, encoding="utf-8")
+    archive = profiles.export_profile("guide", str(home / "guide"))
+    target = profiles.get_profile_dir("worker")
+    real_rename, real_copy = os.rename, shutil.copyfile
+
+    def rename(src, dst, *args, **kwargs):
+        if Path(dst) == target:
+            raise OSError(errno.EXDEV, "cross-device link")
+        return real_rename(src, dst, *args, **kwargs)
+
+    def copyfile(src, dst, *args, **kwargs):
+        if Path(dst).is_relative_to(target) and Path(dst).name == "notes.txt":
+            raise OSError(errno.ENOSPC, "disk full")
+        return real_copy(src, dst, *args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "rename", rename)
+        patched.setattr(shutil, "copyfile", copyfile)
+        try:
+            profiles.import_profile(str(archive), name="worker")
+        except OSError:
+            assert not target.exists() and not named_profile_is_deleted(target)
+    if not profiles.profile_exists("worker"):
+        profiles.import_profile(str(archive), name="worker")
+    assert profiles.profile_exists("worker") and (target / "notes.txt").is_file()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("existing", [False, True], ids=["created", "pre-existing-0755"])
+def test_import_keeps_the_shared_staging_root_usable_by_the_group(home: Path, monkeypatch, existing) -> None:
+    """In a group-shared install (``profiles/`` 0770, umask 022) one member's import must not leave
+    ``profiles/.profile-creating`` writable by that member alone: the next member's import needs it."""
+    profiles_root = home / "profiles"
+    profiles_root.mkdir(mode=0o770)
+    profiles_root.chmod(0o770)
+    if existing:
+        (profiles_root / ".profile-creating").mkdir(mode=0o755)
+
+    def extract(_archive: Path, staging_root: Path) -> None:
+        (staging_root / "worker").mkdir()
+        (staging_root / "worker" / "config.yaml").write_text("model: test\n", encoding="utf-8")
+
+    monkeypatch.setattr(profiles, "safe_extract_targz", extract)
+    previous = os.umask(0o022)
+    try:
+        profiles._import_profile_into_home(home / "unused.tar.gz", "worker", "worker", profiles_root / "worker")
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE((profiles_root / ".profile-creating").stat().st_mode) & 0o070 == 0o070
