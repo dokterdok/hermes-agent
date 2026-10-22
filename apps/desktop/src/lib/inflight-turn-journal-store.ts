@@ -31,6 +31,12 @@ const MAX_USER_ATTACHMENT_REF_CHARS = 64 * 1024
 // 400ms streaming write path.
 let sessionStoreSwept = false
 
+// Idle commits re-read a session's journal on every commit while recovered rows
+// show. Parse each stored value once: keyed by the raw string, so a write from
+// any window is parsed afresh, and bounded to a few sessions.
+const MAX_PARSED_SNAPSHOTS = 8
+const parsedSnapshots = new Map<string, { raw: string; snapshot: InFlightTurnSnapshot }>()
+
 export interface InFlightTurnSnapshot {
   messages: ChatMessage[]
   streamId: null | string
@@ -158,6 +164,27 @@ function parseSnapshot(raw: string): InFlightTurnSnapshot | null {
   } catch {
     return null
   }
+}
+
+function parseStoredSnapshot(key: string, raw: string): InFlightTurnSnapshot | null {
+  const cached = parsedSnapshots.get(key)
+
+  if (cached?.raw === raw) {
+    return cached.snapshot
+  }
+
+  const snapshot = parseSnapshot(raw)
+  parsedSnapshots.delete(key)
+
+  if (snapshot) {
+    parsedSnapshots.set(key, { raw, snapshot })
+
+    if (parsedSnapshots.size > MAX_PARSED_SNAPSHOTS) {
+      parsedSnapshots.delete(parsedSnapshots.keys().next().value!)
+    }
+  }
+
+  return snapshot
 }
 
 function serializeSnapshot(snapshot: InFlightTurnSnapshot): string | null {
@@ -466,7 +493,7 @@ export function readSnapshot(storedSessionId: string): InFlightTurnSnapshot | nu
     return null
   }
 
-  const snapshot = parseSnapshot(raw)
+  const snapshot = parseStoredSnapshot(key, raw)
 
   if (!snapshot || isExpired(snapshot)) {
     discardSnapshot(store, key)
@@ -603,4 +630,5 @@ function tombstoneUnlessRecoverable(store: Storage, key: string): void {
 /** @internal Test-only reset for the once-per-renderer sweep. */
 export function resetSessionStoreSweepForTests(): void {
   sessionStoreSwept = false
+  parsedSnapshots.clear()
 }
