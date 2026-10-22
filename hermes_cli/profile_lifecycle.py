@@ -459,13 +459,30 @@ def publish_profile_generation(
     allow_in_process_profile_resources(profile_dir, incarnation)
 
 
+def _shared_staging_root(profiles_root: Path) -> Path:
+    """``profiles/.profile-creating``, kept as writable as the profiles tree itself: created under
+    one member's umask in a group-shared (0770) install, it locked every other member out of
+    create, clone and import. The attempt directory below reports a root that stays unusable."""
+    root = profiles_root / ".profile-creating"
+    if os.name != "posix":
+        return root
+    directory_mode = _profile_lifecycle_modes(profiles_root)[0]
+    try:
+        root.mkdir(mode=directory_mode, parents=True, exist_ok=True)
+        if stat.S_IMODE(root.stat().st_mode) != directory_mode:
+            root.chmod(directory_mode)
+    except OSError:
+        pass
+    return root
+
+
 def create_profile_generation(
     canon: str,
     profile_dir: Path | str,
     profiles_root: Path | str,
     initialize: Callable[[Path], None],
 ) -> Path:
-    """Build a generation behind a tombstone and atomically publish it."""
+    """Build a generation behind a tombstone and atomically publish it (create, clone, import)."""
     profile_dir = Path(profile_dir)
     profiles_root = Path(profiles_root)
     if profile_dir.exists():
@@ -473,7 +490,7 @@ def create_profile_generation(
 
     prior_tombstone = named_profile_is_deleted(profile_dir)
     mark_profile_deleting(profile_dir)
-    staging_root = profiles_root / ".profile-creating"
+    staging_root = _shared_staging_root(profiles_root)
     staging_parent = staging_root / f"{canon}-{os.getpid()}-{secrets.token_hex(6)}"
     staging_dir = staging_parent / canon
     moved_to_final = False
@@ -490,7 +507,7 @@ def create_profile_generation(
 
         incarnation = read_profile_incarnation(profile_dir)
         publish_profile_generation(profile_dir, incarnation)
-    except Exception:
+    except BaseException:  # a Ctrl-C mid-build or mid-publish must not leave a hidden half-profile
         cleanup_complete = not moved_to_final and not profile_dir.exists()
         if moved_to_final and profile_dir.exists():
             try:
@@ -505,27 +522,6 @@ def create_profile_generation(
         shutil.rmtree(staging_parent, ignore_errors=True)
         # Keep the shared staging root: another name may be between its
         # parent mkdir and attempt-directory mkdir.
-    return profile_dir
-
-
-def import_profile_generation(
-    canon: str,
-    profile_dir: Path | str,
-    build_and_move: Callable[[], str],
-) -> Path:
-    """Publish an imported generation while preserving prior tombstone state."""
-    profile_dir = Path(profile_dir)
-    if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-    had_tombstone = named_profile_is_deleted(profile_dir)
-    mark_profile_deleting(profile_dir)
-    try:
-        incarnation = build_and_move()
-    except Exception:
-        if not had_tombstone and not profile_dir.exists():
-            clear_profile_deletion_marker(profile_dir)
-        raise
-    publish_profile_generation(profile_dir, incarnation)
     return profile_dir
 
 
