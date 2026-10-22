@@ -1,4 +1,4 @@
-import { Button, Textarea } from '@hermes/plugin-sdk'
+import { Button, randomUuid, Textarea } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
@@ -171,7 +171,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         <h2 className="text-sm font-medium">{state?.room.name || labels.loadingGroup}</h2>
         <CanonicalGroupRoster label={labels.members} members={state?.room.members} />
       </div>
-      <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
+      <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))}>{labels.stop}</Button>
     </header>
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}
