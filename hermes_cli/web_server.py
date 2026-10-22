@@ -68,6 +68,7 @@ from hermes_cli.web_server_lifecycle import (
     _dashboard_forwarded_allow_ips,
     _eager_reconcile_own_session_db,
     _maybe_open_browser,
+    _plain_http_remote_warning,
     _port_bind_conflict,
     _read_bound_port,
     _report_port_in_use,
@@ -1265,6 +1266,9 @@ def _on_server_started(
         from hermes_cli.url_utils import format_url_host
 
         print(f"  Hermes Web UI → http://{format_url_host(host)}:{actual_port}")
+        plain_http_warning = _plain_http_remote_warning(host) if app.state.ui_surface == "webapp" else ""
+        if plain_http_warning:
+            print(plain_http_warning, flush=True)
     _maybe_open_browser(host, actual_port, open_browser, initial_profile)
 
     if start_mcp_discovery_after_bind:

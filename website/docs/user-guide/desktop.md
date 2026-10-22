@@ -53,8 +53,24 @@ The default loopback URL is `http://127.0.0.1:9119`. Any non-loopback bind
 engages the same fail-closed [dashboard authentication gate](./features/web-dashboard.md#authentication-gated-mode):
 configure username/password for a trusted LAN or VPN, or OAuth/OIDC for an
 internet-facing deployment. `--insecure` is a deprecated no-op and cannot
-disable that gate. HTTPS is strongly recommended remotely and is required by
-browsers for some microphone and clipboard APIs.
+disable that gate.
+
+:::tip Use HTTPS when the browser is on another machine
+Over `http://` from another machine (a LAN, VPN or Tailscale IP, or a hostname),
+the browser treats the Webapp as an insecure context. Chat, sessions, files,
+Copy and the terminal keep working, but these need HTTPS:
+
+- voice input: dictation, voice conversation and the wake word;
+- desktop notifications;
+- the bot screen viewer.
+
+The password and session cookie also cross the network unencrypted unless a VPN
+encrypts the link. A Tailscale IP over `http://` is encrypted on the wire but is
+still an insecure context for the browser. Put HTTPS in front (a reverse proxy,
+with `dashboard.public_url` set to its `https://` address, or
+`tailscale serve --https`) or use an SSH tunnel to `127.0.0.1`. `hermes webapp`
+prints a warning when it serves a plain-HTTP bind other machines can reach.
+:::
 
 On macOS, open the private launch link printed in the terminal to enter a local
 Webapp session. Hermes does not automatically open that private session in a browser.

@@ -217,6 +217,30 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 
+def _plain_http_remote_warning(host: str) -> str:
+    """The Webapp launch warning for a bind other machines reach over plain HTTP, or ``""``.
+
+    Browsers treat ``http://<LAN, VPN or Tailscale IP>`` as an insecure context and withhold the
+    APIs voice input, notifications and the bot screen viewer need. Warn, never refuse: the
+    documented LAN/VPN setup still works, and a TLS-terminating proxy is invisible here except
+    through an ``https://`` ``dashboard.public_url``.
+    """
+    from urllib.parse import urlparse
+
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    from hermes_cli.web_server_boundary import _LOOPBACK_HOST_VALUES
+
+    if host in _LOOPBACK_HOST_VALUES or urlparse(resolve_public_url()).scheme == "https":
+        return ""
+    return (
+        "  Warning: browsers on other machines reach this Webapp over plain HTTP, which they treat as "
+        "insecure: voice input, desktop notifications and the bot screen viewer need HTTPS, and the "
+        "password and session cookie cross the network unencrypted unless a VPN encrypts the link. "
+        "Put HTTPS in front (a reverse proxy, or `tailscale serve --https`) or use an SSH tunnel to "
+        "127.0.0.1."
+    )
+
+
 def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial_profile: str) -> None:
     """Open the dashboard URL in the user's browser if appropriate.
 
