@@ -18,7 +18,7 @@ from typing import Any, Iterator
 from gateway.hosted_rooms import (
     MAX_ACTOR_ID_CHARS, HostedRoomError, RoomConflictError, _actor_json, _connect, _payload_json, _room_id,
     _transaction, _validate_identifier, _validate_members, _validate_room_name, local_authority_gateway_id)
-from gateway.hosted_rooms_common import DbPath, bounded_int, clock, utf8_len
+from gateway.hosted_rooms_common import DbPath, bounded_int, clock, table_columns, utf8_len
 
 MAX_REPLICA_ROOMS = 256
 MAX_REPLICA_EVENT_BYTES = 256 * 1024 * 1024
@@ -41,8 +41,12 @@ def _initialize_replica_schema(conn: sqlite3.Connection) -> None:
             authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
             last_seq INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
             latest_seq INTEGER NOT NULL DEFAULT 0, event_bytes INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL, updated_at REAL NOT NULL
+            created_at REAL NOT NULL, updated_at REAL NOT NULL, lineage_gateway_id TEXT
         )""")
+    # authority_* is the newest authority a page announced (it fences older pages); lineage_gateway_id is the
+    # gateway of the span the stored events reach, when known. They differ while a claim is still to come.
+    if "lineage_gateway_id" not in table_columns(conn, "hosted_room_replicas"):
+        conn.execute("ALTER TABLE hosted_room_replicas ADD COLUMN lineage_gateway_id TEXT")
     conn.execute("""CREATE TABLE IF NOT EXISTS hosted_room_replica_events (
             room_id TEXT NOT NULL, seq INTEGER NOT NULL CHECK (seq >= 1), event_id TEXT NOT NULL,
             kind TEXT NOT NULL, actor_json TEXT NOT NULL, authority_epoch INTEGER,
@@ -115,8 +119,8 @@ def _validate_page(page: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 def _replica_row_state(conn: sqlite3.Connection, room_id: str) -> tuple[sqlite3.Row | None, int, int, int]:
     """Return (row, stored_epoch, last_seq, stored_bytes); a new room is admitted only under the room cap."""
-    row = conn.execute("""SELECT authority_gateway_id, authority_epoch, last_seq, latest_seq, event_bytes
-             FROM hosted_room_replicas WHERE room_id=?""", (room_id,)).fetchone()
+    row = conn.execute("""SELECT authority_gateway_id, authority_epoch, last_seq, latest_seq, event_bytes,
+             lineage_gateway_id FROM hosted_room_replicas WHERE room_id=?""", (room_id,)).fetchone()
     if row is None:
         count = conn.execute("SELECT COUNT(*) FROM hosted_room_replicas").fetchone()[0]
         if int(count) >= MAX_REPLICA_ROOMS:
@@ -138,27 +142,82 @@ def _check_replay(conn: sqlite3.Connection, room_id: str, replayed: list[dict[st
         raise ReplicaError("page conflicts with the stored replica history")
 
 
+def _stored_span(conn: sqlite3.Connection, room_id: str, row: sqlite3.Row | None) -> tuple[int, str | None]:
+    """(epoch, gateway or None) of the authority span the copy's last stored event belongs to."""
+    last = conn.execute("SELECT authority_epoch FROM hosted_room_replica_events WHERE room_id=? AND seq=?",
+                        (room_id, int(row["last_seq"]) if row is not None else 0)).fetchone()
+    epoch = 1 if last is None or last["authority_epoch"] is None else int(last["authority_epoch"])
+    if row is None:
+        return epoch, None
+    return epoch, row["lineage_gateway_id"] or (
+        str(row["authority_gateway_id"]) if int(row["authority_epoch"]) == epoch else None)
+
+
+def _claim_successor(event: dict[str, Any], epoch: int, gateway: str | None) -> str:
+    """The gateway an ``authority.claimed`` event hands the room to, if it extends span (gateway, epoch)."""
+    claim = event["payload"] if isinstance(event["payload"], dict) else {}
+    successor, previous = claim.get("authority_gateway_id"), claim.get("previous_gateway_id")
+    if (event.get("authority_epoch") != epoch + 1 or claim.get("authority_epoch") != epoch + 1
+            or event["actor"] != _SYSTEM_ACTOR or not isinstance(successor, str) or not isinstance(previous, str)
+            or gateway not in (None, previous)):
+        raise ReplicaError(f"authority.claimed at seq {event['seq']} does not extend the stored replica authority")
+    return successor
+
+
+def _check_lineage(
+    conn: sqlite3.Connection, room_id: str, row: sqlite3.Row | None, new_events: list[dict[str, Any]],
+    authority: dict[str, Any], *, caught_up: bool) -> str | None:
+    """Accept an epoch or gateway change only through an ``authority.claimed`` boundary extending the copy.
+
+    The work-evidence rule (``hosted_room_work_lineage``): a claim exactly at each epoch boundary, naming the
+    span it leaves, and gateway actors matching their span. A page stamped ahead of its events is a partial
+    read whose claim is still to come, so the stamp must match the events once the page is caught up. Returns
+    the gateway of the span the events reach, when known."""
+    epoch, gateway = _stored_span(conn, room_id, row)
+    if gateway is None:  # nothing stored names it: the page's first claim does, or a stamp at this epoch
+        claims = [event["payload"] for event in new_events if event["kind"] == "authority.claimed"]
+        if claims:
+            gateway = claims[0].get("previous_gateway_id") if isinstance(claims[0], dict) else None
+        elif authority["epoch"] == epoch:
+            gateway = authority["gateway_id"]
+    for event in new_events:
+        if event["kind"] == "authority.claimed":
+            epoch, gateway = epoch + 1, _claim_successor(event, epoch, gateway)
+            continue
+        actor, event_epoch = event["actor"], event.get("authority_epoch")
+        if (1 if event_epoch is None else event_epoch) != epoch or (
+                actor.get("kind") == "gateway" and gateway not in (None, actor.get("id"))):
+            raise ReplicaError(f"replica authority changed without an authority.claimed event at seq {event['seq']}")
+    if authority["epoch"] < epoch or (authority["epoch"] > epoch and caught_up) or (
+            authority["epoch"] == epoch and gateway not in (None, authority["gateway_id"])):
+        raise ReplicaError("page authority does not match its authority.claimed lineage")
+    return gateway if gateway is not None or authority["epoch"] != epoch else authority["gateway_id"]
+
+
 def _store_replica(
     conn: sqlite3.Connection, *, is_new: bool, room_id: str, room_name: str, members_json: str,
-    authority: dict[str, Any], new_last: int, latest_seq: int, added_bytes: int, now: float) -> None:
+    authority: dict[str, Any], lineage_gateway_id: str | None, new_last: int, latest_seq: int, added_bytes: int,
+    now: float) -> None:
     """INSERT the replica row for a new room, else UPDATE it (event_bytes accumulates)."""
-    values = (room_name, members_json, authority["gateway_id"], authority["epoch"], new_last, max(latest_seq, new_last))
+    values = (
+        room_name, members_json, authority["gateway_id"], authority["epoch"], lineage_gateway_id, new_last,
+        max(latest_seq, new_last))
     if is_new:
         conn.execute("""INSERT INTO hosted_room_replicas (room_id, name, members_json,
-                authority_gateway_id, authority_epoch, last_seq, latest_seq, event_bytes,
-                created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                authority_gateway_id, authority_epoch, lineage_gateway_id, last_seq, latest_seq, event_bytes,
+                created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (room_id, *values, added_bytes, now, now))
     else:
         conn.execute("""UPDATE hosted_room_replicas SET name=?, members_json=?, authority_gateway_id=?,
-                authority_epoch=?, last_seq=?, latest_seq=?, event_bytes=event_bytes+?,
+                authority_epoch=?, lineage_gateway_id=?, last_seq=?, latest_seq=?, event_bytes=event_bytes+?,
                 updated_at=? WHERE room_id=?""", (*values, added_bytes, now, room_id))
 
 
 def ingest_page(
     db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None
 ) -> dict[str, Any]:
-    """Persist one verbatim ``read_events()`` page idempotently; refuses seq gaps, epoch regressions and a replay
-    that differs from the stored copy."""
+    """Persist one verbatim ``read_events()`` page idempotently; refuses seq gaps, epoch regressions, a replay
+    that differs from the stored copy and an authority change without an ``authority.claimed`` boundary."""
     room_id = _room_id(room_id)
     room_name = _validate_room_name(room_name)
     _, members_json = _validate_members(members)
@@ -172,6 +231,12 @@ def ingest_page(
         new_events = [e for e in events if int(e["seq"]) > last_seq]
         if new_events and int(new_events[0]["seq"]) != last_seq + 1:
             raise ReplicaGapError("page skips sequences the replica has not stored")
+        new_last = int(new_events[-1]["seq"]) if new_events else last_seq
+        latest_seq = page.get("latest_seq")
+        if isinstance(latest_seq, bool) or not isinstance(latest_seq, int):
+            latest_seq = new_last
+        lineage_gateway_id = _check_lineage(
+            conn, room_id, row, new_events, authority, caught_up=new_last >= latest_seq)
         added_bytes = 0
         for event in new_events:
             size = _event_bytes(event)
@@ -184,13 +249,10 @@ def ingest_page(
                     event.get("authority_epoch"), _payload_json(event["payload"]),
                     float(event.get("created_at") or now)))
             added_bytes += size
-        new_last = int(new_events[-1]["seq"]) if new_events else last_seq
-        latest_seq = page.get("latest_seq")
-        if isinstance(latest_seq, bool) or not isinstance(latest_seq, int):
-            latest_seq = new_last
         _store_replica(
             conn, is_new=row is None, room_id=room_id, room_name=room_name, members_json=members_json,
-            authority=authority, new_last=new_last, latest_seq=latest_seq, added_bytes=added_bytes, now=now)
+            authority=authority, lineage_gateway_id=lineage_gateway_id, new_last=new_last, latest_seq=latest_seq,
+            added_bytes=added_bytes, now=now)
     return {
         "room_id": room_id, "stored_seq": new_last, "ingested": len(new_events), "authority": authority,
         "caught_up": new_last >= max(latest_seq, new_last)}
@@ -217,7 +279,9 @@ def promote_replica(
 
     Copies the replica log into the authoritative store and appends a lineage-proving ``authority.claimed``
     event, so wherever the claim replicates the old epoch is stale and every fenced primitive rejects it.
-    The caller decides takeover is safe; this makes it atomic and provable.
+    The caller decides takeover is safe; this makes it atomic and provable. A copy that recorded a later
+    authority than its stored events reach (that authority's claim not yet replicated) is refused, so the
+    appended claim always extends the stored lineage and never reuses an epoch the copy has seen.
     """
     room_id = _room_id(room_id)
     if not isinstance(reason, str) or not reason or len(reason) > 200:
@@ -228,6 +292,10 @@ def promote_replica(
         replica = conn.execute(_SELECT_REPLICA, (room_id,)).fetchone()
         if replica is None:
             raise ReplicaError("replica not found")
+        if int(replica["authority_epoch"]) != _stored_span(conn, room_id, replica)[0]:
+            raise ReplicaError(
+                f"replica has not stored the authority.claimed for epoch {int(replica['authority_epoch'])}; "
+                "replicate the current host's log through that claim before promoting")
         if replica["authority_gateway_id"] == local_gateway:
             raise ReplicaError("this gateway already holds the room authority")
         if conn.execute("SELECT 1 FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone():
