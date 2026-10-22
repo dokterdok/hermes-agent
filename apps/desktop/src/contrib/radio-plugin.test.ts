@@ -32,6 +32,24 @@ afterEach(async () => {
 })
 
 describe('bundled Radio plugin', () => {
+  it('loads on a plain-HTTP origin, where browsers expose no crypto.randomUUID', async () => {
+    $pluginDecisions.set({ accent: false, kanban: false, 'hermes-bots': false })
+    vi.stubGlobal('Audio', vi.fn())
+    const targets = [globalThis.crypto, Object.getPrototypeOf(globalThis.crypto)]
+    const saved = targets.map(target => Object.getOwnPropertyDescriptor(target, 'randomUUID'))
+    targets.forEach(target => Object.defineProperty(target, 'randomUUID', { configurable: true, value: undefined }))
+
+    try {
+      discoverBundledPlugins()
+      await setPluginEnabled('radio', true)
+      expect($pluginRecords.get().radio.status).toBe('loaded')
+      expect(player().status.get()).toBe('paused')
+    } finally {
+      targets.forEach((target, index) =>
+        saved[index] ? Object.defineProperty(target, 'randomUUID', saved[index]) : Reflect.deleteProperty(target, 'randomUUID'))
+    }
+  })
+
   it('inventories off by default and follows the ordinary live enable/disable lifecycle without autoplay', async () => {
     // Other bundled plugins are outside this integration test; Radio has no saved decision.
     $pluginDecisions.set({ accent: false, kanban: false, 'hermes-bots': false })
