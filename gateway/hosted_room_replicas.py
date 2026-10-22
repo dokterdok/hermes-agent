@@ -217,7 +217,8 @@ def ingest_page(
     db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None
 ) -> dict[str, Any]:
     """Persist one verbatim ``read_events()`` page idempotently; refuses seq gaps, epoch regressions, a replay
-    that differs from the stored copy and an authority change without an ``authority.claimed`` boundary."""
+    that differs from the stored copy, an authority change without an ``authority.claimed`` boundary and events
+    after ``room.disbanded``."""
     room_id = _room_id(room_id)
     room_name = _validate_room_name(room_name)
     _, members_json = _validate_members(members)
@@ -235,6 +236,15 @@ def ingest_page(
         latest_seq = page.get("latest_seq")
         if isinstance(latest_seq, bool) or not isinstance(latest_seq, int):
             latest_seq = new_last
+        # A copy ends at room.disbanded, exactly caught up, and its row is then final. In a copy this module wrote
+        # only the last stored sequence can hold it; promote_replica() also checks older history.
+        stored_terminal = conn.execute(
+            "SELECT 1 FROM hosted_room_replica_events WHERE room_id=? AND seq=? AND kind='room.disbanded'",
+            (room_id, last_seq)).fetchone() is not None
+        terminal = new_events[-1]["kind"] == "room.disbanded" if new_events else stored_terminal
+        if (stored_terminal and new_events) or (terminal and latest_seq != new_last) or any(
+                event["kind"] == "room.disbanded" for event in new_events[:-1]):
+            raise ReplicaError("a disbanded Group Chat accepts no later events")
         lineage_gateway_id = _check_lineage(
             conn, room_id, row, new_events, authority, caught_up=new_last >= latest_seq)
         added_bytes = 0
@@ -249,10 +259,11 @@ def ingest_page(
                     event.get("authority_epoch"), _payload_json(event["payload"]),
                     float(event.get("created_at") or now)))
             added_bytes += size
-        _store_replica(
-            conn, is_new=row is None, room_id=room_id, room_name=room_name, members_json=members_json,
-            authority=authority, lineage_gateway_id=lineage_gateway_id, new_last=new_last, latest_seq=latest_seq,
-            added_bytes=added_bytes, now=now)
+        if not stored_terminal:
+            _store_replica(
+                conn, is_new=row is None, room_id=room_id, room_name=room_name, members_json=members_json,
+                authority=authority, lineage_gateway_id=lineage_gateway_id, new_last=new_last, latest_seq=latest_seq,
+                added_bytes=added_bytes, now=now)
     return {
         "room_id": room_id, "stored_seq": new_last, "ingested": len(new_events), "authority": authority,
         "caught_up": new_last >= max(latest_seq, new_last)}
