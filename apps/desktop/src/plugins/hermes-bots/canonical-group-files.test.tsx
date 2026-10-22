@@ -20,6 +20,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     usePluginI18n: () => reader.locale === 'fr' ? translateBotsIn('fr') : translateBots }
 })
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
+import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { CanonicalGroupFiles, latestFileSeq } from './canonical-group-files'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { translateBots, translateBotsIn } from './i18n-test-helper'
@@ -587,4 +588,15 @@ it('fails a download the gateway never answers', async () => {
   expect(dialog.queryByRole('alert')).toBeNull()
   await act(async () => { await vi.advanceTimersByTimeAsync(20_001) })
   expect((await dialog.findByRole('alert')).textContent).toContain('The download timed out.')
+})
+
+it.each([
+  ['a version whose bytes are gone', 'attachment_unavailable', 'This version can no longer be downloaded.'],
+  ['any other refusal', 'permission_denied', 'This file could not be downloaded. (permission_denied)']
+])('says a history download of %s failed to download, not to upload', async (_case, reason, text) => {
+  gateway['groups.attachment.download'] = () => { throw Object.assign(new Error(reason), { code: 4001, data: { reason } }) }
+  const attachment = { attachment_id: file(20).attachment_id, event_id: 'user:20', kind: 'file', name: 'report.txt', mime: 'text/plain', size: 1 }
+  render(<CanonicalGroupAttachments attachments={[attachment]} binding={binding} disabled={false} readOnly />)
+  fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+  expect((await screen.findByRole('alert')).textContent).toBe(text)
 })
