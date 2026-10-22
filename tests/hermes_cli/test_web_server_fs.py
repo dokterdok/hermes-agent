@@ -903,7 +903,7 @@ def test_agent_fs_path_leaves_host_paths_to_fs_path(monkeypatch, tmp_path):
 
 def _browser_save(client, query):
     """The Webapp's Save: a HEAD pre-check with the session header, then the download manager's
-    GET carrying only a ``save`` ticket (sent twice: the ticket is single-use)."""
+    GET carrying only a ``save`` ticket, sent again as the download list's Retry sends it."""
     head = client.head("/api/fs/download", params=query)
     minted = client.post("/api/files/ticket", json={"route": "save", **query})
     assert (head.status_code, minted.status_code) == (200, 200), (head.text, minted.text)
@@ -935,8 +935,8 @@ def test_webapp_save_is_the_native_save_request(client, monkeypatch, tmp_path):
         head, saved, again = _browser_save(client, {"path": str(host_twin)})
         picked = client.post("/api/chat/file-upload", files={"file": ("photo.png", b"PNG", "image/png")})
         _head, saved_pick, _again = _browser_save(client, {"path": picked.json()["path"]})
-    assert (head.headers["content-length"], saved.content, again.status_code) == ("6", b"REMOTE", 401)
-    assert streamed == [str(host_twin)]
+    assert (head.headers["content-length"], saved.content, again.content) == ("6", b"REMOTE", b"REMOTE")
+    assert streamed == [str(host_twin)] * 2
     assert saved_pick.content == b"PNG"
 
     big = tmp_path / "render.mp4"
@@ -948,3 +948,29 @@ def test_webapp_save_is_the_native_save_request(client, monkeypatch, tmp_path):
     client.headers.pop(web_server._SESSION_HEADER_NAME)
     head = client.head("/api/fs/download", params={"path": str(big), "ticket": ticket})
     assert (head.status_code, head.headers["content-length"]) == (200, str(101 * 1024 * 1024))
+
+
+def test_webapp_save_can_be_retried_from_the_download_list(client, monkeypatch, tmp_path):
+    """Chrome's Retry and Resume re-send the spent Save URL. For a short window after its first
+    use the ticket admits that exact request again (Range included) and nothing else, and it
+    dies with the session credential that minted it."""
+    from hermes_cli import web_server_file_tickets
+
+    target, other = tmp_path / "report.txt", tmp_path / "other.txt"
+    target.write_bytes(b"0123456789")
+    other.write_bytes(b"other")
+    window = client.post("/api/files/ticket", json={"route": "save", "path": str(target)}).json()["ticket"]
+    monkeypatch.setattr(web_server_file_tickets, "SAVE_RETRY_SECONDS", 0)
+    lapsed = client.post("/api/files/ticket", json={"route": "save", "path": str(target)}).json()["ticket"]
+    client.headers.pop(web_server._SESSION_HEADER_NAME)
+    save = {"path": str(target), "ticket": window}
+
+    assert client.get("/api/fs/download", params=save).content == b"0123456789"
+    resumed = client.get("/api/fs/download", params=save, headers={"Range": "bytes=4-"})
+    assert (resumed.status_code, resumed.content) == (206, b"456789")
+    assert client.get("/api/fs/download", params={**save, "path": str(other)}).status_code == 401
+    lapsed_save = {"path": str(target), "ticket": lapsed}
+    assert client.get("/api/fs/download", params=lapsed_save).status_code == 200
+    assert client.get("/api/fs/download", params=lapsed_save).status_code == 401
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "rotated-session-credential")
+    assert client.get("/api/fs/download", params=save).status_code == 401
