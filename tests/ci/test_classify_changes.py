@@ -536,6 +536,31 @@ def test_every_desktop_update_path_file_starts_the_desktop_update_suite(path):
     assert classify([path])["e2e_desktop_update"], path
 
 
+# webapp-gateway-attach.spec.ts is the only real-browser test of the Webapp, and it runs in the
+# Desktop core suite. Before, only the spec itself started that suite: an edit to the code it
+# guards first met it on main.
+_WEBAPP_PATH_FILES = (
+    "apps/desktop/e2e/core/webapp-gateway-attach.spec.ts",
+    "hermes_cli/webapp.py",
+    "hermes_cli/webapp_gateway_owner.py",
+    "hermes_cli/webapp_gateway_relay.py",
+    "hermes_cli/main_dashboard.py",
+    "hermes_cli/web_server_surface.py",
+    "hermes_cli/web_routers/webapp.py",
+    "apps/desktop/src/lib/browser-desktop-bridge.ts",
+    "apps/desktop/src/lib/browser-connection.ts",
+    "scripts/build/webapp.mjs",
+    "apps/desktop/scripts/build-webapp.mjs",
+    "gateway/run_api.py",
+)
+
+
+@pytest.mark.parametrize("path", _WEBAPP_PATH_FILES)
+def test_every_webapp_path_file_starts_the_desktop_core_suite(path):
+    assert (_REPO / path).is_file(), f"{path} moved: update the classifier and this table"
+    assert classify([path])["e2e_desktop_core"], path
+
+
 _REPO = Path(__file__).resolve().parents[2]
 
 
