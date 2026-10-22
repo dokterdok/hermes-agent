@@ -1926,6 +1926,15 @@ hermes webapp
 hermes webapp --host 0.0.0.0 --no-open
 ```
 
+**With `hermes dashboard`:** the Webapp and the dashboard both claim this host's
+one Hermes server, and both default to port `9119`, so whichever starts second
+exits with code 78, names the other and prints the command that runs it beside
+the first: `--isolated` and another port, with the profile explicit
+(`hermes -p default webapp --isolated --port 9120`). Or stop the first: through
+its service if one runs it, otherwise with `hermes dashboard --stop` or
+`hermes webapp --stop` from the profile that started it (each stops only that
+profile's servers).
+
 ## `hermes serve`
 
 ```bash
