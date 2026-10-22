@@ -56,6 +56,20 @@ internet-facing deployment. `--insecure` is a deprecated no-op and cannot
 disable that gate. HTTPS is strongly recommended remotely and is required by
 browsers for some microphone and clipboard APIs.
 
+The Webapp and the [Web Dashboard](./features/web-dashboard.md) cannot share a
+host's Hermes server: both claim it and both default to port 9119, so whichever
+starts second exits with code 78, names the other and prints the command below
+for your profile. To run the Webapp next to a running dashboard (for example the
+dashboard service), give it its own server and port:
+
+```bash
+hermes -p default webapp --isolated --port 9120
+```
+
+Or stop the dashboard first: through its service if one runs it, otherwise with
+`hermes dashboard --stop` from the profile that started it (it stops only that
+profile's servers).
+
 On macOS, open the private launch link printed in the terminal to enter a local
 Webapp session. Hermes does not automatically open that private session in a browser.
 
