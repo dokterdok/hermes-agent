@@ -714,6 +714,89 @@ def test_fs_download_profile_uses_that_profiles_sandbox(client, monkeypatch, tmp
     assert default.content == b"DEFAULT"
 
 
+def test_webapp_save_reaches_docker_files_named_by_uri_or_session_cwd(client, docker_volumes):
+    """The managed route translated these after normalizing them, so browser Save must still
+    reach them on native Save's route: a file: URI of a container path, and a path relative to a
+    session whose cwd is inside the container."""
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+
+    (docker_volumes / "project").mkdir()
+    (docker_volumes / "project" / "report.txt").write_bytes(b"sandbox report")
+    db = SessionDB(db_path=get_hermes_home() / "state.db")
+    try:
+        db.create_session("container-session", source="gui", cwd="/workspace/project")
+    finally:
+        db.close()
+    for query in ({"path": "file:///workspace/project/report.txt"},
+                  {"path": "file:///workspace/project/../project/report.txt"},
+                  {"path": "../project/report.txt", "session_id": "container-session"}):
+        _head, saved, _again = _browser_save(client, query)
+        assert saved.content == b"sandbox report", query
+
+
+def test_webapp_save_on_an_ssh_workspace_checks_its_session(client, monkeypatch, tmp_path):
+    """A session-scoped SSH Save or read needs that session, as on this host. A relative path is
+    still the workspace's own (the SSH reader's remote cwd), never joined to the host cwd the
+    session row records."""
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+
+    read = []
+
+    class FakeSshFs:
+        def inspect_file(self, path):
+            read.append(path)
+            return path, 6
+
+        def stream_file(self, path):
+            yield b"REMOTE"
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            read.append(path)
+            return b"REMOTE", 6, path
+
+    db = SessionDB(db_path=get_hermes_home() / "state.db")
+    try:
+        db.create_session("remote-session", source="gui", cwd=str(tmp_path))
+    finally:
+        db.close()
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+    query = {"path": "report.txt", "session_id": "remote-session"}
+    assert _browser_save(client, query)[1].content == b"REMOTE"
+    assert client.get("/api/fs/read-data-url", params=query).status_code == 200
+    assert set(read) == {"report.txt"}
+    stale = {**query, "session_id": "no-such-session"}
+    assert client.post("/api/files/ticket", json={"route": "save", **stale}).status_code == 404
+    for route in ("/api/fs/download", "/api/fs/read-data-url"):
+        assert client.get(route, params=stale).status_code == 404, route
+
+
+def test_webapp_save_ticket_stays_on_the_ssh_machine_it_read(client, monkeypatch):
+    """A remote Save ticket is good for the machine named by the reader that inspected the file:
+    when the profile moves to another SSH host, even while that inspection runs, the ticket is
+    refused instead of returning the other machine's file of the same name."""
+
+    class FakeSshFs:
+        def __init__(self, host):
+            self.machine = (host, "dev", "22")
+
+        def inspect_file(self, path):
+            current["reader"] = FakeSshFs("b.example")  # the profile's ssh_host changes meanwhile
+            return path, 6
+
+        def stream_file(self, path):
+            yield self.machine[0].encode()
+
+    current = {"reader": FakeSshFs("a.example")}
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: current["reader"])
+    query = {"path": "/srv/report.txt"}
+    ticket = client.post("/api/files/ticket", json={"route": "save", **query}).json()["ticket"]
+    client.headers.pop(web_server._SESSION_HEADER_NAME)
+    saved = client.get("/api/fs/download", params={**query, "ticket": ticket})
+    assert saved.status_code == 404, saved.content
+
+
 def test_fs_reads_accept_profile_current_for_host_files(client, tmp_path):
     """``profile=current`` means the request's own profile, as elsewhere in the dashboard."""
     target = tmp_path / "plain.txt"
@@ -816,3 +899,52 @@ def test_agent_fs_path_leaves_host_paths_to_fs_path(monkeypatch, tmp_path):
     assert web_server_files._agent_fs_path("note.txt", cwd=str(tmp_path)) == target.resolve()
     assert web_server_files._agent_container_path("//server/share/x") is None
     assert web_server_files._agent_container_path("C:/data/x") is None
+
+
+def _browser_save(client, query):
+    """The Webapp's Save: a HEAD pre-check with the session header, then the download manager's
+    GET carrying only a ``save`` ticket (sent twice: the ticket is single-use)."""
+    head = client.head("/api/fs/download", params=query)
+    minted = client.post("/api/files/ticket", json={"route": "save", **query})
+    assert (head.status_code, minted.status_code) == (200, 200), (head.text, minted.text)
+    params = {**query, "ticket": minted.json()["ticket"]}
+    header = client.headers.pop(web_server._SESSION_HEADER_NAME)
+    try:
+        return head, client.get("/api/fs/download", params=params), client.get("/api/fs/download", params=params)
+    finally:
+        client.headers[web_server._SESSION_HEADER_NAME] = header
+
+
+def test_webapp_save_is_the_native_save_request(client, monkeypatch, tmp_path):
+    """Browser Save rides native Desktop's /api/fs/download: the SSH workspace (its HEAD pre-check
+    never streams the remote file), host-staged picks from this host, no managed-files cap."""
+    streamed = []
+
+    class FakeSshFs:
+        def inspect_file(self, path):
+            return path, 6
+
+        def stream_file(self, path):
+            streamed.append(path)
+            yield b"REMOTE"
+
+    host_twin = tmp_path / "report.txt"
+    host_twin.write_bytes(b"HOST")
+    with monkeypatch.context() as ssh:
+        ssh.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+        head, saved, again = _browser_save(client, {"path": str(host_twin)})
+        picked = client.post("/api/chat/file-upload", files={"file": ("photo.png", b"PNG", "image/png")})
+        _head, saved_pick, _again = _browser_save(client, {"path": picked.json()["path"]})
+    assert (head.headers["content-length"], saved.content, again.status_code) == ("6", b"REMOTE", 401)
+    assert streamed == [str(host_twin)]
+    assert saved_pick.content == b"PNG"
+
+    big = tmp_path / "render.mp4"
+    with big.open("wb") as handle:
+        handle.truncate(101 * 1024 * 1024)
+    ticket = client.post("/api/files/ticket", json={"route": "save", "path": str(big)}).json()["ticket"]
+    (tmp_path / ".env").write_text("fixture-only")
+    assert client.post("/api/files/ticket", json={"route": "save", "path": str(tmp_path / ".env")}).status_code == 403
+    client.headers.pop(web_server._SESSION_HEADER_NAME)
+    head = client.head("/api/fs/download", params={"path": str(big), "ticket": ticket})
+    assert (head.status_code, head.headers["content-length"]) == (200, str(101 * 1024 * 1024))

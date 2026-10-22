@@ -604,7 +604,7 @@ describe('browser-hosted Desktop bridge', () => {
     await expect(pending).resolves.toMatchObject({ saved: true })
 
     const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
-    expect(requestUrl.pathname).toBe('/hermes/api/files/download')
+    expect(requestUrl.pathname).toBe('/hermes/api/fs/download')
     expect(requestUrl.searchParams.get('path')).toBe('file:///srv/reports/a%20b.pdf')
     expect(requestUrl.searchParams.get('profile')).toBe('research')
     expect(requestUrl.searchParams.get('session_id')).toBe('origin-session')
@@ -619,7 +619,7 @@ describe('browser-hosted Desktop bridge', () => {
     expect(url.searchParams.get('profile')).toBe('research')
     expect(url.searchParams.get('session_id')).toBe('origin-session')
     expect(carriesToken(url, token)).toBe(false)
-    expect(url.searchParams.get('ticket')).toBe(token ? ticketFor(url, 'download') : null)
+    expect(url.searchParams.get('ticket')).toBe(token ? ticketFor(url, 'save') : null)
     expect(downloads[0].download).toBe('a b.pdf')
     expect(downloads[0].isConnected).toBe(false)
 

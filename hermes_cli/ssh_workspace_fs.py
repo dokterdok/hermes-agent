@@ -8,6 +8,7 @@ import posixpath
 import shlex
 import subprocess
 import threading
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from typing import Any, Iterator
@@ -49,11 +50,21 @@ class SshWorkspaceFs:
     def cwd(self) -> str:
         return self._normalize(self._env.cwd)
 
+    @property
+    def machine(self) -> tuple[str, str, str]:
+        """The SSH host, user and port this reader reaches."""
+        return str(self._env.host), str(self._env.user), str(self._env.port)
+
     def _normalize(self, path: str) -> str:
         raw = str(path or "").strip()
+        if raw.lower().startswith("file:"):  # this machine's file URI names its POSIX path
+            parsed = urllib.parse.urlparse(raw)
+            if parsed.netloc.lower() not in ("", "localhost"):
+                raise SshWorkspaceFsError("EINVAL", "Invalid path")
+            raw = urllib.parse.unquote(parsed.path)
         if not raw:
             raise SshWorkspaceFsError("EINVAL", "Path is required")
-        if "\0" in raw or raw.lower().startswith("file:"):
+        if "\0" in raw:
             raise SshWorkspaceFsError("EINVAL", "Invalid path")
         if raw == "~":
             raw = self._env._remote_home

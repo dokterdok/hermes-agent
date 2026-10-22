@@ -230,6 +230,9 @@ export interface FileEndpointQuery {
   session_id?: string
 }
 
+/** Save is native Desktop's Save request; media streams from the managed route. */
+const FILE_ENDPOINTS = { save: '/api/fs/download', stream: '/api/files/stream' } as const
+
 /**
  * URL for a download link or media element, which cannot send the session
  * header. Gated hosts authenticate it with the same-origin cookie. A token
@@ -239,11 +242,11 @@ export interface FileEndpointQuery {
  */
 export async function fileEndpointUrl(
   bootstrap: BrowserBootstrap,
-  route: 'download' | 'stream',
+  route: keyof typeof FILE_ENDPOINTS,
   query: FileEndpointQuery
 ): Promise<URL> {
   const params = Object.fromEntries(Object.entries(query).filter(([, value]) => value)) as Record<string, string>
-  const url = endpointUrl(`/api/files/${route}`, bootstrap.basePath)
+  const url = endpointUrl(FILE_ENDPOINTS[route], bootstrap.basePath)
 
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value))
 

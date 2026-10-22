@@ -4,6 +4,8 @@
 import logging
 import mimetypes
 import os
+import posixpath
+import re
 import stat
 import urllib.request
 from contextlib import contextmanager
@@ -160,30 +162,48 @@ def _agent_container_path(raw: str, *, profile_home: Path | None = None) -> Path
 
 
 SANDBOX_NOT_FOUND = "File not found on the gateway host: the path may live inside the agent sandbox"
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
+
+
+def _agent_logical_path(raw: str, cwd: str | None) -> str:
+    """The agent-visible path *raw* names, in normalized POSIX form and before any host
+    normalization: a ``file:`` URI's decoded path, or a relative path joined to a container
+    (POSIX) session cwd. A raw absolute path stays as given (``..`` in it is still refused)."""
+    if raw.lower().startswith("file:"):
+        parsed = urllib.parse.urlparse(raw)
+        if parsed.netloc.lower() not in ("", "localhost"):
+            return raw
+        return posixpath.normpath(urllib.parse.unquote(parsed.path))
+    if (cwd and cwd.startswith("/") and not cwd.startswith("//")
+            and not raw.startswith(("/", "\\", "~")) and not _WINDOWS_DRIVE.match(raw)):
+        return posixpath.normpath(posixpath.join(cwd, raw))
+    return raw
 
 
 def _agent_fs_path(
     raw_path: str, *, cwd: str | None = None, profile_home: Path | None = None,
 ) -> Path:
     """``_fs_path`` for agent-facing reads; container paths resolve to their host
-    mount, so callers' boundary guards see the real host target.
+    mount, so callers' boundary guards see the real host target. Translation sees
+    the logical path (``_agent_logical_path``), so a ``file:`` URI or a path
+    relative to a container session cwd reaches the sandbox too.
 
     POSIX: a readable host path wins, and translation only runs when the host
     lookup misses, so a root-run gateway can still browse its own ``/root``.
     Windows: a container-shaped path never names a host file (it would anchor to
     the current drive), so a translation miss is a 404 rather than a drive lookup.
     """
-    raw = str(raw_path or "").strip()
+    logical = _agent_logical_path(str(raw_path or "").strip(), cwd)
     if os.name != "nt":
         host = _fs_path(raw_path, cwd=cwd)
         if os.access(host, os.R_OK):
             return host
-        translated = _agent_container_path(raw, profile_home=profile_home)
+        translated = _agent_container_path(logical, profile_home=profile_home)
         return translated if translated is not None else host
-    translated = _agent_container_path(raw, profile_home=profile_home)
+    translated = _agent_container_path(logical, profile_home=profile_home)
     if translated is not None:
         return translated
-    if _is_unmapped_container_path(raw, profile_home=profile_home):
+    if _is_unmapped_container_path(logical, profile_home=profile_home):
         raise HTTPException(status_code=404, detail=SANDBOX_NOT_FOUND)
     return _fs_path(raw_path, cwd=cwd)
 

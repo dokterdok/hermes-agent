@@ -186,3 +186,50 @@ def test_http_ticket_resource_open_is_atomic_with_profile_replacement(file_serve
     else:
         assert (response.status_code, response.content) == (206, b"old")
     assert client.get("/api/files/stream", params=params).status_code in (401, 403, 404)
+
+
+def test_http_save_ticket_dies_with_its_profile_generation(file_server):
+    """The Webapp's Save ticket (native /api/fs/download) is fenced to the generations it captured."""
+    client, home = file_server
+    profile = _generation(home, b"old-generation")
+    query = {"path": str(profile / "clip.mp4"), "profile": "worker"}
+    params, stale = _ticket(client, "save", query), _ticket(client, "save", query)
+    saved = client.get("/api/fs/download", params=params)
+    assert (saved.status_code, saved.content) == (200, b"old-generation")
+    assert saved.headers["content-disposition"].startswith("attachment;")
+    _generation(home, b"new-generation", replace=True)
+    assert client.get("/api/fs/download", params=stale).status_code in (401, 403, 404)
+    fresh = client.get("/api/fs/download", params=_ticket(client, "save", query))
+    assert (fresh.status_code, fresh.content) == (200, b"new-generation")
+
+
+def test_http_remote_save_ticket_never_dials_ssh_under_a_profile_lease(file_server, monkeypatch):
+    """Building the SSH reader may connect for its whole timeout: a ticketed remote Save builds it
+    first and checks the captured generations after, so it never holds the profile's lease across
+    the dial (profile mutations and cold SessionDB opens of that name would wait on it)."""
+    client, home = file_server
+    profile = _generation(home, b"unused")
+    held = []
+
+    class SshFs:
+        def inspect_file(self, path):
+            return path, 6
+
+        def stream_file(self, path):
+            yield b"REMOTE"
+
+    def build(profile_name=None):
+        def probe():
+            try:
+                with profile_lifecycle.profile_lifecycle_lease(profile, timeout=1):
+                    pass
+            except TimeoutError:
+                held.append(profile_name)
+        prober = threading.Thread(target=probe)
+        prober.start()
+        prober.join(10)
+        return SshFs()
+
+    monkeypatch.setattr(files, "_fs_backend", build)
+    saved = client.get("/api/fs/download", params=_ticket(client, "save", {"path": "/srv/report.txt", "profile": "worker"}))
+    assert (saved.status_code, saved.content, held) == (200, b"REMOTE", [])

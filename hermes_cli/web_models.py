@@ -103,8 +103,8 @@ class ManagedFileDelete(BaseModel):
     recursive: bool = False
 
 class FileTicketRequest(BaseModel):
-    """POST /api/files/ticket — the exact query the ticketed download/stream URL carries."""
-    route: Literal["download", "stream"]
+    """POST /api/files/ticket — the exact query the ticketed download/stream/Save URL carries."""
+    route: Literal["download", "stream", "save"]
     path: str
     profile: Optional[str] = None
     session_id: Optional[str] = None

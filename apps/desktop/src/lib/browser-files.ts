@@ -79,17 +79,18 @@ export function createBrowserFilesBridge({
       requireBrowserConnection(payload.connectionId)
       const query = { path: payload.path, profile: payload.profile ?? currentProfile(), session_id: payload.sessionId }
 
-      // Validate before handing the transfer to the browser so missing or
-      // denied files surface in the chat without navigating away. HEAD keeps
-      // large downloads out of renderer memory.
+      // Native Desktop's Save request: the profile's SSH workspace or sandbox,
+      // and no managed-files size cap. Validate before handing the transfer to
+      // the browser so missing or denied files surface in the chat without
+      // navigating away; HEAD keeps large downloads out of renderer memory.
       await api({
         method: 'HEAD',
-        path: queryPath('/api/files/download', { path: query.path, session_id: query.session_id }),
+        path: queryPath('/api/fs/download', { path: query.path, session_id: query.session_id }),
         profile: query.profile
       })
 
       return {
-        saved: await downloadUrl((await fileEndpointUrl(bootstrap, 'download', query)).href, payload.suggestedName)
+        saved: await downloadUrl((await fileEndpointUrl(bootstrap, 'save', query)).href, payload.suggestedName)
       }
     },
     saveImageFromUrl: async (url: string) => {
