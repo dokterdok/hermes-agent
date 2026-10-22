@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
-import type { SessionResumeResult } from '@/types/hermes'
+import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -118,6 +118,34 @@ describe('appendLiveSessionProjection', () => {
       'user-inflight-runtime-1',
       'assistant-stream-runtime-1'
     ])
+  })
+
+  // An older gateway omits turn_started_at, and the text resolver cannot place a cold resume.
+  it.each([
+    ['a flushed tool round of the running turn', 1],
+    ['a completed answer of an earlier turn with the same prompt', 2]
+  ])('without a turn boundary, keeps the right prompt bubbles after %s', (_label, prompts) => {
+    const call = [{ id: 'c1', type: 'function' as const, function: { name: 'terminal', arguments: '{}' } }]
+
+    const afterPrompt: SessionMessage[] =
+      prompts === 1
+        ? [
+            { id: 4, role: 'assistant', content: 'Running it.', timestamp: 4, tool_calls: call },
+            { id: 5, role: 'tool', content: 'ok', tool_call_id: 'c1', timestamp: 5 }
+          ]
+        : [{ id: 4, role: 'assistant', content: 'Build passed.', timestamp: 4 }]
+
+    const persisted = toChatMessages([
+      { id: 1, role: 'user', content: 'earlier prompt', timestamp: 1 },
+      { id: 2, role: 'assistant', content: 'earlier answer', timestamp: 2 },
+      { id: 3, role: 'user', content: 'run the build', timestamp: 3 },
+      ...afterPrompt
+    ])
+
+    const projection = dedupeInflightUserAgainstTranscript(persisted, [], runningProjection('run the build'))
+    const restored = appendLiveSessionProjection(persisted, projection)
+
+    expect(restored.filter(message => chatMessageText(message) === 'run the build')).toHaveLength(prompts)
   })
 })
 
