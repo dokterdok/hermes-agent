@@ -18,10 +18,16 @@ export function createBrowserSettings({
   basePath,
   currentProfile
 }: BrowserSettingsOptions): Window['hermesDesktop']['settings'] {
-  const key = () =>
-    `hermes:browser:default-project-dir:${JSON.stringify([basePath || '/', currentProfile()?.trim() || 'default'])}`
+  const key = (profile?: null | string) => {
+    const owner = profile?.trim() || currentProfile()?.trim() || 'default'
+
+    return `hermes:browser:default-project-dir:${JSON.stringify([basePath || '/', owner])}`
+  }
 
   return {
+    // The folder of the profile a new chat is created in, read at that moment:
+    // mid-switch it is not yet the profile this tab's connection names.
+    defaultProjectDirFor: profile => readKey(key(profile))?.trim() || null,
     getDefaultProjectDir: async () => ({
       defaultLabel: 'Server workspace',
       dir: readKey(key())?.trim() || null,

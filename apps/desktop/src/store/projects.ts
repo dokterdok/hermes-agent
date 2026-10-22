@@ -29,6 +29,7 @@ import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $newChatProfile,
   $profiles,
   $profileScope,
   ALL_PROFILES,
@@ -151,9 +152,9 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 //
 // Priority (first hit wins):
 //   1. Explicit sidebar project scope (drilled into a project / Home bucket)
-//   2. Configured default project dir (detached otherwise — in BOTH local and
-//      remote mode; a bare new chat never inherits the sticky remembered cwd,
-//      #57911 / #84220)
+//   2. Configured default project dir of `profile`, the profile the chat is
+//      created in (detached otherwise — in BOTH local and remote mode; a bare
+//      new chat never inherits the sticky remembered cwd, #57911 / #84220)
 //
 // The "active project" is just an atom ($projectScope) — so inside a project a
 // new session (cmd-n, the trunk "+") starts at that project's root (its primary
@@ -161,7 +162,9 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 // you were looking at: after a restart that's the just-resumed session, whose
 // stored cwd is often a home-dir fallback, so every new chat landed there
 // instead of the configured default (#71873, #80213, #77496).
-export function resolveNewSessionCwd(): string {
+export function resolveNewSessionCwd(
+  profile: string = $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+): string {
   const scope = $projectScope.get()
 
   // Inside Home, "no folder" is the point: a new chat must stay detached rather
@@ -178,7 +181,7 @@ export function resolveNewSessionCwd(): string {
     }
   }
 
-  return workspaceCwdForNewSession()
+  return workspaceCwdForNewSession(profile)
 }
 
 // Entering a project moves the live workspace only when main holds a fresh
