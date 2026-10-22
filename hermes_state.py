@@ -586,8 +586,11 @@ class SessionDB(
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
     def __init__(self, db_path: Path | None = None, read_only: bool = False,
-                 expected_profile_incarnation: str | None = None):
+                 expected_profile_incarnation: str | None = None, profile_home: Path | None = None):
         self.db_path = db_path or _default_db_path()
+        # The named-profile lifecycle checks follow the home the caller named (a linked profile is
+        # fenced on its profiles/<name> spelling); every file operation follows db_path.
+        self._lifecycle_home = Path(profile_home) if profile_home is not None else Path(self.db_path).parent
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
         self.expected_profile_incarnation = expected_profile_incarnation
@@ -659,7 +662,7 @@ class SessionDB(
 
         # Named profiles are explicit lifecycle objects. Path reuse after
         # DELETE must not let a delayed opener attach to the replacement.
-        named_profile_marker = profile_deletion_marker_path(self.db_path.parent)
+        named_profile_marker = profile_deletion_marker_path(self._lifecycle_home)
         profile_lifecycle_stack = contextlib.ExitStack()
 
         try:
@@ -667,7 +670,7 @@ class SessionDB(
                 from hermes_cli.profile_read_snapshot import profile_read_snapshot
 
                 self.expected_profile_incarnation = profile_lifecycle_stack.enter_context(
-                    profile_read_snapshot(self.db_path.parent, expected_profile_incarnation)
+                    profile_read_snapshot(self._lifecycle_home, expected_profile_incarnation)
                 )
             elif named_profile_marker is not None:
                 from hermes_cli.profile_incarnation import profile_incarnation_lease
@@ -680,7 +683,7 @@ class SessionDB(
                 # SessionDB object's full lifetime.
                 profile_lifecycle_stack.enter_context(
                     profile_incarnation_lease(
-                        self.db_path.parent,
+                        self._lifecycle_home,
                         expected_profile_incarnation,
                     )
                 )
@@ -728,7 +731,7 @@ class SessionDB(
         self._assert_named_profile_available()
         # Never materialize a deleted/archived named profile's home: a multiplexer or Desktop backend
         # still holding the profile's route would otherwise re-scaffold it on the next turn (#94590).
-        mkdir_under_hermes_home(self.db_path.parent)
+        mkdir_under_hermes_home(self._lifecycle_home)
         try:
             # Serialize zero-byte check, quarantine, connect and schema commit so concurrent
             # openers don't race the absent-path -> schema-commit window.
@@ -884,12 +887,18 @@ class SessionDB(
             raise
         return conn
 
+    @property
+    def profile_home(self) -> Path:
+        """The home this store belongs to as the caller named it: its identity and lifecycle follow
+        it. ``db_path`` is the file the handle works on (a registry handle's resolved path)."""
+        return self._lifecycle_home
+
     def _assert_named_profile_available(self) -> None:
-        if profile_deletion_marker_path(self.db_path.parent) is None:
+        if profile_deletion_marker_path(self._lifecycle_home) is None:
             return
-        assert_named_profile_home_available(self.db_path.parent)
+        assert_named_profile_home_available(self._lifecycle_home)
         from hermes_cli.profile_incarnation import assert_profile_incarnation_current
-        assert_profile_incarnation_current(self.db_path.parent, self.expected_profile_incarnation)
+        assert_profile_incarnation_current(self._lifecycle_home, self.expected_profile_incarnation)
 
     def _connect_and_init(self) -> None:
         self._assert_named_profile_available()

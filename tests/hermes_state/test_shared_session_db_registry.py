@@ -748,3 +748,29 @@ class TestCloseAllUnder:
         assert errors == []
         assert db._conn is None
         assert swept == [0]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("change", ["removed", "retargeted"])
+def test_borrow_releases_and_closes_its_own_file_after_its_alias_changes(tmp_path, change):
+    """A handle acquired through a symlinked home works on the file it opened: removing or
+    retargeting the alias later must neither leak its release nor turn its close-time WAL
+    handling on the store the alias names now."""
+    from hermes_cli.sqlite_safe_read import has_live_connection
+    original, replacement, alias = tmp_path / "original", tmp_path / "replacement", tmp_path / "home"
+    original.mkdir()
+    replacement.mkdir()
+    alias.symlink_to(original, target_is_directory=True)
+    db = registry.acquire(alias / "state.db")
+    try:
+        db.create_session("s", "cli")
+        alias.unlink()
+        if change == "retargeted":
+            alias.symlink_to(replacement, target_is_directory=True)
+        db.close()
+        assert registry.stats()["total_refcounts"] == 0
+        assert db._conn is None and not has_live_connection(original / "state.db")
+        assert not [p.name for p in replacement.iterdir() if "retired" in p.name]
+    finally:
+        alias.unlink(missing_ok=True)
+        alias.symlink_to(original, target_is_directory=True)
