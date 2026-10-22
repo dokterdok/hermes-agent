@@ -48,7 +48,10 @@ const META = '\u0000HERMES_TERMINAL_META:'
 const MAX_RETRIES = 5
 const RETRY_BACKOFF = { baseDelayMs: 500, capMs: 8000 }
 const START_TIMEOUT = 10_000
-const CLOSE_SIGNALS: Record<number, string> = { 4403: 'denied', 4409: 'superseded', 4410: 'expired', 1013: 'capacity' }
+// 1013 is Try Again Later (a host shutting down, a gateway listener not ready or
+// draining): it is retried like a drop. A full registry has its own code.
+const CLOSE_SIGNALS: Record<number, string> = { 4403: 'denied', 4409: 'superseded', 4410: 'expired', 4429: 'capacity' }
+const CLOSE_REASONS: Record<number, string> = { 1013: 'Terminal service is not ready; try again shortly' }
 
 class TerminalConnectionError extends Error {
   constructor(message: string, readonly signal = 'disconnected') {
@@ -245,7 +248,8 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
       if (signal === 'expired') {forget(state)}
 
       if (!handshakeComplete) {
-        fail(new TerminalConnectionError(event.reason || `Host terminal closed (${event.code})`, signal))
+        const reason = event.reason || CLOSE_REASONS[event.code] || `Host terminal closed (${event.code})`
+        fail(new TerminalConnectionError(reason, signal))
 
         return
       }

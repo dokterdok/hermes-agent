@@ -336,6 +336,13 @@ class RegistryFull(Exception):
         super().__init__(message)
 
 
+class RegistryShuttingDown(RegistryFull):
+    """The registry is closing: a transient refusal a client may retry, unlike a full registry."""
+
+    def __init__(self, message: str = "Terminal service is shutting down.") -> None:
+        super().__init__(message)
+
+
 async def run_reaper(registry: PtySessionRegistry, *, interval: float = 60.0) -> None:
     """Periodically reap idle/dead keep-alive sessions. Cancelled on shutdown."""
     while True:
@@ -411,7 +418,7 @@ class PtySessionRegistry:
         self, key: str, *, spawn: Callable[[], object], active_session_file: Optional[Path] = None,
     ) -> tuple[PtySession, bool]:
         if self._closed:
-            raise RegistryFull("Terminal service is shutting down.")
+            raise RegistryShuttingDown()
         await self.reap_idle()
         existing = self._sessions.get(key)
         if existing is not None and existing.alive:
