@@ -201,6 +201,15 @@ export function recordProduct({ source, product, out, inputs, stampClock }) {
   }) + '\n')
 }
 
+/** True when ``out`` still holds exactly the bytes its ``product`` receipt certified, whichever
+ *  sources, host or Node built it (a rebuild keeps files only from such a generation). */
+export function outputIntact(out, product) {
+  try {
+    const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
+    return saved.schema === 1 && saved.product === product && saved.outputHash === outputHash(out)
+  } catch { return false }
+}
+
 /** The receipt in ``out`` when it was written for ``product`` by this platform, arch and Node. */
 function hostReceipt(out, product) {
   const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
