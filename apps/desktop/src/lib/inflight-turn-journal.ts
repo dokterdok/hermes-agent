@@ -86,9 +86,11 @@ function runtimeTurnTail(visible: ChatMessage[], runtimeStartedAt: number): Chat
   // One preceding durable row is an optional catch-up anchor. It stays
   // unmarked, is never recovered as runtime content, and lets an idle REST
   // transcript prove the suffix without comparing clocks or all-history text.
+  // A row recovered from an earlier journal is not proven durable: only its
+  // row id can anchor, never the local timestamp REST will not share.
   const anchor = visible[start - 1]
 
-  if (anchor && (anchor.rowId !== undefined || anchor.timestamp !== undefined)) {
+  if (anchor && (anchor.rowId !== undefined || (anchor.timestamp !== undefined && !anchor.recovered))) {
     const durableAnchor = { ...anchor }
     delete durableAnchor.runtimeTurnStartedAt
 

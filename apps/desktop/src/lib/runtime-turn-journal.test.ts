@@ -55,6 +55,21 @@ it.each(['hidden', 'auto_continue', 'internal_notification'])('recovers %s runti
   expect(textRows(recovered.messages, 'resumed interrupted turn')).toHaveLength(kind === 'auto_continue' ? 1 : 0)
 })
 
+it('retires a completed wake whose predecessor is a human row recovered from an earlier journal', () => {
+  const stored: SessionMessage[] = [{ id: 1, role: 'user', content: 'go', timestamp: 1 }, { id: 2, role: 'assistant', content: 'ok', timestamp: 2 }]
+  // Its local timestamp is not REST's, so it cannot prove where this wake starts.
+  const correction: ChatMessage = { id: 'user-fix', role: 'user', parts: [{ type: 'text', text: 'check logs' }], timestamp: 5, recovered: true }
+  const reply: ChatMessage = { id: 'assistant-stream-rt', role: 'assistant', runtimeTurnStartedAt: 10, parts: [{ type: 'text', text: 'Logs are clean.' }] }
+  const shown = [...toChatMessages(stored), correction]
+
+  record([...shown, { ...reply, pending: true }])
+  persistInFlightTurnState({ storedSessionId: 'stored', messages: [...shown, reply], streamId: null, busy: false, awaitingResponse: false, turnStartedAt: null })
+
+  const rest = toChatMessages([...stored, { id: 3, role: 'user', content: 'check logs', timestamp: 7 }, { id: 4, role: 'assistant', content: 'Logs are clean.', timestamp: 11 }])
+  expect(readInFlightTurnJournal('stored')).toBeNull()
+  expect(textRows(recoverInFlightTurnJournal('stored', rest).messages, 'Logs are clean.')).toHaveLength(1)
+})
+
 it.each(['hidden', 'auto_continue'])('overlays journaled %s structure onto the same runtime in a new session binding', kind => {
   const live = withTool(appendLiveSessionProjection(oldHistory(), snapshot(kind, 'before')))
   record(live)
