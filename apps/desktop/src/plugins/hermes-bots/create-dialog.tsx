@@ -47,13 +47,15 @@ import { createCanonicalChat } from './canonical-chat'
 import {
   groupCreationSource,
   groupExecutionMode,
+  groupSeatsPeers,
   seatableGroupBots,
   useGroupCapability
 } from './canonical-group-capabilities'
 import type { GroupCapabilityState } from './canonical-group-capabilities'
+import { createGatewayGroup, peerJoinText, peerRoute, peerTargetText, usePeerTargets } from './canonical-group-peers'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
-import { canonicalGroupCreateError, canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
+import { canonicalGroupCreateError, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupRoute } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
@@ -1263,13 +1265,13 @@ async function revalidateGroupCreationMode(
     throw new Error(unavailableMessage)
   }
 
-  const freshMode = groupExecutionMode(await canonicalGroupRequest<unknown>(route, 'groups.capabilities'))
+  const fresh = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
 
-  if (!sourceCurrent() || freshMode !== mode) {
+  if (!sourceCurrent() || groupExecutionMode(fresh) !== mode) {
     throw new Error(unavailableMessage)
   }
 
-  return { mode, sourceCurrent }
+  return { mode, peers: groupSeatsPeers(fresh), sourceCurrent }
 }
 
 /** Discord-style group chat creation: pick 2+ routable bots via checkboxes
@@ -1280,7 +1282,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const { t } = useI18n()
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
-  const { capability, connectionId, mode, observedRoute, seatable, source } = useGroupCapability(open)
+  const { capability, connectionId, mode, observedRoute, peers, seatable, source } = useGroupCapability(open)
 
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
@@ -1298,7 +1300,23 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   }, [open])
 
   // An outage placeholder or a bot the authority will not seat is never offered.
-  const selectableRoster = seatableGroupBots(roster, { connectionId, mode, seatable })
+  const selectableRoster = seatableGroupBots(roster, { connectionId, mode, peers, seatable })
+  // Bots from other connections: each one's gateway says whether it can host a Bot in this room.
+  const peerTargets = usePeerTargets(selectableRoster, connectionId, open && peers)
+
+  // undefined unless this gateway seats the Bot as a peer; null while its gateway is being read.
+  const peerTarget = (bot: RosterRow) => {
+    const own = mode === 'canonical' && peers ? peerRoute(bot, connectionId) : null
+
+    return own ? peerTargets.get(own.connectionId) ?? null : undefined
+  }
+
+  const unready = [...new Map(selectableRoster.flatMap(bot => {
+    const own = mode === 'canonical' && peers ? peerRoute(bot, connectionId) : null
+    const state = own && peerTargets.get(own.connectionId)
+
+    return own && state && !state.ready ? [[own.connectionId, peerTargetText(state, bot.connectionLabel || own.connectionId, b.canonical)] as const] : []
+  })).values()]
 
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
@@ -1309,7 +1327,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     : b.group.nameLabel
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) &&
-    (mode === 'canonical' || mode === 'legacy')
+    (mode === 'canonical' || mode === 'legacy') && selected.every(bot => peerTarget(bot) === undefined || peerTarget(bot)?.ready)
 
   const creating = useRef(false)
 
@@ -1330,7 +1348,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       throw new Error(b.canonical.driverUnavailable)
     }
 
-    const { mode: currentMode, sourceCurrent } = await revalidateGroupCreationMode(route, capability, source, b.canonical.driverUnavailable)
+    const { mode: currentMode, peers: seatsPeers, sourceCurrent } = await revalidateGroupCreationMode(route, capability, source, b.canonical.driverUnavailable)
 
     if (!sourceCurrent()) {
       throw new Error(b.canonical.driverUnavailable)
@@ -1341,13 +1359,18 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         throw new Error(b.canonical.driverUnavailable)
       }
 
-      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+      const created = await createGatewayGroup(route, base, durableGroupChatMembers(selected), peerTargets, seatsPeers)
 
       // Creation already succeeded; leave it on its owner without adopting a stale result.
       if (!sourceCurrent()) {return}
       const key = registerCanonicalGroup(route, created.room)
       onClose()
       onCreated?.(key, 'key')
+
+      // The room is there; a Bot that did not join shows as not joined in it, and why here.
+      for (const { member, error } of created.unjoined) {
+        host.notify({ kind: 'error', message: peerJoinText(error, member.display_name || member.handle, b.canonical) })
+      }
 
       return
     }
@@ -1419,6 +1442,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
         {mode === 'unavailable' && <p role="status">{b.canonical.driverUnavailable}</p>}
+        {peerTargets.size > 0 && <p className="text-xs text-(--ui-text-tertiary)">{b.canonical.peerHint}</p>}
+        {unready.map(words => <p className="text-xs text-(--ui-text-secondary)" key={words} role="note">{words}</p>)}
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}
@@ -1463,7 +1488,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                 const meta = botRosterMeta(bot, allMeta)
                 const { shape, color, image } = botAppearance(bot.name, meta)
                 const isChecked = Boolean(checked[botRosterKey(bot)])
-                const disabled = !isChecked && atCap
+                const target = peerTarget(bot)
+                const disabled = !isChecked && (atCap || (target !== undefined && !target?.ready))
                 const currentGroups = botGroups(meta)
 
                 return (

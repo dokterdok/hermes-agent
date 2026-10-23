@@ -9,6 +9,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { afterEach } from 'vitest'
 
 interface Schema {
@@ -84,6 +85,58 @@ export const CANONICAL_GROUP_CAPABILITIES = declaredCapabilities({
   max_log_limit: 500
 })
 
+const CATALOG_DIGEST = 'c'.repeat(64)
+
+/** `groups.capabilities` of a gateway that also hosts Bots of other gateways' rooms and seats theirs
+ *  (gateway/session_group_peers.py): the `groups.peer.*` methods, `peer_renewal_horizon`, and a
+ *  `room_link` that is enabled, with the catalog a room pins its member to. */
+export function peerGroupCapabilities(gateway = 'install:peer') {
+  const endpoint = { available: true, url: `https://${gateway.slice(8)}.example.ts.net:8642`, transport_security: 'tls' }
+
+  return declaredCapabilities({
+    ...CANONICAL_GROUP_CAPABILITIES,
+    authority_gateway_id: gateway,
+    room_link: {
+      enabled: true, profile: 'default', endpoint,
+      catalog: { installation_id: gateway, protocol_versions: [2], link_modes: ['direct'], persistent_process: true, text: true,
+        attachments: false, execution_policy: { target_profile: 'default', policy_digest: 'p'.repeat(64) },
+        catalog_digest: CATALOG_DIGEST, endpoint }
+    },
+    features: [...CANONICAL_GROUP_CAPABILITIES.features, 'peer_renewal_horizon'],
+    methods: [...CANONICAL_GROUP_CAPABILITIES.methods, 'groups.peer.register', 'groups.peer.invite', 'groups.peer.revoke']
+  })
+}
+
+/** The doubles of a home (`install:home`) seating the default Bot of `install:mini`. */
+export const PEER_HOME = peerGroupCapabilities('install:home')
+export const PEER_MINI = peerGroupCapabilities('install:mini')
+export const PEER_REGISTERED = { registered: true, mode: 'direct', transport_security: 'tls', target_install_id: 'install:mini', target_profile: 'default' }
+export const peerInvitation = (grant = 'grant', endpoint: unknown = PEER_MINI.room_link.endpoint) =>
+  ({ grant, target_profile: 'default', catalog: PEER_MINI.room_link.catalog, endpoint })
+
+/** A roster row for Bot `name` on another connection. */
+export const peerRosterRow = (connectionId: string, connectionLabel: string, name = 'default') => ({
+  name, connectionId, connectionLabel, remoteSource: true, sourceScoped: true,
+  route: { connectionId, mode: 'remote' as const, profile: name, targetProfile: name }
+})
+
+type Answer = (method: string, params: Record<string, any>) => unknown
+
+/** Answer each `request(route, method, params)` from `answers[route.connectionId]` (`local` without a
+ *  route): a value, a promise, or an Error to reject with. Any other request fails the test. */
+export function answerGroupRequests(request: { mockImplementation: (fn: ProfileRequest) => unknown }, answers: Record<string, Answer>) {
+  request.mockImplementation(async (route, method, params) => {
+    const connection = (route as { connectionId?: string } | null)?.connectionId ?? 'local'
+    const answer = await answers[connection]?.(method, params ?? {})
+
+    if (answer === undefined) {throw new Error(`Unexpected RPC: ${connection} ${method}`)}
+
+    if (answer instanceof Error) {throw answer}
+
+    return answer
+  })
+}
+
 /** The standalone server's answer (`hermes serve`, `hermes dashboard`; tui_gateway/methods_groups.py
  *  `_METHODS`): it starts its own room driver at boot, so `driver` is true too. */
 export const STANDALONE_GROUP_CAPABILITIES = declaredCapabilities({
@@ -123,12 +176,17 @@ export function standaloneGroupProblems({ method, params }: GroupRequestCall): s
 // reaches it. canonical-groups-contract.test.ts fails once the two agree.
 export const STANDALONE_RETRY_MISMATCH = ['groups.retry.member_id', 'groups.retry.execution_generation']
 
+// Sent only to a gateway that lists `peer_renewal_horizon`, which the standalone server never does.
+export const CANONICAL_ONLY_FIELDS = ['groups.peer.invite.status_ttl_seconds']
+
 /** Refuse what either surface refuses before any handler runs. The gateway (`4001 invalid_params`):
  *  a method it does not list, an unknown key, or a missing required one. The standalone server: an
  *  unknown key in a method it lists. */
 export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
+  const served = new Set(peerGroupCapabilities().methods)
+
   for (const { method, params } of calls) {
-    const declared = CANONICAL_GROUP_CAPABILITIES.methods.includes(method) ? declaredGroupMethod(method)?.params : undefined
+    const declared = served.has(method) ? declaredGroupMethod(method)?.params : undefined
 
     if (!declared) {
       throw new Error(`Undeclared canonical group method: ${method}`)
@@ -149,7 +207,8 @@ export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
       }
     }
 
-    const refused = standaloneGroupProblems({ method, params }).filter(field => !STANDALONE_RETRY_MISMATCH.includes(field))
+    const refused = standaloneGroupProblems({ method, params })
+      .filter(field => !STANDALONE_RETRY_MISMATCH.includes(field) && !CANONICAL_ONLY_FIELDS.includes(field))
 
     if (refused.length) {
       throw new Error(`The standalone server refuses group field: ${refused.join(', ')}`)
@@ -176,5 +235,26 @@ export function captureGroupRequests(request: ProfileRequest) {
 
       return request(...args)
     }
+  }
+}
+
+/** `@hermes/plugin-sdk` for a dialog or gate on the `local` connection's default profile, with its
+ *  group requests going to `request` (contract-checked), Bot Mode words from `translate()` (read at
+ *  render, since the plugin's bundle imports this module) and `host` overrides. */
+export async function localGatewaySdkMock(sdk: typeof HermesSdk, request: ProfileRequest, translate: () => unknown,
+  host: Record<string, unknown> = {}) {
+  const { en } = await import('@/i18n/en')
+
+  return {
+    ...sdk,
+    gatewayActivationEpoch: () => 1,
+    host: {
+      ...sdk.host, requestProfile: captureGroupRequests(request).request,
+      request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
+      state: { ...sdk.host.state, connectionId: sdk.atom<string | null>('local'), profile: sdk.atom('default'), gateway: sdk.atom('open') },
+      ...host
+    },
+    useI18n: () => ({ locale: 'en', t: en }),
+    usePluginI18n: () => translate()
   }
 }
