@@ -1,6 +1,7 @@
 import { gatewayActivationEpoch, host, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
+import { peerRoute } from './canonical-group-peers'
 import { canonicalGroupRequest } from './canonical-groups'
 import type { RosterRow } from './types'
 
@@ -104,9 +105,18 @@ export function groupCreationSource(route: { connectionId: string; profile: stri
     route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
 }
 
+/** Whether this gateway can be the home of a room with Bots from other gateways: it runs rooms,
+ *  registers their grants (`groups.peer.register`), and outlives Desktop. A backend Desktop started
+ *  (`persistent_process: false`) would take the member's route with it when Desktop closes. */
+export function groupSeatsPeers(value: unknown): boolean {
+  return groupExecutionMode(value) === 'canonical' && (value as { persistent_process?: unknown }).persistent_process === true &&
+    Boolean(groupAdvertisedMethods(value)?.has('groups.peer.register'))
+}
+
 export interface GroupCapabilityState {
   activationEpoch: number
   mode: GroupExecutionMode
+  peers: boolean
   seatable: null | Set<string>
   source: string
 }
@@ -137,6 +147,7 @@ export function useGroupCapability(active: boolean) {
         setCapability({
           activationEpoch,
           mode: failed ? 'unavailable' : groupExecutionMode(result),
+          peers: !failed && groupSeatsPeers(result),
           seatable: failed ? null : groupSeatableProfiles(result),
           source
         })
@@ -158,18 +169,23 @@ export function useGroupCapability(active: boolean) {
     connectionId,
     mode: current ? current.mode : ('checking' as const),
     observedRoute: connectionId ? { connectionId, profile } : null,
+    peers: current ? current.peers : false,
     seatable: current ? current.seatable : null,
     source
   }
 }
 
 /** The roster rows New Group Chat may seat: never an outage placeholder; in
- *  legacy mode every bot, otherwise only bots on the current connection that
- *  the authority's seatable roster names (#141178). The ONE predicate behind
- *  both the dialog's picker and the menu item that opens it. */
+ *  legacy mode every bot, otherwise the bots on the current connection that
+ *  the authority's seatable roster names (#141178) and, when the authority
+ *  seats `peers`, each other connection's default Bot (whether its gateway can
+ *  host one is read when the dialog opens). The ONE predicate behind both the
+ *  dialog's picker and the menu item that opens it. */
 export function seatableGroupBots(
   roster: RosterRow[],
-  { connectionId, mode, seatable }: { connectionId: null | string; mode: GroupExecutionMode | 'checking'; seatable: null | Set<string> }
+  { connectionId, mode, peers = false, seatable }: {
+    connectionId: null | string; mode: GroupExecutionMode | 'checking'; peers?: boolean; seatable: null | Set<string>
+  }
 ): RosterRow[] {
   const currentConnection = String(connectionId || '').trim()
 
@@ -196,7 +212,8 @@ export function seatableGroupBots(
     }
 
     // The profile is the one createCanonicalGroup will send.
-    return belongsToCurrentConnection(bot) &&
-      (!seatable || seatable.has(bot.route?.targetProfile ?? bot.targetProfile ?? bot.name))
+    return (belongsToCurrentConnection(bot) &&
+      (!seatable || seatable.has(bot.route?.targetProfile ?? bot.targetProfile ?? bot.name))) ||
+      (mode === 'canonical' && peers && peerRoute(bot, currentConnection) !== null)
   })
 }
