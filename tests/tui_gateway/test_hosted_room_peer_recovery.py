@@ -3,6 +3,8 @@
 import time
 from pathlib import Path
 
+import pytest
+
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
@@ -42,8 +44,25 @@ class _RecoveringPeerClient(_FakePeerClient):
         }
 
 
-def test_peer_recovery_replays_only_indeterminate_generation(tmp_path: Path):
-    db = tmp_path / "state.db"
+class _UnreachablePeerClient(_RecoveringPeerClient):
+    """Unreachable until ``reachable`` flips; then it returns the run it already holds."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reachable = False
+
+    def recover_dispatch(self, **kwargs):
+        if self.reachable:
+            return super().recover_dispatch(**kwargs)
+        self.recoveries.append({**kwargs, "dispatch": dict(kwargs["dispatch"])})
+        raise PeerRunsHTTPError(
+            "peer RoomLink endpoint is unreachable", retryable=True, not_admitted=True)
+
+    def prepare(self, **kwargs):
+        return self.session if self.reachable else super().prepare(**kwargs)
+
+
+def _peer_room(db: Path, peer: _FakePeerClient) -> HostedRoomService:
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -57,7 +76,6 @@ def test_peer_recovery_replays_only_indeterminate_generation(tmp_path: Path):
         trace_id="trace-room-1",
         grant="signed.room.grant",
     )
-    peer = _RecoveringPeerClient()
     service = HostedRoomService(_server(), db_path=db)
     service.register_peer_route(
         room_id="room-1",
@@ -86,6 +104,12 @@ def test_peer_recovery_replays_only_indeterminate_generation(tmp_path: Path):
             },
         ],
     )
+    return service
+
+
+def test_peer_recovery_replays_only_indeterminate_generation(tmp_path: Path):
+    peer = _RecoveringPeerClient()
+    service = _peer_room(tmp_path / "state.db", peer)
     identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
     task = {
         "identity": identity,
@@ -116,12 +140,119 @@ def test_peer_recovery_replays_only_indeterminate_generation(tmp_path: Path):
     assert recovered["prompt"] == "Recover the accepted review."
 
 
+def test_unreachable_peer_turn_is_deferred_and_retried_on_its_own_generation(tmp_path: Path):
+    """A peer turn whose same-generation recovery keeps failing is deferred, so the room moves
+    on. Retry then recovers that same generation first: it fails while the peer is down, and once
+    the peer is back it settles generation 1 and never sends generation 2."""
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _UnreachablePeerClient()
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 30
+    service.runtime.indeterminate_defer_seconds = 5
+    service.send(
+        room_id="room-1",
+        event_id="user-1",
+        payload={"text": "@reviewer check this", "thread_id": "thread-1"},
+    )
+    queued = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    assert queued["payload"]["target_member_id"] == "member-peer"
+    binding = service.bindings()[0]
+    # A home process admitted the turn and exited before it learned the outcome.
+    crashed = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch,
+        process_generation="crashed-home",
+        ttl_seconds=1,
+        clock=clock,
+    )
+    driver.start_task(db, queued["identity"], crashed, expected_cancel_generation=0, clock=clock)
+
+    now[0] = 102.0
+    service.runtime._run_room_once(binding)
+    assert driver.get_task(db, queued["identity"])["status"] == "indeterminate"
+
+    now[0] = 108.0
+    service.runtime._run_room_once(binding)
+
+    deferred = driver.get_task(db, queued["identity"])
+    assert deferred["status"] == "deferred"
+    assert deferred["execution_generation"] == 1
+    assert deferred["result"] == {"reason": "member_unavailable", "retryable": True}
+    assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
+
+    # Retry while the peer is still down keeps the turn deferred at generation 1.
+    with pytest.raises(PeerRunsHTTPError):
+        service.retry_room_task("room-1", task_id=queued["identity"].task_id)
+    assert driver.get_task(db, queued["identity"])["status"] == "deferred"
+
+    # Once the peer is back, Retry recovers generation 1 and never sends generation 2.
+    peer.reachable = True
+    retried = service.retry_room_task("room-1", task_id=queued["identity"].task_id)
+    service.runtime._run_room_once(binding)
+
+    assert (retried["status"], retried["execution_generation"]) == ("settled", 1)
+    assert driver.get_task(db, queued["identity"])["status"] == "settled"
+    assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
+    assert {d["execution_generation"] for d in peer.dispatches} == {1}
+
+
 def _driver_room(tmp_path: Path) -> Path:
     db = tmp_path / "state.db"
     hosted_rooms.create_room(
         db, room_id=ROOM_ID, name="Release room", members=[{"profile": PROFILE, "handle": PROFILE}],
         authority_gateway_id=BINDING.gateway_id, now=time.time())
     return db
+
+
+@pytest.mark.parametrize("elapsed", [5, 61], ids=["before-deadline", "after-deadline"])
+def test_peer_completion_is_observed_after_the_first_recovery_probe(tmp_path, monkeypatch, elapsed):
+    """A peer may finish between probes, before the deferral window expires."""
+    now, completed = [100.0], [False]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    service.send(room_id="room-1", event_id="user-1",
+                 payload={"text": "@reviewer inspect", "thread_id": "thread-1"})
+    task, = driver.list_tasks(db, room_id="room-1", status="queued")
+    binding = service.bindings()[0]
+    crashed = driver.acquire_lease(db, room_id="room-1", gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch, process_generation="crashed", ttl_seconds=1, clock=clock)
+    driver.start_task(db, task["identity"], crashed, expected_cancel_generation=0, clock=clock)
+    now[0] += 2
+    lease = service.runtime._ensure_lease(binding)
+    driver.recover_room(db, lease, clock=clock)
+    monkeypatch.setattr(peer, "prepare", lambda **_: peer.session)
+    monkeypatch.setattr(peer, "history", lambda **_: [{
+        "role": "assistant", "task_id": task["identity"].task_id, "execution_generation": 1,
+        "status": "settled", "message_id": "peer-complete", "content": "Recovered review",
+    }] if completed[0] else [])
+    monkeypatch.setattr(peer, "status", lambda **_: {
+        "active": not completed[0], "status": "completed" if completed[0] else "running",
+        "task_id": task["identity"].task_id, "execution_generation": 1,
+    })
+
+    assert service.runtime._reconcile_indeterminate(binding, lease)
+    completed[0] = True
+    now[0] += elapsed
+    service.runtime._reconcile_indeterminate(binding, lease)
+    settled = driver.get_task(db, task["identity"])
+    assert (settled["status"], settled["execution_generation"]) == ("settled", 1)
+    assert settled["result"]["text"] == "Recovered review"
+    assert {entry["dispatch"]["execution_generation"] for entry in peer.recoveries} == {1}
 
 
 def test_contradictory_admission_flags_keep_the_same_attempt_at_lease_expiry(tmp_path: Path):
@@ -146,3 +277,36 @@ def test_contradictory_admission_flags_keep_the_same_attempt_at_lease_expiry(tmp
     recovered = driver.get_task(db, identity)
     assert recovered["status"] == "indeterminate" and recovered["execution_generation"] == 1
     assert [params["execution_generation"] for method, params in rpc.calls if method == "submit"] == [1]
+
+
+def test_deferred_turn_on_an_in_process_route_retries_as_before(tmp_path: Path):
+    """Only a route that admits on another gateway replays its generation on Retry. A local
+    member reached through its own session transport (the gateway's canonical member route) is
+    requeued at once, as before."""
+    db = _driver_room(tmp_path)
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    identity = _identity()
+    _admit(db, identity)
+    crashed = driver.acquire_lease(
+        db, room_id=ROOM_ID, gateway_id=BINDING.gateway_id, authority_epoch=BINDING.authority_epoch,
+        process_generation="crashed", ttl_seconds=1, clock=clock)
+    driver.start_task(db, identity, crashed, expected_cancel_generation=0, clock=clock)
+    now[0] = 102.0
+    member_route = FakeSessionRPC(auto_complete=False)
+    runtime = _runtime(db, FakeSessionRPC(), clock=clock, lease_ttl_seconds=30,
+                       indeterminate_defer_seconds=5,
+                       transport_resolver=lambda _binding, _task: member_route)
+    lease = runtime._ensure_lease(BINDING)
+    driver.recover_room(db, lease, clock=clock)
+    assert runtime._reconcile_indeterminate(BINDING, lease) is True
+    now[0] = 108.0
+    assert runtime._reconcile_indeterminate(BINDING, lease) is False
+    assert driver.get_task(db, identity)["status"] == "deferred"
+
+    retried = runtime.retry_indeterminate(identity)
+
+    assert retried["status"] == "queued"
