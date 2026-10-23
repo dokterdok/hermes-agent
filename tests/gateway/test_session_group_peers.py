@@ -3,6 +3,7 @@ pinned registration, and Disband that never leaves a grant behind."""
 import asyncio
 from dataclasses import replace
 import json
+import logging
 import threading
 import time
 from types import SimpleNamespace
@@ -52,13 +53,13 @@ async def call(connection, method, **params):
     return reply.get('result', reply.get('error', {}).get('message'))
 
 
-async def serve(gateway, monkeypatch):
+async def serve(gateway, monkeypatch, port=None):
     app = web.Application()
     for method, path, handler in api_server_room_grants._http_routes(gateway.adapter):
         app.router.add_route(method, path, handler)
     app.router.add_post('/v1/runs', gateway.adapter._handle_runs)
     app.router.add_get('/v1/runs/{run_id}', gateway.adapter._handle_get_run)
-    server = TestServer(app)
+    server = TestServer(app, port=port)
     await server.start_server()
     url = str(server.make_url('')).rstrip('/')
     monkeypatch.setenv('HERMES_ROOM_LINK_URL', url)
@@ -266,7 +267,15 @@ async def test_reregistered_route_replays_accepted_work_as_the_same_target_run(g
         await server.close()
 
 
-def test_disband_waits_for_the_driver_while_a_peer_route_is_stored(tmp_path, monkeypatch):
+def _owed(db_path):
+    """The revokes this home still owes, as (room, member, attempts); the grant itself is not read."""
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute('SELECT room_id, member_id, attempts FROM hosted_room_owed_revokes '
+                            'ORDER BY room_id, member_id').fetchall()
+
+
+def test_disband_without_a_driver_drops_stored_routes_and_owes_their_revokes(tmp_path, monkeypatch):
     from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with SessionDB(tmp_path / 'state.db') as db:
@@ -286,26 +295,146 @@ def test_disband_waits_for_the_driver_while_a_peer_route_is_stored(tmp_path, mon
                 room_id='linked', member_id='reviewer', target_url=endpoint['url'], target_profile='default',
                 grant='stored-grant', catalog=GatewayRoomCatalog.from_mapping(catalog),
                 cancellation_scope_id='cancel-linked', trace_id='trace-linked'))
-            assert await call(owner, 'groups.disband', room_id='linked') == 'runtime_coordination_required'
-            hosted_rooms.delete_room_link_records(db.db_path, room_id='linked')
             assert 'tombstone' in await call(owner, 'groups.disband', room_id='linked')
+            assert hosted_room_links.load_room_links(db.db_path) == ()
+            assert _owed(db.db_path) == [('linked', 'reviewer', 0)]
         asyncio.run(probe())
 
 
 @pytest.mark.asyncio
-async def test_disband_and_registration_never_leave_a_route_behind(gateway, monkeypatch):
+async def test_disband_ends_the_room_while_its_member_gateway_is_down_and_revokes_once_it_answers(
+        gateway, monkeypatch, caplog):
+    """The member's gateway goes down while its room is live, after a re-seat replaced a longer-lived
+    grant with a shorter one. Disband still ends the room at once and drops the route, and nothing
+    more is sent under it. The revoke it owes outlives the room's purge and the home's restart, lasts
+    while the longer grant could pass, backs off while that gateway is down or answers with a fault
+    in its own store, and is paid once it answers. No grant appears in an answer, error or log."""
+    from gateway.hosted_rooms import default_db_path
+    from tui_gateway.hosted_room_driver import HostedRoomRuntime
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+    caplog.set_level(logging.DEBUG)
+    server, url = await serve(gateway, monkeypatch)
+    restarted, db, store = None, gateway.db.db_path, default_db_path()
+    try:
+        catalog = room_link(gateway.authority)['catalog']
+        room = await linked_room(gateway, catalog)
+        long_lived, _ = await _seat(gateway, room, url, catalog, ttl_seconds=86400)
+        grant, registered = await _seat(gateway, room, url, catalog)  # a re-seat with a one-hour grant
+        assert registered['registered'], registered
+        held = gateway.service._resolve_member_transport(
+            gateway.service.bindings()[0], {'payload': {'target_member_id': 'reviewer', 'source_event_seq': 1}})
+        port = server.port
+        await server.close()
+
+        disbanded = await gateway.owner.dispatch({'id': 1, 'method': 'groups.disband', 'params': {'room_id': 'linked'}})
+        assert 'tombstone' in disbanded['result'], disbanded
+        assert gateway.service.peer_routes == {} and hosted_room_links.load_room_links(db) == ()
+        assert _owed(db) == [('linked', 'reviewer', 0)] * 2
+        with pytest.raises(PeerRunsHTTPError, match='route was dropped'):
+            await asyncio.to_thread(held.client.probe, grant=grant)
+        hosted_rooms.prune_disbanded_rooms(db, now=time.time() + 10**8)
+        assert len(_owed(db)) == 2
+
+        # The home restarts past the short grant's horizon, with the member's gateway still down.
+        service = gateway.authority.hosted_room_service = CanonicalHostedRoomService(gateway.authority, None)
+        now = [time.time() + 3700]
+        service.runtime.clock = lambda: now[0]
+        assert await asyncio.to_thread(service.retry_owed_revokes) == 0
+        assert _owed(db) == [('linked', 'reviewer', 1)]  # the long grant's; the short one's expired with it
+        assert await asyncio.to_thread(service.retry_owed_revokes) == 0
+        assert _owed(db) == [('linked', 'reviewer', 1)]  # not yet due: nothing was sent
+        error = str(HostedRoomRuntime.status(service.runtime)['last_error'])
+        assert 'revoke owed for member reviewer of room linked is pending' in error, error
+
+        # It is back, but its own store fails: no answer about the grant, so the debt stays.
+        restarted, _ = await serve(gateway, monkeypatch, port=port)
+        mode, now[0] = store.stat().st_mode, now[0] + 60
+        store.chmod(0)
+        try:
+            assert await asyncio.to_thread(service.retry_owed_revokes) == 0
+            with pytest.raises(PeerRunsHTTPError) as fault:
+                await asyncio.to_thread(PeerRunsHTTPClient(base_url=url, api_key='').revoke_grant, grant=long_lived)
+        finally:
+            store.chmod(mode)
+        assert (fault.value.status_code, fault.value.error_code) == (503, 'room_grant_store_unavailable')
+        assert _owed(db) == [('linked', 'reviewer', 2)] and await _grant_error(url, long_lived) is None
+
+        now[0] += 60
+        assert await asyncio.to_thread(service.retry_owed_revokes) == 1 and _owed(db) == []
+        for revoked in (long_lived, grant):
+            assert await _grant_error(url, revoked) == 'room_reauthorization_required'
+            assert not any(revoked in text for text in (json.dumps(disbanded), error, caplog.text))
+    finally:
+        await server.close()
+        if restarted is not None:
+            await restarted.close()
+
+
+def test_an_owed_revoke_settles_on_unknown_or_revoked_and_is_dropped_at_its_grant_expiry(gateway):
+    """A member gateway's answer that the grant is unknown or already revoked settles the revoke; any
+    other refusal keeps it owed, with backoff. Past the grant's own expiry it is dropped unsent: that
+    gateway refuses the grant by then anyway."""
+    from gateway.hosted_room_peer import issue_room_grant, room_grant_hard_expiry
+    from tui_gateway.hosted_room_driver import HostedRoomRuntime
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    service, db, now = gateway.service, gateway.db.db_path, [time.time()]
+    service.runtime.clock = lambda: now[0]
+
+    class Member:
+        def __init__(self, error=None):
+            self.error, self.calls = error, 0
+
+        def revoke_grant(self, *, grant):
+            self.calls += 1
+            if self.error is not None:
+                raise self.error
+            return {'revoked': True}
+
+    members = {
+        'unknown': Member(PeerRunsHTTPError('rejected', status_code=401, error_code='invalid_room_grant')),
+        'revoked': Member(PeerRunsHTTPError('revoked', status_code=403, error_code='room_reauthorization_required')),
+        'refused': Member(PeerRunsHTTPError('refused', status_code=403, error_code='permission_denied')),
+        'expiring': Member()}
+    grants = {member_id: issue_room_grant(
+        b's' * 32, grant_id=f'grant-{member_id}', room_id='ended', home_install_id='install:home',
+        authority_gateway_id='install:home', authority_epoch=1, member_id=member_id,
+        target_install_id='install:target', target_profile='default', issued_at=now[0], ttl_seconds=600,
+        status_ttl_seconds=600 if member_id == 'expiring' else 3600) for member_id in members}
+    assert room_grant_hard_expiry(grants['expiring']) == now[0] + 600
+    assert room_grant_hard_expiry('not-a-grant', now=now[0]) == now[0] + 30 * 24 * 60 * 60
+    for member_id, client in members.items():
+        service.owe_grant_revoke(room_id='ended', member_id=member_id, target_url='http://127.0.0.1:9',
+                                 grant=grants[member_id], client=client)
+    assert [row[1] for row in _owed(db)] == ['expiring', 'refused', 'revoked', 'unknown']
+
+    now[0] += 601
+    assert sum(service.retry_owed_revokes() for _ in range(3)) == 2
+    assert {member_id: client.calls for member_id, client in members.items()} == {
+        'unknown': 1, 'revoked': 1, 'refused': 1, 'expiring': 0}
+    assert _owed(db) == [('ended', 'refused', 1)]
+    error = str(HostedRoomRuntime.status(service.runtime)['last_error'])
+    assert 'refused' in error and not any(grant in error for grant in grants.values())
+    # Backoff doubles from the first retry; the refused revoke is tried again once due.
+    now[0] += 4
+    assert service.retry_owed_revokes() == 0 and members['refused'].calls == 1
+    now[0] += 1
+    assert service.retry_owed_revokes() == 0 and members['refused'].calls == 2
+    assert _owed(db) == [('ended', 'refused', 2)]
+
+
+@pytest.mark.asyncio
+async def test_disband_and_registration_never_leave_a_route_behind(gateway, monkeypatch):
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     server, url = await serve(gateway, monkeypatch)
     probe = PeerRunsHTTPClient.probe
     try:
         catalog = room_link(gateway.authority)['catalog']
 
+        rooms = {}
+
         async def register(room_id):
-            room = await linked_room(gateway, catalog, room_id=room_id)
-            grant = (await invite(gateway, room))['grant']
-            result = await call(gateway.owner, 'groups.peer.register', room_id=room_id, member_id='reviewer',
-                                target_url=url, target_profile='default', grant=grant, catalog=catalog)
-            return grant, result
+            rooms[room_id] = await linked_room(gateway, catalog, room_id=room_id)
+            return await _seat(gateway, rooms[room_id], url, catalog)
 
         # Disband completes while the probe is in flight: the route is never published.
         def probe_then_disband(client, *, grant):
@@ -316,12 +445,12 @@ async def test_disband_and_registration_never_leave_a_route_behind(gateway, monk
         early_grant, early = await register('early')
         assert early == 'invalid_params'
         monkeypatch.setattr(PeerRunsHTTPClient, 'probe', probe)
-        # Its gateway saw that grant during the probe: the home revokes it rather than drop it.
-        with pytest.raises(PeerRunsHTTPError) as dropped:
-            await asyncio.to_thread(PeerRunsHTTPClient(base_url=url, api_key='').probe, grant=early_grant)
-        assert dropped.value.error_code == 'room_reauthorization_required'
+        # Its gateway saw that grant during the probe: the home owes its revoke and pays it.
+        assert _owed(gateway.db.db_path) == [('early', 'reviewer', 0)]
+        assert await asyncio.to_thread(gateway.service.retry_owed_revokes) == 1
+        assert await _grant_error(url, early_grant) == 'room_reauthorization_required'
 
-        # Disband starts while the route is being published: it waits, then revokes the new grant.
+        # Disband starts while the route is being published: it waits, then owes the new grant's revoke.
         race, save = {}, gateway.service._save_link
 
         def disband_late():
@@ -339,9 +468,22 @@ async def test_disband_and_registration_never_leave_a_route_behind(gateway, monk
         assert 'tombstone' in race['disband'], race
 
         assert gateway.service.peer_routes == {} and hosted_room_links.load_room_links(gateway.db.db_path) == ()
-        with pytest.raises(PeerRunsHTTPError) as revoked:
-            await asyncio.to_thread(PeerRunsHTTPClient(base_url=url, api_key='').probe, grant=grant)
-        assert revoked.value.error_code == 'room_reauthorization_required'
+        assert await asyncio.to_thread(gateway.service.retry_owed_revokes) == 1 and _owed(gateway.db.db_path) == []
+        assert await _grant_error(url, grant) == 'room_reauthorization_required'
+
+        # An invitation still in flight when Disband returned lands once the room has ended and its
+        # stored grant's revoke was paid. That grant is owed too, at the pinned endpoint only, unprobed.
+        probes = []
+        monkeypatch.setattr(PeerRunsHTTPClient, 'probe', lambda client, *, grant: probes.append(grant) or {})
+        after, refused = await _seat(gateway, rooms['late'], url, catalog)
+        assert refused == 'invalid_params', refused  # the room has ended
+        _, refused = await _seat(gateway, rooms['late'], 'http://127.0.0.1:9', catalog)
+        assert refused == 'peer_target_mismatch' and probes == []
+        assert _owed(gateway.db.db_path) == [('late', 'reviewer', 0)]
+        monkeypatch.setattr(PeerRunsHTTPClient, 'probe', probe)
+        assert await _grant_error(url, after) is None
+        assert await asyncio.to_thread(gateway.service.retry_owed_revokes) == 1
+        assert await _grant_error(url, after) == 'room_reauthorization_required'
     finally:
         await server.close()
 
@@ -349,8 +491,8 @@ async def test_disband_and_registration_never_leave_a_route_behind(gateway, monk
 @pytest.mark.asyncio
 async def test_disband_waits_for_a_registration_even_while_the_driver_stops(gateway, monkeypatch):
     """The room driver stopping must not take Disband off the registration lock: a route published
-    meanwhile is either refused by the room's tombstone or stops Disband, never left behind."""
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    meanwhile is either refused by the room's tombstone or dropped by Disband with its revoke owed,
+    never left behind."""
     server, url = await serve(gateway, monkeypatch)
     try:
         catalog = room_link(gateway.authority)['catalog']
@@ -375,15 +517,15 @@ async def test_disband_waits_for_a_registration_even_while_the_driver_stops(gate
 
         assert registered['registered'], registered
         assert race['during_save'] is None, race
-        # The route was published first, and no driver is running to revoke its grant: Disband refuses.
-        assert race['disband'] == 'runtime_coordination_required', race
-        assert hosted_room_links.load_room_links(gateway.db.db_path)
-        assert (await asyncio.to_thread(PeerRunsHTTPClient(base_url=url, api_key='').probe, grant=grant))['room_id']
+        # The route was published first; with no driver running, Disband drops it and owes its revoke.
+        assert 'tombstone' in race['disband'], race
+        assert hosted_room_links.load_room_links(gateway.db.db_path) == () and gateway.service.peer_routes == {}
+        assert _owed(gateway.db.db_path) == [('stopping', 'reviewer', 0)]
 
-        # With the driver back, Disband revokes the grant and ends the room.
+        # A driver pays it.
         gateway.service.runtime.status = running
-        assert 'tombstone' in await call(gateway.owner, 'groups.disband', room_id='stopping')
-        assert hosted_room_links.load_room_links(gateway.db.db_path) == ()
+        assert await asyncio.to_thread(gateway.service.retry_owed_revokes) == 1 and _owed(gateway.db.db_path) == []
+        assert await _grant_error(url, grant) == 'room_reauthorization_required'
     finally:
         await server.close()
 
@@ -488,4 +630,91 @@ async def test_register_sends_the_grant_only_to_the_pinned_endpoint(gateway, mon
         assert await call(gateway.owner, 'groups.peer.register', **register, target_url=url) == 'peer_unreachable'
     finally:
         await echo_server.close()
+        await server.close()
+
+
+async def _seat(gateway, room, url, catalog, **invite_params):
+    """Invite on the member gateway and register that grant on the home; return the grant."""
+    grant = (await call(gateway.owner, 'groups.peer.invite', room_id=room['room_id'], member_id='reviewer',
+                        home_install_id=room['authority_gateway_id'],
+                        authority_gateway_id=room['authority_gateway_id'],
+                        authority_epoch=room['authority_epoch'], **invite_params))['grant']
+    registered = await call(gateway.owner, 'groups.peer.register', room_id=room['room_id'], member_id='reviewer',
+                            target_url=url, target_profile='default', grant=grant, catalog=catalog)
+    return grant, registered
+
+
+async def _grant_error(url, grant):
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+    try:
+        await asyncio.to_thread(PeerRunsHTTPClient(base_url=url, api_key='').probe, grant=grant)
+    except PeerRunsHTTPError as exc:
+        return exc.error_code
+    return None
+
+
+def test_paying_owed_revokes_holds_the_room_supervisor_only_briefly(gateway):
+    """A member gateway that accepts the connection and never answers holds the worker cycle that
+    pays its revoke. Each cycle pays one owed revoke, briefly, and its next attempt is timed from
+    when that attempt gave up, so the room supervisor is never held for long."""
+    import socket
+    import sqlite3
+    db, service = gateway.db.db_path, gateway.service
+    held = []
+    with socket.create_server(('127.0.0.1', 0)) as silent:
+        silent.settimeout(30)
+        port = silent.getsockname()[1]
+        threading.Thread(target=lambda: held.extend(silent.accept() for _ in range(2)), daemon=True).start()
+        for member_id in ('first', 'second'):
+            service.owe_grant_revoke(room_id='ended', member_id=member_id, target_url=f'http://127.0.0.1:{port}',
+                                     grant=f'grant-for-{member_id}')
+        started = time.monotonic()
+        assert service.retry_owed_revokes() == 0
+        returned, elapsed = time.time(), time.monotonic() - started
+    assert elapsed < 4, elapsed
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute('SELECT member_id, attempts, next_attempt_at FROM hosted_room_owed_revokes '
+                            'ORDER BY member_id').fetchall()
+    attempted = [row for row in rows if row[1] == 1]
+    assert len(attempted) == 1 and len(rows) == 2, rows
+    assert attempted[0][2] >= returned + 4.9, (attempted, returned)
+    for connection, _ in held:
+        connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_of_the_previous_grant_never_writes_over_a_re_seat(gateway, monkeypatch):
+    """A turn renews the route's grant while an open room re-seats the member. The renewal belongs
+    to the grant it renewed: once the route holds the re-seated grant, the renewal does not replace it."""
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+    server, url = await serve(gateway, monkeypatch)
+    try:
+        catalog = room_link(gateway.authority)['catalog']
+        room = await linked_room(gateway, catalog)
+        expiring, registered = await _seat(gateway, room, url, catalog, ttl_seconds=120)
+        assert registered['registered'], registered
+        service, key, reseated = gateway.service, ('linked', 'reviewer'), []
+        refresh = PeerRunsHTTPClient.refresh_grant
+
+        def refresh_while_reseating(client, **kwargs):
+            renewed = refresh(client, **kwargs)
+            grant, result = asyncio.run(_seat(gateway, room, url, catalog))
+            assert result['registered'], result
+            reseated.append(grant)
+            return renewed
+        monkeypatch.setattr(PeerRunsHTTPClient, 'refresh_grant', refresh_while_reseating)
+        binding = HostedRoomBinding('linked', room['authority_gateway_id'], room['authority_epoch'])
+        route = service.peer_routes[key]
+        transport = service._resolve_member_transport(
+            binding, {'payload': {'target_member_id': 'reviewer', 'source_event_seq': 1}})
+        dispatch = build_member_dispatch(
+            binding=binding, route=route, room_id='linked', task_id='dtask:renew', target_profile='default',
+            execution_generation=1, source_event_seq=1, prompt='review', trace_id=route.trace_id).as_mapping()
+        sent = await asyncio.to_thread(transport.client._refresh_grant, {'dispatch': dispatch, 'grant': expiring})
+        assert sent['grant'] not in (expiring, *reseated)  # this turn still goes out on its renewal
+        stored, = hosted_room_links.load_room_links(gateway.db.db_path)
+        assert service.peer_routes[key].grant == stored.grant == reseated[0]
+    finally:
         await server.close()
