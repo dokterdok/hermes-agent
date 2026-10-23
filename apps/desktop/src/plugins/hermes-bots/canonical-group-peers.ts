@@ -413,3 +413,39 @@ export function peerTargetText(state: PeerTargetState, connection: string, label
 
   return words ? fill(words, { connection }) : fill(labels.peerTargetSetup, { connection, reason: state.reason })
 }
+
+/** Whether a classic room's Bots can all join a new gateway room on `route` (#142926), those on other
+ *  connections (`elsewhere`, from `dialablePeers`) through their own gateways: 'checking' while their
+ *  gateways are read, then 'ready', or why not (once per connection, or the roster's own problem in
+ *  `problemText`'s words). */
+export function peerGatePlan(route: CanonicalGroupRoute, members: GroupMember[], elsewhere: GroupMember[],
+  targets: ReadonlyMap<string, PeerTargetState>, labels: PeerLabels, problemText: (problem: string) => string): 'checking' | 'ready' | string[] {
+  const states = elsewhere.map(member => {
+    const own = peerRoute(member, route.connectionId)!
+
+    return { connection: member.connectionLabel || own.connectionId, state: targets.get(own.connectionId) }
+  })
+
+  if (states.some(({ state }) => !state)) {return 'checking'}
+
+  const problems = [...new Set(states.flatMap(({ connection, state }) => state!.ready ? [] : [peerTargetText(state!, connection, labels)]))]
+
+  if (problems.length) {return problems}
+
+  const checked = canonicalGroupRoster(route, members, member => {
+    const own = peerRoute(member, route.connectionId)
+    const state = own && targets.get(own.connectionId)
+
+    return state?.ready ? state : undefined
+  })
+
+  return 'problem' in checked ? [problemText(checked.problem)] : 'ready'
+}
+
+/** The Bots of `elsewhere` this Desktop may dial to seat them here: each must be its connection's
+ *  default Bot on a connection with a live roster row. Empty when any one is not. */
+export function dialablePeers(elsewhere: GroupMember[], home: null | string, roster: Partial<RosterRow>[]): GroupMember[] {
+  const live = new Set(roster.flatMap(row => peerRoute(row, home)?.connectionId ?? []))
+
+  return elsewhere.length && elsewhere.every(member => live.has(peerRoute(member, home)?.connectionId ?? '')) ? elsewhere : []
+}
