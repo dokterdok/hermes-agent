@@ -594,7 +594,9 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const profile = useValue(host.state.profile)
   const binding = canonicalGroupBindingFor(bindings, { connectionId: connectionId ?? '', profile }, props.group, props.origin ?? 'name')
 
-  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
+  if (binding) {
+    return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} onReplaced={key => openGroupChat(key, 'key')} visible={props.visible} />
+  }
 
   return <GroupExecutionGate {...props} />
 }
