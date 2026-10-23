@@ -40,9 +40,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource, groupExecutionMode, groupSeatsPeers } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import type { CanonicalGroupMessages } from './canonical-group-locales'
+import { createGatewayGroup, dialablePeers, peerGatePlan, peerJoinText, usePeerTargets } from './canonical-group-peers'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import {
   $canonicalGroupBindings,
@@ -55,7 +56,7 @@ import {
   resolveCanonicalGroup
 } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
-import { canonicalGroupCreateError, canonicalGroupRequest, canonicalGroupRoster, createCanonicalGroup, onCanonicalConnection } from './canonical-groups'
+import { canonicalGroupCreateError, canonicalGroupRequest, canonicalGroupRoster, onCanonicalConnection } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -627,9 +628,10 @@ interface GatePlan {
 
 /** What a room with no gateway binding shows: on a classic connection its classic workspace, as on
  *  main; on a gateway connection (or while that is unknown) what happened, why, what to do, and what
- *  happens to its earlier messages. Only a classic room whose Bots can form a gateway group here is
- *  offered Start new group; a gateway connection never runs a classic room. */
-function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, open }: {
+ *  happens to its earlier messages. Only a classic room whose Bots can form a gateway group here,
+ *  those on other connections joining through their own gateways (`across`), is offered Start new
+ *  group; a gateway connection never runs a classic room. */
+function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, open, across }: {
   mode: GroupExecutionMode | 'checking'
   unavailable: GateUnavailable
   lookup: GateLookup
@@ -637,6 +639,7 @@ function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, ope
   route: { connectionId: string; profile: string }
   canonical: CanonicalGroupMessages
   open: GateOpenCopy
+  across: null | 'checking' | 'ready' | string[]
 }): GatePlan {
   const plan = { classic: false, problem: '', canCreate: false, retry: null }
 
@@ -664,6 +667,10 @@ function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, ope
   if (checked.problem !== 'otherConnection') {
     return { ...plan, message: canonical.legacyRoomBlocked, problem: canonicalGroupCreateError({ canonicalGroupProblem: checked.problem }, canonical) }
   }
+
+  if (across === 'ready') {return { ...plan, message: canonical.legacyRoomAcross, canCreate: true }}
+
+  if (Array.isArray(across)) {return { ...plan, message: canonical.legacyRoomBlocked, problem: across.join(' ') }}
 
   const elsewhere = [...new Set(props.members.filter(member => !onCanonicalConnection(route, member))
     .map(member => member.connectionLabel || member.connectionId).filter((label): label is string => Boolean(label)))]
@@ -694,7 +701,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const gateway = useValue(host.state.gateway)
   const activationEpoch = gatewayActivationEpoch()
   const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
-  const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode; unavailable: GateUnavailable } | null>(null)
+  const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode; peers?: boolean; unavailable: GateUnavailable } | null>(null)
   const current = capability?.source === source ? capability : null
   const mode = current ? current.mode : 'checking'
   const [error, setError] = useState('')
@@ -705,6 +712,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const [lookupAttempt, setLookupAttempt] = useState(0)
   const [capabilityAttempt, setCapabilityAttempt] = useState(0)
   const classicRoom = useValue($groupChats)[props.group]
+  const liveRoster = useValue($lastRoster)
   const lookupStatus = lookup?.source === source ? lookup.status : 'pending'
   useEffect(() => {
     if (mode !== 'canonical') {return}
@@ -740,7 +748,9 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     }
 
     void canonicalGroupRequest<unknown>({ connectionId: connectionId ?? '', profile }, 'groups.capabilities')
-      .then(result => { if (!cancelled) {setCapability({ source, mode: groupExecutionMode(result), unavailable: gateUnavailable(result) })} })
+      .then(result => {
+        if (!cancelled) {setCapability({ source, mode: groupExecutionMode(result), peers: groupSeatsPeers(result), unavailable: gateUnavailable(result) })}
+      })
       .catch(e => {
         if (!cancelled) {
           setCapability({ source, mode: 'unavailable', unavailable: gateUnavailable(undefined, e) })
@@ -753,8 +763,16 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
 
   const route = { connectionId: connectionId ?? '', profile }
 
+  // Bots on other connections that this gateway could seat, read only once the room is known to be classic.
+  const across = current?.peers && lookupStatus === 'missing' && canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null
+    ? dialablePeers(props.members.filter(member => !onCanonicalConnection(route, member)), connectionId, liveRoster)
+    : []
+
+  const peerTargets = usePeerTargets(across, connectionId, across.length > 0)
+
   const plan = groupGatePlan({ mode, unavailable: current?.unavailable ?? 'unreachable', lookup: lookupStatus, props, route,
-    canonical: b.canonical, open: t.gatewayGroupOpen })
+    canonical: b.canonical, open: t.gatewayGroupOpen, across: across.length ? peerGatePlan(route, props.members, across, peerTargets, b.canonical,
+      problem => canonicalGroupCreateError({ canonicalGroupProblem: problem }, b.canonical)) : null })
 
   if (plan.classic) {return <LegacyGroupChatWorkspace {...props} />}
   const { canCreate } = plan
@@ -776,9 +794,14 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
       }
 
       setBusy(true)
-      void createCanonicalGroup(route, props.group, props.members)
-        .then(({ room }) => {
-          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room), 'key')}
+      void createGatewayGroup(route, props.group, props.members, peerTargets, Boolean(current?.peers))
+        .then(({ room, unjoined }) => {
+          if (!sourceCurrent()) {return}
+          openGroupChat(registerCanonicalGroup(route, room), 'key')
+
+          for (const { member, error } of unjoined) {
+            host.notify({ kind: 'error', message: peerJoinText(error, member.display_name || member.handle, b.canonical) })
+          }
         })
         .catch(e => { if (sourceCurrent()) {setError(canonicalGroupCreateError(e, b.canonical))} }).finally(() => setBusy(false))
     }}>{b.canonical.startGatewayGroup}</Button>}

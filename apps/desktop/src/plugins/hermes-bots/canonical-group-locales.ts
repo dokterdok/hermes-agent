@@ -79,6 +79,7 @@ export interface CanonicalGroupMessages {
   peerJoinConnect: string
   peerStartWithout: string
   peerStartWithoutConfirm: string
+  legacyRoomAcross: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -162,7 +163,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerAway: '{name}’s computer isn’t answering right now.',
     peerJoinConnect: '{name} hasn’t joined: connect to the computer it runs on, then choose Retry.',
     peerStartWithout: 'Start new group without {name}',
-    peerStartWithoutConfirm: 'This group chat ends, and a new one starts with the other Bots. Earlier messages aren’t copied into it.'
+    peerStartWithoutConfirm: 'This group chat ends, and a new one starts with the other Bots. Earlier messages aren’t copied into it.',
+    legacyRoomAcross: 'Desktop ran this group chat itself, so it can’t continue on this gateway. Start a new group with the same Bots: this connection hosts it, and the Bots on your other computers join through their own gateways. It keeps working when Desktop is closed. Earlier messages aren’t copied into it.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -244,7 +246,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerAway: '{name} のコンピューターは現在応答していません。',
     peerJoinConnect: '{name} はまだ参加していません。それが動いているコンピューターに接続してから、「再試行」を選んでください。',
     peerStartWithout: '{name} を除いて新しいグループを始める',
-    peerStartWithoutConfirm: 'このグループチャットは終了し、ほかの Bot で新しいグループチャットが始まります。以前のメッセージはコピーされません。'
+    peerStartWithoutConfirm: 'このグループチャットは終了し、ほかの Bot で新しいグループチャットが始まります。以前のメッセージはコピーされません。',
+    legacyRoomAcross: 'このグループチャットは Desktop 自身が動かしていたため、このゲートウェイでは続けられません。同じ Bot で新しいグループを始めましょう。この接続がグループをホストし、ほかのコンピューター上の Bot はそれぞれのゲートウェイを通じて参加します。Desktop を閉じても動き続けます。以前のメッセージは新しいグループにコピーされません。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -326,7 +329,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerAway: '{name} 所在的电脑目前没有响应。',
     peerJoinConnect: '{name} 尚未加入：请连接到它所在的电脑，然后选择“重试”。',
     peerStartWithout: '不含 {name} 开始新群聊',
-    peerStartWithoutConfirm: '此群聊将结束，并用其他 Bot 开始一个新群聊。之前的消息不会复制到新群聊。'
+    peerStartWithoutConfirm: '此群聊将结束，并用其他 Bot 开始一个新群聊。之前的消息不会复制到新群聊。',
+    legacyRoomAcross: '这个群聊由 Desktop 自己运行，因此无法在此网关上继续。用相同的 Bot 开始一个新群组：由此连接托管，其他电脑上的 Bot 通过各自的网关加入。关闭 Desktop 后它仍会继续工作。之前的消息不会复制到新群组。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -408,7 +412,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerAway: '{name} 所在的電腦目前沒有回應。',
     peerJoinConnect: '{name} 尚未加入：請連線到它所在的電腦，然後選擇「重試」。',
     peerStartWithout: '不含 {name} 開始新群聊',
-    peerStartWithoutConfirm: '此群聊將結束，並用其他 Bot 開始新的群聊。先前的訊息不會複製到新群聊。'
+    peerStartWithoutConfirm: '此群聊將結束，並用其他 Bot 開始新的群聊。先前的訊息不會複製到新群聊。',
+    legacyRoomAcross: '這個群聊由 Desktop 自行執行，因此無法在此閘道上繼續。用相同的 Bot 開始新群組：由此連線託管，其他電腦上的 Bot 會透過各自的閘道加入。關閉 Desktop 後它仍會繼續運作。先前的訊息不會複製到新群組。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -490,7 +495,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerAway: 'جهاز {name} لا يستجيب الآن.',
     peerJoinConnect: 'لم ينضم {name} بعد: اتصل بالجهاز الذي يعمل عليه، ثم اختر إعادة المحاولة.',
     peerStartWithout: 'بدء مجموعة جديدة بدون {name}',
-    peerStartWithoutConfirm: 'تنتهي محادثة المجموعة هذه وتبدأ محادثة جديدة بالبوتات الأخرى. لن تُنسخ الرسائل السابقة إليها.'
+    peerStartWithoutConfirm: 'تنتهي محادثة المجموعة هذه وتبدأ محادثة جديدة بالبوتات الأخرى. لن تُنسخ الرسائل السابقة إليها.',
+    legacyRoomAcross: 'شغّل Desktop محادثة المجموعة هذه بنفسه، لذا لا يمكنها المتابعة على هذه البوابة. ابدأ مجموعة جديدة بالبوتات نفسها: يستضيفها هذا الاتصال، وتنضم البوتات الموجودة على أجهزتك الأخرى عبر بواباتها. ستستمر في العمل عند إغلاق Desktop. لن تُنسخ الرسائل السابقة إليها.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -575,7 +581,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerAway: 'Компьютер {name} сейчас не отвечает.',
     peerJoinConnect: '{name} ещё не присоединился: подключитесь к компьютеру, на котором он работает, и выберите «Повторить».',
     peerStartWithout: 'Начать новую группу без {name}',
-    peerStartWithoutConfirm: 'Этот групповой чат завершится, и начнётся новый с остальными ботами. Прежние сообщения в него не копируются.'
+    peerStartWithoutConfirm: 'Этот групповой чат завершится, и начнётся новый с остальными ботами. Прежние сообщения в него не копируются.',
+    legacyRoomAcross: 'Этим групповым чатом управлял сам Desktop, поэтому он не может продолжиться на этом шлюзе. Начните новую группу с теми же ботами: её разместит это подключение, а боты на других ваших компьютерах присоединятся через свои шлюзы. Она продолжит работать, когда Desktop закрыт. Прежние сообщения в неё не копируются.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -659,7 +666,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerAway: 'L’ordinateur de {name} ne répond pas pour l’instant.',
     peerJoinConnect: '{name} n’a pas encore rejoint le groupe : connectez-vous à l’ordinateur où il fonctionne, puis choisissez Réessayer.',
     peerStartWithout: 'Démarrer un nouveau groupe sans {name}',
-    peerStartWithoutConfirm: 'Cette discussion de groupe se termine et une nouvelle démarre avec les autres Bots. Les messages précédents n’y sont pas copiés.'
+    peerStartWithoutConfirm: 'Cette discussion de groupe se termine et une nouvelle démarre avec les autres Bots. Les messages précédents n’y sont pas copiés.',
+    legacyRoomAcross: 'Desktop gérait lui-même cette discussion de groupe, elle ne peut donc pas continuer sur cette passerelle. Démarrez un nouveau groupe avec les mêmes Bots : cette connexion l’héberge, et les Bots de vos autres ordinateurs le rejoignent par leur propre passerelle. Il continue de fonctionner quand Desktop est fermé. Les messages précédents n’y sont pas copiés.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -744,7 +752,8 @@ export const CANONICAL_GROUP_LOCALES = {
     peerAway: 'Der Computer von {name} antwortet gerade nicht.',
     peerJoinConnect: '{name} ist noch nicht beigetreten: Verbinden Sie sich mit dem Computer, auf dem er läuft, und wählen Sie dann Erneut versuchen.',
     peerStartWithout: 'Neue Gruppe ohne {name} starten',
-    peerStartWithoutConfirm: 'Dieser Gruppenchat endet, und ein neuer beginnt mit den anderen Bots. Frühere Nachrichten werden nicht in ihn kopiert.'
+    peerStartWithoutConfirm: 'Dieser Gruppenchat endet, und ein neuer beginnt mit den anderen Bots. Frühere Nachrichten werden nicht in ihn kopiert.',
+    legacyRoomAcross: 'Desktop hat diesen Gruppenchat selbst ausgeführt, daher kann er auf diesem Gateway nicht weiterlaufen. Starten Sie eine neue Gruppe mit denselben Bots: Diese Verbindung hostet sie, und die Bots auf Ihren anderen Computern treten über ihr eigenes Gateway bei. Sie arbeitet weiter, wenn Desktop geschlossen ist. Frühere Nachrichten werden nicht in sie kopiert.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -828,6 +837,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerAway: 'El equipo de {name} no responde en este momento.',
     peerJoinConnect: '{name} aún no se ha unido: conéctate al equipo donde funciona y elige Reintentar.',
     peerStartWithout: 'Iniciar nuevo grupo sin {name}',
-    peerStartWithoutConfirm: 'Este chat de grupo termina y empieza uno nuevo con los demás Bots. Los mensajes anteriores no se copian en él.'
+    peerStartWithoutConfirm: 'Este chat de grupo termina y empieza uno nuevo con los demás Bots. Los mensajes anteriores no se copian en él.',
+    legacyRoomAcross: 'Desktop ejecutaba este chat de grupo por sí mismo, así que no puede continuar en esta pasarela. Inicia un grupo nuevo con los mismos Bots: esta conexión lo aloja y los Bots de tus otros equipos se unen a través de su propia pasarela. Seguirá funcionando cuando Desktop esté cerrado. Los mensajes anteriores no se copian en él.'
   }
 } satisfies Record<string, CanonicalGroupMessages>
