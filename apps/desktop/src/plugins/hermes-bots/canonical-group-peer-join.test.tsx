@@ -157,3 +157,27 @@ it('shows the badge but no setup controls on a gateway that cannot register Bots
   await act(async () => {})
   expect(screen.queryByText(words.peerNotJoined.replace('{name}', 'Hermes · Mac Mini'))).toBeNull()
 })
+
+it('keeps a joined Bot seated: opening its room renews it once, and a send waits for that renewal', async () => {
+  let release!: () => void
+  const registered = new Promise<void>(resolve => { release = resolve })
+  const joined = [{ room_id: 'linked', member_id: 'hermes-mac-mini', status: 'ready' }]
+  gateways({ routes: joined, home: (method, params) => method === 'groups.peer.register'
+    ? registered.then(() => ({ registered: true, mode: 'direct', transport_security: 'tls', target_install_id: 'install:mini', target_profile: 'default' }))
+    : method === 'groups.send' ? { event: {}, client_event_id: params.event_id, accepted: true, driver_started: true } : undefined })
+  const renewed = { ...binding, roomId: 'renewed-on-open' }
+  render(<CanonicalGroupWorkspace binding={renewed} />)
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.peer.register')).toHaveLength(1))
+  expect(request.mock.calls.find(call => call[1] === 'groups.peer.invite')![0].connectionId).toBe('mini')
+
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await act(async () => {})
+  expect(request.mock.calls.filter(call => call[1] === 'groups.send')).toHaveLength(0)
+  await act(async () => { release() })
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.send')).toHaveLength(1))
+  // Fresh now: the next polls renew nothing.
+  await new Promise(resolve => setTimeout(resolve, 2200))
+  expect(request.mock.calls.filter(call => call[1] === 'groups.peer.invite')).toHaveLength(1)
+})

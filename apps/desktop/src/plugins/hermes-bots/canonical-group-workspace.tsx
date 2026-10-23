@@ -6,8 +6,8 @@ import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { CanonicalPeerJoinRows } from './canonical-group-peer-join'
-import { unjoinedPeers } from './canonical-group-peers'
+import { CanonicalPeerJoinRows, usePeerRenewal } from './canonical-group-peer-join'
+import { peerRenewalSettled, unjoinedPeers } from './canonical-group-peers'
 import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
 import { renameCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomActions } from './canonical-group-room-actions'
@@ -219,6 +219,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   }
 
   const sendIntent = async (run: SendRun) => {
+    await peerRenewalSettled(binding)
+
     if (!pending && delivered.current) {
       await retireCanonicalGroupSend(binding, delivered.current)
       delivered.current = null
@@ -351,6 +353,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const phases = canonicalMemberPhases(state?.driver_status)
 
   const unjoined = unjoinedPeers(state?.room, state?.driver_status)
+  usePeerRenewal(binding, state, methods, visible)
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <header className="flex items-center gap-2">

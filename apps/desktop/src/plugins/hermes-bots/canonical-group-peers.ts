@@ -138,6 +138,7 @@ const pinned = (member: CanonicalRoomMember) => member.target?.kind === 'peer' ?
 export async function seatPeer(home: CanonicalGroupBinding, room: RoomAuthority, seat: PeerSeat): Promise<void> {
   try {
     await invitedAndRegistered(home, room, seat)
+    seatedAt.set(peerJoinKey(home, seat.member.member_id), Date.now())
     noteJoin(home, seat.member.member_id)
   } catch (error) {
     noteJoin(home, seat.member.member_id, error)
@@ -301,6 +302,50 @@ export async function startAgainWithout(binding: CanonicalGroupBinding, room: Ca
 
   return { binding: replacement, room: next, unjoined,
     ended: tombstone?.room_id === binding.roomId && typeof tombstone.disbanded_at === 'number' && Number.isFinite(tombstone.disbanded_at) }
+}
+
+/** When this Desktop last seated each member (`peerJoinKey`), in memory: after a restart, the first
+ *  open of a room seats its members again. */
+const seatedAt = new Map<string, number>()
+const renewing = new Map<string, Promise<void>>()
+
+/** A seat made here stays fresh for less than its grant's dispatch lifetime (`ttl_seconds`, one
+ *  day): until then the home can still renew the grant when it sends that member a turn. A failed
+ *  renewal is tried again after a few minutes. */
+const SEAT_FRESH_MS = 20 * 60 * 60 * 1000
+const RENEW_AGAIN_MS = 5 * 60 * 1000
+
+/** Seat again each member of another gateway whose last seat here is not fresh, when its room is open
+ *  (and before a send, `peerRenewalSettled`). The home can renew a grant only while the grant still
+ *  allows dispatch, which it does for one day, and only when it sends the member a turn; so without
+ *  this, a member left a day without a turn needs a Retry. Only joined members, or members whose access
+ *  ended, are renewed: one that never joined or is away keeps its row and its Retry. A renewal that
+ *  fails changes nothing the member has now. */
+export function renewPeers(binding: CanonicalGroupBinding, room: CanonicalRoom, routes: unknown, roster: Partial<RosterRow>[]) {
+  const now = Date.now()
+
+  for (const { member, status } of peerMemberStates(room.members, routes)) {
+    const key = peerJoinKey(binding, member.member_id)
+
+    if ((status !== 'ready' && status !== 'needs_reauthorization') || renewing.has(key) || now - (seatedAt.get(key) ?? 0) < SEAT_FRESH_MS) {continue}
+    seatedAt.set(key, now)
+    renewing.set(key, rejoinPeer(binding, room, member, roster)
+      .catch(() => { seatedAt.set(key, now - SEAT_FRESH_MS + RENEW_AGAIN_MS) })
+      .finally(() => renewing.delete(key)))
+  }
+}
+
+/** A send waits, for up to `timeoutMs`, for the renewals its room has in flight, so its turns go out
+ *  under a fresh grant. */
+export function peerRenewalSettled(binding: CanonicalGroupBinding, timeoutMs = 15_000): Promise<void> {
+  const prefix = JSON.stringify([binding.connectionId, binding.profile, binding.roomId]).slice(0, -1)
+  const inFlight = [...renewing].filter(([key]) => key.startsWith(prefix)).map(([, renewal]) => renewal)
+
+  if (!inFlight.length) {return Promise.resolve()}
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  return Promise.race([Promise.all(inFlight), new Promise(resolve => { timer = setTimeout(resolve, timeoutMs) })])
+    .then(() => clearTimeout(timer))
 }
 
 /** The ids of the room's members of other gateways that have not joined (`peerMemberStates`). */
