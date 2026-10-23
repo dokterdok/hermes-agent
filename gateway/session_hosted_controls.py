@@ -20,13 +20,14 @@ class HostedControls:
                    and m.get('profile') == task['payload']['target_profile']
                    for m in self._room(room_id)['members']):
             raise RuntimeStoreError('permission_denied')
-        if self._member_is_peer(room_id, member_id):
-            raise RuntimeStoreError('unsupported_operation')
         return task, HostedRoomBinding(room_id, gateway, epoch)
 
     def discard_room_task(self, room_id, *, member_id, task_id, execution_generation):
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
+            if self._member_is_peer(room_id, member_id):
+                # Nothing here can prove what the member's gateway did with that attempt.
+                raise RuntimeStoreError('unsupported_operation')
             cancel_id = f'discard:{execution_generation}'
             if task['status'] == 'cancelled' and task.get('cancel_id') == cancel_id:
                 return task
@@ -54,15 +55,31 @@ class HostedControls:
                 raise RuntimeStoreError('unknown_execution')
             if task['status'] != 'deferred':
                 raise RuntimeStoreError('stale_generation')
-            rpc = self._resolve_member_transport(binding, task)
-            info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
-                            session_id=rpc.ref.session_id)
-            if info.get('status') == 'unknown':
-                raise RuntimeStoreError('unknown_execution')
-            if info.get('active'):
-                raise RuntimeStoreError('session_busy')
-            lease = self.runtime._ensure_lease(binding)
-            return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+            if not self._member_is_peer(room_id, member_id):
+                return self._retry_local(binding, task, room_id)
+        return self._retry_peer(task)
+
+    def _retry_local(self, binding, task, room_id):
+        rpc = self._resolve_member_transport(binding, task)
+        info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
+                        session_id=rpc.ref.session_id)
+        if info.get('status') == 'unknown':
+            raise RuntimeStoreError('unknown_execution')
+        if info.get('active'):
+            raise RuntimeStoreError('session_busy')
+        lease = self.runtime._ensure_lease(binding)
+        return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+
+    def _retry_peer(self, task):
+        """A member on another gateway may still hold this generation: replay it under its own key
+        first, never start another (``HostedRoomRuntime._retry_deferred``). Called outside the
+        policy lock, since it waits on the member's gateway."""
+        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        try:
+            return self.runtime.retry_indeterminate(task['identity'])
+        except PeerRunsHTTPError as exc:
+            grant = exc.error_code in {'invalid_room_grant', 'room_reauthorization_required'}
+            raise RuntimeStoreError(exc.error_code if grant else 'peer_unreachable') from exc
 
     def status(self, room_id=None):
         result = super().status(room_id)
@@ -73,8 +90,8 @@ class HostedControls:
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue
             member = task['payload'].get('target_member_id') or task['payload']['target_profile']
-            if self._member_is_peer(room_id, member):
-                continue
+            if task['status'] == 'indeterminate' and self._member_is_peer(room_id, member):
+                continue  # Discard is not offered for a member on another gateway
             actions.append({'kind': 'discard' if task['status'] == 'indeterminate' else 'retry',
                             'member_id': member, 'task_id': task['identity'].task_id,
                             'execution_generation': task['execution_generation']})
