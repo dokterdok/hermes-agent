@@ -12,12 +12,36 @@ One classifier, `groupExecutionMode`, reads `groups.capabilities`. Two surfaces 
 
 A gateway room offers a control only when the answer's `methods` lists its method: Discard (`groups.discard`), Retry (`groups.retry`), Allow and Deny (`groups.approve`), file upload and download (`groups.attachment.upload`, `groups.attachment.download`), Rename (`groups.rename`) and End group chat (`groups.disband`). The standalone surface lists no `groups.discard` and no attachments, so Discard and file upload do not appear there and **Download** stays disabled. The list holds for one opening of the gateway socket: an update restarts the gateway, so when the socket reopens the list is read again, and a reply that started before the socket changed is dropped. Until a read for the current opening succeeds none of these controls is offered, and a failed read is tried again every two seconds while the room is visible; a successful answer without a method list keeps them all.
 
-New Group Chat on a gateway connection offers only the Bots the gateway says it will seat (`seatable_profiles`) and creates a gateway room. When the gateway refuses, Desktop shows "The gateway couldn't create this group chat." followed by the gateway's own detail when it gives one; for a Bot it will not seat, that detail names the member. The gateway itself can also seat a text-only Bot from another gateway (`groups.peer.invite` / `groups.peer.register`, described in the Bot Mode guide); Desktop does not offer that yet.
+New Group Chat on a gateway connection offers only the Bots the gateway says it will seat (`seatable_profiles`) and creates a gateway room. When the gateway refuses, Desktop shows "The gateway couldn't create this group chat." followed by the gateway's own detail when it gives one; for a Bot it will not seat, that detail names the member.
+
+## Bots from other connections
+
+The gating is per side. This connection's gateway, the home, must list `groups.peer.register`; each Bot's own gateway must list `groups.peer.invite` and report its own `room_link` enabled. (The home's `room_link` describes whether the home could lend one of its own Bots to another gateway's room, so it doesn't gate this.) When the home lists `groups.peer.register`, New Group Chat also offers each other connection's default Bot, text only (`canonical-group-peers.ts`). When the dialog opens it reads `groups.capabilities` on each of those connections. A Bot is offered only when its gateway lists `groups.peer.invite` and its `room_link` is enabled, keeps running without Desktop (`persistent_process`), takes text only, lends its `default` profile and has an endpoint. Otherwise the Bot is disabled, and the dialog says why (`room_link.reason`, or the missing piece) and what to do on that computer. A Bot whose handle another member already has joins as handle-connection (`hermes-mac-mini`, "Hermes · Mac Mini").
+
+Desktop runs the one-time setup and keeps nothing:
+
+1. `groups.create` on this connection's gateway (the home), with each such Bot pinned to its gateway's installation and catalog digest;
+2. `groups.peer.invite` on the Bot's own connection, for the room's `authority_gateway_id` and `authority_epoch`, with `ttl_seconds` 86,400 and, where that gateway lists `peer_renewal_horizon`, `status_ttl_seconds` of 30 days;
+3. `groups.peer.register` on the home with that grant, its catalog and, as `target_url`, the endpoint URL in that pinned catalog (the home sends the grant to no other URL). Desktop refuses an invitation whose endpoint differs from its catalog's. The home probes the Bot's gateway before it binds the grant.
+
+The gateways run the member's turns from then on. The grant only passes through Desktop. If setup stops between steps (Desktop quits, either gateway restarts, the network drops), the room exists and its member has not joined, and nothing on this Desktop has to be cleaned up. An unregistered grant is held by no one; it expires, and Disband revokes the member's whole scope with it. The room opens even when a Bot does not join, and the dialog says why.
+
+In the room, each such member's route comes from `groups.state` (`driver_status.peer_routes`). It has no route until it registers, `needs_reauthorization` once its access has ended, and `unavailable` while its computer is away. The roster marks a member that is not `ready` as "not joined". A row under the header says so, gives the reason the last attempt here failed, and offers:
+
+- **Retry**: find the connection whose gateway is the pinned installation, then invite there and register here again. If that gateway now lends another catalog, it can never match this room's pin, and the row says so.
+- **Start new group without** that Bot, in a room of three or more. Its confirmation says that this group chat ends, a new one starts with the other Bots, and earlier messages aren't copied. The other members keep their pins and are seated again. A gateway room's roster is frozen, so this is the only way to drop a member.
+
+While a gateway room is open, Desktop also keeps its members from other computers seated. A grant allows dispatch for one day (`ttl_seconds` 86,400). The home renews it, up to the 30-day horizon, only while it still allows dispatch, and only when it sends that member a turn. So when this Desktop last seated a joined member (or one whose access ended) more than 20 hours ago, or not since it started, the open room runs the same invite and register again. A send waits up to 15 seconds for a renewal in flight. A failed renewal changes nothing and is tried again after five minutes. Nothing runs while no room is open.
+
+These controls appear only where the gateway lists `groups.peer.register`.
+
+## Classic rooms on a gateway connection
 
 A classic room opened on a gateway connection is first looked up by name in `groups.list`; a match opens that gateway room. Otherwise it never runs there, as on `main`, whichever computers its Bots are on: the gate says what happened, why, what to do and what happens to the earlier messages.
 
 - Bots that can form a gateway group on this connection: the gate offers **Start new group**, a fresh gateway room with the same Bots that keeps working when Desktop is closed. Earlier messages are not copied into it.
-- Bots on other connections, or on several (some here, some elsewhere): the gate names those connections and says to switch to the connection where the Bots run and start a group there, or to start a new group chat with Bots from this connection. Desktop does not offer one group across machines.
+- Bots on other connections, or on several (some here, some elsewhere), when this connection's gateway seats Bots from other connections: if each Bot elsewhere is its computer's default Bot, on a connection this Desktop has a live Bot on, and its gateway can host it, the gate offers **Start new group** with the same Bots, set up as in New Group Chat. If a gateway can't host its Bot, the gate says why and what to do there. The gate reads a connection's capabilities only when this Desktop has a live Bot on it.
+- Otherwise, Bots on other connections: the gate names those connections and says to switch to the connection where the Bots run and start a group there, or to start a new group chat with Bots from this connection.
 - Bots here that cannot form a gateway group as they are (two to six Bots, distinct profiles and handles, `@all` and `@everyone` reserved): the gate gives the reason and says to start a new group chat and choose its Bots.
 - A failed lookup offers **Retry**.
 
@@ -36,7 +60,7 @@ The gateway owns the log and the work. Desktop polls `groups.state` and `groups.
 
 History shows messages and notices for failed, cancelled and deferred turns (a deferred turn names its reason, such as `member_unavailable`), a stop, the work limit (`room.activity` with status `bounded`), the room's end and lost ownership; every other event (`turn.started`, `turn.settled`, other `room.activity`, …) stays out. Your own messages read as **You**. Room text may come from another machine: its `MEDIA:` paths, Markdown images, file links and directive cards stay inert, rich code fences (`listing`, `mermaid`, `svg`) show their source, and an explicit web link to a public host (not loopback, link-local or a private network) opens only on a click.
 
-Errors stay visible, and no failed gateway-room action falls back to Desktop-run execution. Membership editing is not offered.
+Errors stay visible, and no failed gateway-room action falls back to Desktop-run execution. Membership editing is not offered (Start new group without a Bot, above, starts a new room).
 
 ## Contract tests
 
