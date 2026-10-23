@@ -84,6 +84,28 @@ export const CANONICAL_GROUP_CAPABILITIES = declaredCapabilities({
   max_log_limit: 500
 })
 
+const CATALOG_DIGEST = 'c'.repeat(64)
+
+/** `groups.capabilities` of a gateway that also hosts Bots of other gateways' rooms and seats theirs
+ *  (gateway/session_group_peers.py): the `groups.peer.*` methods, `peer_renewal_horizon`, and a
+ *  `room_link` that is enabled, with the catalog a room pins its member to. */
+export function peerGroupCapabilities(gateway = 'install:peer') {
+  const endpoint = { available: true, url: `https://${gateway.slice(8)}.example.ts.net:8642`, transport_security: 'tls' }
+
+  return declaredCapabilities({
+    ...CANONICAL_GROUP_CAPABILITIES,
+    authority_gateway_id: gateway,
+    room_link: {
+      enabled: true, profile: 'default', endpoint,
+      catalog: { installation_id: gateway, protocol_versions: [2], link_modes: ['direct'], persistent_process: true, text: true,
+        attachments: false, execution_policy: { target_profile: 'default', policy_digest: 'p'.repeat(64) },
+        catalog_digest: CATALOG_DIGEST, endpoint }
+    },
+    features: [...CANONICAL_GROUP_CAPABILITIES.features, 'peer_renewal_horizon'],
+    methods: [...CANONICAL_GROUP_CAPABILITIES.methods, 'groups.peer.register', 'groups.peer.invite', 'groups.peer.revoke']
+  })
+}
+
 /** The standalone server's answer (`hermes serve`, `hermes dashboard`; tui_gateway/methods_groups.py
  *  `_METHODS`): it starts its own room driver at boot, so `driver` is true too. */
 export const STANDALONE_GROUP_CAPABILITIES = declaredCapabilities({
@@ -123,12 +145,17 @@ export function standaloneGroupProblems({ method, params }: GroupRequestCall): s
 // reaches it. canonical-groups-contract.test.ts fails once the two agree.
 export const STANDALONE_RETRY_MISMATCH = ['groups.retry.member_id', 'groups.retry.execution_generation']
 
+// Sent only to a gateway that lists `peer_renewal_horizon`, which the standalone server never does.
+export const CANONICAL_ONLY_FIELDS = ['groups.peer.invite.status_ttl_seconds']
+
 /** Refuse what either surface refuses before any handler runs. The gateway (`4001 invalid_params`):
  *  a method it does not list, an unknown key, or a missing required one. The standalone server: an
  *  unknown key in a method it lists. */
 export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
+  const served = new Set(peerGroupCapabilities().methods)
+
   for (const { method, params } of calls) {
-    const declared = CANONICAL_GROUP_CAPABILITIES.methods.includes(method) ? declaredGroupMethod(method)?.params : undefined
+    const declared = served.has(method) ? declaredGroupMethod(method)?.params : undefined
 
     if (!declared) {
       throw new Error(`Undeclared canonical group method: ${method}`)
@@ -149,7 +176,8 @@ export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
       }
     }
 
-    const refused = standaloneGroupProblems({ method, params }).filter(field => !STANDALONE_RETRY_MISMATCH.includes(field))
+    const refused = standaloneGroupProblems({ method, params })
+      .filter(field => !STANDALONE_RETRY_MISMATCH.includes(field) && !CANONICAL_ONLY_FIELDS.includes(field))
 
     if (refused.length) {
       throw new Error(`The standalone server refuses group field: ${refused.join(', ')}`)
