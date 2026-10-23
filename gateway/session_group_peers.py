@@ -5,13 +5,10 @@ scope (``groups.peer.revoke``). The room's home binds the grant to the room's pi
 (``groups.peer.register``). Dispatch, Stop, recovery and Disband then run on the canonical hosted
 service like any other member (``CanonicalHostedRoomService`` inherits the peer transport).
 """
-import logging
 import sqlite3
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
-
-logger = logging.getLogger(__name__)
 
 TARGET_METHODS = frozenset({'groups.peer.invite', 'groups.peer.revoke'})
 _GRANT_ERRORS = frozenset({'invalid_room_grant', 'room_reauthorization_required'})
@@ -157,17 +154,10 @@ def register(service, params):
             service.register_peer_route(room_id=room_id, member_id=member_id, route=route, client=client,
                                         target_url=target_url, catalog=catalog)
     if refused is not None:
-        # The member's gateway has seen this grant for a room that ended or moved: revoke it there
-        # (outside the lock), so Disband leaves no grant this home was handed.
-        _revoke_quietly(client, grant)
+        # The member's gateway has seen this grant for a room that ended or moved: this home owes
+        # its revoke, paid by the worker cycle, so Disband leaves no grant it was handed.
+        service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
+                                 client=client)
         raise refused
     return {'registered': True, 'mode': 'direct', 'transport_security': security,
             'target_install_id': catalog.installation_id, 'target_profile': profile}
-
-
-def _revoke_quietly(client, grant):
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-    try:
-        client.revoke_grant(grant=grant)
-    except PeerRunsHTTPError as exc:
-        logger.warning('peer grant for an ended room could not be revoked; it expires on its own: %s', exc)
