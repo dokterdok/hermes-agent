@@ -568,9 +568,9 @@ canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDisc
                  doc="Discard one indeterminate room task after explicit user confirmation.")
 
 
-# Cross-gateway members: the shared names, with the keys the gateway accepts. Grant ids and
-# lifetimes past ``ttl_seconds`` are the target's to choose, and the room's home derives a route's
-# trace and cancellation identity itself (``gateway/session_group_peers.py``).
+# Cross-gateway members: the shared names, with the keys the gateway accepts. Grant ids are the
+# target's to choose, and the room's home derives a route's trace and cancellation identity itself
+# (``gateway/session_group_peers.py``).
 
 
 class CanonicalGroupsPeerInviteParams(RoomParams):
@@ -579,6 +579,9 @@ class CanonicalGroupsPeerInviteParams(RoomParams):
     authority_epoch: int
     member_id: str
     ttl_seconds: float = 3600
+    #: How long the home may renew the grant (``ttl_seconds`` to 30 days); absent, ``ttl_seconds``.
+    #: Never null, like ``ttl_seconds``. Advertised by the ``peer_renewal_horizon`` feature.
+    status_ttl_seconds: float = None  # type: ignore[assignment]
 
 
 canonical_method("groups.peer.invite", params=CanonicalGroupsPeerInviteParams, result=GroupsPeerInviteResult,
