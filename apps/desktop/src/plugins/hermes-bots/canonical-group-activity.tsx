@@ -13,6 +13,8 @@ export interface CanonicalDriverStatus<Action extends { kind: string } = { kind:
   blocked?: boolean
   counts?: Record<string, number>
   pending_actions?: Action[]
+  /** Each member of another gateway with a registered route, and its status (`ready` once joined). */
+  peer_routes?: { member_id: string; status: string }[]
 }
 
 export type CanonicalMemberPhase = 'queued' | 'working'
@@ -40,8 +42,11 @@ export function canonicalMemberPhases(driver?: CanonicalDriverActivity): Map<str
   return phases
 }
 
-export function CanonicalGroupRoster({ members = [], label, labels, phases }: {
-  members?: CanonicalRoomMember[]; label: string; labels: ActivityLabels; phases: Map<string, CanonicalMemberPhase>
+export function CanonicalGroupRoster({ members = [], label, labels, phases, unjoined }: {
+  members?: CanonicalRoomMember[]; label: string; labels: ActivityLabels & { peerNotJoinedBadge?: string }
+  phases: Map<string, CanonicalMemberPhase>
+  /** Members of another gateway that have not joined (canonical-group-peers.ts `peerMemberStates`). */
+  unjoined?: ReadonlySet<string>
 }) {
   if (!members.length) {return null}
 
@@ -53,6 +58,7 @@ export function CanonicalGroupRoster({ members = [], label, labels, phases }: {
         {phase === 'working' && <GlyphSpinner ariaLabel={labels.memberWorking} className="text-(--ui-accent)" />}
         <span className={phase === 'working' ? 'text-(--ui-text-secondary)' : undefined}>{memberName(member)}</span>
         {phase === 'queued' && <span className="text-(--ui-text-quaternary)">· {labels.memberQueued}</span>}
+        {unjoined?.has(member.member_id) && <span className="text-(--ui-text-quaternary)">· {labels.peerNotJoinedBadge}</span>}
       </li>
     })}
   </ul>

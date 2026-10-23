@@ -6,6 +6,8 @@ import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { CanonicalPeerJoinRows } from './canonical-group-peer-join'
+import { unjoinedPeers } from './canonical-group-peers'
 import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
 import { renameCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomActions } from './canonical-group-room-actions'
@@ -43,15 +45,18 @@ function confirmSend(result: unknown, eventId: string, unconfirmed: string) {
   }
 }
 
-export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
+export function CanonicalGroupWorkspace({ binding, visible = true, onBack, onReplaced }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
+  /** Open the room that replaced this one (a member removed); `key` is its registry key. */
+  onReplaced?: (key: string) => void
 }) {
   // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView binding={binding} key={JSON.stringify([binding.connectionId, binding.profile, binding.roomId])} onBack={onBack} visible={visible} />
+  return <CanonicalRoomView binding={binding} key={JSON.stringify([binding.connectionId, binding.profile, binding.roomId])} onBack={onBack}
+    onReplaced={onReplaced} visible={visible} />
 }
 
-function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
-  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void
+function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplaced }: {
+  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void; onReplaced?: (key: string) => void
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
@@ -345,12 +350,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const composerLocked = !restored || busy || !!pending
   const phases = canonicalMemberPhases(state?.driver_status)
 
+  const unjoined = unjoinedPeers(state?.room, state?.driver_status)
+
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <header className="flex items-center gap-2">
       {onBack && <Button onClick={onBack}>{labels.back}</Button>}
       <div className="min-w-0">
         <h2 className="text-sm font-medium">{state?.room.name || labels.loadingGroup}</h2>
-        <CanonicalGroupRoster label={labels.members} labels={labels} members={state?.room.members} phases={phases} />
+        <CanonicalGroupRoster label={labels.members} labels={labels} members={state?.room.members} phases={phases} unjoined={unjoined} />
         <CanonicalGroupAttention driver={state?.driver_status} labels={labels} />
       </div>
       <Button disabled={stopping || !state?.driver_status} onClick={() => void stop()}>{labels.stop}</Button>
@@ -361,6 +368,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     <CanonicalGroupNotices error={error} journalError={journalError} labels={labels} notice={notice}
       onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
       readError={readError} unavailable={Boolean(state && !state.driver_status)} />
+    <CanonicalPeerJoinRows binding={binding} methods={methods} onChanged={() => void refresh().catch(e => setReadError(String(e)))}
+      onReplaced={onReplaced} state={state} unjoined={unjoined} />
     <div className="min-h-0 flex-1 overflow-auto" role="log">
       <CanonicalGroupHistory binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events}
         members={state?.room.members} />
