@@ -6,7 +6,7 @@ import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { CanonicalPeerJoinRows } from './canonical-group-peer-join'
+import { CanonicalPeerJoinRows, peerRenewalBeforeSend, usePeerRenewal } from './canonical-group-peer-join'
 import { unjoinedPeers } from './canonical-group-peers'
 import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
 import { renameCanonicalGroup } from './canonical-group-registry'
@@ -247,6 +247,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     setPending(exact)
     setDraft(words.text)
     setAttachments(words.attachments)
+    // Journaled first: a Desktop that quits while a Bot from another computer is being re-seated
+    // keeps the intent. Nothing has left yet, so a Stop meanwhile still holds it back.
+    await peerRenewalBeforeSend(exact.binding, state, methods)
 
     if (await attemptCanonicalGroupSend(exact.binding, exact.params.event_id) === null) {
       if (alive.current) {finishedElsewhere()}
@@ -351,6 +354,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const phases = canonicalMemberPhases(state?.driver_status)
 
   const unjoined = unjoinedPeers(state?.room, state?.driver_status)
+  usePeerRenewal(binding, state, methods, visible)
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <header className="flex items-center gap-2">
