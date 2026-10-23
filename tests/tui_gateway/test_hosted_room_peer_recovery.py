@@ -310,3 +310,32 @@ def test_deferred_turn_on_an_in_process_route_retries_as_before(tmp_path: Path):
     retried = runtime.retry_indeterminate(identity)
 
     assert retried["status"] == "queued"
+
+
+def test_stop_of_a_deferred_turn_on_an_in_process_route_cancels_at_once(tmp_path: Path):
+    """Only a member on another gateway can still be running a deferred turn, so only its Stop
+    waits for that gateway's acknowledgement; any other deferred turn is cancelled at once."""
+    db = _driver_room(tmp_path)
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    identity = _identity()
+    _admit(db, identity)
+    crashed = driver.acquire_lease(
+        db, room_id=ROOM_ID, gateway_id=BINDING.gateway_id, authority_epoch=BINDING.authority_epoch,
+        process_generation="crashed", ttl_seconds=1, clock=clock)
+    driver.start_task(db, identity, crashed, expected_cancel_generation=0, clock=clock)
+    now[0] = 102.0
+    runtime = _runtime(db, FakeSessionRPC(), clock=clock, lease_ttl_seconds=30,
+                       indeterminate_defer_seconds=5,
+                       transport_resolver=lambda _binding, _task: FakeSessionRPC())
+    lease = runtime._ensure_lease(BINDING)
+    driver.recover_room(db, lease, clock=clock)
+    runtime._reconcile_indeterminate(BINDING, lease)
+    now[0] = 108.0
+    runtime._reconcile_indeterminate(BINDING, lease)
+    assert driver.get_task(db, identity)["status"] == "deferred"
+
+    assert runtime.cancel(identity, cancel_id="stop-deferred")["status"] == "cancelled"

@@ -78,7 +78,7 @@ _REQUEUE_RUNNING_SQL = _task_update(
 _CANCEL_QUEUED_SQL = _task_update(_CANCEL_SET, "status IN ('queued', 'deferred') AND cancel_generation=?")
 _BEGIN_STOP_SQL = _task_update(
     "status='stopping', cancel_generation=?, cancel_id=?, updated_at=?",
-    "status IN ('running', 'indeterminate') AND cancel_generation=?")
+    "status IN ('running', 'indeterminate', 'deferred') AND cancel_generation=?")
 _COMPLETE_STOP_SQL = _task_update(
     "status='cancelled', terminal_at=?, updated_at=?", "status='stopping' AND cancel_id=? AND cancel_generation=?")
 
