@@ -90,6 +90,23 @@ def _grant_status(url, grant):
         return exc.code, json.loads(exc.read())
 
 
+async def _revoked(url, grant, timeout=60):
+    """Wait for the home's worker to pay the revoke Disband left it owing."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status, body = await asyncio.to_thread(_grant_status, url, grant)
+        if status != 200:
+            assert (status, body['error']['code']) == (403, 'room_reauthorization_required'), body
+            return
+        await asyncio.sleep(.25)
+    raise AssertionError('the grant was never revoked')
+
+
+def _owed(home):
+    with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+        return db.execute('SELECT room_id, member_id FROM hosted_room_owed_revokes').fetchall()
+
+
 async def _events(ws, kind, count=1, timeout=60):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -241,8 +258,7 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
             disbanded = await rpc(home_ws, 'groups.disband', room_id='linked')
             assert 'tombstone' in disbanded['result'], disbanded
             for grant in grants:
-                status, body = await asyncio.to_thread(_grant_status, routes[0], grant)
-                assert (status, body['error']['code']) == (403, 'room_reauthorization_required'), body
+                await _revoked(routes[0], grant)
 
     try:
         with daemon(root, target, target_env, barrier=False) as (_, target_desc):
@@ -255,6 +271,66 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
         for model in (home_model, target_model):
             for _, release in model.gates.values():
                 release.set()
+            model.shutdown()
+            model.server_close()
+
+
+def test_disband_ends_the_room_while_the_member_gateway_is_down_and_revokes_once_it_returns(tmp_path):
+    """The member's gateway stops while the room is live. Disband on the home still ends the room and
+    drops the route; the home keeps the revoke it owes, and its worker pays it once that gateway runs
+    again."""
+    root = Path(__file__).resolve().parents[2]
+    home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        api_port = sock.getsockname()[1]
+    home, home_env = _gateway(tmp_path, 'home', home_model, root)
+    target, target_env = _gateway(tmp_path, 'target', target_model, root, api_port=api_port)
+    url, grants = f'http://127.0.0.1:{api_port}', []
+
+    async def link(home_desc, target_desc):
+        async with websocket(home, home_desc) as home_ws, websocket(target, target_desc) as target_ws:
+            catalog = (await _room_link(target_ws))['catalog']
+            pinned = {'kind': 'peer', 'peer_id': 'target-gateway', 'installation_id': catalog['installation_id'],
+                      'profile': 'default', 'capability_digest': catalog['catalog_digest']}
+            room = (await rpc(home_ws, 'groups.create', room_id='linked', name='Linked', members=[
+                {'member_id': 'host', 'profile': 'default', 'handle': 'host'},
+                {'member_id': 'reviewer', 'profile': 'default', 'handle': 'reviewer', 'target': pinned}]))['result']['room']
+            invited = (await rpc(target_ws, 'groups.peer.invite', room_id='linked', member_id='reviewer',
+                                 home_install_id=room['authority_gateway_id'],
+                                 authority_gateway_id=room['authority_gateway_id'],
+                                 authority_epoch=room['authority_epoch']))['result']
+            grants.append(invited['grant'])
+            registered = await rpc(home_ws, 'groups.peer.register', room_id='linked', member_id='reviewer',
+                                   target_url=url, target_profile='default', grant=invited['grant'], catalog=catalog)
+            assert registered['result']['registered'], registered
+            await _send(home_ws, 'ask', '@reviewer BEFORE_DOWN')
+            reply, = await _events(home_ws, 'message.member', timeout=90)
+            assert reply['payload']['text'] == 'PEER_REPLY', reply
+
+    async def disband(home_desc):
+        async with websocket(home, home_desc) as home_ws:
+            disbanded = await rpc(home_ws, 'groups.disband', room_id='linked')
+            assert 'tombstone' in disbanded['result'], disbanded
+            assert grants[0] not in json.dumps(disbanded)
+            assert _owed(home) == [('linked', 'reviewer')]
+
+    async def returned(home_desc):
+        await _revoked(url, grants[0], timeout=120)
+        deadline = time.monotonic() + 30
+        while _owed(home) and time.monotonic() < deadline:
+            await asyncio.sleep(.1)
+        assert _owed(home) == []
+
+    try:
+        with daemon(root, home, home_env, barrier=False) as (_, home_desc):
+            with daemon(root, target, target_env, barrier=False) as (_, target_desc):
+                asyncio.run(link(home_desc, target_desc))
+            asyncio.run(disband(home_desc))
+            with daemon(root, target, target_env, barrier=False):
+                asyncio.run(returned(home_desc))
+    finally:
+        for model in (home_model, target_model):
             model.shutdown()
             model.server_close()
 

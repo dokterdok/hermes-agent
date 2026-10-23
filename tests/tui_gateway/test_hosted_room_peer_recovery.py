@@ -271,8 +271,8 @@ def test_stop_of_a_deferred_peer_turn_is_reported_once_its_gateway_confirms(tmp_
 
 def test_an_unconfirmed_peer_stop_holds_the_room_only_for_the_deferral_window(tmp_path: Path):
     """Stop of an uncertain peer turn waits for its gateway's acknowledgement, but a gateway that
-    stays unreachable holds the room and Disband only for the deferral window. The turn is then
-    deferred, never reported cancelled."""
+    stays unreachable holds the room only for the deferral window, and Disband not at all. The turn
+    is then deferred, never reported cancelled."""
     now = [100.0]
     db = tmp_path / "state.db"
     peer = _UnreachablePeerClient()
@@ -292,8 +292,8 @@ def test_an_unconfirmed_peer_stop_holds_the_room_only_for_the_deferral_window(tm
     lease = service.runtime._ensure_lease(binding)
     driver.recover_room(db, lease, clock=lambda: now[0])
 
-    with pytest.raises(RuntimeError, match="still stopping"):
-        service.stop_room("room-1", cancel_id="stop-uncertain", require_acknowledged=True)
+    # Disband's own wait covers this gateway's work only: the peer turn is fenced, not waited on.
+    assert service.stop_room("room-1", cancel_id="stop-uncertain", require_acknowledged=True) == 1
     assert driver.get_task(db, task["identity"])["status"] == "stopping"
     assert service.runtime._retry_stopping_tasks(binding, lease) is True
 
