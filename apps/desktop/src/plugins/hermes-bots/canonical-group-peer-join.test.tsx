@@ -27,8 +27,9 @@ import {
   answerGroupRequests, PEER_HOME as HOME, PEER_MINI as MINI, PEER_REGISTERED, peerGroupCapabilities, peerInvitation, peerRosterRow
 } from './canonical-group-contract-test-utils'
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
-import { $peerJoinErrors } from './canonical-group-peers'
+import { $peerJoinErrors, peerJoinKey, peerRenewalSettled, renewPeers } from './canonical-group-peers'
 import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const words = CANONICAL_GROUP_LOCALES.en
@@ -204,4 +205,99 @@ it('shows the badge but no setup controls on a gateway that cannot register Bots
   await screen.findByText(`· ${words.peerNotJoinedBadge}`)
   await act(async () => {})
   expect(screen.queryByText(words.peerNotJoined.replace('{name}', 'Hermes · Mac Mini'))).toBeNull()
+})
+
+const joined = [{ room_id: 'linked', member_id: 'hermes-mac-mini', status: 'ready' }]
+const sent = (params: Record<string, any>) => ({ event: {}, client_event_id: params.event_id, accepted: true, driver_started: true })
+const calls = (method: string) => request.mock.calls.filter(call => call[1] === method)
+const textbox = () => screen.getByRole('textbox') as HTMLTextAreaElement
+
+/** A registration on the home that answers once the test releases it. */
+function heldRegistration() {
+  let release!: () => void
+  const held = new Promise<void>(resolve => { release = resolve })
+
+  return { release, register: () => held.then(() => PEER_REGISTERED) }
+}
+
+async function send(text: string) {
+  await waitFor(() => expect(textbox().disabled).toBe(false))
+  fireEvent.change(textbox(), { target: { value: text } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+}
+
+it('renews a Bot that is due when a message is sent: the send is journaled first, leaves after the renewal, and the seat is fresh', async () => {
+  union.profiles = []
+  const { release, register } = heldRegistration()
+  gateways({ routes: joined, home: (method, params) => method === 'groups.peer.register' ? register() : method === 'groups.send' ? sent(params) : undefined })
+  const sending = { ...binding, roomId: 'renew-on-send' }
+  render(<CanonicalGroupWorkspace binding={sending} />)
+  // Its connection had not loaded when the room opened: nothing was renewed yet.
+  await waitFor(() => expect(textbox().disabled).toBe(false))
+  expect(calls('groups.peer.invite')).toHaveLength(0)
+  union.profiles = [mini]
+  await send('Keep this across a restart')
+  // Journaled before it waits: a Desktop that quits now keeps it.
+  await waitFor(async () => expect((await readCanonicalGroupSend(sending))?.params.payload.text).toBe('Keep this across a restart'))
+  expect(calls('groups.send')).toHaveLength(0)
+  await act(async () => { release() })
+  await waitFor(() => expect(calls('groups.send')).toHaveLength(1))
+  expect(request.mock.calls.map(call => call[1]).filter(method => ['groups.peer.register', 'groups.send'].includes(method)))
+    .toEqual(['groups.peer.register', 'groups.send'])
+  // Fresh now: renewing again asks for nothing.
+  renewPeers(sending, room, joined, [mini])
+  await peerRenewalSettled(sending)
+  expect(steps()).toEqual(SEATED)
+})
+
+it('waits for a renewal as long as the home may take to probe the Bot\'s gateway', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const { release, register } = heldRegistration()
+    gateways({ home: method => method === 'groups.peer.register' ? register() : undefined })
+    const probing = { ...binding, roomId: 'slow-probe' }
+    renewPeers(probing, room, joined, [mini])
+    await vi.waitFor(() => expect(calls('groups.peer.register')).toHaveLength(1))
+    let waited = false
+    void peerRenewalSettled(probing).then(() => { waited = true })
+    // The home's probe of the member's gateway may take up to 30 s.
+    await vi.advanceTimersByTimeAsync(31_000)
+    expect(waited).toBe(false)
+    release()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(waited).toBe(true)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it.each([
+  // Nothing is attempted, so nothing is noted against the Bot.
+  ['has not loaded yet', [], undefined],
+  ['has other computers\' Bots, not yet the Mac Mini\'s', [peerRosterRow('studio', 'Studio')], 'peer_connection_missing']
+])('renews a Bot as soon as its connection loads, when the roster %s', async (_case, first, noted) => {
+  gateways({ elsewhere: { studio: method => method === 'groups.capabilities' ? peerGroupCapabilities('install:studio') : undefined } })
+  const loading = { ...binding, roomId: `roster-${first.length}` }
+  renewPeers(loading, room, joined, first)
+  await peerRenewalSettled(loading)
+  expect(($peerJoinErrors.get()[peerJoinKey(loading, 'hermes-mac-mini')] as { reason?: string } | undefined)?.reason).toBe(noted)
+  renewPeers(loading, room, joined, [...first, mini])
+  await waitFor(() => expect(steps()).toEqual(SEATED))
+})
+
+it('holds a Send back when Stop is pressed while it waits for a renewal', async () => {
+  const { release, register } = heldRegistration()
+  gateways({ routes: joined, home: (method, params) => method === 'groups.peer.register' ? register()
+    : method === 'groups.send' ? sent(params) : method === 'groups.stop' ? { cancelled: 0 } : undefined })
+  const stopping = { ...binding, roomId: 'stop-while-renewing' }
+  render(<CanonicalGroupWorkspace binding={stopping} />)
+  // Opening the room renews its Bot.
+  await waitFor(() => expect(calls('groups.peer.register')).toHaveLength(1))
+  await send('Never mind')
+  await waitFor(async () => expect((await readCanonicalGroupSend(stopping))?.params.payload.text).toBe('Never mind'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Stop' })) })
+  await act(async () => { release() })
+  await waitFor(() => expect(textbox().value).toBe('Never mind'))
+  expect(calls('groups.send')).toHaveLength(0)
 })

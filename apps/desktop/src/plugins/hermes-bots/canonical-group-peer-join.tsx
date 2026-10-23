@@ -1,14 +1,34 @@
 import { Button, ConfirmDialog, host, useValue } from '@hermes/plugin-sdk'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { memberName } from './canonical-group-activity'
 import { type GroupMethods, offersGroupMethod } from './canonical-group-capabilities'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { $peerJoinErrors, peerJoinKey, peerJoinText, peerMemberStates, rejoinPeer, startAgainWithout } from './canonical-group-peers'
+import { $peerJoinErrors, peerJoinKey, peerJoinText, peerMemberStates, peerRenewalSettled, rejoinPeer, renewPeers, startAgainWithout } from './canonical-group-peers'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupBinding, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
 import { cachedUnionRoster } from './data'
 import { endCanonicalGroup } from './group-panes'
+
+type RenewalState = { room: CanonicalRoom; driver_status?: { peer_routes?: unknown } } | null
+
+function renewRoom(binding: CanonicalGroupBinding, state: RenewalState, methods: GroupMethods) {
+  if (state?.driver_status && offersGroupMethod(methods, 'groups.peer.register')) {
+    renewPeers(binding, state.room, state.driver_status.peer_routes, cachedUnionRoster()?.profiles ?? [])
+  }
+}
+
+/** Keep this open room's members of other gateways seated (`renewPeers`) where its gateway registers them. */
+export function usePeerRenewal(binding: CanonicalGroupBinding, state: RenewalState, methods: GroupMethods, visible: boolean) {
+  useEffect(() => { if (visible) {renewRoom(binding, state, methods)} }, [binding, methods, state, visible])
+}
+
+/** Before a send leaves: start a renewal that is due, then wait for the room's renewals in flight. */
+export function peerRenewalBeforeSend(binding: CanonicalGroupBinding, state: RenewalState, methods: GroupMethods) {
+  renewRoom(binding, state, methods)
+
+  return peerRenewalSettled(binding)
+}
 
 const STATUS_WORDS = { missing: 'peerNotJoined', needs_reauthorization: 'peerRejoin', unavailable: 'peerAway' } as const
 
@@ -21,8 +41,8 @@ interface JoinRowsProps {
 
 /** The members of another gateway that have not joined this room (no route yet, access ended, or
  *  their computer away), each with why when an attempt here failed, Retry (invite and register
- *  again) and Start new group without it (this room ends; earlier messages are not copied). Shown only where this gateway registers peers,
- *  and mounted only while one has not joined. */
+ *  again) and Start new group without it (this room ends; earlier messages are not copied). Shown
+ *  only where this gateway registers peers, and mounted only while one has not joined. */
 export function CanonicalPeerJoinRows({ state, unjoined, ...props }: JoinRowsProps & {
   state: { room: CanonicalRoom; driver_status?: { peer_routes?: unknown } } | null
   unjoined: ReadonlySet<string>
