@@ -357,6 +357,44 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
     assert captured["registered"]["target_url"] == ("https://peer.example.test")
 
 
+def test_reregistered_peer_route_keeps_its_trace_identity(home, monkeypatch):
+    """A fresh grant for the same member must replay accepted work byte for byte: the target
+    fingerprints the dispatch body, trace and cancellation ids included, under its key."""
+    from gateway.hosted_room_peer import catalog_mapping
+    from gateway.hosted_rooms import local_authority_gateway_id
+
+    catalog = catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+    room, routes = _create_room(), []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def probe(self, *, grant):
+            return {"room_id": "room-1", "home_install_id": local_authority_gateway_id(),
+                    "authority_gateway_id": room["authority_gateway_id"],
+                    "authority_epoch": room["authority_epoch"], "member_id": "member-peer",
+                    "target_profile": "reviewer", "catalog": catalog}
+
+    class FakeService:
+        db_path = hosted_rooms_default_db_path()
+
+        def register_peer_route(self, **kwargs):
+            routes.append(kwargs["route"])
+
+    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr("tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient", FakeClient)
+    for grant in ("first.room.grant", "second.room.grant"):
+        _result(srv._methods["groups.peer.register"](3, {
+            "room_id": "room-1", "member_id": "member-peer", "target_url": "https://peer.example.test",
+            "target_profile": "reviewer", "grant": grant, "catalog": catalog}))
+
+    first, second = routes
+    assert (first.grant, second.grant) == ("first.room.grant", "second.room.grant")
+    assert (first.trace_id, first.cancellation_scope_id) == (second.trace_id, second.cancellation_scope_id)
+    assert first.cancellation_scope_id == "cancel-room-1"
+
+
 def test_register_rejects_plaintext_non_loopback(home, monkeypatch):
     class FakeService:
         db_path = hosted_rooms_default_db_path()
