@@ -170,7 +170,7 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **Rooms keep running when you close the Desktop.** When every member of a room lives on the same gateway, that gateway owns turn scheduling through a durable driver: closing Hermes Desktop (or losing its connection) does not stop a room mid-discussion, and the Desktop simply catches up from the room's log when it reconnects. `groups.capabilities` on the gateway reports `driver: true` when this applies. More than one room worker may share a home — the host gateway that Desktop attaches to (`hermes gateway run`) and a `hermes serve` / `hermes dashboard` backend both run one — and whichever holds the room's driver lease runs the next turn; a member's room session is held only for the duration of its turn, so the lease can move between workers without a turn being refused. Room state lives in the install's root `shared-state.db`; installs that created rooms before that file existed (when rooms were still kept in the root `state.db`) get those rooms copied across once, on the first open after updating, so pre-existing Group Chats stay reachable. Legacy rooms whose members span several machines are different: each member's turns run on its own gateway, and the cross-connection courier described under *Bot-to-bot messaging* applies to those rooms.
 
 - **Mentions read as identities.** In the transcript a routed `@bot` mention, the human handoff `@user`, and the broadcasts `@everyone` / `@all` render as inline references (accent text, not pills); unknown `@words` and e-mail addresses stay plain. Hover a Bot's message and use **Reply to @handle** to seed `@handle ` into the composer, so your next send goes to that Bot only (when a same-named Bot from a Connection shares the room, the tag is device-qualified, e.g. `@reviewer-mini` / `@reviewer-local`) — **Reply in thread** still continues the whole thread. If a reply box for a *different* thread is open, **Reply to** seeds the main composer instead and so starts a fresh thread; use **Reply in thread** to continue that thread.
-- **Rooms can span machines.** New Group Chat checks how the active gateway runs group rooms before offering members. Groups managed by one gateway offer only Bots on the active connection, so every selected member can be reached by that gateway. Older Desktop rooms retain mixed-connection selection; those members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and each member's turns run on its own machine and room session. A member's turn that outlives this Desktop, because you quit or it crashed mid-turn, finishes on the member's own machine: the room posts that reply the next time it is driven, and does not re-drive the member while it is still working.
+- **Rooms can span machines.** New Group Chat checks how the active gateway runs group rooms before offering members. Groups managed by one gateway offer only Bots on the active connection, so every selected member can be reached by that gateway. The gateway can also seat a text-only Bot from another gateway over JSON-RPC (see [Bots from another gateway in a gateway-owned Group Chat](#bots-from-another-gateway-in-a-gateway-owned-group-chat)); New Group Chat does not offer such Bots yet. Older Desktop rooms retain mixed-connection selection; those members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and each member's turns run on its own machine and room session. A member's turn that outlives this Desktop, because you quit or it crashed mid-turn, finishes on the member's own machine: the room posts that reply the next time it is driven, and does not re-drive the member while it is still working.
 - **Rooms show the same identity as the roster.** Transcript rows, the “X is thinking…” line and Activity rows resolve each member's title and avatar by its owning connection and profile — re-titling a Bot or changing its picture updates every room it sits in, remote members keep their own titles, and two same-named Bots on different connections never borrow each other's avatar. When two members would still read identically, Activity appends the connection label (`Reviewer · Mac Mini`).
 - **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
 - **What a member says outside the room still reaches it.** Each member's room session is an ordinary Hermes session (titled `Group: <room> · <thread>`), so you can resume it from the CLI, a routine can post into it, or the Bot's own tools can write to it. When you open the room, and again each time the room drives that member, whatever those writers added since the room last looked — your questions and the member's answers — is posted into the room log under that member's name, once, in the thread the session belongs to; a window restart does not repeat it. The room's own turn prompts and their replies are never duplicated this way, and neither are the agent's housekeeping rows (context compaction notes, routine deliveries, delegation results) or the member's reactions to them. The room starts watching a session the first time it sees it: what was already in that session by then is not replayed, so a room restored on a second Desktop does not re-post its members' history.
@@ -294,6 +294,73 @@ viewer, not a relay. A gateway behind home NAT can dial out to a public peer
 a NAT boundary, put the room's authority on the host every participant can
 reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 :::
+
+### Bots from another gateway in a gateway-owned Group Chat
+
+A Group Chat your gateway owns (its *home*) can seat a Bot that lives on another
+gateway (its *member gateway*). The member's turns run on its own machine; the
+home keeps the room, its log and its schedule. This is set up over the gateways'
+JSON-RPC; New Group Chat in Desktop does not offer such Bots yet.
+
+Limits: text only (a message with files fails that member's turn, visibly), and
+only the member gateway's `default` profile.
+
+**On the member gateway**, `groups.capabilities` must report `room_link.enabled: true`.
+That needs the `api_server` platform with durable run storage, an advertised
+endpoint (`gateway.room_link_url`, reachable from the home), and approvals left on
+(`approvals.mode` manual or smart: a remote turn never runs without approval
+prompts). Otherwise `room_link.reason` names the first missing piece. Keep its
+`room_link.catalog`; the home pins it.
+
+1. **Create the room on the home** with the member pinned to that catalog:
+
+   ```json
+   {"jsonrpc":"2.0","id":1,"method":"groups.create","params":{"room_id":"ROOM_ID","name":"Review","members":[
+     {"member_id":"host","profile":"default","handle":"host"},
+     {"member_id":"reviewer","profile":"default","handle":"reviewer","target":{
+       "kind":"peer","peer_id":"spark","installation_id":"CATALOG_INSTALLATION_ID",
+       "profile":"default","capability_digest":"CATALOG_DIGEST"}}]}}
+   ```
+
+   Until step 3, that member's turns fail with `peer room route is unavailable`.
+2. **Invite from the member gateway.** On an operator connection there (its local
+   gateway socket or a dashboard connection), mint a grant scoped to that one room
+   and member, using the `authority_gateway_id` and `authority_epoch` the room was
+   created with:
+
+   ```json
+   {"jsonrpc":"2.0","id":2,"method":"groups.peer.invite","params":{"room_id":"ROOM_ID","member_id":"reviewer",
+     "home_install_id":"HOME_GATEWAY_ID","authority_gateway_id":"HOME_GATEWAY_ID","authority_epoch":1}}
+   ```
+
+   `ttl_seconds` (60 to 86,400, default 3,600) is optional; the grant id and its status
+   lifetime are the member gateway's to choose.
+3. **Register on the home** with the grant, the catalog and the member gateway's URL.
+   The home probes the member gateway first and refuses a grant for another room,
+   member, profile or catalog (`peer_target_mismatch`), a member it cannot reach
+   (`peer_unreachable`) or a revoked grant (`room_reauthorization_required`):
+
+   ```json
+   {"jsonrpc":"2.0","id":3,"method":"groups.peer.register","params":{"room_id":"ROOM_ID","member_id":"reviewer",
+     "target_url":"https://spark.example.ts.net:8642","target_profile":"default",
+     "grant":"GRANT","catalog":{"...":"the catalog from the member gateway"}}}
+   ```
+
+To renew access, invite again and register the new grant: the route keeps its
+identity, so work already accepted stays the same run on the member gateway.
+`groups.peer.revoke` with a grant, on the member gateway, revokes that room
+member's access. Disbanding the room (`groups.disband`) revokes every grant of the
+room. While the home's room driver is not running it refuses
+(`runtime_coordination_required`) rather than forget a route whose grant is still live.
+
+**A lost reply never runs a turn twice.** The home sends each turn under the
+idempotency key `room:<task>:<generation>`. If the member gateway's answer is lost,
+or its replay cannot connect, the turn stays uncertain on that same key until the
+home can read it back, rather than starting it again. A turn whose member gateway
+stays unreachable is deferred after a minute, which frees the room for the next
+message without starting that turn again; Stop of such a turn waits until the member
+gateway confirms it stopped. Retry and Discard are not offered for a member on
+another gateway yet.
 
 ### Transferring hosted room authority
 
