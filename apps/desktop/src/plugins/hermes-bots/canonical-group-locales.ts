@@ -66,6 +66,13 @@ export interface CanonicalGroupMessages {
   groupDriverStopped: string
   groupsUnreachable: string
   earlierMessages: string
+  peerHint: string
+  peerTargetSetup: string
+  peerTargetUnreachable: string
+  peerJoinFailed: string
+  peerJoinUnreachable: string
+  peerJoinChanged: string
+  peerTargetDesktopOwned: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -136,7 +143,14 @@ export const CANONICAL_GROUP_LOCALES = {
     groupsUnsupported: 'Group chats can’t open here: Hermes on this connection’s computer is too old for them. Update Hermes on that computer and reconnect, then try again. Nothing is lost: earlier messages stay where they are.',
     groupDriverStopped: 'Group chats can’t open here right now: this connection’s gateway isn’t running its group driver. Restart or update Hermes on that computer, then try again. Nothing is lost: earlier messages stay where they are.',
     groupsUnreachable: 'Couldn’t reach this connection’s gateway to open this group chat. Check that Hermes is running there and that you’re connected, then try again. Nothing is lost: earlier messages stay where they are.',
-    earlierMessages: 'Earlier messages, read only. They stay on this Desktop and aren’t copied into a new group.'
+    earlierMessages: 'Earlier messages, read only. They stay on this Desktop and aren’t copied into a new group.',
+    peerHint: 'Bots on your other connections join through their own computer’s gateway: only each computer’s default Bot, text only.',
+    peerTargetSetup: '{connection} can’t host a Bot for a group on another computer yet ({reason}). Update Hermes there, turn on its API server with an address this connection’s gateway can reach (gateway.room_link_url), and keep approvals on.',
+    peerTargetUnreachable: 'Couldn’t reach {connection} to check its Bot. Check that it’s connected, then open this dialog again.',
+    peerJoinFailed: '{name} hasn’t joined: {reason}',
+    peerJoinUnreachable: '{name} hasn’t joined: this group’s gateway couldn’t reach its computer. Check that its computer can be reached from there without Desktop, then try again.',
+    peerJoinChanged: '{name} can’t join this group: its computer’s Bot settings changed since the group was created. Start a new group to include it.',
+    peerTargetDesktopOwned: '{connection} reaches its computer through a backend Desktop started over SSH, and a group can’t seat a Bot through that yet. On that computer, keep hermes serve running yourself, add it as a Remote gateway connection, then choose the Bot of that connection instead.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -205,7 +219,14 @@ export const CANONICAL_GROUP_LOCALES = {
     groupsUnsupported: 'ここではグループチャットを開けません。この接続先のコンピューターの Hermes が古く、グループチャットに対応していないためです。そのコンピューターの Hermes を更新して再接続してから、もう一度お試しください。何も失われません。以前のメッセージはそのまま残ります。',
     groupDriverStopped: 'いまはここでグループチャットを開けません。この接続のゲートウェイでグループの実行機能が動いていないためです。そのコンピューターの Hermes を再起動または更新してから、もう一度お試しください。何も失われません。以前のメッセージはそのまま残ります。',
     groupsUnreachable: 'このグループチャットを開くための、この接続のゲートウェイに接続できませんでした。そのコンピューターで Hermes が動いていて、接続されていることを確認してから、もう一度お試しください。何も失われません。以前のメッセージはそのまま残ります。',
-    earlierMessages: '以前のメッセージ（閲覧のみ）。この Desktop に残り、新しいグループにはコピーされません。'
+    earlierMessages: '以前のメッセージ（閲覧のみ）。この Desktop に残り、新しいグループにはコピーされません。',
+    peerHint: 'ほかの接続上の Bot は、それぞれのコンピューターのゲートウェイを通じて参加します。参加できるのは各コンピューターの既定の Bot だけで、テキストのみです。',
+    peerTargetSetup: '{connection} は、まだほかのコンピューターのグループに Bot を参加させられません（{reason}）。そこで Hermes を更新し、この接続のゲートウェイから届くアドレス（gateway.room_link_url）で API サーバーを有効にし、承認をオンのままにしてください。',
+    peerTargetUnreachable: '{connection} に接続して Bot を確認できませんでした。接続されていることを確認してから、このダイアログをもう一度開いてください。',
+    peerJoinFailed: '{name} はまだ参加していません: {reason}',
+    peerJoinUnreachable: '{name} はまだ参加していません。このグループのゲートウェイがそのコンピューターに届きませんでした。Desktop を介さずにそこから届くことを確認してから、もう一度お試しください。',
+    peerJoinChanged: '{name} はこのグループに参加できません。グループの作成後に、そのコンピューターの Bot の設定が変わりました。含めるには新しいグループを始めてください。',
+    peerTargetDesktopOwned: '{connection} は Desktop が SSH 経由で起動したバックエンドを通じてそのコンピューターに接続しているため、まだその Bot をグループに参加させられません。そのコンピューターで hermes serve を自分で起動したままにし、Remote gateway 接続として追加してから、代わりにその接続の Bot を選んでください。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -274,7 +295,14 @@ export const CANONICAL_GROUP_LOCALES = {
     groupsUnsupported: '无法在此打开群聊：此连接所在电脑上的 Hermes 版本太旧，不支持群聊。请在那台电脑上更新 Hermes 并重新连接，然后再试一次。不会丢失任何内容：之前的消息仍保留在原处。',
     groupDriverStopped: '暂时无法在此打开群聊：此连接的网关没有运行群组运行程序。请在那台电脑上重启或更新 Hermes，然后再试一次。不会丢失任何内容：之前的消息仍保留在原处。',
     groupsUnreachable: '无法连接到此连接的网关来打开这个群聊。请确认那台电脑上的 Hermes 正在运行且你已连接，然后再试一次。不会丢失任何内容：之前的消息仍保留在原处。',
-    earlierMessages: '之前的消息（只读）。它们保留在此 Desktop 上，不会复制到新群组。'
+    earlierMessages: '之前的消息（只读）。它们保留在此 Desktop 上，不会复制到新群组。',
+    peerHint: '其他连接上的 Bot 通过各自电脑的网关加入：每台电脑只能加入其默认 Bot，且仅限文本。',
+    peerTargetSetup: '{connection} 目前还无法让 Bot 加入其他电脑上的群组（{reason}）。请在那里更新 Hermes，用此连接的网关可以访问的地址（gateway.room_link_url）开启其 API 服务器，并保持批准开启。',
+    peerTargetUnreachable: '无法连接 {connection} 来检查其 Bot。请确认它已连接，然后重新打开此对话框。',
+    peerJoinFailed: '{name} 尚未加入：{reason}',
+    peerJoinUnreachable: '{name} 尚未加入：此群组的网关无法访问它所在的电脑。请确认无需 Desktop 也能从那里访问该电脑，然后重试。',
+    peerJoinChanged: '{name} 无法加入此群组：自群组创建以来，它所在电脑上的 Bot 设置已更改。要加入它，请开始一个新群组。',
+    peerTargetDesktopOwned: '{connection} 是通过 Desktop 经 SSH 启动的后端连接到那台电脑的，目前还无法通过它让 Bot 加入群组。请在那台电脑上自行保持 hermes serve 运行，将其添加为远程网关连接，然后改选该连接上的 Bot。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -343,7 +371,14 @@ export const CANONICAL_GROUP_LOCALES = {
     groupsUnsupported: '無法在此開啟群聊：此連線所在電腦上的 Hermes 版本太舊，不支援群聊。請在那台電腦上更新 Hermes 並重新連線，然後再試一次。不會遺失任何內容：先前的訊息仍保留在原處。',
     groupDriverStopped: '暫時無法在此開啟群聊：此連線的閘道沒有執行群組執行程式。請在那台電腦上重新啟動或更新 Hermes，然後再試一次。不會遺失任何內容：先前的訊息仍保留在原處。',
     groupsUnreachable: '無法連上此連線的閘道來開啟這個群聊。請確認那台電腦上的 Hermes 正在執行且你已連線，然後再試一次。不會遺失任何內容：先前的訊息仍保留在原處。',
-    earlierMessages: '先前的訊息（唯讀）。它們會保留在此 Desktop 上，不會複製到新群組。'
+    earlierMessages: '先前的訊息（唯讀）。它們會保留在此 Desktop 上，不會複製到新群組。',
+    peerHint: '其他連線上的 Bot 會透過各自電腦的閘道加入：每台電腦只能加入其預設 Bot，且僅限文字。',
+    peerTargetSetup: '{connection} 目前還無法讓 Bot 加入其他電腦上的群組（{reason}）。請在那裡更新 Hermes，以此連線的閘道可以連到的位址（gateway.room_link_url）開啟其 API 伺服器，並保持核准開啟。',
+    peerTargetUnreachable: '無法連到 {connection} 來檢查其 Bot。請確認它已連線，然後重新開啟此對話框。',
+    peerJoinFailed: '{name} 尚未加入：{reason}',
+    peerJoinUnreachable: '{name} 尚未加入：此群組的閘道無法連到它所在的電腦。請確認不經 Desktop 也能從那裡連到該電腦，然後再試一次。',
+    peerJoinChanged: '{name} 無法加入此群組：自群組建立以來，它所在電腦上的 Bot 設定已變更。若要加入它，請開始新的群組。',
+    peerTargetDesktopOwned: '{connection} 是透過 Desktop 經 SSH 啟動的後端連到那台電腦的，目前還無法透過它讓 Bot 加入群組。請在那台電腦上自行保持 hermes serve 執行，將其新增為 Remote gateway 連線，然後改選該連線上的 Bot。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -412,7 +447,14 @@ export const CANONICAL_GROUP_LOCALES = {
     groupsUnsupported: 'لا يمكن فتح محادثات المجموعات هنا: إصدار Hermes على كمبيوتر هذا الاتصال أقدم من أن يدعمها. حدّث Hermes على ذلك الكمبيوتر وأعد الاتصال، ثم حاول مرة أخرى. لن يضيع شيء: تبقى الرسائل السابقة في مكانها.',
     groupDriverStopped: 'لا يمكن فتح محادثات المجموعات هنا الآن: بوابة هذا الاتصال لا تشغّل مشغّل المجموعة. أعد تشغيل Hermes على ذلك الكمبيوتر أو حدّثه، ثم حاول مرة أخرى. لن يضيع شيء: تبقى الرسائل السابقة في مكانها.',
     groupsUnreachable: 'تعذّر الوصول إلى بوابة هذا الاتصال لفتح محادثة المجموعة هذه. تأكد من أن Hermes يعمل هناك وأنك متصل، ثم حاول مرة أخرى. لن يضيع شيء: تبقى الرسائل السابقة في مكانها.',
-    earlierMessages: 'الرسائل السابقة، للقراءة فقط. تبقى على Desktop هذا ولن تُنسخ إلى مجموعة جديدة.'
+    earlierMessages: 'الرسائل السابقة، للقراءة فقط. تبقى على Desktop هذا ولن تُنسخ إلى مجموعة جديدة.',
+    peerHint: 'تنضم البوتات الموجودة على اتصالاتك الأخرى عبر بوابة جهازها: البوت الافتراضي لكل جهاز فقط، والنص فقط.',
+    peerTargetSetup: 'لا يستطيع {connection} بعد استضافة بوت لمجموعة على جهاز آخر ({reason}). حدّث Hermes هناك، وفعّل خادم API الخاص به بعنوان تستطيع بوابة هذا الاتصال الوصول إليه (gateway.room_link_url)، وأبقِ الموافقات مفعّلة.',
+    peerTargetUnreachable: 'تعذّر الوصول إلى {connection} للتحقق من البوت. تأكد من أنه متصل، ثم افتح مربع الحوار هذا مرة أخرى.',
+    peerJoinFailed: 'لم ينضم {name} بعد: {reason}',
+    peerJoinUnreachable: 'لم ينضم {name} بعد: تعذّر على بوابة هذه المجموعة الوصول إلى جهازه. تأكد من إمكانية الوصول إلى جهازه من هناك دون Desktop، ثم حاول مرة أخرى.',
+    peerJoinChanged: 'لا يمكن لـ {name} الانضمام إلى هذه المجموعة: تغيّرت إعدادات البوت على جهازه منذ إنشاء المجموعة. ابدأ مجموعة جديدة لتضمينه.',
+    peerTargetDesktopOwned: 'يصل {connection} إلى جهازه عبر خادم خلفي شغّله Desktop عبر SSH، ولا يمكن بعد ضمّ بوت إلى مجموعة من خلاله. على ذلك الجهاز، أبقِ hermes serve قيد التشغيل بنفسك وأضفه كاتصال Remote gateway، ثم اختر بوت ذلك الاتصال بدلاً منه.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -484,7 +526,14 @@ export const CANONICAL_GROUP_LOCALES = {
     groupsUnsupported: 'Групповые чаты здесь не открываются: Hermes на компьютере этого подключения слишком старый для них. Обновите Hermes на том компьютере, подключитесь заново и повторите попытку. Ничего не потеряно: прежние сообщения остаются на месте.',
     groupDriverStopped: 'Сейчас групповые чаты здесь не открываются: шлюз этого подключения не запустил исполнитель группы. Перезапустите или обновите Hermes на том компьютере и повторите попытку. Ничего не потеряно: прежние сообщения остаются на месте.',
     groupsUnreachable: 'Не удалось связаться со шлюзом этого подключения, чтобы открыть этот групповой чат. Убедитесь, что Hermes там запущен и подключение есть, и повторите попытку. Ничего не потеряно: прежние сообщения остаются на месте.',
-    earlierMessages: 'Прежние сообщения, только для чтения. Они остаются в этом Desktop и не копируются в новую группу.'
+    earlierMessages: 'Прежние сообщения, только для чтения. Они остаются в этом Desktop и не копируются в новую группу.',
+    peerHint: 'Боты с других подключений присоединяются через шлюз своего компьютера: только бот по умолчанию каждого компьютера и только текст.',
+    peerTargetSetup: '{connection} пока не может предоставить бота группе на другом компьютере ({reason}). Обновите там Hermes, включите его API-сервер с адресом, доступным шлюзу этого подключения (gateway.room_link_url), и оставьте подтверждения включёнными.',
+    peerTargetUnreachable: 'Не удалось связаться с {connection}, чтобы проверить его бота. Убедитесь, что подключение активно, и откройте это окно снова.',
+    peerJoinFailed: '{name} ещё не присоединился: {reason}',
+    peerJoinUnreachable: '{name} ещё не присоединился: шлюз этой группы не смог связаться с его компьютером. Убедитесь, что этот компьютер доступен оттуда без Desktop, и попробуйте снова.',
+    peerJoinChanged: '{name} не может присоединиться к этой группе: настройки бота на его компьютере изменились после создания группы. Чтобы добавить его, начните новую группу.',
+    peerTargetDesktopOwned: '{connection} подключается к своему компьютеру через бэкенд, который Desktop запустил по SSH, и через него пока нельзя добавить бота в группу. Запустите на том компьютере hermes serve сами и держите его работающим, добавьте его как подключение «Удалённый шлюз», затем выберите бота этого подключения.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -555,7 +604,14 @@ export const CANONICAL_GROUP_LOCALES = {
     groupsUnsupported: 'Les discussions de groupe ne peuvent pas s’ouvrir ici : la version de Hermes sur l’ordinateur de cette connexion est trop ancienne. Mettez Hermes à jour sur cet ordinateur et reconnectez-vous, puis réessayez. Rien n’est perdu : les messages précédents restent où ils sont.',
     groupDriverStopped: 'Les discussions de groupe ne peuvent pas s’ouvrir ici pour le moment : la passerelle de cette connexion n’exécute pas son pilote de groupe. Redémarrez ou mettez à jour Hermes sur cet ordinateur, puis réessayez. Rien n’est perdu : les messages précédents restent où ils sont.',
     groupsUnreachable: 'Impossible de joindre la passerelle de cette connexion pour ouvrir cette discussion de groupe. Vérifiez que Hermes y fonctionne et que vous êtes connecté, puis réessayez. Rien n’est perdu : les messages précédents restent où ils sont.',
-    earlierMessages: 'Messages précédents, en lecture seule. Ils restent sur ce Desktop et ne sont pas copiés dans un nouveau groupe.'
+    earlierMessages: 'Messages précédents, en lecture seule. Ils restent sur ce Desktop et ne sont pas copiés dans un nouveau groupe.',
+    peerHint: 'Les Bots de vos autres connexions rejoignent le groupe par la passerelle de leur ordinateur : seulement le Bot par défaut de chacun, et seulement du texte.',
+    peerTargetSetup: '{connection} ne peut pas encore accueillir de Bot pour un groupe sur un autre ordinateur ({reason}). Mettez Hermes à jour là-bas, activez son serveur API avec une adresse que la passerelle de cette connexion peut joindre (gateway.room_link_url), et laissez les approbations activées.',
+    peerTargetUnreachable: 'Impossible de joindre {connection} pour vérifier son Bot. Vérifiez qu’il est connecté, puis rouvrez cette fenêtre.',
+    peerJoinFailed: '{name} n’a pas encore rejoint le groupe : {reason}',
+    peerJoinUnreachable: '{name} n’a pas encore rejoint le groupe : la passerelle de ce groupe n’a pas pu joindre son ordinateur. Vérifiez qu’on peut le joindre depuis là-bas sans Desktop, puis réessayez.',
+    peerJoinChanged: '{name} ne peut pas rejoindre ce groupe : les réglages du Bot sur son ordinateur ont changé depuis la création du groupe. Démarrez un nouveau groupe pour l’inclure.',
+    peerTargetDesktopOwned: '{connection} atteint son ordinateur par un backend que Desktop a démarré via SSH, et un groupe ne peut pas encore accueillir un Bot par ce biais. Sur cet ordinateur, gardez vous-même hermes serve en marche, ajoutez-le comme connexion « Gateway distante », puis choisissez plutôt le Bot de cette connexion.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -627,7 +683,14 @@ export const CANONICAL_GROUP_LOCALES = {
     groupsUnsupported: 'Gruppenchats lassen sich hier nicht öffnen: Hermes auf dem Computer dieser Verbindung ist dafür zu alt. Aktualisieren Sie Hermes auf diesem Computer, verbinden Sie sich neu und versuchen Sie es dann erneut. Nichts geht verloren: Frühere Nachrichten bleiben, wo sie sind.',
     groupDriverStopped: 'Gruppenchats lassen sich hier gerade nicht öffnen: Das Gateway dieser Verbindung führt seinen Gruppentreiber nicht aus. Starten Sie Hermes auf diesem Computer neu oder aktualisieren Sie es, und versuchen Sie es dann erneut. Nichts geht verloren: Frühere Nachrichten bleiben, wo sie sind.',
     groupsUnreachable: 'Das Gateway dieser Verbindung war nicht erreichbar, um diesen Gruppenchat zu öffnen. Prüfen Sie, ob Hermes dort läuft und Sie verbunden sind, und versuchen Sie es dann erneut. Nichts geht verloren: Frühere Nachrichten bleiben, wo sie sind.',
-    earlierMessages: 'Frühere Nachrichten, nur lesbar. Sie bleiben auf diesem Desktop und werden nicht in eine neue Gruppe kopiert.'
+    earlierMessages: 'Frühere Nachrichten, nur lesbar. Sie bleiben auf diesem Desktop und werden nicht in eine neue Gruppe kopiert.',
+    peerHint: 'Bots Ihrer anderen Verbindungen treten über das Gateway ihres eigenen Computers bei: nur der Standard-Bot jedes Computers, nur Text.',
+    peerTargetSetup: '{connection} kann noch keinen Bot für eine Gruppe auf einem anderen Computer bereitstellen ({reason}). Aktualisieren Sie Hermes dort, aktivieren Sie seinen API-Server mit einer Adresse, die das Gateway dieser Verbindung erreichen kann (gateway.room_link_url), und lassen Sie Freigaben eingeschaltet.',
+    peerTargetUnreachable: '{connection} war nicht erreichbar, um seinen Bot zu prüfen. Prüfen Sie, ob die Verbindung besteht, und öffnen Sie diesen Dialog erneut.',
+    peerJoinFailed: '{name} ist noch nicht beigetreten: {reason}',
+    peerJoinUnreachable: '{name} ist noch nicht beigetreten: Das Gateway dieser Gruppe konnte seinen Computer nicht erreichen. Prüfen Sie, ob dieser Computer von dort ohne Desktop erreichbar ist, und versuchen Sie es erneut.',
+    peerJoinChanged: '{name} kann dieser Gruppe nicht beitreten: Die Bot-Einstellungen auf seinem Computer haben sich seit dem Erstellen der Gruppe geändert. Starten Sie eine neue Gruppe, um ihn aufzunehmen.',
+    peerTargetDesktopOwned: '{connection} erreicht seinen Computer über ein Backend, das Desktop per SSH gestartet hat, und darüber kann eine Gruppe noch keinen Bot aufnehmen. Lassen Sie auf diesem Computer hermes serve selbst laufen, fügen Sie es als „Remote-Gateway“-Verbindung hinzu und wählen Sie stattdessen den Bot dieser Verbindung.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -698,6 +761,13 @@ export const CANONICAL_GROUP_LOCALES = {
     groupsUnsupported: 'Los chats de grupo no se pueden abrir aquí: Hermes en el equipo de esta conexión es demasiado antiguo para ellos. Actualiza Hermes en ese equipo y vuelve a conectarte; después, inténtalo de nuevo. No se pierde nada: los mensajes anteriores siguen donde están.',
     groupDriverStopped: 'Los chats de grupo no se pueden abrir aquí ahora mismo: la pasarela de esta conexión no está ejecutando su controlador de grupo. Reinicia o actualiza Hermes en ese equipo y vuelve a intentarlo. No se pierde nada: los mensajes anteriores siguen donde están.',
     groupsUnreachable: 'No se pudo contactar con la pasarela de esta conexión para abrir este chat de grupo. Comprueba que Hermes se esté ejecutando allí y que estés conectado, y vuelve a intentarlo. No se pierde nada: los mensajes anteriores siguen donde están.',
-    earlierMessages: 'Mensajes anteriores, solo lectura. Se quedan en este Desktop y no se copian en un grupo nuevo.'
+    earlierMessages: 'Mensajes anteriores, solo lectura. Se quedan en este Desktop y no se copian en un grupo nuevo.',
+    peerHint: 'Los Bots de tus otras conexiones se unen a través de la pasarela de su propio equipo: solo el Bot predeterminado de cada uno, y solo texto.',
+    peerTargetSetup: '{connection} todavía no puede aportar un Bot a un grupo de otro equipo ({reason}). Actualiza Hermes allí, activa su servidor API con una dirección que la pasarela de esta conexión pueda alcanzar (gateway.room_link_url) y mantén activadas las aprobaciones.',
+    peerTargetUnreachable: 'No se pudo contactar con {connection} para comprobar su Bot. Comprueba que esté conectado y vuelve a abrir este cuadro de diálogo.',
+    peerJoinFailed: '{name} aún no se ha unido: {reason}',
+    peerJoinUnreachable: '{name} aún no se ha unido: la pasarela de este grupo no pudo alcanzar su equipo. Comprueba que se pueda alcanzar desde allí sin Desktop y vuelve a intentarlo.',
+    peerJoinChanged: '{name} no puede unirse a este grupo: la configuración del Bot en su equipo cambió desde que se creó el grupo. Inicia un grupo nuevo para incluirlo.',
+    peerTargetDesktopOwned: '{connection} llega a su equipo a través de un backend que Desktop inició por SSH, y un grupo aún no puede incluir un Bot por esa vía. En ese equipo, mantén hermes serve en marcha por tu cuenta, agrégalo como conexión «Gateway remoto» y luego elige el Bot de esa conexión.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

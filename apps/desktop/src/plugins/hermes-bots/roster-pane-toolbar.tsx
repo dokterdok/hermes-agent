@@ -29,10 +29,10 @@ interface NewGroupChatItemProps {
  *  demand. Offered only when the dialog it opens can seat two bots: the same
  *  predicate the dialog's picker uses, or it opened to a dead Create button. */
 function NewGroupChatItem({ label, onSelect, roster }: NewGroupChatItemProps) {
-  const { connectionId, mode, seatable } = useGroupCapability(true)
+  const { connectionId, mode, peers, seatable } = useGroupCapability(true)
 
   return (
-    <DropdownMenuItem disabled={seatableGroupBots(roster, { connectionId, mode, seatable }).length < 2} onSelect={onSelect}>
+    <DropdownMenuItem disabled={seatableGroupBots(roster, { connectionId, mode, peers, seatable }).length < 2} onSelect={onSelect}>
       <Codicon className="mr-1.5" name="organization" />
       {label}
     </DropdownMenuItem>
