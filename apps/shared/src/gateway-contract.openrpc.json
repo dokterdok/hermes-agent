@@ -9035,6 +9035,10 @@
             "default": 3600,
             "title": "Ttl Seconds",
             "type": "number"
+          },
+          "status_ttl_seconds": {
+            "title": "Status Ttl Seconds",
+            "type": "number"
           }
         },
         "required": [
