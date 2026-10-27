@@ -9,6 +9,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
 
   return {
+    randomUuid: (await import('@hermes/shared')).randomUuid,
     host: { requestProfile: captureGroupRequests(request).request },
     Button: (props: ComponentProps<'button'>) => <button {...props} />
   }

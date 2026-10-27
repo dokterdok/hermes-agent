@@ -9,7 +9,7 @@ const host = vi.hoisted(() => ({
 vi.mock('@hermes/plugin-sdk', async () => {
   const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
 
-  return { host: { ...host, requestProfile: captureGroupRequests(host.requestProfile).request } }
+  return { randomUuid: (await import('@hermes/shared')).randomUuid, host: { ...host, requestProfile: captureGroupRequests(host.requestProfile).request } }
 })
 
 import { groupAdvertisedMethods, groupExecutionMode, offersGroupMethod } from './canonical-group-capabilities'

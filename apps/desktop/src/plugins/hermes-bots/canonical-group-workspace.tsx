@@ -1,4 +1,4 @@
-import { Button, host } from '@hermes/plugin-sdk'
+import { Button, host, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
 import { type CanonicalDriverStatus, CanonicalGroupNotices, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
@@ -307,7 +307,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   const requestStop = async (fresh = false) => {
     if (fresh) {stopIntent.current = null}
-    const cancelId = stopIntent.current ??= crypto.randomUUID()
+    const cancelId = stopIntent.current ??= randomUuid()
     const result = await canonicalGroupRequest<{ cancelled?: unknown } | undefined>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: cancelId })
     const cancelled = result?.cancelled
 
@@ -353,11 +353,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     mutate(() => actCanonicalGroup(binding, action, choice))
 
   const rename = (name: string) =>
-    void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: crypto.randomUUID(), name }))
+    void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: randomUuid(), name }))
 
   // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
   const end = async () => {
-    await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: crypto.randomUUID() })
+    await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: randomUuid() })
 
     if (alive.current) {onBack?.()}
     forgetCanonicalGroup(binding)
