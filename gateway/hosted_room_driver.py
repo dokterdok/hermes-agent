@@ -96,6 +96,12 @@ _GENERATION_TRANSITIONS = {
     "defer": (
         "indeterminate", "status='deferred', result_json=?, terminal_at=?, updated_at=?", _INDETERMINATE_STALE,
         "indeterminate task changed during deferral"),
+    "defer_stopping": (
+        "stopping", "status='deferred', result_json=?, terminal_at=?, updated_at=?",
+        "stopping task generation changed", "stopping task changed during deferral"),
+    "reopen_deferred": (
+        "deferred", "status='indeterminate', result_json=NULL, terminal_at=NULL, indeterminate_at=?, updated_at=?",
+        "deferred task generation changed", "deferred task changed during reopen"),
     "requeue_deferred": (
         "deferred",
         f"{_REQUEUE_SET}, result_json=NULL, started_at=NULL, terminal_at=NULL, indeterminate_at=NULL, updated_at=?",
@@ -737,6 +743,21 @@ def defer_indeterminate_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, reason: Any, clock: Clock) -> dict[str, Any]:
     """Fence one uncertain attempt and release later room work."""
+    return _defer(db_path, identity, lease, "defer", expected_execution_generation, expected_cancel_generation,
+                  reason=reason, clock=clock)
+
+
+def defer_unconfirmed_stop(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, reason: Any, clock: Clock) -> dict[str, Any]:
+    """Release later room work behind a Stop its member never confirmed: deferred, never cancelled."""
+    return _defer(db_path, identity, lease, "defer_stopping", expected_execution_generation,
+                  expected_cancel_generation, reason=reason, clock=clock)
+
+
+def _defer(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, expected_execution_generation: int,
+    expected_cancel_generation: int, *, reason: Any, clock: Clock) -> dict[str, Any]:
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     reason = _identifier(reason, label="defer_reason")
     result_json = _canonical_json({"reason": reason, "retryable": True})
@@ -745,7 +766,7 @@ def defer_indeterminate_task(
         deferred = _generations_match(row, "deferred", expected_execution_generation, expected_cancel_generation)
         return _task_from_row(row, idempotent=True) if deferred and row["result_json"] == result_json else None
     return _generation_transition(
-        db_path, identity, lease, "defer", expected_execution_generation, expected_cancel_generation, now=now,
+        db_path, identity, lease, name, expected_execution_generation, expected_cancel_generation, now=now,
         replay=replay, set_params=(result_json, now, now))
 
 
@@ -758,6 +779,17 @@ def requeue_deferred_task(
     return _generation_transition(
         db_path, identity, lease, "requeue_deferred", expected_execution_generation, expected_cancel_generation,
         now=now, set_params=(now,))
+
+
+def reopen_deferred_task(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    """Return a deferred turn to indeterminate at its same generation (its peer still owns that generation)."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    now = _timestamp(clock)
+    return _generation_transition(
+        db_path, identity, lease, "reopen_deferred", expected_execution_generation, expected_cancel_generation,
+        now=now, set_params=(now, now))
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:

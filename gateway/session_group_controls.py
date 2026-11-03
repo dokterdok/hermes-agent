@@ -25,6 +25,9 @@ GROUP_METHODS = {
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
+    'groups.peer.register': 'session:control',
+    'groups.peer.invite': 'session:operator',
+    'groups.peer.revoke': 'session:operator',
 }
 _FIELDS = {
     'groups.capabilities': set(),
@@ -42,6 +45,10 @@ _FIELDS = {
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
                        'choice', 'request_id'},
+    'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
+    'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
+                           'member_id', 'ttl_seconds', 'status_ttl_seconds'},
+    'groups.peer.revoke': {'grant'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -71,10 +78,13 @@ async def dispatch_group_control(connection, method, params):
     def invoke():
         from gateway.run import _profile_runtime_scope
         from gateway.hosted_rooms import HostedRoomError
+        from gateway import session_group_peers as peers
         with _profile_runtime_scope(home):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied, siblings)
             try:
+                if method in peers.TARGET_METHODS:
+                    return peers.dispatch_target(authority, method, supplied)
                 return _group(authority, actor, method, supplied, host_scope=connection.host_scoped)
             except RuntimeStoreError:
                 raise
@@ -134,16 +144,22 @@ def _group(authority, actor, method, params, *, host_scope=False):
         if not params.get('room_id'):
             raise RuntimeStoreError('invalid_params')
         return _execution_control(service, method, params)
+    if method == 'groups.peer.register':
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        from gateway.session_group_peers import register
+        return register(service, params)
 
     def capabilities():
+        from gateway.session_group_peers import room_link
         from gateway.session_hosted_members import member_roster
         # The roster groups.create will accept from THIS caller, so a picker never offers a bot
         # (parked, retiring, a sibling a profile-bound socket cannot seat) that create refuses.
         homes, refused = member_roster(authority, siblings=host_scope)
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
-                'room_link': {'enabled': False, 'reason': 'canonical_driver_required'},
-                'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
+                'room_link': room_link(authority),
+                'features': ['room_identity', 'monotonic_log', 'replayable_disband', 'peer_renewal_horizon'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT,
                 'seatable_profiles': sorted(name for name in homes if name not in refused)}
 
@@ -205,20 +221,34 @@ def _group(authority, actor, method, params, *, host_scope=False):
                 name=params.get('name'), members=normalized, authority_gateway_id=gateway_id,
                 admit=admit)}
 
+    attached = getattr(authority, 'hosted_room_service', None)
+
     def disband():
+        from contextlib import nullcontext
+        room_id = params.get('room_id')
+        with attached.disbanding(room_id) if attached is not None else nullcontext():
+            state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
+            if service is not None and state.get('disbanded_at') is None:
+                service.stop_room(room_id, cancel_id=params.get('cancel_id') or 'room-disbanded',
+                                  require_acknowledged=True)
+            with attached.peer_route_lock if attached is not None else nullcontext():
+                return finish_disband()
+
+    def finish_disband():
         from gateway.hosted_room_driver import list_tasks
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
-        if service is not None and state.get('disbanded_at') is None:
-            service.stop_room(params.get('room_id'),
-                              cancel_id=params.get('cancel_id') or 'room-disbanded',
-                              require_acknowledged=True)
-            service.revoke_room_routes(params.get('room_id'))
+        room_id = params.get('room_id')
+        state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
         # Metadata control must not destroy an active execution or bypass Stop.
-        if service is None and any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
+        if service is None and any(list_tasks(db_path, room_id=room_id, status=status)
                for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
             raise RuntimeStoreError('runtime_coordination_required')
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
-        return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
+        if state.get('disbanded_at') is None:
+            if attached is not None:
+                attached.revoke_room_routes(room_id)
+            else:
+                from gateway.hosted_room_peer import room_grant_hard_expiry
+                rooms.retire_room_link_records(db_path, room_id=room_id, expiry=room_grant_hard_expiry)
+        return {'tombstone': rooms.disband_room(db_path, room_id=room_id,
                 expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
 
     def state():
