@@ -239,7 +239,7 @@ it('renames the room and disbands it only through ConfirmDialog, which stays ope
   const onBack = vi.fn()
   let disbands = 0
   request.mockImplementation(async (_route, method) => roomReads()(method)
-    ?? (method === 'groups.disband' && ++disbands === 1 ? Promise.reject(new Error('disband failed')) : {}))
+    ?? (method === 'groups.disband' ? (++disbands === 1 ? Promise.reject(new Error('disband failed')) : { tombstone: { room_id: 'controls', disbanded_at: 1 } }) : {}))
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'controls' }} onBack={onBack} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Rename' }))
   fireEvent.change(screen.getByRole('textbox', { name: 'New name' }), { target: { value: ' Renamed ' } })
@@ -260,7 +260,7 @@ it('renames the room and disbands it only through ConfirmDialog, which stays ope
 })
 
 it('leaves the in-panel room after a disband even though no tab supplies onBack', async () => {
-  request.mockImplementation(async (_route, method) => roomReads()(method) ?? {})
+  request.mockImplementation(async (_route, method) => roomReads()(method) ?? (method === 'groups.disband' ? { tombstone: { room_id: 'panel', disbanded_at: 1 } } : {}))
   const group = registerCanonicalGroup({ connectionId: 'local', profile: 'default' }, { room_id: 'panel', name: 'Room', members: [] })
   $groupChatWorkspace.set(group)
   render(<GroupChatWorkspace group={group} members={[]} origin="key" />)
@@ -275,7 +275,7 @@ it('drops a disbanded room from the sidebar list and its bindings, with the disb
   vi.mocked(host.notify).mockClear()
   let disbanded = false
   const room = { room_id: 'gone', name: 'Doomed', members: [] }
-  request.mockImplementation(async (_route, method) => method === 'groups.disband' ? (disbanded = true, {})
+  request.mockImplementation(async (_route, method) => method === 'groups.disband' ? (disbanded = true, { tombstone: { room_id: 'gone', disbanded_at: 1 } })
     : method === 'groups.capabilities' ? { driver: true } : method === 'groups.list' ? { rooms: disbanded ? [] : [room], next_offset: null }
       : roomReads()(method) ?? {})
   render(<CanonicalGroupList onOpen={vi.fn()} />)

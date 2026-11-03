@@ -1,13 +1,15 @@
-import { host, randomUuid, useGatewayActivationEpoch } from '@hermes/plugin-sdk'
+import { atom, host, randomUuid, useGatewayActivationEpoch } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
-import { canonicalGroupRequest, canonicalGroupRoster } from './canonical-groups'
+import { canonicalGroupRequest, canonicalGroupRoster, disbandCanonicalGroup } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
+import { uniqueGroupChatName, updateGroupChat } from './group-chat'
+import { liveGroupChatNames } from './group-membership'
 import { resolveBotConnectionRoute } from './routing'
 import type { GroupMember, ProfileRoute, RosterRow } from './types'
 
 /** Bots from other connections in a gateway Group Chat: Desktop runs the one-time setup (#130790)
- *  and keeps nothing. The room is created on this connection's gateway (the home) with the member
+ *  and keeps no grant. The room is created on this connection's gateway (the home) with the member
  *  pinned to its own gateway; `groups.peer.invite` there mints a grant for that room and member, and
  *  `groups.peer.register` on the home binds it. From then on the gateways run the member's turns.
  *  A setup that stops between its steps leaves a member that has not joined: `groups.state` shows
@@ -128,6 +130,18 @@ export async function readPeerTargets(bots: RosterRow[], home: string): Promise<
   ] as const)))
 }
 
+/** Why the last attempt to seat a member failed, per room and member, until one succeeds. In memory
+ *  only: after a restart the room still shows the member as not joined, without the reason. */
+export const $peerJoinErrors = atom<Record<string, unknown>>({})
+
+export const peerJoinKey = (binding: CanonicalGroupBinding, memberId: string) =>
+  JSON.stringify([binding.connectionId, binding.profile, binding.roomId, memberId])
+
+function noteJoin(binding: CanonicalGroupBinding, memberId: string, error?: unknown) {
+  const { [peerJoinKey(binding, memberId)]: _previous, ...rest } = $peerJoinErrors.get()
+  $peerJoinErrors.set(error === undefined ? rest : { ...rest, [peerJoinKey(binding, memberId)]: error })
+}
+
 /** A step Desktop can tell went wrong itself, beside the gateways' own refusals. */
 export class PeerJoinError extends Error {
   constructor(readonly reason: 'peer_connection_missing' | 'peer_gateway_changed' | 'registration_unconfirmed' | string) {
@@ -144,6 +158,16 @@ const pinned = (member: CanonicalRoomMember) => member.target?.kind === 'peer' ?
 /** Invite `seat.member` on its own gateway and register the grant on the home. The grant only
  *  passes through: if this stops halfway the member stays not joined and nothing here is owed. */
 export async function seatPeer(home: CanonicalGroupBinding, room: RoomAuthority, seat: PeerSeat): Promise<void> {
+  try {
+    await invitedAndRegistered(home, room, seat)
+    noteJoin(home, seat.member.member_id)
+  } catch (error) {
+    noteJoin(home, seat.member.member_id, error)
+    throw error
+  }
+}
+
+async function invitedAndRegistered(home: CanonicalGroupBinding, room: RoomAuthority, seat: PeerSeat) {
   const pin = pinned(seat.member)
 
   if (!pin || !room.authority_gateway_id || typeof room.authority_epoch !== 'number') {throw new PeerJoinError('peer_gateway_changed')}
@@ -166,6 +190,14 @@ export async function seatPeer(home: CanonicalGroupBinding, room: RoomAuthority,
   const receipt = await canonicalGroupRequest<{ registered?: unknown; target_install_id?: unknown }>(home, 'groups.peer.register', {
     room_id: room.room_id, member_id: seat.member.member_id, target_url: endpoint,
     target_profile: invitation.target_profile, grant: invitation.grant, catalog: invitation.catalog
+  }).catch(async error => {
+    // The room ended before this grant was registered: revoke it at its gateway, so no authority
+    // outlives the room. (For a live room the scope also holds its working grant: keep it.)
+    if (!await roomLive(home, room).catch(() => true)) {
+      await peerRequest(seat.route, 'groups.peer.revoke', { grant: invitation.grant }).catch(() => undefined)
+    }
+
+    throw error
   })
 
   if (receipt?.registered !== true || receipt.target_install_id !== pin.installation_id) {throw new PeerJoinError('registration_unconfirmed')}
@@ -218,7 +250,133 @@ export async function createGroupAcrossConnections(
   return { binding, room, unjoined }
 }
 
+/** How well a connection's answer serves a member pinned to `installation` and `digest`: 0 another
+ *  gateway or no answer; 1 that gateway, unable to host; 2 ready with
+ *  another catalog; 3 ready with the pinned one; 4 that, granting the renewal horizon too. */
+function routeRank(state: PeerTargetState | null, installation: string, digest: string) {
+  if (state?.gateway !== installation) {return 0}
+
+  return !state.ready ? 1 : state.catalogDigest !== digest ? 2 : state.renewal ? 4 : 3
+}
+
+/** The best route (`routeRank`) whose gateway is `installation`, asking every route at once, so a
+ *  connection that never answers holds up none of the others. The best kind wins as soon as it
+ *  answers; otherwise the best answer once all have answered, so another connection to the same
+ *  computer that can't host it, or a shorter grant, never wins needlessly; null when none matches. */
+function routeTo(installation: string, digest: string, routes: ProfileRoute[]) {
+  return new Promise<{ route: ProfileRoute; state: PeerTargetState } | null>(resolve => {
+    let left = routes.length
+    let best: { route: ProfileRoute; state: PeerTargetState; rank: number } | null = null
+
+    if (!left) {resolve(null)}
+
+    for (const route of routes) {
+      void peerRequest<unknown>(route, 'groups.capabilities').then(peerTargetState, () => null).then(state => {
+        const rank = routeRank(state, installation, digest)
+
+        if (state && rank > (best?.rank ?? 0)) {best = { route, state, rank }}
+
+        if (best?.rank === 4 || --left === 0) {resolve(best)}
+      })
+    }
+  })
+}
+
+/** The connection this Desktop reaches `member`'s gateway on: among the roster's Bots on other
+ *  connections, the one whose gateway is the installation the room pinned the member to. */
+export async function findPeerSeat(home: CanonicalGroupRoute, member: CanonicalRoomMember, roster: Partial<RosterRow>[]): Promise<PeerSeat> {
+  const pin = pinned(member)
+  const routes = new Map<string, ProfileRoute>()
+
+  for (const bot of roster) {
+    const route = peerRoute(bot, home.connectionId)
+
+    if (route && !routes.has(route.connectionId)) {routes.set(route.connectionId, route)}
+  }
+
+  const found = pin && await routeTo(pin.installation_id, pin.capability_digest, [...routes.values()])
+
+  if (!pin || !found) {throw new PeerJoinError('peer_connection_missing')}
+
+  if (!found.state.ready) {throw new PeerJoinError(found.state.reason)}
+
+  // Its gateway lends a different profile or policy now: this room's pin can never match it.
+  if (found.state.catalogDigest !== pin.capability_digest) {throw new PeerJoinError('peer_gateway_changed')}
+
+  return { member, route: found.route, renewal: found.state.renewal }
+}
+
+/** Whether the home still holds `room` live under the authority it is seated against. */
+async function roomLive(home: CanonicalGroupBinding, room: RoomAuthority) {
+  const answer = await canonicalGroupRequest<{ room?: Partial<CanonicalRoom> }>(home, 'groups.state', {
+    room_id: room.room_id, include_disbanded: true
+  })
+
+  return answer?.room?.disbanded_at == null && answer?.room?.authority_gateway_id === room.authority_gateway_id &&
+    answer?.room?.authority_epoch === room.authority_epoch
+}
+
+/** Seat a member of an existing room again (Retry): find its connection, invite, register. */
+export async function rejoinPeer(binding: CanonicalGroupBinding, room: RoomAuthority & { members?: CanonicalRoomMember[] },
+  member: CanonicalRoomMember, roster: Partial<RosterRow>[]) {
+  const seat = await findPeerSeat(binding, member, roster).then(async found => {
+    // Finding the member's gateway can take a while: never ask it for a grant for a room that ended.
+    if (!await roomLive(binding, room)) {throw new PeerJoinError('room_ended')}
+
+    return found
+  }).catch(error => {
+    noteJoin(binding, member.member_id, error)
+    throw error
+  })
+
+  await seatPeer(binding, room, seat)
+}
+
+/** Remove `memberId` the only way a gateway room's frozen roster allows: a new room with the other
+ *  members (their pins unchanged, each peer seated again), then this room ends. The new room comes
+ *  first, so a failure never leaves the Bots without a group. Earlier messages are not copied. */
+export async function startAgainWithout(binding: CanonicalGroupBinding, room: CanonicalRoom, memberId: string, roster: Partial<RosterRow>[]) {
+  const members = room.members.filter(member => member.member_id !== memberId)
+    .map(({ member_id, profile, handle, display_name, target }) => ({ member_id, profile, handle, target, ...(display_name ? { display_name } : {}) }))
+
+  const { room: next } = await canonicalGroupRequest<{ room: CanonicalRoom }>(binding, 'groups.create', {
+    room_id: randomUuid(), name: uniqueGroupChatName(room.name, new Set(liveGroupChatNames())), members
+  })
+
+  updateGroupChat(next.name, record => ({ ...record, roomId: next.room_id,
+    engine: { kind: 'gateway', connectionId: binding.connectionId, profile: binding.profile, roomId: next.room_id } }), { sync: false })
+  const replacement: CanonicalGroupBinding = { connectionId: binding.connectionId, profile: binding.profile, roomId: next.room_id }
+  const unjoined: { member: CanonicalRoomMember; error: unknown }[] = []
+
+  for (const member of next.members.filter(pinned)) {
+    await rejoinPeer(replacement, next, member, roster).catch(error => { unjoined.push({ member, error }) })
+  }
+
+  // Without its tombstone this room stays, with End group chat, beside its replacement.
+  const ended = await disbandCanonicalGroup(binding).catch(() => false)
+
+  return { binding: replacement, room: next, unjoined, ended }
+}
+
+/** The ids of the room's members of other gateways that have not joined (`peerMemberStates`). */
+export function unjoinedPeers(room?: { members?: CanonicalRoomMember[] }, driver?: { peer_routes?: unknown }): ReadonlySet<string> {
+  return new Set(peerMemberStates(room?.members, driver?.peer_routes).filter(({ status }) => status !== 'ready').map(({ member }) => member.member_id))
+}
+
+/** A member the room pinned to another gateway, and whether it has joined (`ready`), as `groups.state`
+ *  reports its route: absent until it registers, `needs_reauthorization` once its access ended. */
+export function peerMemberStates(members: CanonicalRoomMember[] = [], routes: unknown) {
+  const statuses = new Map<string, string>()
+
+  for (const route of Array.isArray(routes) ? routes : []) {
+    if (route && typeof route.member_id === 'string' && typeof route.status === 'string') {statuses.set(route.member_id, route.status)}
+  }
+
+  return members.filter(member => pinned(member)).map(member => ({ member, status: statuses.get(member.member_id) ?? 'missing' }))
+}
+
 interface PeerLabels {
+  peerJoinConnect: string
   peerJoinFailed: string
   peerJoinUnreachable: string
   peerJoinChanged: string
@@ -235,6 +393,8 @@ export function peerJoinText(error: unknown, name: string, labels: PeerLabels): 
   const reason = error instanceof PeerJoinError ? error.reason
     : String(refusal?.data?.reason || refusal?.message || error)
 
+  if (reason === 'peer_connection_missing') {return fill(labels.peerJoinConnect, { name })}
+
   if (reason === 'peer_unreachable') {return fill(labels.peerJoinUnreachable, { name })}
 
   if (['peer_gateway_changed', 'peer_target_mismatch', 'peer_target_unsupported'].includes(reason)) {return fill(labels.peerJoinChanged, { name })}
@@ -242,4 +402,3 @@ export function peerJoinText(error: unknown, name: string, labels: PeerLabels): 
 
   return fill(labels.peerJoinFailed, { name, reason: detail })
 }
-

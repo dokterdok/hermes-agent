@@ -110,6 +110,14 @@ export interface CanonicalGroupMessages {
   peerJoinFailed: string
   peerJoinUnreachable: string
   peerJoinChanged: string
+  disbandUnconfirmed: string
+  peerNotJoinedBadge: string
+  peerNotJoined: string
+  peerRejoin: string
+  peerAway: string
+  peerJoinConnect: string
+  peerStartWithout: string
+  peerStartWithoutConfirm: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -224,7 +232,15 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} can’t host a bot for a group on another computer yet ({reason}). Update Hermes there, turn on its API server with an address this connection’s gateway can reach (gateway.room_link_url), and keep approvals on.',
     peerJoinFailed: '{name} hasn’t joined: {reason}',
     peerJoinUnreachable: '{name} hasn’t joined: this group’s gateway couldn’t reach its computer. Check that its computer can be reached from there without Desktop, then try again.',
-    peerJoinChanged: '{name} can’t join this group: its computer’s bot settings changed since the group was created. Start a new group to include it.'
+    peerJoinChanged: '{name} can’t join this group: its computer’s bot settings changed since the group was created. Start a new group to include it.',
+    disbandUnconfirmed: 'We couldn’t confirm that the group chat ended. Check its status before trying again.',
+    peerNotJoinedBadge: 'not joined',
+    peerNotJoined: '{name} hasn’t joined this group yet.',
+    peerRejoin: '{name}’s access to this group ended. Choose Retry to invite it again.',
+    peerAway: '{name}’s computer isn’t answering right now.',
+    peerJoinConnect: '{name} hasn’t joined: connect to the computer it runs on, then choose Retry.',
+    peerStartWithout: 'Start new group without {name}',
+    peerStartWithoutConfirm: 'This group chat ends, and a new one starts with the other bots. Earlier messages aren’t copied into it.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -337,7 +353,15 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} は、まだほかのコンピューターのグループにボットを参加させられません（{reason}）。そこで Hermes を更新し、この接続のゲートウェイから届くアドレス（gateway.room_link_url）で API サーバーを有効にし、承認をオンのままにしてください。',
     peerJoinFailed: '{name} はまだ参加していません: {reason}',
     peerJoinUnreachable: '{name} はまだ参加していません。このグループのゲートウェイがそのコンピューターに届きませんでした。Desktop を介さずにそこから届くことを確認してから、もう一度お試しください。',
-    peerJoinChanged: '{name} はこのグループに参加できません。グループの作成後に、そのコンピューターのボットの設定が変わりました。含めるには新しいグループを始めてください。'
+    peerJoinChanged: '{name} はこのグループに参加できません。グループの作成後に、そのコンピューターのボットの設定が変わりました。含めるには新しいグループを始めてください。',
+    disbandUnconfirmed: 'グループチャットの終了を確認できませんでした。再試行する前に状態を確認してください。',
+    peerNotJoinedBadge: '未参加',
+    peerNotJoined: '{name} はまだこのグループに参加していません。',
+    peerRejoin: '{name} のこのグループへのアクセスが終了しました。もう一度招待するには「再試行」を選んでください。',
+    peerAway: '{name} のコンピューターは現在応答していません。',
+    peerJoinConnect: '{name} はまだ参加していません。それが動いているコンピューターに接続してから、「再試行」を選んでください。',
+    peerStartWithout: '{name} を除いて新しいグループを始める',
+    peerStartWithoutConfirm: 'このグループチャットは終了し、ほかのボットで新しいグループチャットが始まります。以前のメッセージはコピーされません。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -450,7 +474,15 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} 目前还无法让机器人加入其他电脑上的群组（{reason}）。请在那里更新 Hermes，用此连接的网关可以访问的地址（gateway.room_link_url）开启其 API 服务器，并保持批准开启。',
     peerJoinFailed: '{name} 尚未加入：{reason}',
     peerJoinUnreachable: '{name} 尚未加入：此群组的网关无法访问它所在的电脑。请确认无需 Desktop 也能从那里访问该电脑，然后重试。',
-    peerJoinChanged: '{name} 无法加入此群组：自群组创建以来，它所在电脑上的机器人设置已更改。要加入它，请开始一个新群组。'
+    peerJoinChanged: '{name} 无法加入此群组：自群组创建以来，它所在电脑上的机器人设置已更改。要加入它，请开始一个新群组。',
+    disbandUnconfirmed: '无法确认群聊是否已经结束。请先检查其状态，再重试。',
+    peerNotJoinedBadge: '未加入',
+    peerNotJoined: '{name} 尚未加入此群组。',
+    peerRejoin: '{name} 对此群组的访问已结束。选择“重试”再次邀请它。',
+    peerAway: '{name} 所在的电脑目前没有响应。',
+    peerJoinConnect: '{name} 尚未加入：请连接到它所在的电脑，然后选择“重试”。',
+    peerStartWithout: '不含 {name} 开始新群聊',
+    peerStartWithoutConfirm: '此群聊将结束，并用其他机器人开始一个新群聊。之前的消息不会复制到新群聊。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -563,7 +595,15 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} 目前還無法讓機器人加入其他電腦上的群組（{reason}）。請在那裡更新 Hermes，以此連線的閘道可以連到的位址（gateway.room_link_url）開啟其 API 伺服器，並保持核准開啟。',
     peerJoinFailed: '{name} 尚未加入：{reason}',
     peerJoinUnreachable: '{name} 尚未加入：此群組的閘道無法連到它所在的電腦。請確認不經 Desktop 也能從那裡連到該電腦，然後再試一次。',
-    peerJoinChanged: '{name} 無法加入此群組：自群組建立以來，它所在電腦上的機器人設定已變更。若要加入它，請開始新的群組。'
+    peerJoinChanged: '{name} 無法加入此群組：自群組建立以來，它所在電腦上的機器人設定已變更。若要加入它，請開始新的群組。',
+    disbandUnconfirmed: '無法確認群組聊天是否已經結束。請先檢查其狀態，再重試。',
+    peerNotJoinedBadge: '未加入',
+    peerNotJoined: '{name} 尚未加入此群組。',
+    peerRejoin: '{name} 對此群組的存取已結束。選擇「重試」再次邀請它。',
+    peerAway: '{name} 所在的電腦目前沒有回應。',
+    peerJoinConnect: '{name} 尚未加入：請連線到它所在的電腦，然後選擇「重試」。',
+    peerStartWithout: '不含 {name} 開始新群組聊天',
+    peerStartWithoutConfirm: '此群組聊天將結束，並用其他機器人開始新的群組聊天。先前的訊息不會複製到新群組聊天。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -676,7 +716,15 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: 'لا يستطيع {connection} بعد استضافة روبوت لمجموعة على جهاز آخر ({reason}). حدّث Hermes هناك، وفعّل خادم API الخاص به بعنوان تستطيع بوابة هذا الاتصال الوصول إليه (gateway.room_link_url)، وأبقِ الموافقات مفعّلة.',
     peerJoinFailed: 'لم ينضم {name} بعد: {reason}',
     peerJoinUnreachable: 'لم ينضم {name} بعد: تعذّر على بوابة هذه المجموعة الوصول إلى جهازه. تأكد من إمكانية الوصول إلى جهازه من هناك دون Desktop، ثم حاول مرة أخرى.',
-    peerJoinChanged: 'لا يمكن لـ {name} الانضمام إلى هذه المجموعة: تغيّرت إعدادات الروبوت على جهازه منذ إنشاء المجموعة. ابدأ مجموعة جديدة لتضمينه.'
+    peerJoinChanged: 'لا يمكن لـ {name} الانضمام إلى هذه المجموعة: تغيّرت إعدادات الروبوت على جهازه منذ إنشاء المجموعة. ابدأ مجموعة جديدة لتضمينه.',
+    disbandUnconfirmed: 'لم نتمكن من تأكيد انتهاء الدردشة الجماعية. تحقّق من حالتها قبل إعادة المحاولة.',
+    peerNotJoinedBadge: 'لم ينضم',
+    peerNotJoined: 'لم ينضم {name} إلى هذه المجموعة بعد.',
+    peerRejoin: 'انتهى وصول {name} إلى هذه المجموعة. اختر إعادة المحاولة لدعوته مرة أخرى.',
+    peerAway: 'جهاز {name} لا يستجيب الآن.',
+    peerJoinConnect: 'لم ينضم {name} بعد: اتصل بالجهاز الذي يعمل عليه، ثم اختر إعادة المحاولة.',
+    peerStartWithout: 'بدء مجموعة جديدة بدون {name}',
+    peerStartWithoutConfirm: 'تنتهي هذه الدردشة الجماعية وتبدأ دردشة جماعية جديدة بالروبوتات الأخرى. لن تُنسخ الرسائل السابقة إليها.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -792,7 +840,15 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} пока не может предоставить бота группе на другом компьютере ({reason}). Обновите там Hermes, включите его API-сервер с адресом, доступным шлюзу этого подключения (gateway.room_link_url), и оставьте подтверждения включёнными.',
     peerJoinFailed: '{name} ещё не присоединился: {reason}',
     peerJoinUnreachable: '{name} ещё не присоединился: шлюз этой группы не смог связаться с его компьютером. Убедитесь, что этот компьютер доступен оттуда без Desktop, и попробуйте снова.',
-    peerJoinChanged: '{name} не может присоединиться к этой группе: настройки бота на его компьютере изменились после создания группы. Чтобы добавить его, начните новую группу.'
+    peerJoinChanged: '{name} не может присоединиться к этой группе: настройки бота на его компьютере изменились после создания группы. Чтобы добавить его, начните новую группу.',
+    disbandUnconfirmed: 'Не удалось подтвердить завершение группового чата. Проверьте его состояние перед повторной попыткой.',
+    peerNotJoinedBadge: 'не присоединился',
+    peerNotJoined: '{name} ещё не присоединился к этой группе.',
+    peerRejoin: 'Доступ {name} к этой группе закончился. Выберите «Повторить», чтобы пригласить его снова.',
+    peerAway: 'Компьютер {name} сейчас не отвечает.',
+    peerJoinConnect: '{name} ещё не присоединился: подключитесь к компьютеру, на котором он работает, и выберите «Повторить».',
+    peerStartWithout: 'Начать новую группу без {name}',
+    peerStartWithoutConfirm: 'Этот групповой чат завершится, и начнётся новый с остальными ботами. Прежние сообщения в него не копируются.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -907,7 +963,15 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} ne peut pas encore accueillir de bot pour un groupe sur un autre ordinateur ({reason}). Mettez Hermes à jour là-bas, activez son serveur API avec une adresse que la passerelle de cette connexion peut joindre (gateway.room_link_url), et laissez les approbations activées.',
     peerJoinFailed: '{name} n’a pas encore rejoint le groupe : {reason}',
     peerJoinUnreachable: '{name} n’a pas encore rejoint le groupe : la passerelle de ce groupe n’a pas pu joindre son ordinateur. Vérifiez qu’on peut le joindre depuis là-bas sans Desktop, puis réessayez.',
-    peerJoinChanged: '{name} ne peut pas rejoindre ce groupe : les réglages du bot sur son ordinateur ont changé depuis la création du groupe. Démarrez un nouveau groupe pour l’inclure.'
+    peerJoinChanged: '{name} ne peut pas rejoindre ce groupe : les réglages du bot sur son ordinateur ont changé depuis la création du groupe. Démarrez un nouveau groupe pour l’inclure.',
+    disbandUnconfirmed: 'La fin de la discussion de groupe n’a pas pu être confirmée. Vérifiez son état avant de réessayer.',
+    peerNotJoinedBadge: 'pas encore là',
+    peerNotJoined: '{name} n’a pas encore rejoint ce groupe.',
+    peerRejoin: 'L’accès de {name} à ce groupe a pris fin. Choisissez Réessayer pour l’inviter à nouveau.',
+    peerAway: 'L’ordinateur de {name} ne répond pas pour l’instant.',
+    peerJoinConnect: '{name} n’a pas encore rejoint le groupe : connectez-vous à l’ordinateur où il fonctionne, puis choisissez Réessayer.',
+    peerStartWithout: 'Démarrer un nouveau groupe sans {name}',
+    peerStartWithoutConfirm: 'Cette discussion de groupe se termine et une nouvelle démarre avec les autres bots. Les messages précédents n’y sont pas copiés.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -1023,7 +1087,15 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} kann noch keinen Bot für eine Gruppe auf einem anderen Computer bereitstellen ({reason}). Aktualisieren Sie Hermes dort, aktivieren Sie seinen API-Server mit einer Adresse, die das Gateway dieser Verbindung erreichen kann (gateway.room_link_url), und lassen Sie Freigaben eingeschaltet.',
     peerJoinFailed: '{name} ist noch nicht beigetreten: {reason}',
     peerJoinUnreachable: '{name} ist noch nicht beigetreten: Das Gateway dieser Gruppe konnte seinen Computer nicht erreichen. Prüfen Sie, ob dieser Computer von dort ohne Desktop erreichbar ist, und versuchen Sie es erneut.',
-    peerJoinChanged: '{name} kann dieser Gruppe nicht beitreten: Die Bot-Einstellungen auf seinem Computer haben sich seit dem Erstellen der Gruppe geändert. Starten Sie eine neue Gruppe, um ihn aufzunehmen.'
+    peerJoinChanged: '{name} kann dieser Gruppe nicht beitreten: Die Bot-Einstellungen auf seinem Computer haben sich seit dem Erstellen der Gruppe geändert. Starten Sie eine neue Gruppe, um ihn aufzunehmen.',
+    disbandUnconfirmed: 'Das Ende des Gruppenchats konnte nicht bestätigt werden. Prüfen Sie seinen Status, bevor Sie es erneut versuchen.',
+    peerNotJoinedBadge: 'nicht beigetreten',
+    peerNotJoined: '{name} ist dieser Gruppe noch nicht beigetreten.',
+    peerRejoin: 'Der Zugang von {name} zu dieser Gruppe ist abgelaufen. Wählen Sie Erneut versuchen, um ihn wieder einzuladen.',
+    peerAway: 'Der Computer von {name} antwortet gerade nicht.',
+    peerJoinConnect: '{name} ist noch nicht beigetreten: Verbinden Sie sich mit dem Computer, auf dem er läuft, und wählen Sie dann Erneut versuchen.',
+    peerStartWithout: 'Neue Gruppe ohne {name} starten',
+    peerStartWithoutConfirm: 'Dieser Gruppenchat endet, und ein neuer beginnt mit den anderen Bots. Frühere Nachrichten werden nicht in ihn kopiert.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -1138,6 +1210,14 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} todavía no puede aportar un bot a un grupo de otro equipo ({reason}). Actualiza Hermes allí, activa su servidor API con una dirección que la pasarela de esta conexión pueda alcanzar (gateway.room_link_url) y mantén activadas las aprobaciones.',
     peerJoinFailed: '{name} aún no se ha unido: {reason}',
     peerJoinUnreachable: '{name} aún no se ha unido: la pasarela de este grupo no pudo alcanzar su equipo. Comprueba que se pueda alcanzar desde allí sin Desktop y vuelve a intentarlo.',
-    peerJoinChanged: '{name} no puede unirse a este grupo: la configuración del bot en su equipo cambió desde que se creó el grupo. Inicia un grupo nuevo para incluirlo.'
+    peerJoinChanged: '{name} no puede unirse a este grupo: la configuración del bot en su equipo cambió desde que se creó el grupo. Inicia un grupo nuevo para incluirlo.',
+    disbandUnconfirmed: 'No pudimos confirmar que el chat de grupo haya terminado. Comprueba su estado antes de reintentarlo.',
+    peerNotJoinedBadge: 'sin unirse',
+    peerNotJoined: '{name} aún no se ha unido a este grupo.',
+    peerRejoin: 'El acceso de {name} a este grupo terminó. Elige Reintentar para invitarlo de nuevo.',
+    peerAway: 'El equipo de {name} no responde en este momento.',
+    peerJoinConnect: '{name} aún no se ha unido: conéctate al equipo donde funciona y elige Reintentar.',
+    peerStartWithout: 'Iniciar nuevo grupo sin {name}',
+    peerStartWithoutConfirm: 'Este chat de grupo termina y empieza uno nuevo con los demás bots. Los mensajes anteriores no se copian en él.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

@@ -19,6 +19,8 @@ export interface CanonicalDriverStatus<Action extends { kind: string } = { kind:
   blocked?: boolean
   counts?: Record<string, number>
   pending_actions?: Action[]
+  /** Each member of another gateway with a registered route, and its status (`ready` once joined). */
+  peer_routes?: { member_id: string; status: string }[]
 }
 
 export interface CanonicalActivityLabels extends RoomStatusLabels {
@@ -54,8 +56,9 @@ const PHASE: Partial<Record<MemberStatus['kind'], string>> = { working: 'working
 const statusOf = (statuses: Map<string, MemberStatus>, member: CanonicalRoomMember): MemberStatus =>
   statuses.get(member.member_id) ?? { kind: 'idle' }
 
-export function CanonicalGroupRoster({ members = [], label, labels, statuses }: {
-  members?: CanonicalRoomMember[]; label: string; labels: RoomStatusLabels & { lead: string }; statuses: Map<string, MemberStatus>
+export function CanonicalGroupRoster({ members = [], label, labels, statuses, unjoined }: {
+  members?: CanonicalRoomMember[]; label: string; labels: RoomStatusLabels & { lead: string; peerNotJoinedBadge?: string }; statuses: Map<string, MemberStatus>
+  unjoined?: ReadonlySet<string>
 }) {
   if (!members.length) {return null}
 
@@ -64,7 +67,7 @@ export function CanonicalGroupRoster({ members = [], label, labels, statuses }: 
       const status = statusOf(statuses, member)
 
       return <MemberStatusChip avatar={<RoomBotAvatar name={avatarName(member)} size={18} />}
-        badge={(member as { lead?: unknown }).lead ? labels.lead : undefined} key={member.member_id}
+        badge={[(member as { lead?: unknown }).lead && labels.lead, unjoined?.has(member.member_id) && labels.peerNotJoinedBadge].filter(Boolean).join(' · ') || undefined} key={member.member_id}
         labels={labels} name={canonicalMemberName(member)} phase={PHASE[status.kind] ?? 'idle'} status={status} />
     })}
   </ul>
