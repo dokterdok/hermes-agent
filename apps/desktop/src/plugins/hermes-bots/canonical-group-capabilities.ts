@@ -1,6 +1,7 @@
 import { gatewayActivationEpoch, host, useGatewayActivationEpoch, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
+import { peerRoute, type PeerTargetState, readPeerTargets } from './canonical-group-peers'
 import { canonicalGroupRequest } from './canonical-groups'
 import type { GroupEngine } from './group-engine'
 import { resolveBotConnectionRoute } from './routing'
@@ -113,6 +114,7 @@ export function groupCreationSource(route: { connectionId: string; profile: stri
 
 export interface GroupCapabilityState {
   activationEpoch: number
+  snapshot: unknown
   mode: GroupExecutionMode
   seatable: null | Set<string>
   source: string
@@ -143,6 +145,7 @@ export function useGroupCapability(active: boolean) {
       if (!cancelled && sourceCurrent()) {
         setCapability({
           activationEpoch,
+          snapshot: result,
           mode: failed ? 'unavailable' : groupExecutionMode(result),
           seatable: failed ? null : groupSeatableProfiles(result),
           source
@@ -163,7 +166,7 @@ export function useGroupCapability(active: boolean) {
   return {
     capability,
     connectionId,
-    mode: current ? current.mode : ('checking' as const),
+    mode: !connectionId || gateway !== 'open' ? 'unavailable' as const : current ? current.mode : ('checking' as const),
     observedRoute: connectionId ? { connectionId, profile } : null,
     seatable: current ? current.seatable : null,
     source
@@ -201,9 +204,7 @@ function memberConnection(bot: RosterRow, connectionId: null | string): string {
   return String(bot.connectionId || bot.route?.connectionId || connectionId || '').trim()
 }
 
-/** True when `members` live on two or more connections. No single gateway can
- *  own such a room, so it runs on this Desktop, which carries each member's turn
- *  to its own gateway. A member with no recorded connection counts as being on
+/** True when `members` live on two or more connections. A member with no recorded connection counts as being on
  *  `connectionId`. */
 export function groupNeedsDesktopCourier(members: RosterRow[], connectionId: null | string): boolean {
   return new Set(members.map(bot => memberConnection(bot, connectionId))).size > 1
@@ -224,19 +225,87 @@ export function groupSelectionElsewhere(selection: RosterRow[], connectionId: nu
     !botOnConnection(selection[0], connectionId)
 }
 
-export type GroupCreationEngine = 'desktop' | 'elsewhere' | 'gateway'
+export type GroupCreationEngine = 'desktop' | 'elsewhere' | 'gateway' | 'gateway-peer' | 'checking' | 'unavailable'
+export interface GroupCreationPlan {
+  engine: GroupCreationEngine
+  reason?: string
+  connection?: string
+}
 
-/** Who runs a room seating `selection` when created under `mode` from
- *  `connectionId`: the gateway here (canonical mode, every bot on this
- *  connection), this Desktop (a legacy gateway, or bots on two or more
- *  connections), or nobody reachable from here (every bot on ONE other
- *  connection, see groupSelectionElsewhere). */
-export function groupCreationEngine(mode: GroupExecutionMode, selection: RosterRow[], connectionId: null | string): GroupCreationEngine {
-  if (mode !== 'canonical' || groupNeedsDesktopCourier(selection, connectionId)) {
-    return 'desktop'
+/** Owning peers does not require the owner to lend its own Bot through RoomLink. */
+export function groupSeatsPeers(value: unknown): boolean {
+  const answer = value as { driver?: boolean; persistent_process?: boolean; methods?: string[] } | null
+
+  return answer?.driver === true && answer.persistent_process === true && Array.isArray(answer.methods) && answer.methods.includes('groups.peer.register')
+}
+
+/** The one decision point for ordinary gateway, peer and Desktop courier creation. */
+export function groupCreationEngine(mode: GroupExecutionMode | 'checking', selection: RosterRow[], connectionId: null | string,
+  snapshot?: unknown, targets: ReadonlyMap<string, PeerTargetState> = new Map()): GroupCreationPlan {
+  if (mode === 'checking') {return { engine: 'checking', reason: 'capabilities_pending' }}
+
+  if (!connectionId || mode === 'unavailable') {return { engine: 'unavailable', reason: 'owner_unavailable' }}
+
+  if (selection.some(bot => !botOnConnection(bot, connectionId) && !courierReachable(bot))) {return { engine: 'unavailable', reason: 'route_unavailable' }}
+
+  if (groupSelectionElsewhere(selection, connectionId)) {return { engine: 'elsewhere', reason: 'other_connection' }}
+  const seatable = groupSeatableProfiles(snapshot)
+
+  if (mode === 'canonical' && selection.some(bot => botOnConnection(bot, connectionId) && seatable && !seatable.has(bot.route?.targetProfile ?? bot.targetProfile ?? bot.name))) {
+    return { engine: 'unavailable', reason: 'profile_unseatable' }
   }
 
-  return groupSelectionElsewhere(selection, connectionId) ? 'elsewhere' : 'gateway'
+  if (mode === 'legacy') {return { engine: 'desktop' }}
+
+  if (!groupNeedsDesktopCourier(selection, connectionId)) {return { engine: 'gateway' }}
+
+  if (!groupSeatsPeers(snapshot)) {return { engine: 'desktop', reason: 'peer_owner_unavailable' }}
+
+  const remote = selection.filter(member => !botOnConnection(member, connectionId))
+
+  if (remote.some(bot => { const route = peerRoute(bot, connectionId);
+
+ return route && !targets.has(route.connectionId) })) {
+    return { engine: 'checking', reason: 'capabilities_pending' }
+  }
+
+  for (const bot of remote) {
+    const route = peerRoute(bot, connectionId)
+    const connection = connectionName(bot)
+
+    if (!route) {return { engine: 'desktop', reason: 'default_profile_required', connection }}
+    const target = targets.get(route.connectionId)
+
+    if (!target) {return { engine: 'checking', reason: 'capabilities_pending', connection }}
+
+    if (!target.ready) {return { engine: 'desktop', reason: target.reason, connection }}
+
+    if (bot.installId && !samePeerInstallation(bot.installId, target.installationId)) {return { engine: 'unavailable', reason: 'peer_gateway_changed', connection }}
+  }
+
+  return { engine: 'gateway-peer' }
+}
+
+/** Roster installId is get_install_id()'s raw id; RoomLink uses install:<id>. */
+function samePeerInstallation(installId: string, authorityId: string): boolean {
+  return `install:${installId}` === authorityId
+}
+
+/** Re-read the complete plan before the first write; changed choices require a fresh selection. */
+export async function revalidateGroupCreation(route: { connectionId: string; profile: string }, capability: GroupCapabilityState | null,
+  source: string, selection: RosterRow[], expected: GroupCreationEngine, unavailable: string) {
+  const sourceCurrent = groupCreationSource(route, capability?.activationEpoch ?? -1)
+
+  if (!capability || capability.source !== source || !sourceCurrent()) {throw new Error(unavailable)}
+  const snapshot = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+
+  if (groupExecutionMode(snapshot) !== capability.mode) {throw new Error(unavailable)}
+  const targets = groupSeatsPeers(snapshot) ? await readPeerTargets(selection, route.connectionId) : new Map<string, PeerTargetState>()
+  const plan = groupCreationEngine(groupExecutionMode(snapshot), selection, route.connectionId, snapshot, targets)
+
+  if (!sourceCurrent() || plan.engine !== expected || !['gateway', 'gateway-peer', 'desktop'].includes(plan.engine)) {throw new Error(unavailable)}
+
+  return { plan, targets, sourceCurrent }
 }
 
 /** The name a person knows a bot's connection by. */
