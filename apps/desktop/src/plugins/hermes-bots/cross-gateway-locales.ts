@@ -1,6 +1,8 @@
 /** Execution lifetime for groups spanning connected machines. Every Bot Mode locale. */
 export interface CrossGatewayGroupMessages {
   gatewayPeer: (owner: string) => string
+  startGatewayGroup: string
+  upgradeHistory: string
   checkingPeers: string
   desktopDriven: string
   /** A bot's machine is offline: Manage groups cannot change its rooms. */
@@ -17,6 +19,8 @@ export interface CrossGatewayGroupMessages {
 export const CROSS_GATEWAY_GROUP_LOCALES = {
   en: {
     gatewayPeer: owner => `Runs on ${owner}, including when this Desktop is closed. Bots on other computers take text only.`,
+    startGatewayGroup: 'Start a group chat that runs without Desktop',
+    upgradeHistory: 'Earlier messages stay in this group chat.',
     checkingPeers: 'Checking whether these computers can run the group without Desktop…',
     desktopDriven:
       'Runs while this Desktop is open: bots on other machines answer from their own gateways, and this Desktop carries the messages between them.',
@@ -29,6 +33,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   ja: {
     gatewayPeer: owner => `このデスクトップを閉じていても ${owner} で動作します。ほかのコンピューターのボットはテキストのみを受け取ります。`,
+    startGatewayGroup: 'Desktop なしで動くグループチャットを始める',
+    upgradeHistory: '過去のメッセージはこのグループチャットに残ります。',
     checkingPeers: 'デスクトップなしでグループを実行できるか確認しています…',
     desktopDriven:
       'このデスクトップを開いている間だけ動作します。ほかのマシンのボットはそれぞれのゲートウェイから返信し、このデスクトップがメッセージを中継します。',
@@ -41,6 +47,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   zh: {
     gatewayPeer: owner => `在 ${owner} 上运行，即使此桌面端已关闭。其他电脑上的机器人仅接收文本。`,
+    startGatewayGroup: '新建无需 Desktop 也能运行的群聊',
+    upgradeHistory: '之前的消息保留在此群聊中。',
     checkingPeers: '正在检查这些电脑能否在桌面端关闭后运行群组…',
     desktopDriven: '仅在此桌面端打开时运行：其他机器上的机器人通过各自的网关回复，由此桌面端在它们之间传递消息。',
     groupsOffline: (connection, bot) => `${connection} 已离线——重新连接后才能更改 ${bot} 的群组。`,
@@ -52,6 +60,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   'zh-hant': {
     gatewayPeer: owner => `在 ${owner} 上執行，即使此桌面端已關閉。其他電腦上的機器人僅接收文字。`,
+    startGatewayGroup: '建立無需 Desktop 也能執行的群聊',
+    upgradeHistory: '之前的訊息保留在此群聊中。',
     checkingPeers: '正在檢查這些電腦能否在桌面端關閉後執行群組…',
     desktopDriven: '僅在此桌面端開啟時執行：其他機器上的機器人透過各自的閘道回覆，由此桌面端在它們之間傳遞訊息。',
     groupsOffline: (connection, bot) => `${connection} 已離線——重新連線後才能變更 ${bot} 的群組。`,
@@ -63,6 +73,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   ar: {
     gatewayPeer: owner => `تعمل على ${owner} حتى عند إغلاق سطح المكتب هذا. تقبل الروبوتات على الأجهزة الأخرى النص فقط.`,
+    startGatewayGroup: 'بدء محادثة جماعية تعمل دون Desktop',
+    upgradeHistory: 'تبقى الرسائل السابقة في هذه المحادثة الجماعية.',
     checkingPeers: 'جارٍ التحقق مما إذا كانت هذه الأجهزة تستطيع تشغيل المجموعة دون سطح المكتب…',
     desktopDriven:
       'تعمل ما دام سطح المكتب هذا مفتوحًا: تردّ الروبوتات على الأجهزة الأخرى من بواباتها الخاصة، وينقل سطح المكتب هذا الرسائل بينها.',
@@ -75,6 +87,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   ru: {
     gatewayPeer: owner => `Работает на ${owner}, даже когда этот Desktop закрыт. Боты на других компьютерах принимают только текст.`,
+    startGatewayGroup: 'Начать групповой чат, работающий без Desktop',
+    upgradeHistory: 'Предыдущие сообщения останутся в этом групповом чате.',
     checkingPeers: 'Проверяем, могут ли эти компьютеры запускать группу без Desktop…',
     desktopDriven:
       'Работает, пока открыт этот Desktop: боты на других машинах отвечают через свои шлюзы, а этот Desktop передаёт сообщения между ними.',
@@ -87,6 +101,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   fr: {
     gatewayPeer: owner => `Fonctionne sur ${owner}, même lorsque ce Desktop est fermé. Les bots des autres ordinateurs acceptent uniquement du texte.`,
+    startGatewayGroup: 'Créer une discussion de groupe qui fonctionne sans Desktop',
+    upgradeHistory: 'Les anciens messages restent dans cette discussion de groupe.',
     checkingPeers: 'Vérification de la capacité de ces ordinateurs à faire fonctionner le groupe sans Desktop…',
     desktopDriven:
       'Fonctionne tant que ce Desktop est ouvert : les bots des autres machines répondent depuis leur propre passerelle, et ce Desktop transmet les messages entre eux.',
@@ -99,6 +115,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   de: {
     gatewayPeer: owner => `Läuft auf ${owner}, auch wenn dieser Desktop geschlossen ist. Bots auf anderen Computern empfangen nur Text.`,
+    startGatewayGroup: 'Gruppenchat starten, der ohne Desktop läuft',
+    upgradeHistory: 'Frühere Nachrichten bleiben in diesem Gruppenchat.',
     checkingPeers: 'Es wird geprüft, ob diese Computer die Gruppe ohne Desktop ausführen können…',
     desktopDriven:
       'Läuft, solange dieser Desktop geöffnet ist: Bots auf anderen Rechnern antworten über ihr eigenes Gateway, und dieser Desktop leitet die Nachrichten zwischen ihnen weiter.',
@@ -111,6 +129,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   es: {
     gatewayPeer: owner => `Funciona en ${owner}, incluso cuando este Desktop está cerrado. Los bots de otros equipos solo reciben texto.`,
+    startGatewayGroup: 'Crear un chat de grupo que funcione sin Desktop',
+    upgradeHistory: 'Los mensajes anteriores permanecen en este chat de grupo.',
     checkingPeers: 'Comprobando si estos equipos pueden ejecutar el grupo sin Desktop…',
     desktopDriven:
       'Funciona mientras este Desktop esté abierto: los bots de otras máquinas responden desde su propia pasarela y este Desktop transmite los mensajes entre ellos.',
