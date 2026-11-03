@@ -13,7 +13,7 @@ import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
 import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, replaceCanonicalGroupSend, retireCanonicalGroupSend, withdrawCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
-import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupRequest, disbandCanonicalGroup } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomContext, CanonicalRoomMember } from './canonical-groups'
 import { GroupMentionInput } from './group-chat-parts'
 import { RoomBotAvatar } from './group-room-avatar'
@@ -59,15 +59,15 @@ function confirmSend(result: unknown, eventId: string, unconfirmed: string) {
   }
 }
 
-export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
-  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
+export function CanonicalGroupWorkspace({ binding, visible = true, onBack, onReplaced }: {
+  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void; onReplaced?: (key: string) => void
 }) {
   // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView binding={binding} key={JSON.stringify([binding.connectionId, binding.profile, binding.roomId])} onBack={onBack} visible={visible} />
+  return <CanonicalRoomView binding={binding} key={JSON.stringify([binding.connectionId, binding.profile, binding.roomId])} onBack={onBack} onReplaced={onReplaced} visible={visible} />
 }
 
-function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
-  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void
+function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplaced }: {
+  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void; onReplaced?: (key: string) => void
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
@@ -395,7 +395,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
   const end = async () => {
-    await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: randomUuid() })
+    if (!await disbandCanonicalGroup(binding)) {throw new Error(labels.disbandUnconfirmed)}
 
     if (alive.current) {onBack?.()}
     forgetCanonicalGroup(binding)
@@ -445,9 +445,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <CanonicalGroupHeader busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
-        canStop={!!driver && offersGroupMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
-        onDisband={end} onRename={rename} onStop={() => void stop()}
+      <CanonicalGroupHeader binding={binding} busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
+        canStop={!!driver && offersGroupMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
+        onChanged={() => void refresh().catch(e => setReadError(String(e)))} onDetails={() => setDetailsOpen(open => !open)}
+        onDisband={end} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />
       <CanonicalGroupNotices error={error} journalError={journalError} labels={labels}
         notice={notice} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}

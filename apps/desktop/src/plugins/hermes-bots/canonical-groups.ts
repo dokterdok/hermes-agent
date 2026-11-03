@@ -81,6 +81,17 @@ export async function canonicalGroupRequest<T>(
   }, method, { ...params, profile: route.profile })
 }
 
+/** A resolved RPC alone does not prove this room ended; only its matching tombstone does. */
+export async function disbandCanonicalGroup(binding: CanonicalGroupBinding): Promise<boolean> {
+  const answer = await canonicalGroupRequest<{ tombstone?: { room_id?: unknown; disbanded_at?: unknown } }>(binding, 'groups.disband', {
+    room_id: binding.roomId, cancel_id: randomUuid()
+  })
+
+  const tombstone = answer?.tombstone
+
+  return tombstone?.room_id === binding.roomId && typeof tombstone.disbanded_at === 'number' && Number.isFinite(tombstone.disbanded_at)
+}
+
 export async function discoverCanonicalGroups(
   route: CanonicalGroupRoute
 ): Promise<{ driver: boolean; rooms: CanonicalRoom[] }> {

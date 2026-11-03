@@ -55,7 +55,7 @@ beforeEach(() => {
 
       rooms = rooms.filter(r => r.room_id !== params.room_id)
 
-      return { tombstone: { room_id: params.room_id } }
+      return { tombstone: { room_id: params.room_id, disbanded_at: 1 } }
     }
 
     return {}
