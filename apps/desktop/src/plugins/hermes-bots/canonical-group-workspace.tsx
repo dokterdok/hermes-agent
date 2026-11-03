@@ -8,7 +8,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
-import { forgetCanonicalGroup } from './canonical-group-registry'
+import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, replaceCanonicalGroupSend, retireCanonicalGroupSend, withdrawCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
@@ -353,7 +353,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     mutate(() => actCanonicalGroup(binding, action, choice))
 
   const rename = (name: string) =>
-    void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: randomUuid(), name }))
+    void mutate(async () => {
+      const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(binding, 'groups.rename', { room_id: binding.roomId, event_id: randomUuid(), name })
+      registerCanonicalGroup(binding, room)
+    })
 
   // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
   const end = async () => {

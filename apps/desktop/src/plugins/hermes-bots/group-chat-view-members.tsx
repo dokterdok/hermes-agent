@@ -33,6 +33,7 @@ import {
 import { $botMeta, $lastRoster, botHandle, botRosterKey, botSourceStatus, saveBotMeta } from './data'
 import { $groupChats, GROUP_CHAT_MAX_MEMBERS, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import { stickyGroupEngine } from './group-engine'
 import {
   botGroups,
   durableGroupChatMembers,
@@ -80,7 +81,7 @@ async function commitGroupChatRoster(group: string, previous: RosterRow[], seate
 
   updateGroupChat(group, (room: GroupChatRoom) => ({
     ...room,
-    ...(desktopDriven ? { engine: 'desktop' as const } : {}),
+    ...stickyGroupEngine(room, desktopDriven ? { engine: 'desktop' } : undefined),
     members: durableGroupChatMembers(seated),
     heldMessages: without(room.heldMessages, key => key),
     holds: without(room.holds, key => key),
