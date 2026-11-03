@@ -19,6 +19,8 @@ export interface CanonicalDriverStatus<Action extends { kind: string } = { kind:
   blocked?: boolean
   counts?: Record<string, number>
   pending_actions?: Action[]
+  /** Each member of another gateway with a registered route, and its status (`ready` once joined). */
+  peer_routes?: { member_id: string; status: string }[]
 }
 
 export interface CanonicalActivityLabels extends RoomStatusLabels {
@@ -54,8 +56,9 @@ const PHASE: Partial<Record<MemberStatus['kind'], string>> = { working: 'working
 const statusOf = (statuses: Map<string, MemberStatus>, member: CanonicalRoomMember): MemberStatus =>
   statuses.get(member.member_id) ?? { kind: 'idle' }
 
-export function CanonicalGroupRoster({ members = [], label, labels, statuses }: {
+export function CanonicalGroupRoster({ members = [], label, labels, statuses, peerBadges }: {
   members?: CanonicalRoomMember[]; label: string; labels: RoomStatusLabels & { lead: string }; statuses: Map<string, MemberStatus>
+  peerBadges?: ReadonlyMap<string, string | undefined>
 }) {
   if (!members.length) {return null}
 
@@ -64,7 +67,7 @@ export function CanonicalGroupRoster({ members = [], label, labels, statuses }: 
       const status = statusOf(statuses, member)
 
       return <MemberStatusChip avatar={<RoomBotAvatar name={avatarName(member)} size={18} />}
-        badge={(member as { lead?: unknown }).lead ? labels.lead : undefined} key={member.member_id}
+        badge={[(member as { lead?: unknown }).lead && labels.lead, peerBadges?.get(member.member_id)].filter(Boolean).join(' · ') || undefined} key={member.member_id}
         labels={labels} name={canonicalMemberName(member)} phase={PHASE[status.kind] ?? 'idle'} status={status} />
     })}
   </ul>
@@ -168,7 +171,7 @@ export function CanonicalGroupNotices({ readError, error, journalError, notice, 
 }) {
   return <>
     {readError && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{readError}<Button onClick={onRefresh}>{labels.refresh}</Button></div>}
-    {error && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{error}</div>}
+    {error && <div className="px-4 py-1.5"><div className="mx-auto w-full max-w-3xl text-xs text-destructive" role="alert">{error}</div></div>}
     {journalError && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">
       <p>{labels.journalLoadFailed}</p>
       <Button onClick={onJournalReload}>{labels.journalReload}</Button>
