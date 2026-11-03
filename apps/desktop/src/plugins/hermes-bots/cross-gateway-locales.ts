@@ -1,7 +1,7 @@
-/** Copy for group chats whose members live on more than one connected machine.
- *  Such a room runs on this Desktop (each member answers from its own gateway),
- *  so the dialog says so before it is created. Every Bot Mode locale. */
+/** Execution lifetime for groups spanning connected machines. Every Bot Mode locale. */
 export interface CrossGatewayGroupMessages {
+  gatewayPeer: (owner: string) => string
+  checkingPeers: string
   desktopDriven: string
   /** A bot's machine is offline: Manage groups cannot change its rooms. */
   groupsOffline: (connection: string, bot: string) => string
@@ -16,6 +16,8 @@ export interface CrossGatewayGroupMessages {
 
 export const CROSS_GATEWAY_GROUP_LOCALES = {
   en: {
+    gatewayPeer: owner => `Runs on ${owner}, including when this Desktop is closed. Bots on other computers take text only.`,
+    checkingPeers: 'Checking whether these computers can run the group without Desktop…',
     desktopDriven:
       'Runs while this Desktop is open: bots on other machines answer from their own gateways, and this Desktop carries the messages between them.',
     groupsOffline: (connection, bot) => `${connection} is offline — reconnect to change ${bot}’s groups.`,
@@ -26,6 +28,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     selectionElsewhere: connection => `These bots all live on ${connection}. Add a bot from this connection, or switch to ${connection} to start a group of its bots.`
   },
   ja: {
+    gatewayPeer: owner => `このデスクトップを閉じていても ${owner} で動作します。ほかのコンピューターのボットはテキストのみを受け取ります。`,
+    checkingPeers: 'デスクトップなしでグループを実行できるか確認しています…',
     desktopDriven:
       'このデスクトップを開いている間だけ動作します。ほかのマシンのボットはそれぞれのゲートウェイから返信し、このデスクトップがメッセージを中継します。',
     groupsOffline: (connection, bot) => `${connection} はオフラインです。${bot} のグループを変更するには再接続してください。`,
@@ -36,6 +40,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     selectionElsewhere: connection => `これらのボットはすべて ${connection} にあります。この接続のボットを追加するか、${connection} に切り替えてそのボットだけのグループを作成してください。`
   },
   zh: {
+    gatewayPeer: owner => `在 ${owner} 上运行，即使此桌面端已关闭。其他电脑上的机器人仅接收文本。`,
+    checkingPeers: '正在检查这些电脑能否在桌面端关闭后运行群组…',
     desktopDriven: '仅在此桌面端打开时运行：其他机器上的机器人通过各自的网关回复，由此桌面端在它们之间传递消息。',
     groupsOffline: (connection, bot) => `${connection} 已离线——重新连接后才能更改 ${bot} 的群组。`,
     memberOffline: (connection, bot) => `${connection} 已离线——重新连接后才能移除 ${bot}。`,
@@ -45,6 +51,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     selectionElsewhere: connection => `这些机器人都在 ${connection} 上。请添加一个此连接上的机器人，或切换到 ${connection} 来创建只包含其机器人的群组。`
   },
   'zh-hant': {
+    gatewayPeer: owner => `在 ${owner} 上執行，即使此桌面端已關閉。其他電腦上的機器人僅接收文字。`,
+    checkingPeers: '正在檢查這些電腦能否在桌面端關閉後執行群組…',
     desktopDriven: '僅在此桌面端開啟時執行：其他機器上的機器人透過各自的閘道回覆，由此桌面端在它們之間傳遞訊息。',
     groupsOffline: (connection, bot) => `${connection} 已離線——重新連線後才能變更 ${bot} 的群組。`,
     memberOffline: (connection, bot) => `${connection} 已離線——重新連線後才能移除 ${bot}。`,
@@ -54,6 +62,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     selectionElsewhere: connection => `這些機器人都在 ${connection} 上。請加入一個此連線上的機器人，或切換到 ${connection} 來建立只包含其機器人的群組。`
   },
   ar: {
+    gatewayPeer: owner => `تعمل على ${owner} حتى عند إغلاق سطح المكتب هذا. تقبل الروبوتات على الأجهزة الأخرى النص فقط.`,
+    checkingPeers: 'جارٍ التحقق مما إذا كانت هذه الأجهزة تستطيع تشغيل المجموعة دون سطح المكتب…',
     desktopDriven:
       'تعمل ما دام سطح المكتب هذا مفتوحًا: تردّ الروبوتات على الأجهزة الأخرى من بواباتها الخاصة، وينقل سطح المكتب هذا الرسائل بينها.',
     groupsOffline: (connection, bot) => `${connection} غير متصل — أعد الاتصال لتغيير مجموعات ${bot}.`,
@@ -64,6 +74,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     selectionElsewhere: connection => `كل هذه الروبوتات موجودة على ${connection}. أضف روبوتًا من هذا الاتصال، أو انتقل إلى ${connection} لبدء مجموعة من روبوتاته.`
   },
   ru: {
+    gatewayPeer: owner => `Работает на ${owner}, даже когда этот Desktop закрыт. Боты на других компьютерах принимают только текст.`,
+    checkingPeers: 'Проверяем, могут ли эти компьютеры запускать группу без Desktop…',
     desktopDriven:
       'Работает, пока открыт этот Desktop: боты на других машинах отвечают через свои шлюзы, а этот Desktop передаёт сообщения между ними.',
     groupsOffline: (connection, bot) => `${connection} не в сети — переподключитесь, чтобы изменить группы ${bot}.`,
@@ -74,6 +86,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     selectionElsewhere: connection => `Все эти боты находятся на ${connection}. Добавьте бота из этого подключения или переключитесь на ${connection}, чтобы создать группу из его ботов.`
   },
   fr: {
+    gatewayPeer: owner => `Fonctionne sur ${owner}, même lorsque ce Desktop est fermé. Les bots des autres ordinateurs acceptent uniquement du texte.`,
+    checkingPeers: 'Vérification de la capacité de ces ordinateurs à faire fonctionner le groupe sans Desktop…',
     desktopDriven:
       'Fonctionne tant que ce Desktop est ouvert : les bots des autres machines répondent depuis leur propre passerelle, et ce Desktop transmet les messages entre eux.',
     groupsOffline: (connection, bot) => `${connection} est hors ligne — reconnectez-le pour modifier les groupes de ${bot}.`,
@@ -84,6 +98,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     selectionElsewhere: connection => `Ces bots se trouvent tous sur ${connection}. Ajoutez un bot de cette connexion, ou passez sur ${connection} pour créer un groupe avec ses bots.`
   },
   de: {
+    gatewayPeer: owner => `Läuft auf ${owner}, auch wenn dieser Desktop geschlossen ist. Bots auf anderen Computern empfangen nur Text.`,
+    checkingPeers: 'Es wird geprüft, ob diese Computer die Gruppe ohne Desktop ausführen können…',
     desktopDriven:
       'Läuft, solange dieser Desktop geöffnet ist: Bots auf anderen Rechnern antworten über ihr eigenes Gateway, und dieser Desktop leitet die Nachrichten zwischen ihnen weiter.',
     groupsOffline: (connection, bot) => `${connection} ist offline – verbinde es neu, um die Gruppen von ${bot} zu ändern.`,
@@ -94,6 +110,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     selectionElsewhere: connection => `Diese Bots liegen alle auf ${connection}. Füge einen Bot dieser Verbindung hinzu oder wechsle zu ${connection}, um eine Gruppe mit dessen Bots zu starten.`
   },
   es: {
+    gatewayPeer: owner => `Funciona en ${owner}, incluso cuando este Desktop está cerrado. Los bots de otros equipos solo reciben texto.`,
+    checkingPeers: 'Comprobando si estos equipos pueden ejecutar el grupo sin Desktop…',
     desktopDriven:
       'Funciona mientras este Desktop esté abierto: los bots de otras máquinas responden desde su propia pasarela y este Desktop transmite los mensajes entre ellos.',
     groupsOffline: (connection, bot) => `${connection} está sin conexión: vuelve a conectarlo para cambiar los grupos de ${bot}.`,
