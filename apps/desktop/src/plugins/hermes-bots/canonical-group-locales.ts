@@ -18,6 +18,8 @@ export interface CanonicalGroupMessages {
   deny: string
   discardUnknown: string
   discardWarning: string
+  discardStopPending: string
+  discardPeerUnreachable: string
   confirmDiscard: string
   unconfirmedSend: string
   restoredPendingSend: string
@@ -117,6 +119,21 @@ export interface CanonicalGroupMessages {
   peerJoinFailed: string
   peerJoinUnreachable: string
   peerJoinChanged: string
+  disbandUnconfirmed: string
+  disbandKept: string
+  disbandPeerUnreachable: string
+  disbandStopPending: string
+  disbandInProgress: string
+  disbandRevokeUnsupported: string
+  disbandServiceRequired: string
+  peerStartWithoutKept: string
+  peerNotJoinedBadge: string
+  peerNotJoined: string
+  peerRejoin: string
+  peerAway: string
+  peerJoinConnect: string
+  peerStartWithout: string
+  peerStartWithoutConfirm: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -138,8 +155,10 @@ export const CANONICAL_GROUP_LOCALES = {
     invalidLogCursor: 'Invalid room log cursor',
     allowOnce: 'Allow once',
     deny: 'Deny',
-    discardUnknown: 'Discard unknown work',
-    discardWarning: 'Side effects may already have occurred. Discarding does not undo them.',
+    discardUnknown: 'Discard turn',
+    discardWarning: 'Side effects may already have occurred. Discarding does not undo them. For a bot on another computer, Discard waits for that computer to confirm the turn has stopped.',
+    discardStopPending: 'This bot has not confirmed that its turn has stopped. The turn has been kept. Wait a moment, then try Discard again.',
+    discardPeerUnreachable: 'This bot’s computer is unreachable. The turn has been kept. Reconnect that computer, then try Discard again.',
     confirmDiscard: 'Confirm discard',
     unconfirmedSend: 'The previous send is unconfirmed. Retry its original text before sending another message.',
     restoredPendingSend: 'An unconfirmed send was restored. Retry it before sending another message.',
@@ -177,7 +196,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Stop the group',
     pendingApproval: '{name} is asking for approval. You decide.',
     pendingRetry: '{name}’s turn stopped before it finished. Retry it?',
-    pendingDiscard: '{name}’s turn may have done work that was not recorded. Discard it?',
+    pendingDiscard: 'Discard {name}’s turn? Work already done will not be undone.',
     membersFixed: 'Members are set when the group is created.',
     rowWorking: 'Working',
     rowFailed: 'A member failed',
@@ -238,7 +257,22 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} can’t host a bot for a group chat on another computer yet ({reason}). Update Hermes there, turn on its API server with an address this connection’s gateway can reach (gateway.room_link_url), and keep approvals on.',
     peerJoinFailed: '{name} hasn’t joined: {reason}',
     peerJoinUnreachable: '{name} hasn’t joined: this group chat’s gateway couldn’t reach its computer. Check that its computer can be reached from there without Desktop, then try again.',
-    peerJoinChanged: '{name} can’t join this group chat: its computer’s bot settings changed since the group chat was created. Start a new group chat to include it.'
+    peerJoinChanged: '{name} can’t join this group chat: its computer’s bot settings changed since the group chat was created. Start a new group chat to include it.',
+    disbandUnconfirmed: 'We couldn’t confirm that the group chat ended. Check its status before trying again.',
+    disbandKept: 'The group chat has been kept. {reason}',
+    disbandPeerUnreachable: 'A member’s gateway is unreachable. Reconnect it, then try Disband again.',
+    disbandStopPending: 'Work in the group chat is still stopping. Wait for Stop to finish, then try Disband again.',
+    disbandInProgress: 'Another Disband request is still in progress. Wait a moment, check the group chat, then try Disband again if needed.',
+    disbandRevokeUnsupported: 'A member cannot remove its access to this group chat. Update Hermes on that member’s computer, then try Disband again.',
+    disbandServiceRequired: 'Hermes must be running on the computer that runs this group chat to stop its bots and remove their access. Start or reconnect Hermes there, then try Disband again.',
+    peerStartWithoutKept: 'The new group chat is ready and the original group chat has been kept. {reason}',
+    peerNotJoinedBadge: 'not joined',
+    peerNotJoined: '{name} hasn’t joined this group chat yet.',
+    peerRejoin: '{name}’s access to this group chat ended. Choose Retry to invite it again.',
+    peerAway: '{name}’s computer isn’t answering right now.',
+    peerJoinConnect: '{name} hasn’t joined: connect to the computer it runs on, then choose Retry.',
+    peerStartWithout: 'Start new group chat without {name}',
+    peerStartWithoutConfirm: 'A new group chat starts with the other bots. The original ends only after every member confirms Stop and access revocation; an unreachable member keeps it. Earlier messages aren’t copied.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -258,8 +292,10 @@ export const CANONICAL_GROUP_LOCALES = {
     invalidLogCursor: 'ルームのログカーソルが無効です',
     allowOnce: '今回のみ許可',
     deny: '拒否',
-    discardUnknown: '結果不明の処理を破棄',
-    discardWarning: 'すでに変更が行われている可能性があります。破棄しても元には戻りません。',
+    discardUnknown: 'ターンを破棄',
+    discardWarning: 'すでに変更が行われている可能性があります。破棄しても元には戻りません。別のコンピューターのボットの場合、そのコンピューターがターンの停止を確認するまで破棄は完了しません。',
+    discardStopPending: 'このボットはまだターンの停止を確認していません。ターンは保持されています。少し待ってから、もう一度破棄してください。',
+    discardPeerUnreachable: 'このボットのコンピューターに接続できません。ターンは保持されています。そのコンピューターを再接続してから、もう一度破棄してください。',
     confirmDiscard: '破棄を確定',
     unconfirmedSend: '前回の送信は未確認です。別のメッセージを送信する前に、元のテキストで再試行してください。',
     restoredPendingSend: '未確認の送信を復元しました。別のメッセージを送信する前に再試行してください。',
@@ -297,7 +333,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'グループを停止',
     pendingApproval: '{name} が承認を求めています。判断してください。',
     pendingRetry: '{name} のターンは完了前に止まりました。再試行しますか？',
-    pendingDiscard: '{name} のターンは記録されていない作業をした可能性があります。破棄しますか？',
+    pendingDiscard: '{name} のターンを破棄しますか？すでに行われた作業は元に戻りません。',
     membersFixed: 'メンバーはグループ作成時に決まります。',
     rowWorking: '作業中',
     rowFailed: 'メンバーが失敗しました',
@@ -358,7 +394,22 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} は、まだほかのコンピューターのグループチャットにボットを参加させられません（{reason}）。そこで Hermes を更新し、この接続のゲートウェイから届くアドレス（gateway.room_link_url）で API サーバーを有効にし、承認をオンのままにしてください。',
     peerJoinFailed: '{name} はまだ参加していません: {reason}',
     peerJoinUnreachable: '{name} はまだ参加していません。このグループチャットのゲートウェイがそのコンピューターに届きませんでした。Desktop を介さずにそこから届くことを確認してから、もう一度お試しください。',
-    peerJoinChanged: '{name} はこのグループチャットに参加できません。グループチャットの作成後に、そのコンピューターのボットの設定が変わりました。含めるには新しいグループチャットを始めてください。'
+    peerJoinChanged: '{name} はこのグループチャットに参加できません。グループチャットの作成後に、そのコンピューターのボットの設定が変わりました。含めるには新しいグループチャットを始めてください。',
+    disbandUnconfirmed: 'グループチャットの終了を確認できませんでした。再試行する前に状態を確認してください。',
+    disbandKept: 'グループチャットは保持されています。{reason}',
+    disbandPeerUnreachable: 'メンバーのゲートウェイに接続できません。再接続してから、もう一度解散してください。',
+    disbandStopPending: 'グループチャットの処理はまだ停止中です。停止の完了を待ってから、もう一度解散してください。',
+    disbandInProgress: '別の解散リクエストを処理中です。少し待ってグループチャットを確認し、必要であればもう一度解散してください。',
+    disbandRevokeUnsupported: 'メンバーがこのグループチャットへのアクセスを解除できません。そのメンバーのコンピューターで Hermes を更新してから、もう一度解散してください。',
+    disbandServiceRequired: 'ボットを停止してアクセスを解除するには、このグループチャットを実行するコンピューターで Hermes が動作している必要があります。そこで Hermes を起動するか再接続してから、もう一度解散してください。',
+    peerStartWithoutKept: '新しいグループチャットの準備ができました。元のグループチャットも保持されています。{reason}',
+    peerNotJoinedBadge: '未参加',
+    peerNotJoined: '{name} はまだこのグループチャットに参加していません。',
+    peerRejoin: '{name} のこのグループチャットへのアクセスが終了しました。もう一度招待するには「再試行」を選んでください。',
+    peerAway: '{name} のコンピューターは現在応答していません。',
+    peerJoinConnect: '{name} はまだ参加していません。それが動いているコンピューターに接続してから、「再試行」を選んでください。',
+    peerStartWithout: '{name} を除いて新しいグループチャットを始める',
+    peerStartWithoutConfirm: 'ほかのボットで新しいグループチャットを開始します。元のチャットは、全メンバーの停止とアクセス取り消しが確認された後に終了します。接続できないメンバーがいる場合は保持されます。以前のメッセージはコピーされません。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -378,8 +429,10 @@ export const CANONICAL_GROUP_LOCALES = {
     invalidLogCursor: '群组日志游标无效',
     allowOnce: '仅允许一次',
     deny: '拒绝',
-    discardUnknown: '丢弃结果未知的任务',
-    discardWarning: '可能已产生实际影响。丢弃任务不会撤销这些影响。',
+    discardUnknown: '丢弃回合',
+    discardWarning: '可能已产生实际影响。丢弃回合不会撤销这些影响。如果机器人在其他电脑上运行，必须等待那台电脑确认回合已停止，才能完成丢弃。',
+    discardStopPending: '此机器人尚未确认回合已停止。回合已保留。请稍等片刻，然后重试丢弃。',
+    discardPeerUnreachable: '无法连接此机器人的电脑。回合已保留。请重新连接那台电脑，然后重试丢弃。',
     confirmDiscard: '确认丢弃',
     unconfirmedSend: '上次发送尚未确认。请先重试发送原始文本，再发送其他消息。',
     restoredPendingSend: '已恢复尚未确认的发送。请先重试，再发送其他消息。',
@@ -417,7 +470,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: '停止群组',
     pendingApproval: '{name} 正在请求批准，由你决定。',
     pendingRetry: '{name} 的回合未完成就停止了。要重试吗？',
-    pendingDiscard: '{name} 的回合可能做了未记录的工作。要丢弃吗？',
+    pendingDiscard: '丢弃 {name} 的回合？已经完成的工作不会被撤销。',
     membersFixed: '成员在创建群组时确定。',
     rowWorking: '工作中',
     rowFailed: '有成员失败',
@@ -478,7 +531,22 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} 目前还无法让机器人加入其他电脑上的群聊（{reason}）。请在那里更新 Hermes，用此连接的网关可以访问的地址（gateway.room_link_url）开启其 API 服务器，并保持批准开启。',
     peerJoinFailed: '{name} 尚未加入：{reason}',
     peerJoinUnreachable: '{name} 尚未加入：此群聊的网关无法访问它所在的电脑。请确认无需 Desktop 也能从那里访问该电脑，然后重试。',
-    peerJoinChanged: '{name} 无法加入此群聊：自群聊创建以来，它所在电脑上的机器人设置已更改。要加入它，请开始一个新群聊。'
+    peerJoinChanged: '{name} 无法加入此群聊：自群聊创建以来，它所在电脑上的机器人设置已更改。要加入它，请开始一个新群聊。',
+    disbandUnconfirmed: '无法确认群聊是否已经结束。请先检查其状态，再重试。',
+    disbandKept: '群聊已保留。{reason}',
+    disbandPeerUnreachable: '无法连接成员的网关。请重新连接，然后重试解散。',
+    disbandStopPending: '群聊中的工作仍在停止中。请等待停止完成，然后重试解散。',
+    disbandInProgress: '另一个解散请求仍在处理中。请稍等片刻，检查群聊状态，然后根据需要重试解散。',
+    disbandRevokeUnsupported: '某个成员无法撤销其对此群聊的访问权限。请更新该成员电脑上的 Hermes，然后重试解散。',
+    disbandServiceRequired: '必须在运行此群聊的电脑上启动 Hermes，才能停止机器人并撤销其访问权限。请在那台电脑上启动或重新连接 Hermes，然后重试解散。',
+    peerStartWithoutKept: '新群聊已就绪，原群聊已保留。{reason}',
+    peerNotJoinedBadge: '未加入',
+    peerNotJoined: '{name} 尚未加入此群聊。',
+    peerRejoin: '{name} 对此群聊的访问已结束。选择“重试”再次邀请它。',
+    peerAway: '{name} 所在的电脑目前没有响应。',
+    peerJoinConnect: '{name} 尚未加入：请连接到它所在的电脑，然后选择“重试”。',
+    peerStartWithout: '不含 {name} 开始新群聊',
+    peerStartWithoutConfirm: '将用其他机器人开始新群聊。只有所有成员确认停止并撤销访问权限后，原群聊才会结束；若有成员无法连接，原群聊将保留。之前的消息不会复制。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -498,8 +566,10 @@ export const CANONICAL_GROUP_LOCALES = {
     invalidLogCursor: '群組記錄游標無效',
     allowOnce: '僅允許一次',
     deny: '拒絕',
-    discardUnknown: '捨棄結果不明的工作',
-    discardWarning: '可能已產生實際影響。捨棄工作不會復原這些影響。',
+    discardUnknown: '捨棄回合',
+    discardWarning: '可能已產生實際影響。捨棄回合不會復原這些影響。如果機器人在其他電腦上執行，必須等待那台電腦確認回合已停止，才能完成捨棄。',
+    discardStopPending: '此機器人尚未確認回合已停止。回合已保留。請稍候片刻，再重試捨棄。',
+    discardPeerUnreachable: '無法連線至此機器人的電腦。回合已保留。請重新連線至那台電腦，再重試捨棄。',
     confirmDiscard: '確認捨棄',
     unconfirmedSend: '上次傳送尚未確認。請先重試傳送原始文字，再傳送其他訊息。',
     restoredPendingSend: '已還原尚未確認的傳送。請先重試，再傳送其他訊息。',
@@ -537,7 +607,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: '停止群組',
     pendingApproval: '{name} 正在請求核准，由你決定。',
     pendingRetry: '{name} 的回合未完成就停止了。要重試嗎？',
-    pendingDiscard: '{name} 的回合可能做了未記錄的工作。要捨棄嗎？',
+    pendingDiscard: '捨棄 {name} 的回合？已完成的工作不會被復原。',
     membersFixed: '成員在建立群組時決定。',
     rowWorking: '工作中',
     rowFailed: '有成員失敗',
@@ -598,7 +668,22 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} 目前還無法讓機器人加入其他電腦上的群組聊天（{reason}）。請在那裡更新 Hermes，以此連線的閘道可以連到的位址（gateway.room_link_url）開啟其 API 伺服器，並保持核准開啟。',
     peerJoinFailed: '{name} 尚未加入：{reason}',
     peerJoinUnreachable: '{name} 尚未加入：此群組聊天的閘道無法連到它所在的電腦。請確認不經 Desktop 也能從那裡連到該電腦，然後再試一次。',
-    peerJoinChanged: '{name} 無法加入此群組聊天：自群組聊天建立以來，它所在電腦上的機器人設定已變更。若要加入它，請開始新的群組聊天。'
+    peerJoinChanged: '{name} 無法加入此群組聊天：自群組聊天建立以來，它所在電腦上的機器人設定已變更。若要加入它，請開始新的群組聊天。',
+    disbandUnconfirmed: '無法確認群組聊天是否已經結束。請先檢查其狀態，再重試。',
+    disbandKept: '群組聊天已保留。{reason}',
+    disbandPeerUnreachable: '無法連線至成員的閘道。請重新連線，再重試解散。',
+    disbandStopPending: '群組聊天中的工作仍在停止中。請等待停止完成，再重試解散。',
+    disbandInProgress: '另一個解散請求仍在處理中。請稍候片刻，檢查群組聊天狀態，再視需要重試解散。',
+    disbandRevokeUnsupported: '某個成員無法撤銷其對此群組聊天的存取權。請更新該成員電腦上的 Hermes，再重試解散。',
+    disbandServiceRequired: '必須在執行此群組聊天的電腦上啟動 Hermes，才能停止機器人並撤銷其存取權。請在那台電腦上啟動或重新連線至 Hermes，再重試解散。',
+    peerStartWithoutKept: '新的群組聊天已就緒，原有的群組聊天也已保留。{reason}',
+    peerNotJoinedBadge: '未加入',
+    peerNotJoined: '{name} 尚未加入此群組聊天。',
+    peerRejoin: '{name} 對此群組聊天的存取已結束。選擇「重試」再次邀請它。',
+    peerAway: '{name} 所在的電腦目前沒有回應。',
+    peerJoinConnect: '{name} 尚未加入：請連線到它所在的電腦，然後選擇「重試」。',
+    peerStartWithout: '不含 {name} 開始新群組聊天',
+    peerStartWithoutConfirm: '將用其他機器人開始新群組聊天。只有所有成員確認停止並撤銷存取權後，原群組聊天才會結束；若有成員無法連線，原群組聊天將保留。先前的訊息不會複製。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -618,8 +703,10 @@ export const CANONICAL_GROUP_LOCALES = {
     invalidLogCursor: 'مؤشر سجل الغرفة غير صالح',
     allowOnce: 'السماح مرة واحدة',
     deny: 'رفض',
-    discardUnknown: 'تجاهل العمل ذي النتيجة المجهولة',
-    discardWarning: 'قد تكون تغييرات قد حدثت بالفعل. تجاهل العمل لا يتراجع عنها.',
+    discardUnknown: 'تجاهل الدور',
+    discardWarning: 'قد تكون تغييرات قد حدثت بالفعل. تجاهل الدور لا يتراجع عنها. إذا كان الروبوت على جهاز آخر، ينتظر التجاهل تأكيد ذلك الجهاز أن الدور قد توقف.',
+    discardStopPending: 'لم يؤكد هذا الروبوت توقف دوره بعد. تم الاحتفاظ بالدور. انتظر قليلًا، ثم حاول تجاهله مجددًا.',
+    discardPeerUnreachable: 'جهاز هذا الروبوت غير متاح. تم الاحتفاظ بالدور. أعد توصيل ذلك الجهاز، ثم حاول تجاهله مجددًا.',
     confirmDiscard: 'تأكيد التجاهل',
     unconfirmedSend: 'الإرسال السابق غير مؤكّد. أعد المحاولة بالنص الأصلي قبل إرسال رسالة أخرى.',
     restoredPendingSend: 'تمت استعادة إرسال غير مؤكّد. أعد محاولته قبل إرسال رسالة أخرى.',
@@ -657,7 +744,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'إيقاف المجموعة',
     pendingApproval: '{name} يطلب موافقة. القرار لك.',
     pendingRetry: 'توقف دور {name} قبل أن ينتهي. هل تعيد المحاولة؟',
-    pendingDiscard: 'ربما أنجز دور {name} عملًا لم يُسجَّل. هل تتجاهله؟',
+    pendingDiscard: 'هل تريد تجاهل دور {name}؟ لن يتم التراجع عن العمل الذي أُنجز بالفعل.',
     membersFixed: 'يُحدَّد الأعضاء عند إنشاء المجموعة.',
     rowWorking: 'يعمل',
     rowFailed: 'فشل أحد الأعضاء',
@@ -718,7 +805,22 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: 'لا يستطيع {connection} بعد استضافة روبوت لمحادثة جماعية على جهاز آخر ({reason}). حدّث Hermes هناك، وفعّل خادم API الخاص به بعنوان تستطيع بوابة هذا الاتصال الوصول إليه (gateway.room_link_url)، وأبقِ الموافقات مفعّلة.',
     peerJoinFailed: 'لم ينضم {name} بعد: {reason}',
     peerJoinUnreachable: 'لم ينضم {name} بعد: تعذّر على بوابة هذه المحادثة الجماعية الوصول إلى جهازه. تأكد من إمكانية الوصول إلى جهازه من هناك دون Desktop، ثم حاول مرة أخرى.',
-    peerJoinChanged: 'لا يمكن لـ {name} الانضمام إلى هذه المحادثة الجماعية: تغيّرت إعدادات الروبوت على جهازه منذ إنشاء المحادثة الجماعية. ابدأ محادثة جماعية جديدة لتضمينه.'
+    peerJoinChanged: 'لا يمكن لـ {name} الانضمام إلى هذه المحادثة الجماعية: تغيّرت إعدادات الروبوت على جهازه منذ إنشاء المحادثة الجماعية. ابدأ محادثة جماعية جديدة لتضمينه.',
+    disbandUnconfirmed: 'لم نتمكن من تأكيد انتهاء الدردشة الجماعية. تحقّق من حالتها قبل إعادة المحاولة.',
+    disbandKept: 'تم الاحتفاظ بالدردشة الجماعية. {reason}',
+    disbandPeerUnreachable: 'بوابة أحد الأعضاء غير متاحة. أعد الاتصال بها، ثم حاول حل الدردشة الجماعية مجددًا.',
+    disbandStopPending: 'لا يزال العمل في الدردشة الجماعية قيد الإيقاف. انتظر اكتمال الإيقاف، ثم حاول حل الدردشة الجماعية مجددًا.',
+    disbandInProgress: 'لا يزال طلب حل آخر قيد التنفيذ. انتظر قليلًا وتحقّق من المحادثة الجماعية، ثم حاول حلها مجددًا إذا لزم الأمر.',
+    disbandRevokeUnsupported: 'لا يستطيع أحد الأعضاء إلغاء وصوله إلى هذه المحادثة الجماعية. حدّث Hermes على جهاز ذلك العضو، ثم حاول حل المحادثة مجددًا.',
+    disbandServiceRequired: 'يجب تشغيل Hermes على الجهاز الذي يشغّل هذه المحادثة الجماعية لإيقاف روبوتاتها وإلغاء وصولها. شغّل Hermes هناك أو أعد الاتصال به، ثم حاول حل المحادثة مجددًا.',
+    peerStartWithoutKept: 'الدردشة الجماعية الجديدة جاهزة، وتم الاحتفاظ بالدردشة الجماعية الأصلية. {reason}',
+    peerNotJoinedBadge: 'لم ينضم',
+    peerNotJoined: 'لم ينضم {name} إلى هذه المحادثة الجماعية بعد.',
+    peerRejoin: 'انتهى وصول {name} إلى هذه المحادثة الجماعية. اختر إعادة المحاولة لدعوته مرة أخرى.',
+    peerAway: 'جهاز {name} لا يستجيب الآن.',
+    peerJoinConnect: 'لم ينضم {name} بعد: اتصل بالجهاز الذي يعمل عليه، ثم اختر إعادة المحاولة.',
+    peerStartWithout: 'بدء محادثة جماعية جديدة بدون {name}',
+    peerStartWithoutConfirm: 'تبدأ دردشة جماعية جديدة بالروبوتات الأخرى. لا تنتهي الدردشة الأصلية إلا بعد تأكيد إيقاف كل عضو وإلغاء وصوله؛ وتبقى إذا تعذّر الوصول إلى أحد الأعضاء. لن تُنسخ الرسائل السابقة.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -739,8 +841,10 @@ export const CANONICAL_GROUP_LOCALES = {
     invalidLogCursor: 'Недопустимый курсор журнала комнаты',
     allowOnce: 'Разрешить один раз',
     deny: 'Отклонить',
-    discardUnknown: 'Отбросить работу с неизвестным результатом',
-    discardWarning: 'Изменения могли уже произойти. Отмена работы не отменяет эти изменения.',
+    discardUnknown: 'Отбросить ход',
+    discardWarning: 'Изменения могли уже произойти. Отбрасывание хода их не отменяет. Если бот работает на другом компьютере, нужно дождаться подтверждения с этого компьютера, что ход остановлен.',
+    discardStopPending: 'Этот бот ещё не подтвердил остановку хода. Ход сохранён. Немного подождите, затем попробуйте отбросить его снова.',
+    discardPeerUnreachable: 'Компьютер этого бота недоступен. Ход сохранён. Восстановите подключение к этому компьютеру, затем попробуйте отбросить ход снова.',
     confirmDiscard: 'Подтвердить отмену работы',
     unconfirmedSend:
       'Предыдущая отправка не подтверждена. Повторите её с исходным текстом, прежде чем отправлять другое сообщение.',
@@ -780,7 +884,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Остановить группу',
     pendingApproval: '{name} просит одобрения. Решать вам.',
     pendingRetry: 'Ход {name} прервался до завершения. Повторить?',
-    pendingDiscard: 'Ход {name} мог выполнить незаписанную работу. Отбросить?',
+    pendingDiscard: 'Отбросить ход {name}? Уже выполненная работа не будет отменена.',
     membersFixed: 'Участники задаются при создании группы.',
     rowWorking: 'Работает',
     rowFailed: 'Ошибка участника',
@@ -841,7 +945,22 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} пока не может предоставить бота групповому чату на другом компьютере ({reason}). Обновите там Hermes, включите его API-сервер с адресом, доступным шлюзу этого подключения (gateway.room_link_url), и оставьте подтверждения включёнными.',
     peerJoinFailed: '{name} ещё не присоединился: {reason}',
     peerJoinUnreachable: '{name} ещё не присоединился: шлюз этого группового чата не смог связаться с его компьютером. Убедитесь, что этот компьютер доступен оттуда без Desktop, и попробуйте снова.',
-    peerJoinChanged: '{name} не может присоединиться к этому групповому чату: настройки бота на его компьютере изменились после создания группового чата. Чтобы добавить его, начните новый групповой чат.'
+    peerJoinChanged: '{name} не может присоединиться к этому групповому чату: настройки бота на его компьютере изменились после создания группового чата. Чтобы добавить его, начните новый групповой чат.',
+    disbandUnconfirmed: 'Не удалось подтвердить завершение группового чата. Проверьте его состояние перед повторной попыткой.',
+    disbandKept: 'Групповой чат сохранён. {reason}',
+    disbandPeerUnreachable: 'Шлюз участника недоступен. Восстановите подключение, затем повторите роспуск группового чата.',
+    disbandStopPending: 'Работа в групповом чате ещё останавливается. Дождитесь завершения остановки, затем повторите роспуск группового чата.',
+    disbandInProgress: 'Другой запрос на роспуск ещё выполняется. Немного подождите, проверьте групповой чат и при необходимости повторите роспуск.',
+    disbandRevokeUnsupported: 'Участник не может отозвать свой доступ к этому групповому чату. Обновите Hermes на компьютере этого участника, затем повторите роспуск.',
+    disbandServiceRequired: 'Чтобы остановить ботов и отозвать их доступ, Hermes должен работать на компьютере, который ведёт этот групповой чат. Запустите Hermes там или восстановите подключение к нему, затем повторите роспуск.',
+    peerStartWithoutKept: 'Новый групповой чат готов, а исходный групповой чат сохранён. {reason}',
+    peerNotJoinedBadge: 'не присоединился',
+    peerNotJoined: '{name} ещё не присоединился к этому групповому чату.',
+    peerRejoin: 'Доступ {name} к этому групповому чату закончился. Выберите «Повторить», чтобы пригласить его снова.',
+    peerAway: 'Компьютер {name} сейчас не отвечает.',
+    peerJoinConnect: '{name} ещё не присоединился: подключитесь к компьютеру, на котором он работает, и выберите «Повторить».',
+    peerStartWithout: 'Начать новый групповой чат без {name}',
+    peerStartWithoutConfirm: 'Начнётся новый групповой чат с остальными ботами. Исходный завершится только после подтверждения остановки и отзыва доступа каждого участника; если участник недоступен, чат сохранится. Прежние сообщения не копируются.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -862,8 +981,10 @@ export const CANONICAL_GROUP_LOCALES = {
     invalidLogCursor: 'Curseur de journal de salon invalide',
     allowOnce: 'Autoriser une fois',
     deny: 'Refuser',
-    discardUnknown: 'Abandonner le travail au résultat inconnu',
-    discardWarning: 'Des effets de bord ont peut-être déjà eu lieu. Abandonner ne les annule pas.',
+    discardUnknown: 'Abandonner le tour',
+    discardWarning: 'Des modifications ont peut-être déjà eu lieu. Abandonner le tour ne les annule pas. Pour un bot sur un autre ordinateur, il faut attendre que cet ordinateur confirme l’arrêt du tour.',
+    discardStopPending: 'Ce bot n’a pas encore confirmé l’arrêt de son tour. Le tour a été conservé. Patientez un instant, puis réessayez de l’abandonner.',
+    discardPeerUnreachable: 'L’ordinateur de ce bot est inaccessible. Le tour a été conservé. Reconnectez cet ordinateur, puis réessayez d’abandonner le tour.',
     confirmDiscard: "Confirmer l'abandon",
     unconfirmedSend:
       "L'envoi précédent n'est pas confirmé. Réessayez son texte d'origine avant d'envoyer un autre message.",
@@ -902,7 +1023,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Arrêter le groupe',
     pendingApproval: '{name} demande une approbation. À vous de décider.',
     pendingRetry: 'Le tour de {name} s’est arrêté avant la fin. Réessayer ?',
-    pendingDiscard: 'Le tour de {name} a peut-être fait un travail non enregistré. L’abandonner ?',
+    pendingDiscard: 'Abandonner le tour de {name} ? Le travail déjà effectué ne sera pas annulé.',
     membersFixed: 'Les membres sont fixés à la création du groupe.',
     rowWorking: 'Au travail',
     rowFailed: 'Un membre a échoué',
@@ -963,7 +1084,22 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} ne peut pas encore accueillir de bot pour une discussion de groupe sur un autre ordinateur ({reason}). Mettez Hermes à jour là-bas, activez son serveur API avec une adresse que la passerelle de cette connexion peut joindre (gateway.room_link_url), et laissez les approbations activées.',
     peerJoinFailed: '{name} n’a pas encore rejoint la discussion de groupe : {reason}',
     peerJoinUnreachable: '{name} n’a pas encore rejoint la discussion de groupe : la passerelle de cette discussion de groupe n’a pas pu joindre son ordinateur. Vérifiez qu’on peut le joindre depuis là-bas sans Desktop, puis réessayez.',
-    peerJoinChanged: '{name} ne peut pas rejoindre cette discussion de groupe : les réglages du bot sur son ordinateur ont changé depuis la création de la discussion de groupe. Démarrez une nouvelle discussion de groupe pour l’inclure.'
+    peerJoinChanged: '{name} ne peut pas rejoindre cette discussion de groupe : les réglages du bot sur son ordinateur ont changé depuis la création de la discussion de groupe. Démarrez une nouvelle discussion de groupe pour l’inclure.',
+    disbandUnconfirmed: 'La fin de la discussion de groupe n’a pas pu être confirmée. Vérifiez son état avant de réessayer.',
+    disbandKept: 'La discussion de groupe a été conservée. {reason}',
+    disbandPeerUnreachable: 'La passerelle d’un membre est inaccessible. Reconnectez-la, puis réessayez de dissoudre la discussion de groupe.',
+    disbandStopPending: 'Le travail dans la discussion de groupe est encore en cours d’arrêt. Attendez la fin de l’arrêt, puis réessayez de dissoudre la discussion de groupe.',
+    disbandInProgress: 'Une autre demande de dissolution est en cours. Patientez un instant, vérifiez la discussion de groupe, puis réessayez de la dissoudre si nécessaire.',
+    disbandRevokeUnsupported: 'Un membre ne peut pas révoquer son accès à cette discussion de groupe. Mettez à jour Hermes sur l’ordinateur de ce membre, puis réessayez de dissoudre la discussion de groupe.',
+    disbandServiceRequired: 'Hermes doit fonctionner sur l’ordinateur qui exécute cette discussion de groupe pour arrêter ses bots et révoquer leurs accès. Démarrez ou reconnectez Hermes sur cet ordinateur, puis réessayez de dissoudre la discussion de groupe.',
+    peerStartWithoutKept: 'La nouvelle discussion de groupe est prête et la discussion de groupe d’origine a été conservée. {reason}',
+    peerNotJoinedBadge: 'pas encore là',
+    peerNotJoined: '{name} n’a pas encore rejoint cette discussion de groupe.',
+    peerRejoin: 'L’accès de {name} à cette discussion de groupe a pris fin. Choisissez Réessayer pour l’inviter à nouveau.',
+    peerAway: 'L’ordinateur de {name} ne répond pas pour l’instant.',
+    peerJoinConnect: '{name} n’a pas encore rejoint la discussion de groupe : connectez-vous à l’ordinateur où il fonctionne, puis choisissez Réessayer.',
+    peerStartWithout: 'Démarrer une nouvelle discussion de groupe sans {name}',
+    peerStartWithoutConfirm: 'Une nouvelle discussion démarre avec les autres bots. L’originale ne se termine qu’après confirmation de l’arrêt et de la révocation des accès de chaque membre ; elle est conservée si un membre est inaccessible. Les messages précédents ne sont pas copiés.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -984,8 +1120,10 @@ export const CANONICAL_GROUP_LOCALES = {
     invalidLogCursor: 'Ungültiger Raumprotokoll-Cursor',
     allowOnce: 'Einmal erlauben',
     deny: 'Ablehnen',
-    discardUnknown: 'Arbeit mit unbekanntem Ergebnis verwerfen',
-    discardWarning: 'Nebenwirkungen können bereits eingetreten sein. Verwerfen macht sie nicht rückgängig.',
+    discardUnknown: 'Turn verwerfen',
+    discardWarning: 'Änderungen können bereits erfolgt sein. Das Verwerfen macht sie nicht rückgängig. Bei einem bot auf einem anderen Computer wartet das Verwerfen, bis dieser Computer den Stopp des Turns bestätigt.',
+    discardStopPending: 'Dieser bot hat den Stopp seines Turns noch nicht bestätigt. Der Turn bleibt erhalten. Warten Sie kurz und versuchen Sie dann erneut, ihn zu verwerfen.',
+    discardPeerUnreachable: 'Der Computer dieses bots ist nicht erreichbar. Der Turn bleibt erhalten. Stellen Sie die Verbindung zu diesem Computer wieder her und versuchen Sie dann erneut, den Turn zu verwerfen.',
     confirmDiscard: 'Verwerfen bestätigen',
     unconfirmedSend:
       'Der vorherige Versand ist unbestätigt. Wiederholen Sie seinen ursprünglichen Text, bevor Sie eine weitere Nachricht senden.',
@@ -1025,7 +1163,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Gruppe stoppen',
     pendingApproval: '{name} bittet um Freigabe. Du entscheidest.',
     pendingRetry: 'Der Zug von {name} endete vorzeitig. Erneut versuchen?',
-    pendingDiscard: 'Der Zug von {name} hat womöglich nicht erfasste Arbeit getan. Verwerfen?',
+    pendingDiscard: 'Den Turn von {name} verwerfen? Bereits ausgeführte Arbeit wird nicht rückgängig gemacht.',
     membersFixed: 'Mitglieder werden beim Erstellen der Gruppe festgelegt.',
     rowWorking: 'Arbeitet',
     rowFailed: 'Ein Mitglied ist fehlgeschlagen',
@@ -1086,7 +1224,22 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} kann noch keinen bot für einen Gruppenchat auf einem anderen Computer bereitstellen ({reason}). Aktualisieren Sie Hermes dort, aktivieren Sie seinen API-Server mit einer Adresse, die das Gateway dieser Verbindung erreichen kann (gateway.room_link_url), und lassen Sie Freigaben eingeschaltet.',
     peerJoinFailed: '{name} ist noch nicht beigetreten: {reason}',
     peerJoinUnreachable: '{name} ist noch nicht beigetreten: Das Gateway dieses Gruppenchats konnte seinen Computer nicht erreichen. Prüfen Sie, ob dieser Computer von dort ohne Desktop erreichbar ist, und versuchen Sie es erneut.',
-    peerJoinChanged: '{name} kann diesem Gruppenchat nicht beitreten: Die Bot-Einstellungen auf seinem Computer haben sich seit dem Erstellen des Gruppenchats geändert. Starten Sie einen neuen Gruppenchat, um ihn aufzunehmen.'
+    peerJoinChanged: '{name} kann diesem Gruppenchat nicht beitreten: Die bot-Einstellungen auf seinem Computer haben sich seit dem Erstellen des Gruppenchats geändert. Starten Sie einen neuen Gruppenchat, um ihn aufzunehmen.',
+    disbandUnconfirmed: 'Das Ende des Gruppenchats konnte nicht bestätigt werden. Prüfen Sie seinen Status, bevor Sie es erneut versuchen.',
+    disbandKept: 'Der Gruppenchat bleibt erhalten. {reason}',
+    disbandPeerUnreachable: 'Das Gateway eines Mitglieds ist nicht erreichbar. Stellen Sie die Verbindung wieder her und versuchen Sie erneut, den Gruppenchat aufzulösen.',
+    disbandStopPending: 'Die Arbeit im Gruppenchat wird noch gestoppt. Warten Sie, bis der Stopp abgeschlossen ist, und versuchen Sie erneut, den Gruppenchat aufzulösen.',
+    disbandInProgress: 'Eine andere Auflösung läuft noch. Warten Sie kurz, prüfen Sie den Gruppenchat und versuchen Sie bei Bedarf erneut, ihn aufzulösen.',
+    disbandRevokeUnsupported: 'Ein Mitglied kann seinen Zugriff auf diesen Gruppenchat nicht aufheben. Aktualisieren Sie Hermes auf dem Computer dieses Mitglieds und versuchen Sie dann erneut, den Gruppenchat aufzulösen.',
+    disbandServiceRequired: 'Hermes muss auf dem Computer laufen, der diesen Gruppenchat ausführt, um die bots zu stoppen und ihren Zugriff aufzuheben. Starten Sie Hermes dort oder verbinden Sie es erneut und versuchen Sie dann erneut, den Gruppenchat aufzulösen.',
+    peerStartWithoutKept: 'Der neue Gruppenchat ist bereit und der ursprüngliche Gruppenchat bleibt erhalten. {reason}',
+    peerNotJoinedBadge: 'nicht beigetreten',
+    peerNotJoined: '{name} ist diesem Gruppenchat noch nicht beigetreten.',
+    peerRejoin: 'Der Zugang von {name} zu diesem Gruppenchat ist abgelaufen. Wählen Sie Erneut versuchen, um ihn wieder einzuladen.',
+    peerAway: 'Der Computer von {name} antwortet gerade nicht.',
+    peerJoinConnect: '{name} ist noch nicht beigetreten: Verbinden Sie sich mit dem Computer, auf dem er läuft, und wählen Sie dann Erneut versuchen.',
+    peerStartWithout: 'Neuen Gruppenchat ohne {name} starten',
+    peerStartWithoutConfirm: 'Ein neuer Gruppenchat beginnt mit den anderen bots. Der ursprüngliche endet erst, wenn Stopp und Zugriffsentzug für alle Mitglieder bestätigt sind; ist ein Mitglied nicht erreichbar, bleibt er erhalten. Frühere Nachrichten werden nicht kopiert.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -1107,8 +1260,10 @@ export const CANONICAL_GROUP_LOCALES = {
     invalidLogCursor: 'Cursor de registro de sala no válido',
     allowOnce: 'Permitir una vez',
     deny: 'Denegar',
-    discardUnknown: 'Descartar trabajo con resultado desconocido',
-    discardWarning: 'Puede que ya se hayan producido efectos secundarios. Descartar no los deshace.',
+    discardUnknown: 'Descartar turno',
+    discardWarning: 'Es posible que ya se hayan producido cambios. Descartar no los deshace. Si el bot está en otro equipo, se espera a que ese equipo confirme que el turno se ha detenido.',
+    discardStopPending: 'Este bot aún no ha confirmado que su turno se haya detenido. El turno se ha conservado. Espera un momento y vuelve a intentar descartarlo.',
+    discardPeerUnreachable: 'El equipo de este bot no está disponible. El turno se ha conservado. Reconecta ese equipo y vuelve a intentar descartar el turno.',
     confirmDiscard: 'Confirmar descarte',
     unconfirmedSend:
       'El envío anterior no está confirmado. Reintenta su texto original antes de enviar otro mensaje.',
@@ -1147,7 +1302,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Detener el grupo',
     pendingApproval: '{name} pide aprobación. Tú decides.',
     pendingRetry: 'El turno de {name} se detuvo antes de terminar. ¿Reintentar?',
-    pendingDiscard: 'El turno de {name} pudo hacer trabajo no registrado. ¿Descartarlo?',
+    pendingDiscard: '¿Descartar el turno de {name}? El trabajo ya realizado no se deshará.',
     membersFixed: 'Los miembros se fijan al crear el grupo.',
     rowWorking: 'Trabajando',
     rowFailed: 'Un miembro falló',
@@ -1208,6 +1363,21 @@ export const CANONICAL_GROUP_LOCALES = {
     peerTargetSetup: '{connection} todavía no puede aportar un bot a un chat de grupo de otro equipo ({reason}). Actualiza Hermes allí, activa su servidor API con una dirección que la pasarela de esta conexión pueda alcanzar (gateway.room_link_url) y mantén activadas las aprobaciones.',
     peerJoinFailed: '{name} aún no se ha unido: {reason}',
     peerJoinUnreachable: '{name} aún no se ha unido: la pasarela de este chat de grupo no pudo alcanzar su equipo. Comprueba que se pueda alcanzar desde allí sin Desktop y vuelve a intentarlo.',
-    peerJoinChanged: '{name} no puede unirse a este chat de grupo: la configuración del bot en su equipo cambió desde que se creó el chat de grupo. Inicia un chat de grupo nuevo para incluirlo.'
+    peerJoinChanged: '{name} no puede unirse a este chat de grupo: la configuración del bot en su equipo cambió desde que se creó el chat de grupo. Inicia un chat de grupo nuevo para incluirlo.',
+    disbandUnconfirmed: 'No pudimos confirmar que el chat de grupo haya terminado. Comprueba su estado antes de reintentarlo.',
+    disbandKept: 'El chat de grupo se ha conservado. {reason}',
+    disbandPeerUnreachable: 'La pasarela de un miembro no está disponible. Reconéctala y vuelve a intentar disolver el chat de grupo.',
+    disbandStopPending: 'El trabajo en el chat de grupo aún se está deteniendo. Espera a que termine de detenerse y vuelve a intentar disolver el chat de grupo.',
+    disbandInProgress: 'Otra solicitud de disolución sigue en curso. Espera un momento, comprueba el chat de grupo y vuelve a intentar disolverlo si es necesario.',
+    disbandRevokeUnsupported: 'Un miembro no puede revocar su acceso a este chat de grupo. Actualiza Hermes en el equipo de ese miembro y vuelve a intentar disolver el chat de grupo.',
+    disbandServiceRequired: 'Hermes debe estar en ejecución en el equipo que gestiona este chat de grupo para detener sus bots y revocar sus accesos. Inicia o reconecta Hermes allí y vuelve a intentar disolver el chat de grupo.',
+    peerStartWithoutKept: 'El nuevo chat de grupo está listo y el chat de grupo original se ha conservado. {reason}',
+    peerNotJoinedBadge: 'sin unirse',
+    peerNotJoined: '{name} aún no se ha unido a este chat de grupo.',
+    peerRejoin: 'El acceso de {name} a este chat de grupo terminó. Elige Reintentar para invitarlo de nuevo.',
+    peerAway: 'El equipo de {name} no responde en este momento.',
+    peerJoinConnect: '{name} aún no se ha unido: conéctate al equipo donde funciona y elige Reintentar.',
+    peerStartWithout: 'Iniciar nuevo chat de grupo sin {name}',
+    peerStartWithoutConfirm: 'Empieza un nuevo chat de grupo con los demás bots. El original solo termina cuando se confirman la detención y la revocación de acceso de cada miembro; si alguno no está disponible, se conserva. Los mensajes anteriores no se copian.'
   }
 } satisfies Record<string, CanonicalGroupMessages>
