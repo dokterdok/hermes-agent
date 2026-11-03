@@ -2,10 +2,17 @@ import { Button, ConfirmDialog, Input } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import { type CanonicalDriverStatus, CanonicalGroupAttention, CanonicalGroupRoster, type CanonicalMemberPhase } from './canonical-group-activity'
+import type { GroupMethods } from './canonical-group-capabilities'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import type { CanonicalRoom } from './canonical-groups'
+import { CanonicalPeerJoinRows } from './canonical-group-peer-join'
+import { unjoinedPeers } from './canonical-group-peers'
+import type { CanonicalGroupBinding, CanonicalRoom } from './canonical-groups'
 
 interface CanonicalGroupHeaderProps {
+  binding: CanonicalGroupBinding
+  methods: GroupMethods
+  onChanged: () => void
+  onReplaced?: (key: string) => void
   busy: boolean
   /** Whether the room's gateway lists groups.disband / groups.rename. */
   canDisband: boolean
@@ -22,8 +29,9 @@ interface CanonicalGroupHeaderProps {
   stopping: boolean
 }
 
-export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, driver, onBack, onDisband, onRename, onStop, phases, room, stopping }: CanonicalGroupHeaderProps) {
+export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, busy, canDisband, canRename, canStop, driver, onBack, onDisband, onRename, onStop, phases, room, stopping }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
+  const unjoined = unjoinedPeers(room, driver)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [ending, setEnding] = useState(false)
 
@@ -38,13 +46,15 @@ export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, dri
       {onBack && <Button onClick={onBack}>{labels.back}</Button>}
       <div className="min-w-0">
         <h2 className="text-sm font-medium">{room?.name || labels.loadingGroup}</h2>
-        <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} phases={phases} />
+        <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} phases={phases} unjoined={unjoined} />
         <CanonicalGroupAttention driver={driver} labels={labels} />
       </div>
       <Button disabled={stopping || !canStop} onClick={onStop}>{labels.stop}</Button>
       {canRename && <Button disabled={busy || !room} onClick={() => setRenaming(room?.name ?? '')}>{labels.rename}</Button>}
       {canDisband && <Button disabled={busy || !room} onClick={() => setEnding(true)}>{labels.disband}</Button>}
     </header>
+    <CanonicalPeerJoinRows binding={binding} methods={methods} onChanged={onChanged} onReplaced={onReplaced}
+      state={room ? { room, driver_status: driver } : null} unjoined={unjoined} />
     {renaming !== null && <form className="flex items-center gap-2" onSubmit={event => { event.preventDefault(); rename(renaming.trim()) }}>
       <Input aria-label={labels.renameLabel} autoFocus onChange={event => setRenaming(event.target.value)} value={renaming} />
       <Button disabled={busy || !renaming.trim()} type="submit">{labels.save}</Button>

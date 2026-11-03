@@ -1,9 +1,9 @@
-import { atom, Button, host, randomUuid, useValue } from '@hermes/plugin-sdk'
+import { atom, Button, host, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalGroupRow } from './canonical-group-row'
-import { canonicalGroupRequest, captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
+import { captureCanonicalGroupRoute, disbandCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
 import { $groupChats, updateGroupChat } from './group-chat'
 import { closeGroupChatMainTab } from './group-panes'
@@ -32,6 +32,7 @@ export function forgetCanonicalGroup({ connectionId, profile, roomId }: Canonica
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
   // A native Rename (or a rename seen on refresh) moves our durable owner record too.
   const records = $groupChats.get()
+
   const previous = Object.entries(records).find(([, record]) => {
     const owner = record.engine
 
@@ -150,12 +151,18 @@ function canonicalGroupViews({ connectionId, profile, roomId }: CanonicalGroupBi
   return views
 }
 
+/** Close every view of a confirmed disbanded room. */
+export function endCanonicalGroup(binding: CanonicalGroupBinding): void {
+  canonicalGroupViews(binding).forEach(closeGroupChatMainTab)
+  forgetCanonicalGroup(binding)
+}
+
 interface ListedRoom { binding: CanonicalGroupBinding; key: string; memberCount: number; name: string }
 
 /** Disband on the room's own gateway, then retire it everywhere this window shows it.
  *  A refusal rejects before anything is dropped, so the row stays and the confirm shows why. */
-async function disbandListedRoom(room: ListedRoom, doneMessage: string): Promise<void> {
-  await canonicalGroupRequest(room.binding, 'groups.disband', { room_id: room.binding.roomId, cancel_id: randomUuid() })
+async function disbandListedRoom(room: ListedRoom, doneMessage: string, unconfirmedMessage: string): Promise<void> {
+  if (!await disbandCanonicalGroup(room.binding)) {throw new Error(unconfirmedMessage)}
   // Collect before forgetting: the bindings are the only record of which views alias this room.
   canonicalGroupViews(room.binding).add(room.key).forEach(closeGroupChatMainTab)
   forgetCanonicalGroup(room.binding)
@@ -195,6 +202,6 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: C
     <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
     {error && <p role="alert">{error}</p>}
     {rooms.map(room => <CanonicalGroupRow key={room.key} memberCount={room.memberCount} name={room.name}
-      onDelete={() => disbandListedRoom(room, labels.disbanded(room.name))} onOpen={() => onOpen(room.key, 'key')} />)}
+      onDelete={() => disbandListedRoom(room, labels.disbanded(room.name), labels.disbandUnconfirmed)} onOpen={() => onOpen(room.key, 'key')} />)}
   </div>
 }

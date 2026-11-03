@@ -11,7 +11,7 @@ import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
 import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, replaceCanonicalGroupSend, retireCanonicalGroupSend, withdrawCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
-import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupRequest, disbandCanonicalGroup } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
 import { GroupMentionInput } from './group-chat-parts'
 
@@ -43,15 +43,15 @@ function confirmSend(result: unknown, eventId: string, unconfirmed: string) {
   }
 }
 
-export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
-  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
+export function CanonicalGroupWorkspace({ binding, visible = true, onBack, onReplaced }: {
+  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void; onReplaced?: (key: string) => void
 }) {
   // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView binding={binding} key={JSON.stringify([binding.connectionId, binding.profile, binding.roomId])} onBack={onBack} visible={visible} />
+  return <CanonicalRoomView binding={binding} key={JSON.stringify([binding.connectionId, binding.profile, binding.roomId])} onBack={onBack} onReplaced={onReplaced} visible={visible} />
 }
 
-function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
-  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void
+function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplaced }: {
+  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void; onReplaced?: (key: string) => void
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
@@ -360,7 +360,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
   const end = async () => {
-    await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: randomUuid() })
+    if (!await disbandCanonicalGroup(binding)) {throw new Error(labels.disbandUnconfirmed)}
 
     if (alive.current) {onBack?.()}
     forgetCanonicalGroup(binding)
@@ -382,8 +382,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   }
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
-    <CanonicalGroupHeader busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
-      canStop={!!state?.driver_status} driver={state?.driver_status} onBack={onBack} onDisband={end} onRename={rename}
+    <CanonicalGroupHeader binding={binding} busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')} canStop={!!state?.driver_status} driver={state?.driver_status} methods={methods}
+      onBack={onBack} onChanged={() => void refresh().catch(e => setReadError(String(e)))} onDisband={end} onRename={rename} onReplaced={onReplaced}
       onStop={() => void stop()} phases={phases} room={state?.room} stopping={stopping} />
     <CanonicalGroupNotices error={error} journalError={journalError} labels={labels} notice={notice}
       onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
