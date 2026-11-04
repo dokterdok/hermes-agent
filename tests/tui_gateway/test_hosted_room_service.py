@@ -1791,5 +1791,3 @@ def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
         }
     ]
     assert service.status("room-1")["pending_actions"] == []
-
-
