@@ -703,10 +703,15 @@ class HostedRoomService:
             attempt_action("retry", task) for task in tasks if task["status"] in _RETRYABLE_STATUSES]
         if self._prepare_stalls.stalled(room_id):
             pending_actions.append(prepare_stall.retry_action(room_id, self._room(room_id)))
+        # Stop can end the attempt without another info poll clearing its cached approval.
+        # A late poll from an older generation must not offer that approval on the next attempt.
+        approvable = {(task_member_id(task), task["identity"].task_id, task["execution_generation"])
+                      for task in tasks if task["status"] in {"running", "indeterminate"}}
         with self._policy_lock:
             pending_actions.extend(
-                dict(action) for (action_room_id, _member_id), action
-                in self._pending_actions.items() if action_room_id == room_id)
+                dict(action) for (action_room_id, member_id), action in self._pending_actions.items()
+                if action_room_id == room_id
+                and (member_id, action.get("task_id"), action.get("execution_generation")) in approvable)
         # Who is answering right now, since when, and (when this process runs the turn) in which tool.
         member_activity = [
             _member_activity(task) for task in tasks if task["status"] in _LIVE_STATUSES]
