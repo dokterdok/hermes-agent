@@ -4,6 +4,8 @@ A group chat is either a **gateway group chat** (the gateway owns its log and ru
 
 The Bots roster lists the selected connection/profile's gateway rooms as ordinary Group Chat rows beside legacy renderer rooms. The list keeps itself current (a poll, every socket or source change, and right after a create or disband here); a failed read keeps the last good list and never shows transport text. Opening a room binds and captures that exact authority; changing the foreground profile does not retarget its controls.
 
+The gateway itself can seat a text-only bot from another gateway; Desktop does not offer that yet. These owner/lender rules apply to the canonical gateway (`hermes gateway run`), including when `hermes serve` forwards Desktop's group calls to it. The home must report `driver: true`, `persistent_process: true` and `groups.peer.register` in `groups.capabilities.methods`; it does not need its own `room_link.enabled`. The member gateway must report `room_link.enabled: true` with its catalog/endpoint and list `groups.peer.invite` in `methods` (see [the Bot Mode guide](../../../website/docs/user-guide/bot-mode.md#bots-from-another-gateway-in-a-gateway-owned-group-chat)). Standalone `hermes serve` answering for its own group chats derives `persistent_process` from its lending catalog and skips API-server and endpoint checks for `room_link`; clients should not use it as a home for gateway-owned group chats.
+
 ## Which group chats are gateway group chats
 
 One classifier, `groupExecutionMode`, reads `groups.capabilities`. Two surfaces answer it: the gateway's own (`gateway/session_group_controls.py`) and the standalone server, reached by SSH, URL and Cloud connections (`hermes serve`, `hermes dashboard`; `tui_gateway/methods_groups.py`).
