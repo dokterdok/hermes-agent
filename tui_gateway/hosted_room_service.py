@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
@@ -21,10 +21,12 @@ from gateway import hosted_rooms
 from gateway.hosted_room_context import room_context
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
-    GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
+    GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_hard_expiry,
+    room_grant_needs_dispatch_refresh)
 from tui_gateway import hosted_room_prepare_stall as prepare_stall
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
-from tui_gateway.hosted_room_member_activity import forget_task_progress, record_task_progress, task_progress
+from tui_gateway.hosted_room_member_activity import (
+    forget_task_progress, record_task_progress, task_is_active, task_progress)
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
@@ -40,6 +42,13 @@ _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
 _APPROVABLE_STATUSES = ("running", "indeterminate", "deferred")
+_PEER_RUN_ENDED = frozenset({"completed", "failed", "interrupted", "cancelled"})
+# Owed grant revokes run on the room supervisor's cycle, so one short attempt per cycle, then backoff
+# up to an hour: a member gateway that accepts and never answers holds the supervisor only briefly.
+_OWED_REVOKES_PER_CYCLE = 1
+_OWED_REVOKE_TIMEOUT_SECONDS = 3.0
+_OWED_REVOKE_FIRST_RETRY_SECONDS = 5.0
+_OWED_REVOKE_MAX_RETRY_SECONDS = 3600.0
 logger = logging.getLogger(__name__)
 
 
@@ -109,6 +118,11 @@ def _grant_revoke_is_terminal(exc: PeerRunsHTTPError) -> bool:
         "invalid_room_grant", "room_reauthorization_required"}
 
 
+def _member_of(task: Mapping[str, Any]) -> str:
+    payload = task.get("payload") or {}
+    return str(payload.get("target_member_id") or payload.get("target_profile") or "")
+
+
 def _hook(obj: Any, name: str):
     """Optional callable attribute of a duck-typed peer client, or None."""
     value = getattr(obj, name, None)
@@ -139,6 +153,13 @@ class HostedRoomService:
         self._peer_route_status: dict[tuple[str, str], str] = {}
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
         self.peer_clients: dict[tuple[str, str], Any] = {}
+        # Duck-typed transports of dropped routes, by grant digest, for this process's owed revokes;
+        # an HTTP RoomLink revoke always goes through a fresh short-timeout client.
+        self._revoke_clients: dict[str, Any] = {}
+        # Lock order: peer_route_lock -> _policy_lock. Route sections only compare/persist/publish;
+        # never call Stop, recovery or the network while holding either lock.
+        self.peer_route_lock = threading.Lock()
+        self._disbanding_rooms: set[str] = set()
         self._prepare_stalls = prepare_stall.PrepareStallTracker()
         try:
             self._load_stored_links()
@@ -155,6 +176,9 @@ class HostedRoomService:
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self._prepare_tracked, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action, task_progress=record_task_progress,
+            retire_task_progress=forget_task_progress,
+            remote_member=self._member_is_peer,
+            maintain=self.retry_owed_revokes,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
@@ -275,30 +299,97 @@ class HostedRoomService:
     def _publish_route(self, key: tuple[str, str], route: PeerMemberRoute, client=None) -> None:
         """Make a persisted route live as ``ready`` (and bind its client when given)."""
         with self._policy_lock:
+            previous, current = self.peer_routes.get(key), self.peer_clients.get(key)
+            if (previous is not None and replace(previous, grant=route.grant) == route
+                    and isinstance(current, PeerRunsHTTPClient) and isinstance(client, PeerRunsHTTPClient)
+                    and current.base_url == client.base_url):
+                # The active worker still polls this client; keep its observed approval identities.
+                client = current
             self.peer_routes[key], self._peer_route_status[key] = route, "ready"
             if client is not None:
                 self.peer_clients[key] = client
 
     def revoke_room_routes(self, room_id: str) -> int:
-        """Revoke and forget every scoped peer route for one room; an unreachable target
-        leaves the room intact for retry rather than a false disband with a live grant."""
+        """Drop every peer route of one room; nothing more is sent under them. Each stored route's
+        grant becomes a revoke this home owes its member's gateway, recorded in the transaction that
+        drops the route, so an unreachable gateway never holds Disband and a restart cannot lose the
+        debt. The worker cycle pays it (``retry_owed_revokes``), woken now."""
         with self._policy_lock:
             routes = [(key, route) for key, route in self.peer_routes.items() if key[0] == room_id]
+            for key, route in routes:
+                self._keep_revoke_client(route.grant, self.peer_clients.get(key))
+        stored = {(row["room_id"], row["member_id"]) for row in hosted_rooms.list_room_link_records(self.db_path)}
         for key, route in routes:
-            revoke = _hook(self.peer_clients.get(key), "revoke_grant")
-            if revoke is None:
-                raise RuntimeError("peer room grant cannot be revoked safely")
-            try:
-                revoke(grant=route.grant)
-            except PeerRunsHTTPError as exc:
-                if not _grant_revoke_is_terminal(exc):
-                    raise
-        hosted_rooms.delete_room_link_records(self.db_path, room_id=room_id)
+            if key not in stored:  # a route handed in without persistence: owe it at its client's URL
+                self._owe_unstored(key, route)
+        dropped = hosted_rooms.retire_room_link_records(
+            self.db_path, room_id=room_id, expiry=room_grant_hard_expiry)
         with self._policy_lock:
             for key, _route in routes:
                 for table in (self.peer_routes, self._peer_route_status, self.peer_clients):
                     table.pop(key, None)
-        return len(routes)
+        self.runtime.wakeup()
+        return max(dropped, len(routes))
+
+    def _owe_unstored(self, key: tuple[str, str], route: PeerMemberRoute) -> None:
+        client = self.peer_clients.get(key)
+        url = getattr(client, "base_url", None)
+        if not isinstance(url, str) or not url:
+            raise RuntimeError("peer room grant cannot be revoked safely")
+        self.owe_grant_revoke(room_id=key[0], member_id=key[1], target_url=url, grant=route.grant, client=client)
+
+    def owe_grant_revoke(
+        self, *, room_id: str, member_id: str, target_url: str, grant: str, client: Any = None) -> None:
+        """Record that this home owes a revoke for a grant it was handed (``retry_owed_revokes``)."""
+        hosted_rooms.owe_room_grant_revoke(
+            self.db_path, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
+            expires_at=room_grant_hard_expiry(grant))
+        self._keep_revoke_client(grant, client)
+        self.runtime.wakeup()
+
+    def _keep_revoke_client(self, grant: str, client: Any) -> None:
+        if client is not None and not isinstance(client, PeerRunsHTTPClient):
+            self._revoke_clients[hosted_rooms.grant_digest(grant)] = client
+
+    def ended_room(self, room_id: str) -> dict[str, Any] | None:
+        """The kept tombstone of a room this gateway owned and disbanded, else None (live, moved,
+        purged or unknown): a grant handed in for it is owed its revoke."""
+        try:
+            room = hosted_rooms.room_state(self.db_path, room_id=room_id, include_disbanded=True)
+        except hosted_rooms.RoomNotFoundError:
+            return None
+        if room.get("disbanded_at") is None or str(
+                room.get("authority_gateway_id")) != hosted_rooms.local_authority_gateway_id():
+            return None
+        return room
+
+    def retry_owed_revokes(self) -> int:
+        """Pay one due owed grant revoke per worker cycle, with backoff timed from when the attempt
+        ended; returns how many settled. Only the member gateway's answer that the grant is unknown
+        or already revoked settles it (a fault there, a 5xx or no answer keeps it owed); an owed
+        revoke whose grant has expired is dropped. Nothing here names the grant."""
+        settled = 0
+        for owed in hosted_rooms.due_room_grant_revokes(
+                self.db_path, limit=_OWED_REVOKES_PER_CYCLE, now=self.runtime.clock()):
+            key = {k: str(owed[k]) for k in ("room_id", "member_id", "grant_digest")}
+            try:
+                client = self._revoke_clients.get(key["grant_digest"]) or PeerRunsHTTPClient(
+                    base_url=str(owed["target_url"]), api_key="", timeout_seconds=_OWED_REVOKE_TIMEOUT_SECONDS,
+                    total_deadline=True)
+                client.revoke_grant(grant=str(owed["grant"]))
+            except Exception as exc:  # health: allow BLE001 -- every transport fault retains debt with backoff and records an error
+                if not (isinstance(exc, PeerRunsHTTPError) and _grant_revoke_is_terminal(exc)):
+                    delay = min(_OWED_REVOKE_MAX_RETRY_SECONDS,
+                                _OWED_REVOKE_FIRST_RETRY_SECONDS * 2 ** min(int(owed["attempts"]), 20))
+                    hosted_rooms.settle_room_grant_revoke(
+                        self.db_path, **key, retry_at=self.runtime.clock() + delay)
+                    self.runtime._record_error(
+                        f"revoke owed for member {key['member_id']} of room {key['room_id']} is pending: {exc}")
+                    continue
+            hosted_rooms.settle_room_grant_revoke(self.db_path, **key)
+            self._revoke_clients.pop(key["grant_digest"], None)
+            settled += 1
+        return settled
 
     def _resolve_member_transport(self, binding: HostedRoomBinding, task: Mapping[str, Any]):
         payload = task.get("payload", {})
@@ -323,11 +414,11 @@ class HostedRoomService:
         def set_status(status: str):
             return lambda: self._set_route_status(*key, status)
         tracked_client = _RouteStatusPeerClient(
-            client, on_ready=set_status("ready"),
+            client, live=lambda: key in self.peer_routes, on_ready=set_status("ready"),
             on_reauthorization=set_status("needs_reauthorization"),
             on_unavailable=set_status("unavailable"),
-            on_refreshed=lambda grant, catalog=None: self._rotate_route_grant(
-                *key, grant, catalog))
+            on_refreshed=lambda grant, catalog=None, previous=None: self._rotate_route_grant(
+                *key, grant, catalog, previous=previous))
         self._recover_peer_admission(binding, task, route, tracked_client)
         return PeerHostedRoomTransport(
             binding=binding, route=route, client=tracked_client,
@@ -344,7 +435,7 @@ class HostedRoomService:
         if (
             recover is None or not isinstance(identity, driver.TaskIdentity)
             or not isinstance(payload, Mapping) or execution_generation < 1
-            or task.get("status") not in {"running", "indeterminate", "stopping"}):
+            or task.get("status") not in {"indeterminate", "stopping", "deferred"}):
             return
         prompt = payload.get("prompt")
         source_event_seq = int(payload.get("source_event_seq") or 0)
@@ -380,14 +471,47 @@ class HostedRoomService:
             else:
                 self._pending_actions[(room_id, member_id)] = {**action, "member_id": member_id}
 
+    @contextlib.contextmanager
+    def disbanding(self, room_id: str):
+        """Fence new routes while Stop runs outside the publication and policy locks."""
+        with self.peer_route_lock:
+            if room_id in self._disbanding_rooms:
+                raise RuntimeError("room is already disbanding; retry deletion")
+            self._disbanding_rooms.add(room_id)
+        try:
+            yield
+        finally:
+            with self.peer_route_lock:
+                self._disbanding_rooms.remove(room_id)
+
+    def route_authority(self, room_id: str) -> tuple[str, int]:
+        """Check publication authority under peer_route_lock, including an in-progress Disband."""
+        if room_id in self._disbanding_rooms:
+            from hermes_state_runtime import RuntimeStoreError
+            # Stop can still fail: this temporary refusal must not owe a surviving route's revoke.
+            raise RuntimeStoreError("room_disbanding_retry")
+        return self._owned_authority(room_id)
+
     def _rotate_route_grant(
-        self, room_id: str, member_id: str, grant: str, catalog: GatewayRoomCatalog | None = None
-    ) -> None:
-        """Persist a target-refreshed scoped grant before publishing it live."""
+        self, room_id: str, member_id: str, grant: str, catalog: GatewayRoomCatalog | None = None,
+        previous: str | None = None) -> None:
+        """Persist a target-refreshed scoped grant before publishing it live. A renewal of
+        ``previous`` is published only while the route still holds that grant: a re-seat that
+        landed meanwhile stays the route's, and the renewal serves only the turn that asked."""
+        with self.peer_route_lock:
+            self.route_authority(room_id)
+            self._rotate_live_route_grant(room_id, member_id, grant, catalog, previous)
+
+    def _rotate_live_route_grant(
+        self, room_id: str, member_id: str, grant: str, catalog: GatewayRoomCatalog | None,
+        previous: str | None) -> None:
+        """Compare, persist and publish while registration and Disband are excluded."""
         key = (room_id, member_id)
         route = self.peer_routes.get(key)
         if route is None:
             raise RuntimeError("peer room route is unavailable")
+        if previous is not None and route.grant != previous:
+            return
         stored = next((
             l for l in hosted_room_links.load_room_links(self.db_path)
             if (l.room_id, l.member_id) == key), None)
@@ -552,7 +676,9 @@ class HostedRoomService:
         stalls.clear(binding.room_id)
 
     def publish_terminal(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> None:
-        forget_task_progress(binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
+        # A deferred peer still owns this generation; Retry resumes its existing run.
+        if task["status"] != "deferred" or not self._member_is_peer(binding.room_id, task_member_id(task)):
+            forget_task_progress(binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
         self._prepare_tracked(binding)
         self.runtime.wakeup()
 
@@ -603,11 +729,15 @@ class HostedRoomService:
 
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
+        """Stop the room's work; the count leaves out a deferred turn on another gateway that its
+        gateway has not confirmed stopped (``_stop_deferred_peer``): it stays deferred.
+        ``require_acknowledged`` (Disband) waits only on this gateway's own work: a member on another
+        gateway is fenced by dropping its route and revoking its grant, never waited on."""
         gateway_id, epoch = self._owned_authority(room_id)
         fence = hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
-        pending = 0
+        pending = unconfirmed = 0
         with self._policy_lock:
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
@@ -615,16 +745,46 @@ class HostedRoomService:
                 # A replay retains its original fence; work admitted afterward belongs to the
                 # next message. Disband must drain all work before deleting the room.
                 if require_acknowledged or int(task["payload"]["source_event_seq"]) < int(fence["seq"])}
-            for task in tasks.values():
-                own_cancel_id = (
-                    task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
-                result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
-                if result["status"] == "stopping":
-                    pending += 1
+        for task in tasks.values():
+            if task["status"] == "deferred" and not self._stop_deferred_peer(room_id, task):
+                unconfirmed += 1
+                continue
+            own_cancel_id = (
+                task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
+            result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
+            if result["status"] == "stopping" and not self._member_is_peer(room_id, _member_of(task)):
+                pending += 1
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
-        return len(tasks)
+        return len(tasks) - unconfirmed
+
+    def _stop_deferred_peer(self, room_id: str, task: Mapping[str, Any]) -> bool:
+        """Whether a deferred task may be cancelled here: always for a member on this gateway. For a
+        member on another gateway, only once that gateway answers that the exact run this home holds
+        a receipt for has ended. Without a receipt nothing is sent: the admission is uncertain, and
+        replaying it to find the run could start it. Deferral freed the room, so it is not held."""
+        member = _member_of(task)
+        if not self._member_is_peer(room_id, member):
+            return True
+        route, client = self.peer_routes.get((room_id, member)), self.peer_clients.get((room_id, member))
+        stop, bind_scope = _hook(client, "stop_receipt"), _hook(client, "bind_room_scope")
+        if route is None or stop is None:
+            return False
+        room = self._room(room_id)
+        try:
+            if bind_scope is not None:
+                bind_scope(
+                    room_id=room_id, home_install_id=route.home_install_id,
+                    authority_gateway_id=str(room["authority_gateway_id"]),
+                    authority_epoch=int(room["authority_epoch"]), member_id=route.member_id,
+                    target_install_id=route.target_install_id, target_profile=route.target_profile)
+            result = stop(task_id=task["identity"].task_id,
+                          execution_generation=int(task["execution_generation"]), grant=route.grant)
+        except PeerRunsHTTPError as exc:
+            self.runtime._record_error(f"stop of deferred task {task['identity'].task_id} is unconfirmed: {exc}")
+            return False
+        return result is not None and str(result.get("status") or "") in _PEER_RUN_ENDED
 
     def retry_room_task(
         self, room_id: str, *, task_id: str, member_id: str | None = None,
@@ -638,9 +798,6 @@ class HostedRoomService:
                      and execution_generation in (None, c["execution_generation"])), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
-        # Retry keeps the task id: drop the old attempt's tool and last-frame time before the new attempt can
-        # run, or the room reads the fresh retry as stalled on the old attempt's progress_at.
-        forget_task_progress(room_id, task_id, int(task["execution_generation"]))
         return self.runtime.retry_indeterminate(
             task["identity"], execution_generation=task["execution_generation"])
 
@@ -721,9 +878,15 @@ class HostedRoomService:
                 dict(action) for (action_room_id, member_id), action in self._pending_actions.items()
                 if action_room_id == room_id
                 and (member_id, action.get("task_id"), action.get("execution_generation")) in approvable)
-        # Who is answering right now, since when, and (when this process runs the turn) in which tool.
-        member_activity = [
-            _member_activity(task) for task in tasks if task["status"] in _LIVE_STATUSES]
+        member_activity = []
+        for task in tasks:
+            # Recovery keeps its durable uncertainty until a receipt arrives, even while the
+            # peer confirms the same attempt is running. Project that observation as live work.
+            recovered_active = (task["status"] == "indeterminate"
+                and self._member_is_peer(room_id, task_member_id(task))
+                and task_is_active(room_id, task["identity"].task_id, int(task["execution_generation"])))
+            if task["status"] in _LIVE_STATUSES or recovered_active:
+                member_activity.append(_member_activity({**task, "status": "running"} if recovered_active else task))
         return {
             "running": runtime["running"], "working": bool(member_activity),
             "blocked": room_id in runtime["blocked_rooms"]
@@ -736,11 +899,13 @@ class HostedRoomService:
 
 
 class _RouteStatusPeerClient:
-    """Classify scoped-auth failures without exposing route credentials."""
+    """Classify scoped-auth failures without exposing route credentials. Once its route is dropped
+    (Disband), a transport still holding it sends nothing more under it."""
 
     def __init__(
-        self, client, *, on_ready, on_reauthorization, on_unavailable, on_refreshed) -> None:
-        self._client, self._on_ready, self._on_refreshed = client, on_ready, on_refreshed
+        self, client, *, on_ready, on_reauthorization, on_unavailable, on_refreshed,
+        live: Callable[[], bool] = lambda: True) -> None:
+        self._client, self._live, self._on_ready, self._on_refreshed = client, live, on_ready, on_refreshed
         self._on_reauthorization, self._on_unavailable = on_reauthorization, on_unavailable
 
     def _refresh_grant(self, kwargs: dict) -> dict:
@@ -777,7 +942,7 @@ class _RouteStatusPeerClient:
             if drift is not None:
                 self._on_reauthorization()
                 raise drift
-        self._on_refreshed(replacement, refreshed_catalog)
+        self._on_refreshed(replacement, refreshed_catalog, previous=grant)
         return {**kwargs, "grant": replacement}
 
     def __getattr__(self, name):
@@ -786,6 +951,8 @@ class _RouteStatusPeerClient:
             return value
 
         def tracked(*args, **kwargs):
+            if not self._live():
+                raise PeerRunsHTTPError("peer room route was dropped", not_admitted=True)
             if name in {"dispatch", "recover_dispatch"} and "grant" in kwargs:
                 kwargs = self._refresh_grant(kwargs)
             try:
