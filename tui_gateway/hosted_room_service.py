@@ -713,14 +713,17 @@ class HostedRoomService:
         ``require_acknowledged`` (Disband) waits only on this gateway's own work: a member on another
         gateway is fenced by dropping its route and revoking its grant, never waited on."""
         gateway_id, epoch = self._owned_authority(room_id)
-        hosted_rooms.request_room_stop(
+        fence = hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
         pending = unconfirmed = 0
         with self._policy_lock:
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
-                for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)}
+                for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)
+                # A replay retains its original fence; work admitted afterward belongs to the
+                # next message, even when it appeared before this Stop's task scan.
+                if int(task["payload"]["source_event_seq"]) < int(fence["seq"])}
         for task in tasks.values():
             if task["status"] == "deferred" and not self._stop_deferred_peer(room_id, task):
                 unconfirmed += 1
