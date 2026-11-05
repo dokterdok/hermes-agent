@@ -5,6 +5,8 @@ from tui_gateway.hosted_room_driver import HostedRoomBinding
 from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
 from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
+_GRANT_ERRORS = frozenset({'invalid_room_grant', 'room_reauthorization_required'})
+
 
 class HostedControls:
     def _control_task(self, room_id, member_id, task_id, execution_generation):
@@ -22,8 +24,6 @@ class HostedControls:
                    and m.get('profile') == task['payload']['target_profile']
                    for m in self._room(room_id)['members']):
             raise RuntimeStoreError('permission_denied')
-        if self._member_is_peer(room_id, member_id):
-            raise RuntimeStoreError('unsupported_operation')
         return task, HostedRoomBinding(room_id, gateway, epoch)
 
     def discard_room_task(self, room_id, *, member_id, task_id, execution_generation):
@@ -32,20 +32,51 @@ class HostedControls:
             cancel_id = f'discard:{execution_generation}'
             if task['status'] == 'cancelled' and task.get('cancel_id') == cancel_id:
                 return task
-            if task['status'] != 'indeterminate':
-                raise RuntimeStoreError('stale_generation')
-            rpc = self._resolve_member_transport(binding, task)
-            # Canonical receipt commits first. If the driver write fails, exact
-            # RPC replay must recover it rather than invent another execution.
-            rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
-                        session_id=rpc.ref.session_id, expected_task_id=task_id,
-                        execution_generation=execution_generation)
-            lease = self.runtime._ensure_lease(binding)
-            result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
-                binding, task, lease, cancel_id=cancel_id)
-            self.runtime._set_blocked(room_id, False)
-            self.runtime.wakeup()
-            return result
+            if not self._member_is_peer(room_id, member_id):
+                return self._discard_local(binding, task, cancel_id)
+        # The member's gateway is asked over the network: never under the policy lock.
+        return self._discard_peer(binding, task, cancel_id)
+
+    def _discard_local(self, binding, task, cancel_id):
+        if task['status'] != 'indeterminate':
+            raise RuntimeStoreError('stale_generation')
+        rpc = self._resolve_member_transport(binding, task)
+        # Canonical receipt commits first. If the driver write fails, exact
+        # RPC replay must recover it rather than invent another execution.
+        rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
+                    session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
+                    execution_generation=task['execution_generation'])
+        lease = self.runtime._ensure_lease(binding)
+        result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
+            binding, task, lease, cancel_id=cancel_id)
+        self.runtime._set_blocked(binding.room_id, False)
+        self.runtime.wakeup()
+        return result
+
+    def _discard_peer(self, binding, task, cancel_id):
+        """Discard a deferred peer turn the way Disband ends it, since its member's gateway may still
+        run it: the admission is recovered under its own key (its receipt, else a replay, which finds
+        that run or starts it), the run is stopped, and the turn settles only once that gateway
+        confirms the run ended. An unreachable member keeps the turn: nothing here can prove what
+        its gateway did with the admission."""
+        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        if task['status'] != 'deferred':
+            raise RuntimeStoreError('unsupported_operation')
+        try:
+            self._resolve_member_transport(binding, task)
+        except PeerRunsHTTPError as exc:
+            raise RuntimeStoreError(
+                exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc
+        except RuntimeError as exc:  # no live route to the member's gateway
+            raise RuntimeStoreError('peer_unreachable') from exc
+        if not self._stop_deferred_peer(binding.room_id, task):
+            raise RuntimeStoreError('session_busy', detail=(
+                "the member's gateway has not confirmed this turn's run stopped; Discard again once it has"))
+        result = tasks.cancel_task(self.db_path, task['identity'], cancel_id=cancel_id,
+                                   expected_cancel_generation=task['cancel_generation'],
+                                   clock=self.runtime.clock)
+        self.runtime.wakeup()
+        return result
 
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
         if isinstance(task_id, str) and task_id.startswith(RETRY_TASK_PREFIX):
@@ -60,15 +91,32 @@ class HostedControls:
                 raise RuntimeStoreError('unknown_execution')
             if task['status'] != 'deferred':
                 raise RuntimeStoreError('stale_generation')
-            rpc = self._resolve_member_transport(binding, task)
-            info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
-                            session_id=rpc.ref.session_id)
-            if info.get('status') == 'unknown':
-                raise RuntimeStoreError('unknown_execution')
-            if info.get('active'):
-                raise RuntimeStoreError('session_busy')
-            lease = self.runtime._ensure_lease(binding)
-            return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+            if not self._member_is_peer(room_id, member_id):
+                return self._retry_local(binding, task, room_id)
+        return self._retry_peer(task)
+
+    def _retry_local(self, binding, task, room_id):
+        rpc = self._resolve_member_transport(binding, task)
+        info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
+                        session_id=rpc.ref.session_id)
+        if info.get('status') == 'unknown':
+            raise RuntimeStoreError('unknown_execution')
+        if info.get('active'):
+            raise RuntimeStoreError('session_busy')
+        lease = self.runtime._ensure_lease(binding)
+        return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+
+    def _retry_peer(self, task):
+        """A member on another gateway may still hold this generation: replay it under its own key
+        first, never start another (``HostedRoomRuntime._retry_deferred``). Called outside the
+        policy lock, since it waits on the member's gateway."""
+        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        try:
+            return self.runtime.retry_indeterminate(
+                task['identity'], execution_generation=task['execution_generation'])
+        except PeerRunsHTTPError as exc:
+            raise RuntimeStoreError(
+                exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc
 
     def status(self, room_id=None):
         result = super().status(room_id)
@@ -79,8 +127,11 @@ class HostedControls:
         for task in tasks.list_tasks(self.db_path, room_id=room_id):
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue
-            if self._member_is_peer(room_id, task_member_id(task)):
+            peer = self._member_is_peer(room_id, task_member_id(task))
+            if task['status'] == 'indeterminate' and peer:
                 continue
             actions.append(attempt_action(
                 'discard' if task['status'] == 'indeterminate' else 'retry', task))
+            if peer:
+                actions.append(attempt_action('discard', task))
         return {**result, 'pending_actions': actions}
