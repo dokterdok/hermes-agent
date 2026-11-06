@@ -1046,6 +1046,24 @@ def remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any]) -> dict[st
     return dict(row) if row is not None else None
 
 
+def forget_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any]) -> None:
+    """Retire only the scoped run the member confirmed missing, preserving any replacement."""
+    with _transaction(db_path, immediate=True) as conn:
+        conn.execute(f"DELETE FROM hosted_room_remote_runs WHERE {_REMOTE_RUN_WHERE} AND run_id=?",
+                     (*_remote_run_identity(record), record["run_id"]))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, record["room_id"])
+
+
+def replace_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], run_id: str, now: float | None = None) -> None:
+    """Point one attempt's saved run at the run its member names under the same key, in one write."""
+    with _transaction(db_path, immediate=True) as conn:
+        conn.execute(f"UPDATE hosted_room_remote_runs SET run_id=?, updated_at=? WHERE {_REMOTE_RUN_WHERE} AND run_id=?",
+                     (run_id, _now(now), *_remote_run_identity(record), record["run_id"]))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, record["room_id"])
+
+
 # --- rooms and events -------------------------------------------------------------
 def _adopt_legacy_room(
     conn: sqlite3.Connection, existing: sqlite3.Row, *, room_id: str, members_json: str, authority_gateway_id: str,

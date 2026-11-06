@@ -421,6 +421,20 @@ class PeerRunsHTTPClient:
         self._recovery_backoff.pop(key, None)
         return recovered
 
+    def refresh_receipt(self, *, dispatch: Mapping[str, Any], grant: str) -> None:
+        """Explicit Retry checks whether its saved run still exists before replaying the key."""
+        # Binds the group chat's scope first: a client new since a restart has none yet.
+        checked = self._checked_dispatch(dispatch, grant)
+        record = self._receipt(checked.task_id, checked.execution_generation)
+        if record is None:
+            return
+        try:
+            self._request(_run_path(record), room_grant=self._require_room_grant(grant))
+        except PeerRunsHTTPError as exc:
+            if exc.status_code != 404 or exc.error_code != "run_not_found":
+                raise
+            self._forget_receipt(record)
+
     def close_admission(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
         """Find the run this admission's key started, never starting it: by receipt, else by
         asking the member gateway to look the key up and close it when unused
@@ -505,6 +519,28 @@ class PeerRunsHTTPClient:
             hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
         self._runs[(checked.task_id, checked.execution_generation)] = receipt
         self._status_cache.pop(run_id, None)
+
+    def _forget_receipt(self, record: Mapping[str, Any]) -> None:
+        if self.receipt_db_path is not None:
+            from gateway import hosted_rooms
+            hosted_rooms.forget_remote_run_receipt(self.receipt_db_path, record=record)
+        self._clear_receipt_state(record)
+
+    def _replace_receipt(self, record: Mapping[str, Any], *, run_id: str) -> dict[str, Any]:
+        if self.receipt_db_path is not None:
+            from gateway import hosted_rooms
+            hosted_rooms.replace_remote_run_receipt(self.receipt_db_path, record=record, run_id=run_id)
+        self._clear_receipt_state(record)
+        replacement = {**record, "run_id": run_id}
+        self._runs[(str(record["task_id"]), int(record["execution_generation"]))] = replacement
+        return replacement
+
+    def _clear_receipt_state(self, record: Mapping[str, Any]) -> None:
+        key = (str(record["task_id"]), int(record["execution_generation"]))
+        self._runs.pop(key, None)
+        self._status_cache.pop(str(record["run_id"]), None)
+        self._terminal_receipts.discard(key)
+        self._recovery_backoff.pop(key, None)
 
     def _session_id(self, dispatch: HostedMemberDispatch, *, grant: str) -> str:
         existing = self._receipt(dispatch.task_id, dispatch.execution_generation)
@@ -677,6 +713,8 @@ class PeerRunsHTTPClient:
             result = self._post_run_action(
                 record, "stop", body={}, grant=self._require_room_grant(grant))
         except PeerRunsHTTPError as exc:
+            if exc.status_code == 404 and exc.error_code == "run_not_found":
+                return self._stop_missing_receipt(record, grant=grant)
             if exc.error_code != "unknown_execution":
                 raise
             # Stop needs fresh confirmation, even while observation is backing off.
@@ -685,6 +723,26 @@ class PeerRunsHTTPClient:
         if result.get("status") in _TERMINAL_RUN_STATES:
             self._terminal_receipts.add((str(task_id), int(execution_generation)))
         return result
+
+    def _stop_missing_receipt(self, record: Mapping[str, Any], *, grant: str) -> Mapping[str, Any] | None:
+        """A typed missing run is settled by its key, never by replaying admission.
+
+        Keep the old receipt until close answers so a lost reply can be retried after restart.
+        A reservation still visible under the same run may yet be admitted; keep waiting for it.
+        """
+        result = self._scoped_post("/v1/room-members/runs/close", grant, body={
+            "task_id": record["task_id"], "execution_generation": record["execution_generation"]})
+        if result.get("closed") is True:
+            self._forget_receipt(record)
+            return {"status": "cancelled"}
+        run_id = str(result.get("run_id") or "")
+        if not run_id:
+            raise PeerRunsHTTPError("peer answered a run close with no run")
+        if run_id == record["run_id"]:
+            return None
+        replacement = self._replace_receipt(record, run_id=run_id)
+        # One replacement per control call bounds a member whose run store keeps changing.
+        return self._post_run_action(replacement, "stop", body={}, grant=grant)
 
     def issue_invitation(
         self, *, room_id: str, home_install_id: str, authority_gateway_id: str,
