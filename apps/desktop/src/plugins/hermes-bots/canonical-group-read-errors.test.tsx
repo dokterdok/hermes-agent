@@ -20,7 +20,7 @@ const timeoutAdvice = [
   ['ar', 'لم تستجب البوابة في الوقت', 'جهاز أحد البوتات', 'تحديث'],
   ['ru', 'Шлюз не ответил вовремя', 'компьютер бота', 'Обновить'],
   ['fr', 'passerelle n’a pas répondu à temps', 'l’ordinateur d’un bot', 'Actualiser'],
-  ['de', 'Gateway hat nicht rechtzeitig geantwortet', 'Computer eines bots', 'Aktualisieren'],
+  ['de', 'Gateway hat nicht rechtzeitig geantwortet', 'Computer eines Bots', 'Aktualisieren'],
   ['es', 'pasarela no respondió a tiempo', 'equipo de un bot', 'Actualizar']
 ] as const
 
