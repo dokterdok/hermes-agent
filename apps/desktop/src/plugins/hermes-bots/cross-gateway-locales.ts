@@ -1,6 +1,8 @@
 /** Execution lifetime for groups spanning connected machines. Every Bot Mode locale. */
 export interface CrossGatewayGroupMessages {
   gatewayPeer: (owner: string) => string
+  startGatewayGroup: string
+  upgradeHistory: string
   pickBots: (max: number) => string
   desktopMembership: string
   gatewayMembership: string
@@ -21,6 +23,8 @@ export interface CrossGatewayGroupMessages {
 export const CROSS_GATEWAY_GROUP_LOCALES = {
   en: {
     gatewayPeer: owner => `Runs on ${owner}, including when this Desktop is closed. Only text is sent to bots on other computers.`,
+    startGatewayGroup: 'Start a group chat that runs without Desktop',
+    upgradeHistory: 'Earlier messages stay in this group chat.',
     pickBots: max => `Pick 2–${max} bots.`,
     desktopMembership: 'Local memberships sync through each bot profile; cross-machine members stay scoped to this group chat.',
     gatewayMembership: 'Membership is saved with this group chat on its computer.',
@@ -37,6 +41,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   ja: {
     gatewayPeer: owner => `このデスクトップを閉じていても ${owner} で動作します。ほかのコンピューターのボットはテキストのみを受け取ります。`,
+    startGatewayGroup: 'Desktop なしで動くグループチャットを始める',
+    upgradeHistory: '過去のメッセージはこのグループチャットに残ります。',
     pickBots: max => `2〜${max} 個のボットを選択してください。`,
     desktopMembership: 'ローカルのメンバー情報は各ボットのプロファイルを通じて同期されます。別のコンピューターのメンバーはこのグループチャットにのみ保存されます。',
     gatewayMembership: 'メンバー情報は、このグループチャットを実行するコンピューターに保存されます。',
@@ -53,6 +59,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   zh: {
     gatewayPeer: owner => `在 ${owner} 上运行，即使此桌面端已关闭。其他电脑上的机器人仅接收文本。`,
+    startGatewayGroup: '新建无需 Desktop 也能运行的群聊',
+    upgradeHistory: '之前的消息保留在此群聊中。',
     pickBots: max => `选择 2–${max} 个机器人。`,
     desktopMembership: '本地成员关系通过各机器人的配置文件同步；跨电脑成员仅属于此群聊。',
     gatewayMembership: '成员关系随此群聊保存在运行它的电脑上。',
@@ -68,6 +76,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   'zh-hant': {
     gatewayPeer: owner => `在 ${owner} 上執行，即使此桌面端已關閉。其他電腦上的機器人僅接收文字。`,
+    startGatewayGroup: '建立無需 Desktop 也能執行的群聊',
+    upgradeHistory: '之前的訊息保留在此群聊中。',
     pickBots: max => `選擇 2–${max} 個機器人。`,
     desktopMembership: '本機成員關係透過各機器人的設定檔同步；跨電腦成員僅屬於此群組聊天。',
     gatewayMembership: '成員關係隨此群組聊天儲存在執行它的電腦上。',
@@ -83,6 +93,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   ar: {
     gatewayPeer: owner => `تعمل على ${owner} حتى عند إغلاق سطح المكتب هذا. تقبل الروبوتات على الأجهزة الأخرى النص فقط.`,
+    startGatewayGroup: 'بدء محادثة جماعية تعمل دون Desktop',
+    upgradeHistory: 'تبقى الرسائل السابقة في هذه المحادثة الجماعية.',
     pickBots: max => `اختر من 2 إلى ${max} بوتات.`,
     desktopMembership: 'تتم مزامنة العضوية المحلية عبر ملف تعريف كل بوت؛ وتبقى عضوية الأجهزة الأخرى خاصة بهذه المحادثة الجماعية.',
     gatewayMembership: 'تُحفظ العضوية مع هذه المحادثة الجماعية على الجهاز الذي يشغّلها.',
@@ -99,6 +111,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   ru: {
     gatewayPeer: owner => `Работает на ${owner}, даже когда этот Desktop закрыт. На других компьютерах боты принимают только текст.`,
+    startGatewayGroup: 'Начать групповой чат, работающий без Desktop',
+    upgradeHistory: 'Предыдущие сообщения останутся в этом групповом чате.',
     pickBots: max => `Выберите от 2 до ${max} ботов.`,
     desktopMembership: 'Локальное участие синхронизируется через профиль каждого бота; участие ботов с других компьютеров сохраняется только в этом групповом чате.',
     gatewayMembership: 'Участники сохраняются вместе с групповым чатом на компьютере, где он работает.',
@@ -115,6 +129,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   fr: {
     gatewayPeer: owner => `Fonctionne sur ${owner}, même lorsque ce Desktop est fermé. Les bots des autres ordinateurs acceptent uniquement du texte.`,
+    startGatewayGroup: 'Créer une discussion de groupe qui fonctionne sans Desktop',
+    upgradeHistory: 'Les anciens messages restent dans cette discussion de groupe.',
     pickBots: max => `Choisissez de 2 à ${max} bots.`,
     desktopMembership: 'Les membres locaux sont synchronisés via le profil de chaque bot ; les membres des autres ordinateurs restent propres à cette discussion de groupe.',
     gatewayMembership: 'Les membres sont enregistrés avec cette discussion de groupe sur son ordinateur.',
@@ -131,6 +147,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   de: {
     gatewayPeer: owner => `Läuft auf ${owner}, auch wenn dieser Desktop geschlossen ist. Auf anderen Computern empfangen bots nur Text.`,
+    startGatewayGroup: 'Gruppenchat starten, der ohne Desktop läuft',
+    upgradeHistory: 'Frühere Nachrichten bleiben in diesem Gruppenchat.',
     pickBots: max => `Wählen Sie 2–${max} bots.`,
     desktopMembership: 'Lokale Mitgliedschaften werden über das jeweilige bot-Profil synchronisiert; Mitglieder anderer Computer bleiben auf diesen Gruppenchat beschränkt.',
     gatewayMembership: 'Die Mitglieder werden mit diesem Gruppenchat auf seinem Computer gespeichert.',
@@ -147,6 +165,8 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
   },
   es: {
     gatewayPeer: owner => `Funciona en ${owner}, incluso cuando este Desktop está cerrado. Los bots de otros equipos solo reciben texto.`,
+    startGatewayGroup: 'Crear un chat de grupo que funcione sin Desktop',
+    upgradeHistory: 'Los mensajes anteriores permanecen en este chat de grupo.',
     pickBots: max => `Elige de 2 a ${max} bots.`,
     desktopMembership: 'Los miembros locales se sincronizan mediante el perfil de cada bot; los de otros equipos quedan vinculados a este chat de grupo.',
     gatewayMembership: 'Los miembros se guardan con este chat de grupo en el equipo que lo ejecuta.',
