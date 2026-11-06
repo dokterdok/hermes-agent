@@ -1,0 +1,272 @@
+import { useStore } from '@nanostores/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { atom } from 'nanostores'
+import type { ComponentProps } from 'react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+
+import type * as DataModule from './data'
+
+const { request, union, notify, language } = vi.hoisted(() => ({ language: { value: 'en' }, request: vi.fn(), notify: vi.fn(), union: { profiles: [] as unknown[] } }))
+vi.mock('@hermes/plugin-sdk', async () => {
+  const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
+  const gateway = createGroupGateway()
+  const { en } = await import('@/i18n/en')
+  const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
+  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
+  const { ConfirmDialog } = await import('@/components/ui/confirm-dialog')
+
+  return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore, ConfirmDialog,
+    useI18n: () => ({ t: en }),
+    usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES[language.value as keyof typeof CANONICAL_GROUP_LOCALES][key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
+    Button: (p: ComponentProps<'button'>) => <button {...p} />,
+    host: { ...gateway.host, notify, requestProfile: captureGroupRequests(request).request } }
+})
+vi.mock('./data', async importOriginal => ({ ...await importOriginal<typeof DataModule>(), cachedUnionRoster: () => union }))
+
+import {
+  answerGroupRequests, DISBAND_FAILURES, PEER_HOME as HOME, PEER_MINI as MINI, PEER_REGISTERED, peerGroupCapabilities, peerInvitation, peerRosterRow, strictGroupCreation
+} from './canonical-group-contract-test-utils'
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import { $peerJoinErrors } from './canonical-group-peers'
+import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { CanonicalGroupWorkspace } from './canonical-group-workspace'
+import { $groupChats, updateGroupChat } from './group-chat'
+import { scriptedStorage } from './group-test-utils'
+import { setPluginCtx } from './shared'
+
+const words = CANONICAL_GROUP_LOCALES.en
+const say = (text: string) => text.replace('{name}', 'Hermes · Mac Mini')
+const binding = { connectionId: 'local', profile: 'default', roomId: 'linked' }
+const pinned = { kind: 'peer', peer_id: 'install:3f2a0000000000000000000000000000', installation_id: 'install:3f2a0000000000000000000000000000', profile: 'default', capability_digest: MINI.room_link.catalog.catalog_digest }
+const mini = peerRosterRow('mini', 'Mac Mini')
+
+const room = {
+  room_id: 'linked', name: 'Linked', authority_gateway_id: 'install:a18b0000000000000000000000000000', authority_epoch: 1, latest_seq: 0,
+  members: [
+    { member_id: 'default', profile: 'default', handle: 'hermes', target: { kind: 'local', profile: 'default' } },
+    { member_id: 'coder', profile: 'coder', handle: 'coder', target: { kind: 'local', profile: 'coder' } },
+    { member_id: 'hermes-mac-mini', profile: 'default', handle: 'hermes-mac-mini', display_name: 'Hermes · Mac Mini', target: pinned }
+  ]
+}
+
+type Handler = (method: string, params: Record<string, any>) => unknown
+
+/** The home (`local`) and the Mac Mini's gateway (`mini`), each answering as `HOME` / `MINI` unless its
+ *  handler does; `offline` never answers. The home reports `routes`, and the room as ended once `ended`. */
+function gateways({ home, peer, elsewhere = {}, routes = [] }: { home?: Handler; peer?: Handler; elsewhere?: Record<string, Handler>; routes?: unknown[] }) {
+  const state = { ended: false, routes }
+  const { create } = strictGroupCreation()
+
+  answerGroupRequests(request, {
+    ...elsewhere,
+    offline: () => new Promise(() => undefined),
+    mini: (method, params) => peer?.(method, params) ?? ({
+      'groups.capabilities': MINI, 'groups.peer.invite': peerInvitation(), 'groups.peer.revoke': { revoked: true }
+    } as Record<string, unknown>)[method],
+    local: (method, params) => home?.(method, params) ?? (method === 'groups.create' ? create(params) : ({
+      'groups.capabilities': HOME, 'groups.log': { events: [] }, 'groups.peer.register': PEER_REGISTERED,
+      'groups.state': { room: state.ended ? { ...room, disbanded_at: 2 } : room, driver_status: { running: true, peer_routes: state.routes } }
+    } as Record<string, unknown>)[method])
+  })
+
+  return state
+}
+
+const refusal = (reason: string) => Object.assign(new Error(reason), { code: 4001, data: { reason } })
+const status = () => screen.getByText(say(words.peerNotJoined)).closest('[role="status"]') as HTMLElement
+const steps = () => request.mock.calls.map(([route, method]) => [route?.connectionId, method]).filter(([, method]) => method.startsWith('groups.peer'))
+const SEATED = [['mini', 'groups.peer.invite'], ['local', 'groups.peer.register']]
+
+async function retry() {
+  await screen.findByText(say(words.peerNotJoined))
+  await act(async () => { fireEvent.click(within(status()).getByRole('button', { name: 'Retry' })) })
+}
+
+beforeEach(() => {
+  setPluginCtx(scriptedStorage(new Map()))
+  language.value = 'en'
+  union.profiles = [mini]
+  $groupChats.set({})
+  $peerJoinErrors.set({})
+  $canonicalGroupBindings.set({})
+})
+afterEach(() => { setPluginCtx(null); cleanup(); request.mockReset(); notify.mockReset() })
+
+it.each(['missing', 'unavailable'])('retries a %s peer through its matching connection without waiting on another offline computer', async status => {
+  union.profiles = [peerRosterRow('offline', 'Old laptop'), mini]
+
+  const state = gateways({ routes: status === 'missing' ? [] : [{ room_id: 'linked', member_id: 'hermes-mac-mini', status }], home: (method, params) => method === 'groups.peer.register'
+    ? (state.routes = [{ room_id: 'linked', member_id: params.member_id, status: 'ready' }], PEER_REGISTERED) : undefined })
+
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const text = say(status === 'missing' ? words.peerNotJoined : words.peerAway)
+  const row = (await screen.findByText(text)).closest('[role="status"]') as HTMLElement
+  const badge = status === 'missing' ? words.peerNotJoinedBadge : words.peerOfflineBadge
+  expect(within(screen.getByRole('list', { name: words.members })).getByText(badge)).toBeTruthy()
+  expect(within(row).getByRole('button', { name: say(words.peerStartWithout) })).toBeTruthy()
+  await act(async () => { fireEvent.click(within(row).getByRole('button', { name: 'Retry' })) })
+  await waitFor(() => expect(screen.queryByText(text)).toBeNull())
+  expect(screen.queryByText(badge)).toBeNull()
+  expect(steps()).toEqual(SEATED)
+  expect(request.mock.calls.find(call => call[1] === 'groups.peer.invite')![2]).toEqual({
+    profile: 'default', room_id: 'linked', member_id: 'hermes-mac-mini', home_install_id: 'install:a18b0000000000000000000000000000',
+    authority_gateway_id: 'install:a18b0000000000000000000000000000', authority_epoch: 1, ttl_seconds: 86400, status_ttl_seconds: 2592000 })
+})
+
+it.each([
+  // An ordinary failure never revokes: revocation is scope-wide, and would end a live room's working grant.
+  ['the home cannot reach it', { home: (method: string) => method === 'groups.peer.register' ? refusal('peer_unreachable') : undefined },
+    words.peerJoinUnreachable, SEATED],
+  ['its gateway lends another catalog now', { peer: (method: string) => method === 'groups.capabilities'
+    ? { ...MINI, room_link: { ...MINI.room_link, catalog: { ...MINI.room_link.catalog, catalog_digest: 'd'.repeat(64) } } } : undefined },
+  words.peerJoinChanged, []],
+  ['no connection here reaches it', { peer: (method: string) => method === 'groups.capabilities' ? peerGroupCapabilities('install:other') : undefined },
+    words.peerJoinConnect, []]
+])('says why a Retry did not seat the Bot when %s', async (_case, handlers, why, asked) => {
+  gateways(handlers)
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await retry()
+  await waitFor(() => expect(within(status()).getByText(say(why))).toBeTruthy())
+  expect(steps()).toEqual(asked)
+})
+
+it('says when a joined Bot\'s access ended, and offers Retry', async () => {
+  gateways({ routes: [{ room_id: 'linked', member_id: 'hermes-mac-mini', status: 'needs_reauthorization' }] })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const row = (await screen.findByText(say(words.peerRejoin))).closest('[role="status"]') as HTMLElement
+  expect(within(row).getByRole('button', { name: 'Retry' })).toBeTruthy()
+  expect(screen.getByText(words.peerRejoinBadge)).toBeTruthy()
+  expect(screen.queryByText(words.peerNotJoinedBadge)).toBeNull()
+})
+
+const later = (answer: unknown) => new Promise(resolve => setTimeout(() => resolve(answer), 0))
+const oneDay = { ...MINI, features: MINI.features.filter(feature => feature !== 'peer_renewal_horizon') }
+const nonpersistent = { ...MINI, room_link: { ...MINI.room_link, catalog: { ...MINI.room_link.catalog, persistent_process: false, catalog_digest: 'e'.repeat(64) } } }
+
+it.each([
+  ['grants the longer renewal horizon', oneDay, MINI, 2592000],
+  ['can host it, when another connection to that computer cannot', nonpersistent, oneDay, undefined]
+])('seats the Bot through the connection that %s', async (_case, first, chosen, horizon) => {
+  union.profiles = [peerRosterRow('first', 'Mac Mini (first)'), mini]
+  gateways({ elsewhere: { first: method => method === 'groups.capabilities' ? first : undefined },
+    peer: method => method === 'groups.capabilities' ? later(chosen) : undefined })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await retry()
+  await waitFor(() => expect(steps()).toEqual(SEATED))
+  expect(request.mock.calls.find(call => call[1] === 'groups.peer.invite')![2].status_ttl_seconds).toBe(horizon)
+})
+
+it.each(['capabilities', 'invite'] as const)('does not leave a grant when the room ends during %s', async step => {
+  const state = gateways({
+    home: method => method === 'groups.peer.register' ? refusal('invalid_params') : undefined,
+    peer: method => method === `groups.peer.${step}` || method === `groups.${step}` ? (state.ended = true, undefined) : undefined
+  })
+
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await retry()
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.state').length).toBeGreaterThan(1))
+  await waitFor(() => expect(steps()).toEqual(step === 'invite' ? [...SEATED, ['mini', 'groups.peer.revoke']] : []))
+
+  if (step === 'invite') {expect(request.mock.calls.find(call => call[1] === 'groups.peer.revoke')![2].grant).toBe('grant')}
+})
+
+it.each(['confirmed', 'offline', 'unconfirmed', 'stop pending'])('starts the group again and keeps the original until Disband is confirmed (%s)', async outcome => {
+  const onReplaced = vi.fn()
+  const failure = DISBAND_FAILURES.find(({ name }) => name === outcome)
+  const confirmed = outcome === 'confirmed' || outcome === 'offline'
+
+  if (outcome === 'offline') {union.profiles = []}
+  gateways({ routes: outcome === 'offline' ? [{ room_id: 'linked', member_id: 'hermes-mac-mini', status: 'unavailable' }] : [], home: method => method === 'groups.disband' ? confirmed ? { tombstone: { room_id: 'linked', disbanded_at: 1 } } : failure?.error ?? {} : undefined })
+  updateGroupChat('Linked', record => ({ ...record, roomId: binding.roomId, engine: { kind: 'gateway', ...binding } }), { sync: false })
+  const original = structuredClone($groupChats.get().Linked)
+  registerCanonicalGroup({ connectionId: 'local', profile: 'default' }, room)
+  render(<CanonicalGroupWorkspace binding={binding} onReplaced={onReplaced} />)
+  const row = (await screen.findByText(say(outcome === 'offline' ? words.peerAway : words.peerNotJoined))).closest('[role="status"]') as HTMLElement
+
+  if (outcome === 'offline') {expect(within(row).queryByRole('button', { name: 'Retry' })).toBeNull()}
+  // The control says what it does: a new group without that Bot, earlier messages not copied.
+  fireEvent.click(within(row).getByRole('button', { name: 'Start new group chat without Hermes · Mac Mini' }))
+  const dialog = await screen.findByRole('dialog')
+  expect(within(dialog).getByText(words.peerStartWithoutConfirm)).toBeTruthy()
+  await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: words.startGatewayGroup })) })
+  await waitFor(() => expect(onReplaced).toHaveBeenCalledOnce())
+
+  const create = request.mock.calls.find(call => call[1] === 'groups.create')![2]
+  expect(create).toEqual({ profile: 'default', room_id: create.room_id, name: 'Linked 2', members: room.members.slice(0, 2) })
+  expect(request.mock.calls.map(call => call[1]).filter(method => method === 'groups.create' || method === 'groups.disband'))
+    .toEqual(['groups.create', 'groups.disband'])
+  expect(Object.values($canonicalGroupBindings.get()).map(entry => entry.roomId).sort())
+    .toEqual((confirmed ? [create.room_id] : ['linked', create.room_id]).sort())
+
+  if (confirmed) {expect($groupChats.get().Linked).toBeUndefined()} else {
+    expect($groupChats.get().Linked).toEqual(original)
+    expect(notify).toHaveBeenCalledExactlyOnceWith({ kind: 'error', message: words.peerStartWithoutKept.replace('{reason}', words[failure?.detail ?? 'disbandUnconfirmed']) })
+  }
+
+  expect($groupChats.get()[create.name]?.engine).toEqual({ kind: 'gateway', ...binding, roomId: create.room_id })
+})
+
+it('shows the badge but no setup controls on a gateway that cannot register Bots of other gateways', async () => {
+  gateways({ home: method => method === 'groups.capabilities' ? { ...HOME, methods: HOME.methods.filter(name => !name.startsWith('groups.peer')) } : undefined })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await screen.findByText(words.peerNotJoinedBadge)
+  await act(async () => {})
+  expect(screen.queryByText(words.peerNotJoined.replace('{name}', 'Hermes · Mac Mini'))).toBeNull()
+})
+
+const calls = (method: string) => request.mock.calls.filter(call => call[1] === method)
+
+it.each(['missing', 'refused'])('keeps A+B+C when removing B cannot seat C (%s), then reuses the replacement', async failure => {
+  const labels = words
+
+  const original = { ...room, room_id: `replace-${failure}`, members: [room.members[0],
+    { ...room.members[1], display_name: 'B', target: { ...pinned, installation_id: 'install:b' } }, room.members[2]] }
+
+  const own = { ...binding, roomId: original.room_id }
+  const { rooms: created, create } = strictGroupCreation()
+  let recovered = false
+  union.profiles = failure === 'missing' ? [] : [mini]
+  gateways({ home: (method, params) => {
+    if (method === 'groups.state') {return { room: created.get(params.room_id) ?? original,
+      driver_status: { running: true, peer_routes: [{ member_id: 'hermes-mac-mini', status: 'unavailable' }] } }}
+
+    if (method === 'groups.create') {
+      return create(params)
+    }
+
+    if (method === 'groups.peer.register' && !recovered) {return refusal('peer_unreachable')}
+
+    if (method === 'groups.disband') {return { tombstone: { room_id: original.room_id, disbanded_at: 1 } }}
+  } })
+  updateGroupChat(original.name, record => ({ ...record, roomId: own.roomId, engine: { kind: 'gateway', ...own } }), { sync: false })
+  const before = structuredClone($groupChats.get()[original.name])
+  const originalKey = registerCanonicalGroup(own, original)
+  const onReplaced = vi.fn()
+  render(<CanonicalGroupWorkspace binding={own} onReplaced={onReplaced} />)
+
+  const replace = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: labels.peerStartWithout.replace('{name}', 'B') }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: labels.startGatewayGroup }))
+  }
+
+  await replace()
+  await waitFor(() => expect(onReplaced).toHaveBeenCalledOnce())
+  expect(calls('groups.disband')).toHaveLength(0)
+  expect($groupChats.get()[original.name]).toEqual(before)
+  expect($canonicalGroupBindings.get()[originalKey]).toMatchObject(own)
+  const reason = (failure === 'missing' ? labels.peerJoinConnect : labels.peerJoinUnreachable).replace('{name}', 'Hermes · Mac Mini')
+  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: labels.peerStartWithoutKept.replace('{reason}', reason) })
+  expect(created.size).toBe(1)
+  const next = [...created.values()][0]
+  expect(next.members.map(member => member.member_id)).toEqual(['default', 'hermes-mac-mini'])
+  expect($groupChats.get()[next.name].engine).toEqual({ kind: 'gateway', ...binding, roomId: next.room_id })
+  recovered = true
+  union.profiles = [mini]
+  await replace()
+  await waitFor(() => expect(onReplaced).toHaveBeenCalledTimes(2))
+  expect(created.size).toBe(1)
+  expect(calls('groups.create')).toHaveLength(1)
+  expect(calls('groups.disband')).toHaveLength(1)
+  expect(request.mock.calls.findIndex(call => call[1] === 'groups.disband')).toBeGreaterThan(request.mock.calls.findIndex(call => call[1] === 'groups.peer.register'))
+  expect($canonicalGroupBindings.get()[originalKey]).toBeUndefined()
+})
