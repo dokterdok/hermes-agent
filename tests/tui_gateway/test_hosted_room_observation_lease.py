@@ -401,9 +401,9 @@ def test_stop_of_a_lost_member_lets_go_of_the_worker(observed, monkeypatch):
     assert state.get_task(o.db, o.identity)['status'] == 'stopping'
 
 
-def test_stop_of_a_member_on_another_daemon_defers(observed, monkeypatch):
+def test_stop_of_a_member_on_another_gateway_defers(observed, monkeypatch):
     o = observed
-    o.rpc.served_elsewhere = True
+    o.runtime.remote_member = lambda *_: True
     o.runtime.transport_resolver = lambda *_: o.rpc
     fail_observation(o, monkeypatch)
 
@@ -426,7 +426,7 @@ def test_stop_of_a_member_on_another_daemon_defers(observed, monkeypatch):
 
 def test_stop_probe_outlasting_the_lease_still_defers(observed, monkeypatch):
     o = observed
-    o.rpc.served_elsewhere = True
+    o.runtime.remote_member = lambda *_: True
     o.runtime.transport_resolver = lambda *_: o.rpc
     fail_observation(o, monkeypatch)
 

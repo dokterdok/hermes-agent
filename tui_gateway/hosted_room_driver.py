@@ -337,7 +337,7 @@ class HostedRoomRuntime:
         """A member on another gateway that has not confirmed a Stop within the deferral window may
         stay unreachable: release the room's queue. The turn is deferred, never reported cancelled,
         since its run may still be going there."""
-        if (not self._served_elsewhere(binding, task)
+        if (not self._remote(task)
                 or self.clock() < float(task.get("updated_at") or 0) + self.indeterminate_defer_seconds):
             return False
         # A Stop probe that timed out can outlast the lease this commits under.
@@ -345,15 +345,6 @@ class HostedRoomRuntime:
         self._publish(binding, self._fenced(
             state.defer_unconfirmed_stop, None, task, lease, reason="member_unavailable"))
         return True
-
-    def _served_elsewhere(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
-        """Whether another process serves this member, which can go away without taking this one."""
-        if self._remote(task):
-            return True
-        try:
-            return bool(getattr(self._transport_for(binding, task), "served_elsewhere", False))
-        except Exception:  # health: allow BLE001 -- a member whose route is gone is not served here
-            return True
 
     def _publish(self, binding: HostedRoomBinding, task: dict[str, Any]) -> dict[str, Any]:
         if self.publish_terminal is not None:
