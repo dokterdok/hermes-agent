@@ -3660,6 +3660,7 @@ export interface SessionInterruptParams {
   session_id: string
   profile?: string | null
   expected_hosted_task_id?: string | null
+  expected_hosted_execution_generation?: number | null
 }
 export interface SessionInterruptResult {
   status: InterruptStatus
